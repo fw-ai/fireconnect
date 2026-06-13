@@ -84,6 +84,7 @@ read_api_key() {
 
   echo "Create a Fireworks API key here:"
   echo "https://app.fireworks.ai/settings/users/api-keys"
+  echo "(Fire Pass users: paste your fpk_... key directly.)"
   echo
 
   # Support interactive, piped (`curl | bash`), and non-interactive stdin flows.

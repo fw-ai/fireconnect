@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import {
   DEFAULT_MAIN_MODEL,
+  detectApiKeyType,
   normalizeModelId,
   readJsonIfExists,
   writeJson,
@@ -84,6 +86,7 @@ export async function enableOpencodeFireworks({
   apiKey,
   apiKeyFromFlag = false,
   modelId,
+  keyType = "fireworks",
 }) {
   if (!apiKey) {
     throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
@@ -99,12 +102,27 @@ export async function enableOpencodeFireworks({
     }
   }
 
+  // Resolve the {env:FIREWORKS_API_KEY} placeholder to the real env value before
+  // detecting key type — otherwise env-ref stored keys always detect as "fireworks".
+  const effectiveApiKey = apiKey === OPENCODE_API_KEY_ENV_REF
+    ? (process.env.FIREWORKS_API_KEY ?? "")
+    : apiKey;
+  const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(effectiveApiKey) : keyType;
+
   // Model precedence: explicit request > model already configured by a previous
   // `on` > default. A repeat `on` without --main must not reset the user's choice.
   const currentModelId = typeof config.model === "string" && config.model.startsWith("fireworks/")
     ? config.model.slice("fireworks/".length)
     : "";
-  const resolvedModel = normalizeModelId(modelId || currentModelId || DEFAULT_MAIN_MODEL);
+
+  // Fire Pass only covers kimi-k2p6-turbo; when no explicit model is requested,
+  // default to that router so the user gets a working config out of the box.
+  let effectiveModelId = modelId;
+  if (resolvedKeyType === "firepass" && !modelId) {
+    effectiveModelId = DEFAULT_MAIN_MODEL;
+  }
+
+  const resolvedModel = normalizeModelId(effectiveModelId || currentModelId || DEFAULT_MAIN_MODEL);
 
   const backupPath = opencodeBackupPath(dataDir, configPath);
   // Snapshot only when the live config carries no trace of FireConnect (no
@@ -143,7 +161,7 @@ export async function enableOpencodeFireworks({
   await writeJson(configPath, next);
   await writeJson(opencodeStatePath(dataDir), { enabled: true });
 
-  return { model: next.model, apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference" };
+  return { model: next.model, apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference", keyType: resolvedKeyType };
 }
 
 export async function disableOpencodeFireworks({ configPath, dataDir }) {
