@@ -32,6 +32,9 @@ For non-interactive setup:
 curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | FIREWORKS_API_KEY="fw_..." bash
 ```
 
+Fire Pass users can use a `fpk_...` key directly — FireConnect detects the key type and
+uses the correct defaults for Fire Pass (kimi-k2p6-turbo for all aliases).
+
 If you prefer installing from an SSH checkout:
 
 ```bash

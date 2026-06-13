@@ -51,6 +51,13 @@ export const DEFAULT_FIREWORKS_PRESET = {
   CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE: "0",
 };
 
+export const DEFAULT_FIREPASS_PRESET = {
+  ...DEFAULT_FIREWORKS_PRESET,
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
+  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
+};
+
 export async function readJsonIfExists(filePath) {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
@@ -140,7 +147,16 @@ export function validateModelId(model, flag) {
   }
 }
 
-export function defaultModelIds() {
+export function defaultModelIds(keyType = "fireworks") {
+  if (keyType === "firepass") {
+    return {
+      main: DEFAULT_MAIN_MODEL,
+      opus: DEFAULT_MAIN_MODEL,
+      sonnet: DEFAULT_MAIN_MODEL,
+      haiku: DEFAULT_MAIN_MODEL,
+      subagent: DEFAULT_MAIN_MODEL,
+    };
+  }
   return {
     main: DEFAULT_MAIN_MODEL,
     opus: DEFAULT_OPUS_MODEL,
@@ -150,8 +166,8 @@ export function defaultModelIds() {
   };
 }
 
-export function resolveModelMapping(overrides = {}) {
-  const defaults = defaultModelIds();
+export function resolveModelMapping(overrides = {}, keyType = "fireworks") {
+  const defaults = defaultModelIds(keyType);
   const main = normalizeModelId(overrides.main || defaults.main);
   const opus = normalizeModelId(overrides.opus || defaults.opus);
   const sonnet = normalizeModelId(overrides.sonnet || defaults.sonnet);
@@ -224,6 +240,15 @@ export function isFireworksModelId(model) {
   return typeof model === "string" && model.startsWith("accounts/fireworks/");
 }
 
+/** Detect whether a key is a Fire Pass subscription key (fpk_...) or a
+ *  standard Fireworks API key (fw_...). Returns "firepass" or "fireworks". */
+export function detectApiKeyType(key) {
+  if (typeof key === "string" && key.trim().startsWith("fpk_")) {
+    return "firepass";
+  }
+  return "fireworks";
+}
+
 export function applyTopLevelBackup(settings, topLevelBackup) {
   const next = { ...settings };
   if (!topLevelBackup?.values) {
@@ -271,10 +296,12 @@ export function buildFireworksProviderEnv(env, {
   baseUrl = FIREWORKS_BASE_URL,
   mapping,
   preset = DEFAULT_FIREWORKS_PRESET,
+  keyType = "fireworks",
 }) {
+  const resolvedPreset = keyType === "firepass" ? DEFAULT_FIREPASS_PRESET : preset;
   const nextEnv = {
     ...env,
-    ...preset,
+    ...resolvedPreset,
     ...mergeModelsIntoEnv({}, mapping),
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_API_KEY: apiKey,
@@ -292,6 +319,7 @@ export async function enableFireworksProvider({
   baseUrl = FIREWORKS_BASE_URL,
   mapping = resolveModelMapping(),
   preset = DEFAULT_FIREWORKS_PRESET,
+  keyType = "fireworks",
 }) {
   const backupPath = providerBackupPath(dataDir);
   const statePath = providerStatePath(dataDir);
@@ -316,9 +344,11 @@ export async function enableFireworksProvider({
     throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
   }
 
+  const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(token) : keyType;
+
   const next = {
     ...settings,
-    env: buildFireworksProviderEnv(env, { apiKey: token, baseUrl, mapping, preset }),
+    env: buildFireworksProviderEnv(env, { apiKey: token, baseUrl, mapping, preset, keyType: resolvedKeyType }),
   };
 
   await writeJson(settingsPath, next);

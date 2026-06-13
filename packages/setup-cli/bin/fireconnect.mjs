@@ -8,10 +8,12 @@ import {
   FIREWORKS_BASE_URL,
   applyModelMapping,
   defaultModelIds,
+  detectApiKeyType,
   disableFireworksProvider,
   enableFireworksProvider,
   isSafeDataDirRemoval,
   mappingFromEnv,
+  providerStatePath,
   providerStatusFromEnv,
   readJsonIfExists,
   resolveModelMapping,
@@ -19,6 +21,7 @@ import {
   userSettingsPath,
 } from "../lib/fireconnect-core.mjs";
 import {
+  OPENCODE_API_KEY_ENV_REF,
   disableOpencodeFireworks,
   enableOpencodeFireworks,
   opencodeConfigPath,
@@ -284,12 +287,15 @@ async function listCommand(options) {
     await opencodeListCommand(options);
     return;
   }
-  const { settingsPath } = pathsFor(options);
+  const { settingsPath, dataDir } = pathsFor(options);
   const settings = await readJsonIfExists(settingsPath);
+  const state = await readJsonIfExists(providerStatePath(dataDir));
   const env = settings.env ?? {};
+  const token = env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey || "";
+  const keyType = detectApiKeyType(token);
 
   const payload = {
-    defaults: defaultModelIds(),
+    defaults: defaultModelIds(keyType),
     current: mappingFromEnv(env),
     provider: providerStatusFromEnv(env),
   };
@@ -300,15 +306,20 @@ async function listCommand(options) {
   }
 
   const defaults = payload.defaults;
-  console.log("Default mapping:");
-  console.log(`  main     -> ${defaults.main}`);
-  console.log(`  opus     -> ${defaults.opus}`);
-  console.log(`  sonnet   -> ${defaults.sonnet}`);
-  console.log(`  haiku    -> ${defaults.haiku}`);
-  console.log(`  subagent -> ${defaults.subagent}`);
+  if (keyType !== "firepass") {
+    console.log("Default mapping:");
+    console.log(`  main     -> ${defaults.main}`);
+    console.log(`  opus     -> ${defaults.opus}`);
+    console.log(`  sonnet   -> ${defaults.sonnet}`);
+    console.log(`  haiku    -> ${defaults.haiku}`);
+    console.log(`  subagent -> ${defaults.subagent}`);
+    console.log("");
+  }
 
-  console.log("");
   console.log(`Current provider: ${payload.provider}`);
+  if (keyType === "firepass") {
+    console.log("Key type: Fire Pass (kimi-k2p6-turbo only)");
+  }
   console.log("Current mapping:");
   console.log(`  main     -> ${payload.current.main ?? "(unset)"}`);
   console.log(`  opus     -> ${payload.current.opus ?? "(unset)"}`);
@@ -387,20 +398,32 @@ async function setCommand(options, commandName = "set") {
     const modelId = commandName === "reset"
       ? options.main || defaultModelIds().main
       : options.main;
+    const rawKey = options.apiKeyFromFlag ? options.apiKey : existingKey;
+    const effectiveKey = rawKey === OPENCODE_API_KEY_ENV_REF
+      ? (process.env.FIREWORKS_API_KEY ?? "")
+      : rawKey;
+    const keyType = detectApiKeyType(effectiveKey);
     const result = await enableOpencodeFireworks({
       configPath,
       dataDir,
       apiKey: options.apiKeyFromFlag ? options.apiKey : existingKey || options.apiKey,
       apiKeyFromFlag: options.apiKeyFromFlag || Boolean(existingKey),
       modelId,
+      keyType,
     });
     console.log(`Updated OpenCode model: ${result.model}`);
     return;
   }
-  const { settingsPath } = pathsFor(options);
+  const { settingsPath, dataDir } = pathsFor(options);
+  // Resolve the key type from the currently stored token, not just the CLI flag.
+  const settings = await readJsonIfExists(settingsPath);
+  const state = await readJsonIfExists(providerStatePath(dataDir));
+  const env = settings.env ?? {};
+  const token = options.apiKey || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey || "";
+  const keyType = detectApiKeyType(token);
   await applyModelMapping({
     settingsPath,
-    mapping: resolveModelMapping(modelOverridesFrom(options)),
+    mapping: resolveModelMapping(modelOverridesFrom(options), keyType),
   });
   console.log("Updated Claude Code model aliases for Fireworks.");
 }
@@ -424,12 +447,18 @@ async function onCommand(options) {
         reusedExistingKey = true;
       }
     }
+    // Resolve env-ref placeholder to the real key before detecting type.
+    const effectiveApiKey = apiKey === OPENCODE_API_KEY_ENV_REF
+      ? (process.env.FIREWORKS_API_KEY ?? "")
+      : apiKey;
+    const keyType = detectApiKeyType(effectiveApiKey);
     const result = await enableOpencodeFireworks({
       configPath,
       dataDir,
       apiKey,
       apiKeyFromFlag,
       modelId: options.main,
+      keyType,
     });
     console.log(`Fireworks provider enabled for OpenCode (model: ${result.model}).`);
     if (reusedExistingKey) {
@@ -439,18 +468,32 @@ async function onCommand(options) {
     } else {
       console.log("API key written into opencode.json (passed via --api-key).");
     }
+    if (result.keyType === "firepass") {
+      console.log("Fire Pass key detected: using kimi-k2p6-turbo for all aliases.");
+    }
     console.log("Restart OpenCode for full effect.");
     return;
   }
   const { settingsPath, dataDir } = pathsFor(options);
+  // Resolve the actual token from the same sources enableFireworksProvider uses
+  // so the key type detection is accurate even when the CLI key is empty.
+  const settings = await readJsonIfExists(settingsPath);
+  const state = await readJsonIfExists(providerStatePath(dataDir));
+  const env = settings.env ?? {};
+  const token = options.apiKey || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey || "";
+  const keyType = detectApiKeyType(token);
   await enableFireworksProvider({
     settingsPath,
     dataDir,
     apiKey: options.apiKey,
     baseUrl: options.baseUrl,
-    mapping: resolveModelMapping(modelOverridesFrom(options)),
+    mapping: resolveModelMapping(modelOverridesFrom(options), keyType),
+    keyType,
   });
   console.log("Fireworks provider enabled. Restart Claude Code for full effect.");
+  if (keyType === "firepass") {
+    console.log("Fire Pass key detected: using kimi-k2p6-turbo for all aliases.");
+  }
 }
 
 async function offCommand(options) {
