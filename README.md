@@ -57,7 +57,7 @@ hi
 Default models:
 
 ```text
-opus     -> kimi-k2p6-turbo
+opus     -> kimi-k2p7-code-fast
 sonnet   -> glm-5p1
 haiku    -> minimax-m2p5
 subagent -> minimax-m2p5
@@ -89,8 +89,8 @@ The setup writes these Claude Code settings:
     "ANTHROPIC_BASE_URL": "https://api.fireworks.ai/inference",
     "ANTHROPIC_API_KEY": "fw_YOUR_FIREWORKS_API_KEY",
     "ANTHROPIC_AUTH_TOKEN": "fw_YOUR_FIREWORKS_API_KEY",
-    "ANTHROPIC_MODEL": "accounts/fireworks/routers/kimi-k2p6-turbo",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "accounts/fireworks/routers/kimi-k2p6-turbo",
+    "ANTHROPIC_MODEL": "accounts/fireworks/routers/kimi-k2p7-code-fast",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "accounts/fireworks/routers/kimi-k2p7-code-fast",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "accounts/fireworks/models/glm-5p1",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "accounts/fireworks/models/minimax-m2p5",
     "CLAUDE_CODE_SUBAGENT_MODEL": "accounts/fireworks/models/minimax-m2p5"
@@ -100,7 +100,67 @@ The setup writes these Claude Code settings:
 
 The setup writes both `ANTHROPIC_API_KEY` (preferred) and `ANTHROPIC_AUTH_TOKEN` (compatibility alias) with the same Fireworks key. It saves a backup of your previous provider settings so `fireconnect off` can restore them.
 
-Short model IDs are accepted everywhere. For example, `kimi-k2p6-turbo` is written to Claude Code settings as `accounts/fireworks/routers/kimi-k2p6-turbo`.
+Short model IDs are accepted everywhere. For example, `kimi-k2p7-code-fast` is written to Claude Code settings as `accounts/fireworks/routers/kimi-k2p7-code-fast`.
+
+## Browsing and Picking Models
+
+After `fireconnect on`, FireConnect prints hints for browsing the Fireworks catalog and
+picking a model interactively.
+
+```bash
+fireconnect model list              # browse callable serverless endpoints
+fireconnect model select            # pick a model for Claude Code
+fireconnect model select --slot sonnet   # update one Claude Code alias
+fireconnect model select --harness opencode   # pick OpenCode's default model
+```
+
+### `fireconnect model list`
+
+Harness-agnostic by default: lists the same Fireworks serverless catalog regardless of Claude
+Code or OpenCode. Fetches serverless models from the Fireworks API (`supports_serverless=true`)
+and merges the two known public platform routers (`kimi-k2p6-turbo` and `kimi-k2p7-code-fast`).
+Every row is tagged `serverless` (on-demand endpoints will be added later).
+
+```bash
+fireconnect model list
+fireconnect model list --search glm
+fireconnect model list --json
+fireconnect model list --harness opencode
+```
+
+Uses `FIREWORKS_API_KEY`, or a key already stored in Claude Code or OpenCode settings. By
+default both sources are checked, but non-Fireworks-shaped keys (for example, an Anthropic
+`sk-ant-...` token) are skipped. Use `--harness opencode` to force the OpenCode key source, or
+`--harness claude` to force the Claude Code source.
+
+Fire Pass keys (`fpk_...`) only show the `kimi-k2p6-turbo` router.
+
+### `fireconnect model select`
+
+Interactive picker. Requires a terminal and Fireworks to be enabled. On confirm, writes
+the chosen model to your harness settings.
+
+**Claude Code** — pick one of five aliases (`main`, `opus`, `sonnet`, `haiku`, `subagent`):
+
+```bash
+fireconnect model select
+fireconnect model select --slot sonnet
+fireconnect model select --slot sonnet --search glm
+```
+
+**OpenCode** — single default model (no `--slot`):
+
+```bash
+fireconnect model select --harness opencode
+fireconnect model select --harness opencode --search glm
+```
+
+### `fireconnect list` vs `fireconnect model list`
+
+| Command | Shows |
+|---------|--------|
+| `fireconnect list` | Your configured alias mapping in Claude Code settings |
+| `fireconnect model list` | Available serverless endpoints from the Fireworks API |
 
 ## FireConnect CLI
 
@@ -109,6 +169,7 @@ fireconnect on         Route Claude Code through Fireworks.
 fireconnect off        Restore your previous provider.
 fireconnect status     Show the current provider.
 fireconnect list       Show the model mapping.
+fireconnect model      Browse or pick serverless models (list, select).
 fireconnect set        Change model aliases.
 fireconnect reset      Reset models to defaults.
 fireconnect uninstall  Remove FireConnect from this machine.
