@@ -127,7 +127,7 @@ async function runClaudeModelSelect({ options, settingsPath, dataDir, configPath
   }
 
   const { catalog, keyType } = await loadServerlessCatalog({
-    apiKey: options.apiKey,
+    apiKey: options.apiKeyFromFlag ? options.apiKey : "",
     harness: HARNESS.CLAUDE,
     settingsPath,
     dataDir,
@@ -194,11 +194,12 @@ async function runOpencodeModelSelect({ options, configPath, dataDir, settingsPa
   }
 
   const existingKey = config.provider?.fireworks?.options?.apiKey ?? "";
-  const effectiveKey = effectiveOpencodeApiKey(existingKey) || options.apiKey;
+  const effectiveKey = effectiveOpencodeApiKey(existingKey)
+    || (options.apiKeyFromFlag ? options.apiKey : "");
   const keyType = detectApiKeyType(effectiveKey);
 
   const { catalog } = await loadServerlessCatalog({
-    apiKey: options.apiKey || effectiveKey,
+    apiKey: options.apiKeyFromFlag ? options.apiKey : effectiveKey,
     harness: HARNESS.OPENCODE,
     settingsPath,
     dataDir: "",

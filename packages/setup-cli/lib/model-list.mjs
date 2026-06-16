@@ -17,7 +17,7 @@ function formatTable(catalog) {
 
 export async function runModelListCommand({ options, settingsPath, dataDir, configPath }) {
   const { catalog, keyType } = await loadServerlessCatalog({
-    apiKey: options.apiKey,
+    apiKey: options.apiKeyFromFlag ? options.apiKey : "",
     harness: options.harness,
     settingsPath,
     dataDir,
