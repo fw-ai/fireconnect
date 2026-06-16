@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import {
+  DEFAULT_FIREPASS_MAIN_MODEL,
   DEFAULT_MAIN_MODEL,
   detectApiKeyType,
   normalizeModelId,
@@ -119,7 +120,7 @@ export async function enableOpencodeFireworks({
   // default to that router so the user gets a working config out of the box.
   let effectiveModelId = modelId;
   if (resolvedKeyType === "firepass" && !modelId) {
-    effectiveModelId = DEFAULT_MAIN_MODEL;
+    effectiveModelId = DEFAULT_FIREPASS_MAIN_MODEL;
   }
 
   const resolvedModel = normalizeModelId(effectiveModelId || currentModelId || DEFAULT_MAIN_MODEL);

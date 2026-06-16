@@ -28,6 +28,9 @@ import {
   opencodeDataDir,
   opencodeProviderStatus,
 } from "../lib/opencode-core.mjs";
+import { runModelListCommand } from "../lib/model-list.mjs";
+import { runModelSelectCommand } from "../lib/model-select.mjs";
+import { DEFAULT_HARNESS, HARNESS, parseHarness } from "../lib/harness.mjs";
 
 const CLI_NAME = "fireconnect";
 
@@ -37,7 +40,7 @@ function parseArgs(argv) {
     home: process.env.HOME ?? "",
     settingsPath: "",
     configPath: "",
-    harness: "claude-code",
+    harness: DEFAULT_HARNESS,
     dataDir: "",
     apiKey: process.env.FIREWORKS_API_KEY ?? "",
     apiKeyFromFlag: false,
@@ -47,6 +50,8 @@ function parseArgs(argv) {
     sonnet: "",
     haiku: "",
     subagent: "",
+    slot: "",
+    search: "",
     json: false,
     positional: [],
   };
@@ -69,10 +74,7 @@ function parseArgs(argv) {
       options.configPath = requireValue(arg, next);
       i += 1;
     } else if (arg === "--harness") {
-      options.harness = requireValue(arg, next);
-      if (options.harness !== "claude-code" && options.harness !== "opencode") {
-        throw new Error(`--harness must be "claude-code" or "opencode", got: ${options.harness}`);
-      }
+      options.harness = parseHarness(requireValue(arg, next));
       i += 1;
     } else if (arg === "--data-dir") {
       options.dataDir = requireValue(arg, next);
@@ -99,6 +101,12 @@ function parseArgs(argv) {
     } else if (arg === "--subagent") {
       options.subagent = requireValue(arg, next);
       i += 1;
+    } else if (arg === "--slot") {
+      options.slot = requireValue(arg, next);
+      i += 1;
+    } else if (arg === "--search") {
+      options.search = requireValue(arg, next);
+      i += 1;
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown argument: ${arg}`);
     } else {
@@ -123,7 +131,7 @@ function ensureNoPositional(options, command) {
 }
 
 function ensureHome(options) {
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     if (!options.configPath && !options.home) {
       throw new Error("HOME is not set; pass --home or --config-path");
     }
@@ -213,6 +221,27 @@ Reset model aliases to the defaults.`,
 
 Turn off Fireworks routing and remove FireConnect from this machine
 (local data and the CLI launcher).`,
+    model: `Usage:
+  ${CLI_NAME} model list [--json] [--search <query>] [--harness opencode]
+  ${CLI_NAME} model select [--slot <alias>] [--search <query>] [--harness opencode]
+
+Browse or interactively pick serverless Fireworks models.
+
+Subcommands:
+  list     List callable serverless models and routers.
+  select   Pick a model and update harness settings (Claude Code or OpenCode).
+
+Options:
+  --slot <alias>       Claude Code alias: main, opus, sonnet, haiku, subagent.
+  --harness opencode   Use OpenCode config/key instead of Claude Code.
+  --search <query>     Filter by id or display name (list or select).
+  --api-key <key>      Fireworks API key. Defaults to FIREWORKS_API_KEY.
+  --json               Machine-readable output (list only).
+  --home <path>        Override HOME for settings resolution.
+  --settings-path <path>
+                       Explicit Claude Code settings file.
+  --config-path <path>
+                       Explicit opencode.json path.`,
   };
 
   if (command && commandHelp[command]) {
@@ -230,6 +259,7 @@ Commands:
   off        Restore your previous provider.
   status     Show the current provider.
   list       Show the model mapping.
+  model      Browse or pick serverless models (list, select).
   set        Change model aliases.
   reset      Reset models to defaults.
   uninstall  Remove FireConnect from this machine.
@@ -243,7 +273,7 @@ Common options:
 Examples:
   ${CLI_NAME} on --api-key fw_...
   ${CLI_NAME} status
-  ${CLI_NAME} set --main kimi-k2p6-turbo
+  ${CLI_NAME} set --main kimi-k2p7-code-fast
   ${CLI_NAME} off
   ${CLI_NAME} on --harness opencode
 
@@ -261,7 +291,7 @@ async function opencodeListCommand(options) {
   // OpenCode routes a single default model (no opus/sonnet/haiku alias slots),
   // so the mapping has one entry — same defaults/current shape as Claude Code.
   const payload = {
-    harness: "opencode",
+    harness: HARNESS.OPENCODE,
     defaults: { main: defaultModelIds().main },
     current: { main: model },
     provider: opencodeProviderStatus(config),
@@ -283,7 +313,7 @@ async function opencodeListCommand(options) {
 async function listCommand(options) {
   ensureNoPositional(options, "list");
   ensureHome(options);
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     await opencodeListCommand(options);
     return;
   }
@@ -333,7 +363,7 @@ async function opencodeStatusCommand(options) {
   const config = await readJsonIfExists(configPath);
   const fireworks = config.provider?.fireworks ?? null;
   const payload = {
-    harness: "opencode",
+    harness: HARNESS.OPENCODE,
     provider: opencodeProviderStatus(config),
     baseUrl: fireworks?.options?.baseURL ?? null,
     hasAuthToken: Boolean(fireworks?.options?.apiKey),
@@ -355,7 +385,7 @@ async function opencodeStatusCommand(options) {
 async function statusCommand(options) {
   ensureNoPositional(options, "status");
   ensureHome(options);
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     await opencodeStatusCommand(options);
     return;
   }
@@ -383,7 +413,7 @@ async function statusCommand(options) {
 async function setCommand(options, commandName = "set") {
   ensureNoPositional(options, commandName);
   ensureHome(options);
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     // OpenCode has a single default model; re-run `on` with the new --main.
     const { configPath, dataDir } = opencodePathsFor(options);
     const config = await readJsonIfExists(configPath);
@@ -393,16 +423,16 @@ async function setCommand(options, commandName = "set") {
     // Reuse the existing configured key verbatim (it may be a literal key or the
     // {env:...} reference); apiKeyFromFlag=true makes enable write it back as-is.
     const existingKey = config.provider?.fireworks?.options?.apiKey ?? "";
-    // `set` without --main keeps the configured model (enable's precedence does
-    // that); `reset` must explicitly apply the default, like the Claude Code path.
-    const modelId = commandName === "reset"
-      ? options.main || defaultModelIds().main
-      : options.main;
     const rawKey = options.apiKeyFromFlag ? options.apiKey : existingKey;
     const effectiveKey = rawKey === OPENCODE_API_KEY_ENV_REF
       ? (process.env.FIREWORKS_API_KEY ?? "")
       : rawKey;
     const keyType = detectApiKeyType(effectiveKey);
+    // `set` without --main keeps the configured model (enable's precedence does
+    // that); `reset` must explicitly apply the default, like the Claude Code path.
+    const modelId = commandName === "reset"
+      ? options.main || defaultModelIds(keyType).main
+      : options.main;
     const result = await enableOpencodeFireworks({
       configPath,
       dataDir,
@@ -431,7 +461,7 @@ async function setCommand(options, commandName = "set") {
 async function onCommand(options) {
   ensureNoPositional(options, "on");
   ensureHome(options);
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     const { configPath, dataDir } = opencodePathsFor(options);
     // Re-running `on` without a key in the flag or environment should reuse the
     // key already configured (literal or {env:...} reference), like `set` does.
@@ -470,6 +500,9 @@ async function onCommand(options) {
     }
     if (result.keyType === "firepass") {
       console.log("Fire Pass key detected: using kimi-k2p6-turbo for all aliases.");
+    } else {
+      console.log("Browse models: fireconnect model list");
+      console.log("Pick a model:  fireconnect model select --harness opencode");
     }
     console.log("Restart OpenCode for full effect.");
     return;
@@ -493,13 +526,16 @@ async function onCommand(options) {
   console.log("Fireworks provider enabled. Restart Claude Code for full effect.");
   if (keyType === "firepass") {
     console.log("Fire Pass key detected: using kimi-k2p6-turbo for all aliases.");
+  } else {
+    console.log("Browse models: fireconnect model list");
+    console.log("Pick a model:  fireconnect model select");
   }
 }
 
 async function offCommand(options) {
   ensureNoPositional(options, "off");
   ensureHome(options);
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     const { configPath, dataDir } = opencodePathsFor(options);
     await disableOpencodeFireworks({ configPath, dataDir });
     console.log("Fireworks provider disabled for OpenCode; original config restored.");
@@ -524,7 +560,7 @@ async function removePath(pathToRemove) {
 
 async function uninstallCommand(options) {
   ensureNoPositional(options, "uninstall");
-  if (options.harness === "opencode") {
+  if (options.harness === HARNESS.OPENCODE) {
     throw new Error("uninstall does not support --harness opencode; use: fireconnect off --harness opencode");
   }
   const home = process.env.HOME ?? "";
@@ -574,11 +610,56 @@ async function uninstallCommand(options) {
   console.log("Restart Claude Code to fully apply changes.");
 }
 
+async function modelCommand(options) {
+  const subcommand = options.positional[0] ?? "";
+  const trailingPositional = options.positional.slice(1);
+  if (trailingPositional.length > 0) {
+    throw new Error(`model ${subcommand} does not accept positional arguments`);
+  }
+  ensureHome(options);
+
+  const { settingsPath, dataDir } = pathsFor(options);
+  const { configPath, dataDir: opencodeDataDirPath } = opencodePathsFor(options);
+
+  if (subcommand === "list") {
+    await runModelListCommand({ options, settingsPath, dataDir, configPath });
+    return;
+  }
+
+  if (subcommand === "select") {
+    if (options.harness === HARNESS.OPENCODE) {
+      await runModelSelectCommand({
+        options,
+        harness: HARNESS.OPENCODE,
+        settingsPath,
+        configPath,
+        opencodeDataDir: opencodeDataDirPath,
+      });
+    } else {
+      await runModelSelectCommand({
+        options,
+        harness: DEFAULT_HARNESS,
+        settingsPath,
+        dataDir,
+        configPath,
+      });
+    }
+    return;
+  }
+
+  throw new Error(`Usage: ${CLI_NAME} model list|select`);
+}
+
 async function run() {
   const { command, options } = parseArgs(process.argv.slice(2));
 
   if (command === "help") {
     printHelp(options.positional[0] || "");
+    return;
+  }
+
+  if (command === "model") {
+    await modelCommand(options);
     return;
   }
 

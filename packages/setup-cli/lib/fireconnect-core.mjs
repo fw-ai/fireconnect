@@ -2,8 +2,17 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  applyClaudeCodeContextPolicy,
+  claudeCodeModelId,
+  stripClaudeCodeContextSuffix,
+} from "./claude-code-context.mjs";
+
+export { CLAUDE_CODE_1M_CONTEXT_MODELS } from "./claude-code-context.mjs";
+
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
-export const DEFAULT_OPUS_MODEL = "kimi-k2p6-turbo";
+export const DEFAULT_OPUS_MODEL = "kimi-k2p7-code-fast";
+export const DEFAULT_FIREPASS_MAIN_MODEL = "kimi-k2p6-turbo";
 export const DEFAULT_SONNET_MODEL = "glm-5p1";
 export const DEFAULT_HAIKU_MODEL = "minimax-m2p5";
 export const DEFAULT_MAIN_MODEL = DEFAULT_OPUS_MODEL;
@@ -38,13 +47,13 @@ export const FIREWORKS_TOP_LEVEL_KEYS = [
 ];
 
 export const DEFAULT_FIREWORKS_PRESET = {
-  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
+  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
   ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/models/glm-5p1",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/models/minimax-m2p5",
   CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/minimax-m2p5",
-  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.6 Turbo via Fireworks",
+  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.7 Code Fast via Fireworks",
   ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks Anthropic-compatible open model",
   CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
   CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
@@ -53,9 +62,13 @@ export const DEFAULT_FIREWORKS_PRESET = {
 
 export const DEFAULT_FIREPASS_PRESET = {
   ...DEFAULT_FIREWORKS_PRESET,
+  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
   ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
   CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
+  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p6-turbo",
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.6 Turbo via Fireworks",
 };
 
 export async function readJsonIfExists(filePath) {
@@ -129,6 +142,7 @@ export function providerBackupPath(dataDir) {
 }
 
 export function normalizeModelId(model) {
+  model = stripClaudeCodeContextSuffix(model);
   if (model.startsWith("accounts/")) {
     return model;
   }
@@ -138,23 +152,26 @@ export function normalizeModelId(model) {
   if (model === "kimi-k2p6-turbo") {
     return "accounts/fireworks/routers/kimi-k2p6-turbo";
   }
+  if (model === "kimi-k2p7-code-fast") {
+    return "accounts/fireworks/routers/kimi-k2p7-code-fast";
+  }
   return `accounts/fireworks/models/${model}`;
 }
 
 export function validateModelId(model, flag) {
   if (!model.startsWith("accounts/") && model.includes("/")) {
-    throw new Error(`${flag} must be a Fireworks model or router ID like kimi-k2p6-turbo or accounts/fireworks/routers/kimi-k2p6-turbo`);
+    throw new Error(`${flag} must be a Fireworks model or router ID like kimi-k2p7-code-fast or accounts/fireworks/routers/kimi-k2p7-code-fast`);
   }
 }
 
 export function defaultModelIds(keyType = "fireworks") {
   if (keyType === "firepass") {
     return {
-      main: DEFAULT_MAIN_MODEL,
-      opus: DEFAULT_MAIN_MODEL,
-      sonnet: DEFAULT_MAIN_MODEL,
-      haiku: DEFAULT_MAIN_MODEL,
-      subagent: DEFAULT_MAIN_MODEL,
+      main: DEFAULT_FIREPASS_MAIN_MODEL,
+      opus: DEFAULT_FIREPASS_MAIN_MODEL,
+      sonnet: DEFAULT_FIREPASS_MAIN_MODEL,
+      haiku: DEFAULT_FIREPASS_MAIN_MODEL,
+      subagent: DEFAULT_FIREPASS_MAIN_MODEL,
     };
   }
   return {
@@ -184,12 +201,13 @@ export function resolveModelMapping(overrides = {}, keyType = "fireworks") {
 }
 
 export function mappingFromEnv(env) {
+  const strip = (value) => (value ? stripClaudeCodeContextSuffix(value) : value);
   return {
-    main: env.ANTHROPIC_MODEL ?? null,
-    opus: env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? null,
-    sonnet: env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? null,
-    haiku: env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? null,
-    subagent: env.CLAUDE_CODE_SUBAGENT_MODEL ?? null,
+    main: strip(env.ANTHROPIC_MODEL ?? null),
+    opus: strip(env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? null),
+    sonnet: strip(env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? null),
+    haiku: strip(env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? null),
+    subagent: strip(env.CLAUDE_CODE_SUBAGENT_MODEL ?? null),
   };
 }
 
@@ -274,11 +292,11 @@ export function clearFireworksTopLevelWithoutBackup(settings) {
 
 export function modelEnvFromMapping(mapping) {
   return {
-    ANTHROPIC_MODEL: mapping.main,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: mapping.opus,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: mapping.sonnet,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: mapping.haiku,
-    CLAUDE_CODE_SUBAGENT_MODEL: mapping.subagent,
+    ANTHROPIC_MODEL: claudeCodeModelId(mapping.main),
+    ANTHROPIC_DEFAULT_OPUS_MODEL: claudeCodeModelId(mapping.opus),
+    ANTHROPIC_DEFAULT_SONNET_MODEL: claudeCodeModelId(mapping.sonnet),
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: claudeCodeModelId(mapping.haiku),
+    CLAUDE_CODE_SUBAGENT_MODEL: claudeCodeModelId(mapping.subagent),
   };
 }
 
@@ -309,7 +327,7 @@ export function buildFireworksProviderEnv(env, {
   };
   delete nextEnv.ANTHROPIC_SMALL_FAST_MODEL;
   delete nextEnv.ENABLE_TOOL_SEARCH;
-  return nextEnv;
+  return applyClaudeCodeContextPolicy(nextEnv, mapping);
 }
 
 export async function enableFireworksProvider({
@@ -402,6 +420,6 @@ export async function applyModelMapping({ settingsPath, mapping }) {
   const env = settings.env ?? {};
   await writeJson(settingsPath, {
     ...settings,
-    env: mergeModelsIntoEnv(env, mapping),
+    env: applyClaudeCodeContextPolicy(mergeModelsIntoEnv(env, mapping), mapping),
   });
 }
