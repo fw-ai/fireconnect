@@ -1,4 +1,4 @@
-/** @typedef {"claude" | "opencode"} HarnessId */
+/** @typedef {"" | "claude" | "opencode"} HarnessArg */
 
 export const HARNESS = Object.freeze({
   CLAUDE: "claude",
@@ -7,6 +7,7 @@ export const HARNESS = Object.freeze({
 
 export const HARNESSES = Object.freeze(Object.values(HARNESS));
 
+/** Default harness for commands that require a single target (e.g. model select). */
 export const DEFAULT_HARNESS = HARNESS.CLAUDE;
 
 export function parseHarness(value) {

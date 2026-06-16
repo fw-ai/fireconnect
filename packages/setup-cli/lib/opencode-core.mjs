@@ -116,8 +116,8 @@ export async function enableOpencodeFireworks({
     ? config.model.slice("fireworks/".length)
     : "";
 
-  // Fire Pass only covers kimi-k2p6-turbo; when no explicit model is requested,
-  // default to that router so the user gets a working config out of the box.
+  // Fire Pass defaults to the K2.7 Code Fast router; when no explicit model is
+  // requested, use that so the user gets a working config out of the box.
   let effectiveModelId = modelId;
   if (resolvedKeyType === "firepass" && !modelId) {
     effectiveModelId = DEFAULT_FIREPASS_MAIN_MODEL;
