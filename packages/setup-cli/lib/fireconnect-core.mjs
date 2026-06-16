@@ -12,7 +12,7 @@ export { CLAUDE_CODE_1M_CONTEXT_MODELS } from "./claude-code-context.mjs";
 
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
 export const DEFAULT_OPUS_MODEL = "kimi-k2p7-code-fast";
-export const DEFAULT_FIREPASS_MAIN_MODEL = "kimi-k2p6-turbo";
+export const DEFAULT_FIREPASS_MAIN_MODEL = "kimi-k2p7-code-fast";
 export const DEFAULT_SONNET_MODEL = "glm-5p1";
 export const DEFAULT_HAIKU_MODEL = "minimax-m2p5";
 export const DEFAULT_MAIN_MODEL = DEFAULT_OPUS_MODEL;
@@ -62,13 +62,13 @@ export const DEFAULT_FIREWORKS_PRESET = {
 
 export const DEFAULT_FIREPASS_PRESET = {
   ...DEFAULT_FIREWORKS_PRESET,
-  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p6-turbo",
-  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.6 Turbo via Fireworks",
+  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.7 Code Fast via Fireworks",
 };
 
 export async function readJsonIfExists(filePath) {
@@ -258,6 +258,27 @@ export function isFireworksModelId(model) {
   return typeof model === "string" && model.startsWith("accounts/fireworks/");
 }
 
+export function isFireworksShapedKey(key) {
+  return typeof key === "string" && (key.startsWith("fw_") || key.startsWith("fpk_"));
+}
+
+export function fireworksKeyOrEmpty(key) {
+  return isFireworksShapedKey(key) ? key.trim() : "";
+}
+
+export function claudeFireworksKeyFrom({ env = {}, state = {} } = {}) {
+  return fireworksKeyOrEmpty(env.ANTHROPIC_API_KEY)
+    || fireworksKeyOrEmpty(env.ANTHROPIC_AUTH_TOKEN)
+    || fireworksKeyOrEmpty(state.fireworksApiKey);
+}
+
+export function resolveClaudeToken({ apiKeyFromFlag, apiKey }, { env, state }) {
+  if (apiKeyFromFlag) {
+    return apiKey;
+  }
+  return claudeFireworksKeyFrom({ env, state }) || process.env.FIREWORKS_API_KEY || "";
+}
+
 /** Detect whether a key is a Fire Pass subscription key (fpk_...) or a
  *  standard Fireworks API key (fw_...). Returns "firepass" or "fireworks". */
 export function detectApiKeyType(key) {
@@ -357,7 +378,7 @@ export async function enableFireworksProvider({
     }
   }
 
-  const token = apiKey || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey;
+  const token = apiKey || claudeFireworksKeyFrom({ env, state }) || process.env.FIREWORKS_API_KEY || "";
   if (!token) {
     throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
   }

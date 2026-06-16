@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh |
 ```
 
 Fire Pass users can use a `fpk_...` key directly — FireConnect detects the key type and
-uses the correct defaults for Fire Pass (kimi-k2p6-turbo for all aliases).
+uses the correct defaults for Fire Pass (kimi-k2p7-code-fast for all aliases).
 
 If you prefer installing from an SSH checkout:
 
@@ -133,7 +133,7 @@ default both sources are checked, but non-Fireworks-shaped keys (for example, an
 `sk-ant-...` token) are skipped. Use `--harness opencode` to force the OpenCode key source, or
 `--harness claude` to force the Claude Code source.
 
-Fire Pass keys (`fpk_...`) only show the `kimi-k2p6-turbo` router.
+Fire Pass keys (`fpk_...`) only show the `kimi-k2p7-code-fast` router.
 
 ### `fireconnect model select`
 

@@ -1,5 +1,7 @@
 import {
+  claudeFireworksKeyFrom,
   detectApiKeyType,
+  fireworksKeyOrEmpty,
   providerStatePath,
   readJsonIfExists,
 } from "./fireconnect-core.mjs";
@@ -9,7 +11,7 @@ import { OPENCODE_API_KEY_ENV_REF } from "./opencode-core.mjs";
 export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
 export const PLATFORM_ACCOUNT_ID = "fireworks";
 export const KIND_SERVERLESS = "serverless";
-export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/kimi-k2p6-turbo";
+export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/kimi-k2p7-code-fast";
 
 const BUILTIN_ROUTERS = [
   {
@@ -50,24 +52,10 @@ export function effectiveOpencodeApiKey(storedKey) {
   return storedKey;
 }
 
-function isFireworksKey(key) {
-  return typeof key === "string" && (key.startsWith("fw_") || key.startsWith("fpk_"));
-}
-
 async function resolveClaudeFireworksKey({ settingsPath, dataDir }) {
   const settings = settingsPath ? await readJsonIfExists(settingsPath) : {};
   const state = dataDir ? await readJsonIfExists(providerStatePath(dataDir)) : {};
-  const env = settings.env ?? {};
-  if (isFireworksKey(env.ANTHROPIC_API_KEY)) {
-    return env.ANTHROPIC_API_KEY.trim();
-  }
-  if (isFireworksKey(env.ANTHROPIC_AUTH_TOKEN)) {
-    return env.ANTHROPIC_AUTH_TOKEN.trim();
-  }
-  if (isFireworksKey(state.fireworksApiKey)) {
-    return state.fireworksApiKey.trim();
-  }
-  return "";
+  return claudeFireworksKeyFrom({ env: settings.env ?? {}, state });
 }
 
 async function resolveOpencodeFireworksKey({ configPath }) {
@@ -76,10 +64,7 @@ async function resolveOpencodeFireworksKey({ configPath }) {
   }
   const config = await readJsonIfExists(configPath);
   const opencodeKey = effectiveOpencodeApiKey(config.provider?.fireworks?.options?.apiKey ?? "");
-  if (isFireworksKey(opencodeKey)) {
-    return opencodeKey.trim();
-  }
-  return "";
+  return fireworksKeyOrEmpty(opencodeKey);
 }
 
 const HARNESS_KEY_RESOLVERS = {
@@ -98,16 +83,30 @@ export async function resolveFireworksApiKey({
     return apiKey.trim();
   }
 
+  if (!harness) {
+    const claudeKey = await resolveClaudeFireworksKey({ settingsPath, dataDir });
+    if (claudeKey) {
+      return claudeKey;
+    }
+    const opencodeKey = await resolveOpencodeFireworksKey({ configPath });
+    if (opencodeKey) {
+      return opencodeKey;
+    }
+  } else {
+    const resolveKey = HARNESS_KEY_RESOLVERS[harness];
+    if (resolveKey) {
+      const harnessKey = await resolveKey({ settingsPath, dataDir, configPath });
+      if (harnessKey) {
+        return harnessKey;
+      }
+    }
+  }
+
   if (process.env.FIREWORKS_API_KEY) {
     return process.env.FIREWORKS_API_KEY.trim();
   }
 
-  const resolveKey = HARNESS_KEY_RESOLVERS[harness];
-  if (!resolveKey) {
-    return "";
-  }
-
-  return resolveKey({ settingsPath, dataDir, configPath });
+  return "";
 }
 
 async function fetchGatewayPage(path, apiKey) {
