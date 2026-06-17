@@ -91,8 +91,10 @@ export async function writeNativeAnthropicSettings(home) {
 export async function writeOpencodeConfig(home, apiKey) {
   const configPath = path.join(home, OPENCODE_CONFIG_RELATIVE_PATH);
   await writeJson(configPath, {
-    provider: { fireworks: { options: { apiKey } } },
-    model: `fireworks/${K2P7_FAST}`,
+    provider: {
+      "fireworks-ai": { options: { apiKey } },
+    },
+    model: `fireworks-ai/accounts/fireworks/routers/${K2P7_FAST}`,
   });
   return configPath;
 }

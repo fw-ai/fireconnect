@@ -1,11 +1,5 @@
-import {
-  claudeFireworksKeyFrom,
-  detectApiKeyType,
-  fireworksKeyOrEmpty,
-  providerStatePath,
-  readJsonIfExists,
-} from "./fireconnect-core.mjs";
-import { HARNESS } from "./harness.mjs";
+import { detectApiKeyType } from "./fireconnect-core.mjs";
+import { resolveStoredApiKey } from "./global-config.mjs";
 import { OPENCODE_API_KEY_ENV_REF } from "./opencode-core.mjs";
 
 export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
@@ -52,58 +46,46 @@ export function effectiveOpencodeApiKey(storedKey) {
   return storedKey;
 }
 
-async function resolveClaudeFireworksKey({ settingsPath, dataDir }) {
-  const settings = settingsPath ? await readJsonIfExists(settingsPath) : {};
-  const state = dataDir ? await readJsonIfExists(providerStatePath(dataDir)) : {};
-  return claudeFireworksKeyFrom({ env: settings.env ?? {}, state });
+export function isFireworksKey(key) {
+  return typeof key === "string" && (key.startsWith("fw_") || key.startsWith("fpk_"));
 }
 
-async function resolveOpencodeFireworksKey({ configPath }) {
-  if (!configPath) {
-    return "";
-  }
-  const config = await readJsonIfExists(configPath);
-  const opencodeKey = effectiveOpencodeApiKey(config.provider?.fireworks?.options?.apiKey ?? "");
-  return fireworksKeyOrEmpty(opencodeKey);
-}
-
-const HARNESS_KEY_RESOLVERS = {
-  [HARNESS.CLAUDE]: resolveClaudeFireworksKey,
-  [HARNESS.OPENCODE]: resolveOpencodeFireworksKey,
-};
-
+/**
+ * Resolve a Fireworks API key in the documented order:
+ *   1. explicit `--api-key`
+ *   2. `FIREWORKS_API_KEY` environment variable (env override wins over stored keys)
+ *   3. harness-local stored key (via the harness adapter's `resolveKey`)
+ *   4. global `~/.fireconnect/config.json`
+ *
+ * @param {{ apiKey?: string, resolveKey?: () => Promise<string>, home?: string }} args
+ */
 export async function resolveFireworksApiKey({
   apiKey = "",
-  harness = "",
-  settingsPath = "",
-  dataDir = "",
-  configPath = "",
+  resolveKey,
+  home = process.env.HOME ?? "",
 }) {
   if (apiKey) {
     return apiKey.trim();
   }
 
-  if (!harness) {
-    const claudeKey = await resolveClaudeFireworksKey({ settingsPath, dataDir });
-    if (claudeKey) {
-      return claudeKey;
-    }
-    const opencodeKey = await resolveOpencodeFireworksKey({ configPath });
-    if (opencodeKey) {
-      return opencodeKey;
-    }
-  } else {
-    const resolveKey = HARNESS_KEY_RESOLVERS[harness];
-    if (resolveKey) {
-      const harnessKey = await resolveKey({ settingsPath, dataDir, configPath });
-      if (harnessKey) {
-        return harnessKey;
-      }
+  if (process.env.FIREWORKS_API_KEY) {
+    return process.env.FIREWORKS_API_KEY.trim();
+  }
+
+  if (resolveKey) {
+    const harnessKey = await resolveKey();
+    if (harnessKey) {
+      return harnessKey.trim();
     }
   }
 
-  if (process.env.FIREWORKS_API_KEY) {
-    return process.env.FIREWORKS_API_KEY.trim();
+  if (home) {
+    const { readGlobalConfig } = await import("./global-config.mjs");
+    const globalConfig = await readGlobalConfig(home);
+    const globalKey = resolveStoredApiKey(globalConfig.apiKey);
+    if (globalKey) {
+      return globalKey;
+    }
   }
 
   return "";
@@ -211,15 +193,8 @@ export function filterCatalogBySearch(catalog, search = "") {
   ));
 }
 
-export async function loadServerlessCatalog({
-  apiKey,
-  harness = "",
-  settingsPath = "",
-  dataDir = "",
-  configPath = "",
-  keyType = "",
-}) {
-  const resolvedKey = await resolveFireworksApiKey({ apiKey, harness, settingsPath, dataDir, configPath });
+export async function loadServerlessCatalog({ apiKey, keyType = "" }) {
+  const resolvedKey = apiKey;
   if (!resolvedKey) {
     throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
   }

@@ -74,7 +74,7 @@ https://app.fireworks.ai/settings/users/api-keys
 Then enable Fireworks routing from a terminal:
 
 ```bash
-fireconnect on --api-key fw_...
+fireconnect claude on --api-key fw_...
 ```
 
 Restart Claude Code after this completes.
@@ -98,96 +98,110 @@ The setup writes these Claude Code settings:
 }
 ```
 
-The setup writes both `ANTHROPIC_API_KEY` (preferred) and `ANTHROPIC_AUTH_TOKEN` (compatibility alias) with the same Fireworks key. It saves a backup of your previous provider settings so `fireconnect off` can restore them.
+The setup writes both `ANTHROPIC_API_KEY` (preferred) and `ANTHROPIC_AUTH_TOKEN` (compatibility alias) with the same Fireworks key. It saves a backup of your previous provider settings so `fireconnect claude off` can restore them.
 
 Short model IDs are accepted everywhere. For example, `kimi-k2p7-code-fast` is written to Claude Code settings as `accounts/fireworks/routers/kimi-k2p7-code-fast`.
 
 ## Browsing and Picking Models
 
-After `fireconnect on`, FireConnect prints hints for browsing the Fireworks catalog and
+After `fireconnect claude on`, FireConnect prints hints for browsing the Fireworks catalog and
 picking a model interactively.
 
 ```bash
-fireconnect model list              # browse callable serverless endpoints
-fireconnect model select            # pick a model for Claude Code
-fireconnect model select --slot sonnet   # update one Claude Code alias
-fireconnect model select --harness opencode   # pick OpenCode's default model
+fireconnect claude model list                 # browse callable serverless endpoints
+fireconnect claude model select               # pick a model for Claude Code
+fireconnect claude model select --slot sonnet # update one Claude Code alias
+fireconnect opencode model select             # pick OpenCode's default model
 ```
 
-### `fireconnect model list`
+### `fireconnect <harness> model list`
 
-Harness-agnostic by default: lists the same Fireworks serverless catalog regardless of Claude
-Code or OpenCode. Fetches serverless models from the Fireworks API (`supports_serverless=true`)
-and merges the two known public platform routers (`kimi-k2p6-turbo` and `kimi-k2p7-code-fast`).
-Every row is tagged `serverless` (on-demand endpoints will be added later).
+Harness-scoped: lists the Fireworks serverless catalog using the API key resolved from that
+harness. Fetches serverless models from the Fireworks API (`supports_serverless=true`) and merges
+the two known public platform routers (`kimi-k2p6-turbo` and `kimi-k2p7-code-fast`). Every row is
+tagged `serverless` (on-demand endpoints will be added later).
 
 ```bash
-fireconnect model list
-fireconnect model list --search glm
-fireconnect model list --json
-fireconnect model list --harness opencode
+fireconnect claude model list
+fireconnect claude model list --search glm
+fireconnect opencode model list --json
 ```
 
-Uses `FIREWORKS_API_KEY`, or a key already stored in Claude Code or OpenCode settings. By
-default both sources are checked, but non-Fireworks-shaped keys (for example, an Anthropic
-`sk-ant-...` token) are skipped. Use `--harness opencode` to force the OpenCode key source, or
-`--harness claude` to force the Claude Code source.
+Resolves the key in documented order: `--api-key`, then the harness's stored key, then
+`~/.fireconnect/config.json`, then `FIREWORKS_API_KEY`. Non-Fireworks-shaped keys (for example
+Anthropic `sk-ant-...`) are skipped when resolving harness-local keys.
 
 Fire Pass keys (`fpk_...`) only show the `kimi-k2p7-code-fast` router.
 
-### `fireconnect model select`
+### `fireconnect <harness> model select`
 
-Interactive picker. Requires a terminal and Fireworks to be enabled. On confirm, writes
-the chosen model to your harness settings.
+Interactive picker. Requires a terminal and Fireworks to be enabled for that harness.
 
 **Claude Code** — pick one of five aliases (`main`, `opus`, `sonnet`, `haiku`, `subagent`):
 
 ```bash
-fireconnect model select
-fireconnect model select --slot sonnet
-fireconnect model select --slot sonnet --search glm
+fireconnect claude model select
+fireconnect claude model select --slot sonnet
+fireconnect claude model select --slot sonnet --search glm
 ```
 
 **OpenCode** — single default model (no `--slot`):
 
 ```bash
-fireconnect model select --harness opencode
-fireconnect model select --harness opencode --search glm
+fireconnect opencode model select
+fireconnect opencode model select --search glm
 ```
 
-### `fireconnect list` vs `fireconnect model list`
+### `fireconnect claude status` vs `fireconnect claude model list`
 
 | Command | Shows |
 |---------|--------|
-| `fireconnect list` | Your configured alias mapping in Claude Code settings |
-| `fireconnect model list` | Available serverless endpoints from the Fireworks API |
+| `fireconnect claude status` | Your current provider, auth, and configured alias mapping |
+| `fireconnect claude model list` | Available serverless endpoints from the Fireworks API |
+
+After `fireconnect claude on`, `model select`, or `model reset`, model routing updates in
+`settings.json` immediately. Claude Code's `/model` picker may still show the previous model
+until you restart the app — use `fireconnect claude status` to confirm the active mapping.
 
 ## FireConnect CLI
 
+The CLI is harness-first: `fireconnect <harness> <command>`. A handful of commands are
+global (no harness). Commands below are listed in the same order as `fireconnect help`.
+
+**Global**
+
 ```text
-fireconnect on         Route Claude Code through Fireworks.
-fireconnect off        Restore your previous provider.
-fireconnect status     Show the current provider.
-fireconnect list       Show the model mapping.
-fireconnect model      Browse or pick serverless models (list, select).
-fireconnect set        Change model aliases.
-fireconnect reset      Reset models to defaults.
-fireconnect uninstall  Remove FireConnect from this machine.
+fireconnect configure              Register harnesses and API key preferences.
+fireconnect uninstall              Disable + restore all harnesses, then remove FireConnect.
+fireconnect help                   Show help.
 ```
 
-Run `fireconnect help <command>` for all options.
+**Per harness** (`claude`, `opencode`)
+
+```text
+fireconnect <harness> on           Route the harness through Fireworks (default if no command).
+fireconnect <harness> off          Restore your previous provider/config.
+fireconnect <harness> status       Show the provider, auth, and model mapping.
+fireconnect <harness> model list   Browse serverless Fireworks models.
+fireconnect <harness> model select Interactive model picker.
+fireconnect <harness> model reset  Reset models to defaults.
+fireconnect <harness> help         Show help for that harness.
+```
+
+Run `fireconnect help` for the overview, or `fireconnect claude help` / `fireconnect opencode help`
+for everything available at the harness level.
 
 ## OpenCode Harness
 
-FireConnect can also route [OpenCode](https://opencode.ai) through Fireworks. The same CLI
-commands work with `--harness opencode`:
+FireConnect routes [OpenCode](https://opencode.ai) through Fireworks with harness-first commands:
 
 ```bash
 export FIREWORKS_API_KEY=fw_...
-fireconnect on --harness opencode        # route OpenCode through Fireworks
-fireconnect status --harness opencode    # check current provider
-fireconnect set --harness opencode --main glm-5p1   # switch model
-fireconnect off --harness opencode       # restore your original config
+fireconnect opencode on                  # route OpenCode through Fireworks
+fireconnect opencode status              # check current provider
+fireconnect opencode on --main glm-5p1   # switch model (non-interactive)
+fireconnect opencode model select        # switch model (interactive)
+fireconnect opencode off                 # restore your original config
 ```
 
 What it does:
@@ -195,7 +209,7 @@ What it does:
 - Merges a `provider.fireworks` block into `~/.config/opencode/opencode.json` (the
   OpenAI-compatible adapter pointed at `https://api.fireworks.ai/inference/v1`) and sets the
   default `model`. Your other providers are left untouched.
-- Snapshots your original `opencode.json` before the first change. `fireconnect off`
+- Snapshots your original `opencode.json` before the first change. `fireconnect opencode off`
   restores it **byte-for-byte** (formatting, key order, everything). The snapshot lives in
   `~/.fireconnect/opencode/`.
 - Keeps secrets out of the config file: when the key comes from the `FIREWORKS_API_KEY`
@@ -204,6 +218,5 @@ What it does:
   touched.
 
 Use `--config-path <path>` to target a non-default config file (also handy for testing
-without touching your real config). See `docs/opencode-harness.md` for design notes and
-remaining verification items.
+without touching your real config). See `docs/cli-design.md` for the full CLI spec.
 
