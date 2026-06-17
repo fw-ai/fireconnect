@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -85,9 +85,10 @@ export async function readJsonIfExists(filePath) {
   }
 }
 
-export async function writeJson(filePath, value) {
+export async function writeJson(filePath, value, { mode } = {}) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  if (mode !== undefined) await chmod(filePath, mode);
 }
 
 export function isSafeDataDirRemoval(dataDir, home) {
@@ -311,6 +312,55 @@ export function clearFireworksTopLevelWithoutBackup(settings) {
   return next;
 }
 
+function isFireworksOwnedEnvEntry(key, value, env) {
+  if (key === "ANTHROPIC_BASE_URL") {
+    return value === FIREWORKS_BASE_URL;
+  }
+  if (key === "ANTHROPIC_API_KEY" || key === "ANTHROPIC_AUTH_TOKEN") {
+    return isFireworksShapedKey(value);
+  }
+  if (env.ANTHROPIC_BASE_URL === FIREWORKS_BASE_URL) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Remove only env entries FireConnect owns — never strip user Anthropic keys.
+ * @param {Record<string, string>} env
+ */
+export function stripFireworksOwnedEnv(env) {
+  const nextEnv = { ...env };
+  let changed = false;
+  for (const key of FIREWORKS_ENV_KEYS) {
+    if (!Object.hasOwn(nextEnv, key)) {
+      continue;
+    }
+    if (isFireworksOwnedEnvEntry(key, nextEnv[key], env)) {
+      delete nextEnv[key];
+      changed = true;
+    }
+  }
+  return { env: nextEnv, changed };
+}
+
+export function fireworksCustomOptionFields(mainModelId) {
+  const resolved = claudeCodeModelId(mainModelId);
+  const shortId = stripClaudeCodeContextSuffix(mainModelId).split("/").at(-1) ?? "Fireworks model";
+  return {
+    ANTHROPIC_CUSTOM_MODEL_OPTION: resolved,
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: `${shortId} via Fireworks`,
+    ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks Anthropic-compatible open model",
+  };
+}
+
+export function syncFireworksCustomOption(env, mapping) {
+  return {
+    ...env,
+    ...fireworksCustomOptionFields(mapping.main),
+  };
+}
+
 export function modelEnvFromMapping(mapping) {
   return {
     ANTHROPIC_MODEL: claudeCodeModelId(mapping.main),
@@ -338,10 +388,11 @@ export function buildFireworksProviderEnv(env, {
   keyType = "fireworks",
 }) {
   const resolvedPreset = keyType === "firepass" ? DEFAULT_FIREPASS_PRESET : preset;
+  const mergedEnv = mergeModelsIntoEnv({}, mapping);
   const nextEnv = {
     ...env,
     ...resolvedPreset,
-    ...mergeModelsIntoEnv({}, mapping),
+    ...syncFireworksCustomOption(mergedEnv, mapping),
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_API_KEY: apiKey,
     ANTHROPIC_AUTH_TOKEN: apiKey,
@@ -390,57 +441,87 @@ export async function enableFireworksProvider({
     env: buildFireworksProviderEnv(env, { apiKey: token, baseUrl, mapping, preset, keyType: resolvedKeyType }),
   };
 
+  if (providerStatusFromEnv(next.env) === "fireworks") {
+    next.model = claudeCodeModelId(mapping.main);
+  }
+
   await writeJson(settingsPath, next);
-  await writeJson(statePath, { ...state, enabled: true, fireworksApiKey: token });
+  await writeJson(statePath, { ...state, fireworksApiKey: token });
   return token;
 }
 
-export async function disableFireworksProvider({ settingsPath, dataDir }) {
+export async function disableFireworksProvider({ settingsPath, dataDir, wasEnabled = false }) {
   const backupPath = providerBackupPath(dataDir);
   const statePath = providerStatePath(dataDir);
   const settings = await readJsonIfExists(settingsPath);
   const backup = await readJsonIfExists(backupPath);
   const state = await readJsonIfExists(statePath);
   const env = settings.env ?? {};
-  const nextEnv = { ...env };
+  const status = providerStatusFromEnv(env);
+  const hasBackup = Boolean(backup.values);
 
-  for (const key of FIREWORKS_ENV_KEYS) {
-    delete nextEnv[key];
+  if (!wasEnabled && !hasBackup && status !== "fireworks") {
+    return;
   }
 
-  if (backup.values) {
+  if (hasBackup) {
+    const nextEnv = { ...env };
+    for (const key of FIREWORKS_ENV_KEYS) {
+      delete nextEnv[key];
+    }
     for (const [key, value] of Object.entries(backup.values)) {
       nextEnv[key] = value;
     }
     for (const key of backup.missing ?? []) {
       delete nextEnv[key];
     }
+
+    let nextSettings = { ...settings, env: nextEnv };
+    if (backup.topLevel?.values || backup.topLevel?.missing) {
+      nextSettings = applyTopLevelBackup(nextSettings, backup.topLevel);
+    } else {
+      nextSettings = clearFireworksTopLevelWithoutBackup(nextSettings);
+    }
+
+    await writeJson(settingsPath, nextSettings);
+    await writeJson(statePath, {
+      ...state,
+      fireworksApiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey,
+    });
+    await unlink(backupPath).catch(() => {});
+    return;
   }
 
+  const { env: nextEnv, changed: envChanged } = stripFireworksOwnedEnv(env);
   let nextSettings = { ...settings, env: nextEnv };
-  if (backup.topLevel?.values || backup.topLevel?.missing) {
-    nextSettings = applyTopLevelBackup(nextSettings, backup.topLevel);
-  } else {
+  const hadFireworksModel = isFireworksModelId(settings.model);
+  if (hadFireworksModel) {
     nextSettings = clearFireworksTopLevelWithoutBackup(nextSettings);
   }
 
-  await writeJson(settingsPath, nextSettings);
+  if (envChanged || hadFireworksModel) {
+    await writeJson(settingsPath, nextSettings);
+  }
+
   await writeJson(statePath, {
     ...state,
-    enabled: false,
     fireworksApiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey,
   });
-
-  if (backup.values) {
-    await unlink(backupPath).catch(() => {});
-  }
 }
 
 export async function applyModelMapping({ settingsPath, mapping }) {
   const settings = await readJsonIfExists(settingsPath);
   const env = settings.env ?? {};
-  await writeJson(settingsPath, {
+  const nextEnv = applyClaudeCodeContextPolicy(
+    syncFireworksCustomOption(mergeModelsIntoEnv(env, mapping), mapping),
+    mapping,
+  );
+  const next = {
     ...settings,
-    env: applyClaudeCodeContextPolicy(mergeModelsIntoEnv(env, mapping), mapping),
-  });
+    env: nextEnv,
+  };
+  if (providerStatusFromEnv(nextEnv) === "fireworks") {
+    next.model = claudeCodeModelId(mapping.main);
+  }
+  await writeJson(settingsPath, next);
 }

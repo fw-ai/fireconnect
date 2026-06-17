@@ -11,15 +11,17 @@ import {
 } from "./fireconnect-core.mjs";
 import {
   OPENCODE_API_KEY_ENV_REF,
+  OPENCODE_FIREWORKS_PROVIDER_ID,
   enableOpencodeFireworks,
+  opencodeCurrentModelId,
   opencodeProviderStatus,
 } from "./opencode-core.mjs";
 import {
-  effectiveOpencodeApiKey,
   filterCatalogBySearch,
   loadServerlessCatalog,
 } from "./fireworks-models.mjs";
-import { DEFAULT_HARNESS, HARNESS } from "./harness.mjs";
+import { HARNESS } from "./harness.mjs";
+import { printClaudeModelRoutingHint } from "./claude-hints.mjs";
 
 export const CLAUDE_CODE_SLOTS = [
   { key: "main", label: "main (primary conversation model)" },
@@ -32,9 +34,9 @@ export const CLAUDE_CODE_SLOTS = [
 function ensureInteractiveTerminal(harness) {
   if (!input.isTTY || !output.isTTY) {
     if (harness === HARNESS.OPENCODE) {
-      throw new Error("model select requires an interactive terminal. Use: fireconnect set --harness opencode --main <id>");
+      throw new Error("model select requires an interactive terminal. Use: fireconnect opencode on --main <id>");
     }
-    throw new Error("model select requires an interactive terminal. Use: fireconnect set --<slot> <id>");
+    throw new Error("model select requires an interactive terminal. Use: fireconnect claude on --<slot> <id>");
   }
 }
 
@@ -90,7 +92,7 @@ async function pickFromCatalog({ rl, catalog, options, promptLabel }) {
   if (options.search) {
     workingCatalog = filterCatalogBySearch(catalog, options.search);
   } else {
-    const searchQuery = (await rl.question("Filter models (optional, Enter for all): ")).trim();
+    const searchQuery = (await rl.question("Search models (or press Enter to list all): ")).trim();
     workingCatalog = filterCatalogBySearch(catalog, searchQuery);
   }
 
@@ -119,20 +121,16 @@ async function pickFromCatalog({ rl, catalog, options, promptLabel }) {
   return picked;
 }
 
-async function runClaudeModelSelect({ options, settingsPath, dataDir, configPath }) {
+export async function runClaudeModelSelect({ options, settingsPath, apiKey }) {
+  ensureInteractiveTerminal(HARNESS.CLAUDE);
+
   const settings = await readJsonIfExists(settingsPath);
   const env = settings.env ?? {};
   if (providerStatusFromEnv(env) !== "fireworks") {
-    throw new Error("model select requires Fireworks to be enabled; run: fireconnect on");
+    throw new Error("model select requires Fireworks to be enabled; run: fireconnect claude on");
   }
 
-  const { catalog, keyType } = await loadServerlessCatalog({
-    apiKey: options.apiKeyFromFlag ? options.apiKey : "",
-    harness: HARNESS.CLAUDE,
-    settingsPath,
-    dataDir,
-    configPath,
-  });
+  const { catalog, keyType } = await loadServerlessCatalog({ apiKey });
 
   const rl = readline.createInterface({ input, output });
 
@@ -177,39 +175,32 @@ async function runClaudeModelSelect({ options, settingsPath, dataDir, configPath
 
     await applyModelMapping({ settingsPath, mapping });
     console.log(`Updated ${slot} -> ${mapping[slot]}`);
-    console.log("Restart Claude Code for full effect.");
+    printClaudeModelRoutingHint();
   } finally {
     rl.close();
   }
 }
 
-async function runOpencodeModelSelect({ options, configPath, dataDir, settingsPath }) {
+export async function runOpencodeModelSelect({ options, configPath, dataDir, apiKey }) {
+  ensureInteractiveTerminal(HARNESS.OPENCODE);
+
   if (options.slot) {
     throw new Error("--slot is Claude Code only; OpenCode uses a single model (omit --slot)");
   }
 
   const config = await readJsonIfExists(configPath);
   if (opencodeProviderStatus(config) !== "fireworks") {
-    throw new Error("model select requires Fireworks to be enabled; run: fireconnect on --harness opencode");
+    throw new Error("model select requires Fireworks to be enabled; run: fireconnect opencode on");
   }
 
-  const existingKey = config.provider?.fireworks?.options?.apiKey ?? "";
-  const effectiveKey = effectiveOpencodeApiKey(existingKey)
-    || (options.apiKeyFromFlag ? options.apiKey : "");
-  const keyType = detectApiKeyType(effectiveKey);
+  const existingKey = config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]?.options?.apiKey
+    ?? config.provider?.fireworks?.options?.apiKey
+    ?? "";
+  const keyType = detectApiKeyType(apiKey);
 
-  const { catalog } = await loadServerlessCatalog({
-    apiKey: options.apiKeyFromFlag ? options.apiKey : effectiveKey,
-    harness: HARNESS.OPENCODE,
-    settingsPath,
-    dataDir: "",
-    configPath,
-    keyType,
-  });
+  const { catalog } = await loadServerlessCatalog({ apiKey, keyType });
 
-  const currentModel = typeof config.model === "string" && config.model.startsWith("fireworks/")
-    ? config.model.slice("fireworks/".length).split("/").at(-1)
-    : "(unset)";
+  const currentModel = opencodeCurrentModelId(config)?.split("/").at(-1) ?? "(unset)";
 
   const rl = readline.createInterface({ input, output });
 
@@ -226,16 +217,15 @@ async function runOpencodeModelSelect({ options, configPath, dataDir, settingsPa
       return;
     }
 
-    // Preserve the existing key mode: explicit --api-key or a literal key stored in
-    // config should be written back literally; an env reference (or no existing key)
-    // should keep using the env reference so the secret stays out of the file.
-    const apiKey = options.apiKeyFromFlag ? options.apiKey : (existingKey || options.apiKey);
+    // Preserve the on-disk write mode: keep the stored value (literal or
+    // {env:...} ref) unless the user passed an explicit --api-key.
+    const writeKey = options.apiKeyFromFlag ? options.apiKey : (existingKey || options.apiKey);
     const existingKeyIsLiteral = Boolean(existingKey) && existingKey !== OPENCODE_API_KEY_ENV_REF;
 
     const result = await enableOpencodeFireworks({
       configPath,
       dataDir,
-      apiKey,
+      apiKey: writeKey,
       apiKeyFromFlag: options.apiKeyFromFlag || existingKeyIsLiteral,
       modelId: picked.shortId,
       keyType,
@@ -246,32 +236,4 @@ async function runOpencodeModelSelect({ options, configPath, dataDir, settingsPa
   } finally {
     rl.close();
   }
-}
-
-export async function runModelSelectCommand({
-  options,
-  harness = DEFAULT_HARNESS,
-  settingsPath = "",
-  dataDir = "",
-  configPath = "",
-  opencodeDataDir = "",
-}) {
-  ensureInteractiveTerminal(harness);
-
-  if (harness === HARNESS.OPENCODE) {
-    await runOpencodeModelSelect({
-      options,
-      configPath,
-      dataDir: opencodeDataDir,
-      settingsPath,
-    });
-    return;
-  }
-
-  await runClaudeModelSelect({
-    options,
-    settingsPath,
-    dataDir,
-    configPath,
-  });
 }

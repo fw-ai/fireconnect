@@ -1,6 +1,6 @@
 {
   "name": "@fireconnect/cli",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "FireConnect CLIs for using Fireworks models with Claude Code",
   "type": "module",
   "bin": {

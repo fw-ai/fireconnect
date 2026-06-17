@@ -160,7 +160,7 @@ main() {
   ensure_durable_source
 
   read_api_key
-  node "${CLI}" on --api-key "${FIREWORKS_API_KEY}" --base-url "${BASE_URL}" >/dev/null
+  node "${CLI}" claude on --api-key "${FIREWORKS_API_KEY}" --base-url "${BASE_URL}" >/dev/null
   install_cli_launcher
 
   echo

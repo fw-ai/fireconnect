@@ -15,14 +15,8 @@ function formatTable(catalog) {
   return [header, ...lines].join("\n");
 }
 
-export async function runModelListCommand({ options, settingsPath, dataDir, configPath }) {
-  const { catalog, keyType } = await loadServerlessCatalog({
-    apiKey: options.apiKeyFromFlag ? options.apiKey : "",
-    harness: options.harness,
-    settingsPath,
-    dataDir,
-    configPath,
-  });
+export async function runModelListCommand({ options, harness = "", apiKey }) {
+  const { catalog, keyType } = await loadServerlessCatalog({ apiKey });
 
   const filtered = filterCatalogBySearch(catalog, options.search);
 
@@ -48,6 +42,7 @@ export async function runModelListCommand({ options, settingsPath, dataDir, conf
   console.log(formatTable(filtered));
   console.log("");
   console.log(`Showing ${filtered.length} serverless endpoint${filtered.length === 1 ? "" : "s"}.`);
-  console.log("Pick interactively: fireconnect model select");
-  console.log("OpenCode:           fireconnect model select --harness opencode");
+  if (harness) {
+    console.log(`Pick interactively: fireconnect ${harness} model select`);
+  }
 }

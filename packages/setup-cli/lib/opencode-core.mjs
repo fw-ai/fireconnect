@@ -10,11 +10,14 @@ import {
   readJsonIfExists,
   writeJson,
 } from "./fireconnect-core.mjs";
+import { isHarnessEnabled } from "./global-config.mjs";
+import { HARNESS } from "./harness.mjs";
 
 export const OPENCODE_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1";
 export const OPENCODE_CONFIG_RELATIVE_PATH = ".config/opencode/opencode.json";
 export const OPENCODE_DATA_RELATIVE_DIR = ".fireconnect/opencode";
 export const OPENCODE_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
+export const OPENCODE_FIREWORKS_PROVIDER_ID = "fireworks-ai";
 
 export function opencodeConfigPath(home, configPath) {
   if (configPath) {
@@ -38,10 +41,6 @@ export function opencodeBackupPath(dataDir, configPath) {
   return path.join(dataDir, `config-backup.${key}.json`);
 }
 
-export function opencodeStatePath(dataDir) {
-  return path.join(dataDir, "state.json");
-}
-
 // Raw-text snapshot (not parsed JSON) so `off` can restore the user's file
 // byte-for-byte, preserving their formatting and key order.
 export async function readRawIfExists(filePath) {
@@ -55,30 +54,38 @@ export async function readRawIfExists(filePath) {
   }
 }
 
-export function buildFireworksProviderBlock({ apiKeyValue, modelId }) {
-  return {
-    npm: "@ai-sdk/openai-compatible",
-    name: "Fireworks",
-    options: {
-      baseURL: OPENCODE_FIREWORKS_BASE_URL,
-      apiKey: apiKeyValue,
-    },
-    models: {
-      [modelId]: { name: `${modelId} (Fireworks)` },
-    },
-  };
+export function opencodeCurrentModelId(config) {
+  const modelRef = typeof config.model === "string" ? config.model : "";
+  const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
+  if (modelRef.startsWith(prefix)) {
+    return modelRef.slice(prefix.length);
+  }
+  if (modelRef.startsWith("fireworks/")) {
+    return modelRef.slice("fireworks/".length);
+  }
+  return null;
 }
 
 export function opencodeProviderStatus(config) {
-  const hasProvider = Boolean(config.provider?.fireworks);
+  const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
+  const hasFireworksAi = Boolean(config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]);
+  const hasLegacy = Boolean(config.provider?.fireworks);
   const model = typeof config.model === "string" ? config.model : "";
-  if (hasProvider && model.startsWith("fireworks/")) {
+  const fireworksModel = model.startsWith(prefix) || model.startsWith("fireworks/");
+  if ((hasFireworksAi || hasLegacy) && fireworksModel) {
     return "fireworks";
   }
-  if (hasProvider || model.startsWith("fireworks/")) {
+  if (hasFireworksAi || hasLegacy || fireworksModel) {
     return "custom";
   }
   return "default";
+}
+
+function homeFromDataDir(dataDir) {
+  if (path.basename(dataDir) !== "opencode" || path.basename(path.dirname(dataDir)) !== ".fireconnect") {
+    return "";
+  }
+  return path.dirname(path.dirname(dataDir));
 }
 
 export async function enableOpencodeFireworks({
@@ -110,11 +117,15 @@ export async function enableOpencodeFireworks({
     : apiKey;
   const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(effectiveApiKey) : keyType;
 
+  const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
+  const modelRef = typeof config.model === "string" ? config.model : "";
   // Model precedence: explicit request > model already configured by a previous
   // `on` > default. A repeat `on` without --main must not reset the user's choice.
-  const currentModelId = typeof config.model === "string" && config.model.startsWith("fireworks/")
-    ? config.model.slice("fireworks/".length)
-    : "";
+  const currentModelId = modelRef.startsWith(prefix)
+    ? modelRef.slice(prefix.length)
+    : modelRef.startsWith("fireworks/")
+      ? modelRef.slice("fireworks/".length)
+      : "";
 
   // Fire Pass defaults to the K2.7 Code Fast router; when no explicit model is
   // requested, use that so the user gets a working config out of the box.
@@ -126,19 +137,16 @@ export async function enableOpencodeFireworks({
   const resolvedModel = normalizeModelId(effectiveModelId || currentModelId || DEFAULT_MAIN_MODEL);
 
   const backupPath = opencodeBackupPath(dataDir, configPath);
-  // Snapshot only when the live config carries no trace of FireConnect (no
-  // provider.fireworks block):
-  // - first `on`: captures the true pre-Fireworks state;
-  // - repeat `on` while enabled, or in a PARTIAL state (our provider block
-  //   present but the model switched away): the existing backup is still the
-  //   true pre-`on` original — keep it, never overwrite with an intermediate;
-  // - `on` after the config was reverted/replaced outside `off` (our block
-  //   gone): any leftover backup is stale — overwrite with a fresh snapshot so
-  //   `off` can never clobber the user's current config with old content.
-  // If our block is present but no backup exists (data dir wiped), we record
-  // nothing: `off` then falls back to stripping only what we own.
-  const hasOurProvider = Boolean(config.provider?.fireworks);
-  if (!hasOurProvider) {
+  const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
+  const hasFireconnectRouting = Boolean(
+    config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] || config.provider?.fireworks,
+  );
+  const home = homeFromDataDir(dataDir);
+  const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
+  const shouldSnapshot = !hasBackup
+    ? !hasFireconnectRouting || !wasGloballyEnabled
+    : !hasFireconnectRouting;
+  if (shouldSnapshot) {
     // The snapshot can contain credentials from the user's other providers —
     // keep the backup (and its directory) private to the owner.
     await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
@@ -146,28 +154,42 @@ export async function enableOpencodeFireworks({
     await chmod(backupPath, 0o600);
   }
 
-  // Keep the secret off disk when it came from the environment; only write the
-  // literal value when the user explicitly passed --api-key.
+  const shortName = resolvedModel.split("/").at(-1) ?? resolvedModel;
+  const provider = { ...(config.provider ?? {}) };
+  delete provider.fireworks;
+
+  const existing = provider[OPENCODE_FIREWORKS_PROVIDER_ID] ?? {};
   const apiKeyValue = apiKeyFromFlag ? apiKey : OPENCODE_API_KEY_ENV_REF;
+  provider[OPENCODE_FIREWORKS_PROVIDER_ID] = {
+    ...existing,
+    options: { ...(existing.options ?? {}), apiKey: apiKeyValue },
+    models: {
+      ...(existing.models ?? {}),
+      [shortName]: { name: shortName },
+    },
+  };
 
   const next = {
     ...config,
-    provider: {
-      ...(config.provider ?? {}),
-      fireworks: buildFireworksProviderBlock({ apiKeyValue, modelId: resolvedModel }),
-    },
-    model: `fireworks/${resolvedModel}`,
+    provider,
+    model: `${prefix}${shortName}`,
   };
 
   await writeJson(configPath, next);
-  await writeJson(opencodeStatePath(dataDir), { enabled: true });
-
   return { model: next.model, apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference", keyType: resolvedKeyType };
 }
 
-export async function disableOpencodeFireworks({ configPath, dataDir }) {
+export async function disableOpencodeFireworks({ configPath, dataDir, wasEnabled = false }) {
   const backupPath = opencodeBackupPath(dataDir, configPath);
   const backup = await readJsonIfExists(backupPath);
+  const config = await readJsonIfExists(configPath);
+  const status = opencodeProviderStatus(config);
+  const hasBackup = backup.snapshot !== undefined;
+  const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
+
+  if (!wasEnabled && !hasBackup && status !== "fireworks") {
+    return;
+  }
 
   // Refuse to restore a snapshot that was taken for a different config file
   // (legacy un-keyed backups have no configPath recorded).
@@ -199,24 +221,28 @@ export async function disableOpencodeFireworks({ configPath, dataDir }) {
     // re-serialize a config Fireworks was not enabled on.
     const { existed } = await readRawIfExists(configPath);
     if (existed) {
-      const config = await readJsonIfExists(configPath);
+      const liveConfig = await readJsonIfExists(configPath);
       let changed = false;
-      if (config.provider?.fireworks) {
-        delete config.provider.fireworks;
-        if (Object.keys(config.provider).length === 0) {
-          delete config.provider;
-        }
+      if (liveConfig.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]) {
+        delete liveConfig.provider[OPENCODE_FIREWORKS_PROVIDER_ID];
         changed = true;
       }
-      if (typeof config.model === "string" && config.model.startsWith("fireworks/")) {
-        delete config.model;
+      if (liveConfig.provider?.fireworks) {
+        delete liveConfig.provider.fireworks;
+        changed = true;
+      }
+      if (typeof liveConfig.model === "string"
+        && (liveConfig.model.startsWith(prefix) || liveConfig.model.startsWith("fireworks/"))) {
+        delete liveConfig.model;
+        changed = true;
+      }
+      if (liveConfig.provider && Object.keys(liveConfig.provider).length === 0) {
+        delete liveConfig.provider;
         changed = true;
       }
       if (changed) {
-        await writeJson(configPath, config);
+        await writeJson(configPath, liveConfig);
       }
     }
   }
-
-  await writeJson(opencodeStatePath(dataDir), { enabled: false });
 }
