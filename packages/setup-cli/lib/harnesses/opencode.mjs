@@ -124,7 +124,7 @@ export default defineHarness({
       console.log("API key written into opencode.json (passed via --api-key).");
     }
     if (result.keyType === "firepass") {
-      console.log("Fire Pass key detected: using kimi-k2p7-code-fast for all aliases.");
+      console.log("Fire Pass key detected: using glm-latest for all aliases.");
     } else {
       console.log("Browse models: fireconnect opencode model list");
       console.log("Pick a model:  fireconnect opencode model select");
@@ -147,12 +147,15 @@ export default defineHarness({
     const config = await readJsonIfExists(configPath);
     const fireworksAi = config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] ?? null;
     const model = opencodeCurrentModelId(config);
+    const storedRef = opencodeStoredApiKeyRef(config);
+    const effectiveKey = effectiveOpencodeApiKey(storedRef) || process.env.FIREWORKS_API_KEY || "";
+    const keyType = detectApiKeyType(effectiveKey);
     const payload = {
       harness: HARNESS.OPENCODE,
       provider: opencodeProviderStatus(config),
       baseUrl: fireworksAi?.options?.baseURL ?? null,
-      hasAuthToken: Boolean(opencodeStoredApiKeyRef(config) || process.env.FIREWORKS_API_KEY),
-      defaults: { main: defaultModelIds().main },
+      hasAuthToken: Boolean(storedRef || process.env.FIREWORKS_API_KEY),
+      defaults: defaultModelIds(keyType),
       current: { main: model },
     };
 

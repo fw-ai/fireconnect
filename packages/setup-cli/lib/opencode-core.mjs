@@ -127,7 +127,7 @@ export async function enableOpencodeFireworks({
       ? modelRef.slice("fireworks/".length)
       : "";
 
-  // Fire Pass defaults to the K2.7 Code Fast router; when no explicit model is
+  // Fire Pass defaults to the GLM Latest router; when no explicit model is
   // requested, use that so the user gets a working config out of the box.
   let effectiveModelId = modelId;
   if (resolvedKeyType === "firepass" && !modelId) {
@@ -154,7 +154,6 @@ export async function enableOpencodeFireworks({
     await chmod(backupPath, 0o600);
   }
 
-  const shortName = resolvedModel.split("/").at(-1) ?? resolvedModel;
   const provider = { ...(config.provider ?? {}) };
   delete provider.fireworks;
 
@@ -165,14 +164,14 @@ export async function enableOpencodeFireworks({
     options: { ...(existing.options ?? {}), apiKey: apiKeyValue },
     models: {
       ...(existing.models ?? {}),
-      [shortName]: { name: shortName },
+      [resolvedModel]: { name: resolvedModel },
     },
   };
 
   const next = {
     ...config,
     provider,
-    model: `${prefix}${shortName}`,
+    model: `${prefix}${resolvedModel}`,
   };
 
   await writeJson(configPath, next);

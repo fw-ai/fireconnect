@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { OPENCODE_FIREWORKS_PROVIDER_ID, opencodeConfigPath } from "../lib/opencode-core.mjs";
+import { GLM_LATEST } from "./helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "bin", "fireconnect.mjs");
 
@@ -41,7 +42,9 @@ describe("opencode harness integration", () => {
     const enabled = JSON.parse(await readFile(configPath, "utf8"));
     assert.ok(enabled.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]);
     assert.equal(enabled.provider?.fireworks, undefined);
-    assert.ok(enabled.model.startsWith(`${OPENCODE_FIREWORKS_PROVIDER_ID}/`));
+    const defaultModel = `accounts/fireworks/routers/${GLM_LATEST}`;
+    assert.equal(enabled.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/${defaultModel}`);
+    assert.equal(enabled.provider[OPENCODE_FIREWORKS_PROVIDER_ID].models[defaultModel].name, defaultModel);
 
     const offResult = await runFireconnect(["opencode", "off"], { HOME: home });
     assert.equal(offResult.code, 0);

@@ -33,7 +33,7 @@ describe("defineHarness", () => {
   it("rejects unknown harness id", () => {
     assert.throws(
       () => defineHarness({
-        id: "pi",
+        id: "unknown",
         label: "Pi",
         on: async () => {},
         off: async () => {},

@@ -3,9 +3,18 @@ import {
   userSettingsPath,
 } from "./fireconnect-core.mjs";
 import {
+  codexConfigPath,
+  codexDataDir,
+} from "./codex-core.mjs";
+import {
   opencodeConfigPath,
   opencodeDataDir,
 } from "./opencode-core.mjs";
+import {
+  piAuthPath,
+  piDataDir,
+  piSettingsPath,
+} from "./pi-core.mjs";
 
 /** @typedef {import("./harness-types.mjs").HarnessContext} HarnessContext */
 
@@ -32,6 +41,28 @@ export function opencodePathsFor(ctx) {
 /**
  * @param {HarnessContext} ctx
  */
+export function codexPathsFor(ctx) {
+  return {
+    configPath: codexConfigPath(ctx.home, ctx.configPath),
+    dataDir: codexDataDir(ctx.home, ctx.dataDir),
+  };
+}
+
+/**
+ * @param {HarnessContext} ctx
+ */
+export function piPathsFor(ctx) {
+  const settingsPath = piSettingsPath(ctx.home, ctx.settingsPath || ctx.configPath);
+  return {
+    settingsPath,
+    authPath: piAuthPath(ctx.home, "", settingsPath),
+    dataDir: piDataDir(ctx.home, ctx.dataDir),
+  };
+}
+
+/**
+ * @param {HarnessContext} ctx
+ */
 export function modelOverridesFrom(ctx) {
   return {
     main: ctx.main,
@@ -44,12 +75,18 @@ export function modelOverridesFrom(ctx) {
 
 /**
  * @param {HarnessContext} ctx
- * @param {"claude" | "opencode"} harnessId
+ * @param {"claude" | "opencode" | "codex" | "pi"} harnessId
  */
 export function ensureHomeForHarness(ctx, harnessId) {
-  if (harnessId === "opencode") {
+  if (harnessId === "opencode" || harnessId === "codex") {
     if (!ctx.configPath && !ctx.home) {
       throw new Error("HOME is not set; pass --home or --config-path");
+    }
+    return;
+  }
+  if (harnessId === "pi") {
+    if (!ctx.settingsPath && !ctx.configPath && !ctx.home) {
+      throw new Error("HOME is not set; pass --home or --settings-path");
     }
     return;
   }

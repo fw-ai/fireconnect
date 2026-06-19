@@ -63,7 +63,7 @@ export async function runConfigureCommand(ctx) {
       rl.close();
     }
   } else if (harnessIds.length === 0) {
-    throw new Error("Pass --harnesses claude,opencode or run configure in an interactive terminal");
+    throw new Error("Pass --harnesses claude,opencode,codex,pi or run configure in an interactive terminal");
   }
 
   if (apiKey) {

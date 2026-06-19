@@ -5,9 +5,26 @@ import { OPENCODE_API_KEY_ENV_REF } from "./opencode-core.mjs";
 export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
 export const PLATFORM_ACCOUNT_ID = "fireworks";
 export const KIND_SERVERLESS = "serverless";
-export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/kimi-k2p7-code-fast";
+export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/glm-latest";
+export const FIREPASS_ROUTER_IDS = new Set([
+  FIREPASS_ROUTER_ID,
+  "accounts/fireworks/routers/kimi-fast-latest",
+  "accounts/fireworks/routers/kimi-k2p7-code-fast",
+]);
 
 const BUILTIN_ROUTERS = [
+  {
+    id: "accounts/fireworks/routers/glm-latest",
+    shortId: "glm-latest",
+    displayName: "GLM Latest via Fireworks",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/kimi-fast-latest",
+    shortId: "kimi-fast-latest",
+    displayName: "Kimi Fast Latest via Fireworks",
+    kind: KIND_SERVERLESS,
+  },
   {
     id: "accounts/fireworks/routers/kimi-k2p6-turbo",
     shortId: "kimi-k2p6-turbo",
@@ -18,6 +35,12 @@ const BUILTIN_ROUTERS = [
     id: "accounts/fireworks/routers/kimi-k2p7-code-fast",
     shortId: "kimi-k2p7-code-fast",
     displayName: "Kimi K2.7 Code Fast via Fireworks",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/kimi-latest",
+    shortId: "kimi-latest",
+    displayName: "Kimi Latest via Fireworks",
     kind: KIND_SERVERLESS,
   },
 ];
@@ -177,7 +200,7 @@ export function filterCatalogForKeyType(catalog, keyType) {
   if (keyType !== "firepass") {
     return catalog;
   }
-  return catalog.filter((entry) => entry.id === FIREPASS_ROUTER_ID);
+  return catalog.filter((entry) => FIREPASS_ROUTER_IDS.has(entry.id));
 }
 
 export function filterCatalogBySearch(catalog, search = "") {

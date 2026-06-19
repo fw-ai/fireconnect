@@ -1,8 +1,10 @@
-/** @typedef {"" | "claude" | "opencode"} HarnessArg */
+/** @typedef {"" | "claude" | "opencode" | "codex" | "pi"} HarnessArg */
 
 export const HARNESS = Object.freeze({
   CLAUDE: "claude",
   OPENCODE: "opencode",
+  CODEX: "codex",
+  PI: "pi",
 });
 
 export const HARNESSES = Object.freeze(Object.values(HARNESS));

@@ -11,12 +11,21 @@ import {
 export { CLAUDE_CODE_1M_CONTEXT_MODELS } from "./claude-code-context.mjs";
 
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
-export const DEFAULT_OPUS_MODEL = "kimi-k2p7-code-fast";
-export const DEFAULT_FIREPASS_MAIN_MODEL = "kimi-k2p7-code-fast";
+export const GLM_LATEST_ROUTER_ID = "accounts/fireworks/routers/glm-latest";
+export const DEFAULT_OPUS_MODEL = "glm-latest";
+export const DEFAULT_FIREPASS_MAIN_MODEL = "glm-latest";
+export const DEFAULT_MAIN_MODEL = "glm-latest";
 export const DEFAULT_SONNET_MODEL = "glm-5p1";
 export const DEFAULT_HAIKU_MODEL = "minimax-m2p5";
-export const DEFAULT_MAIN_MODEL = DEFAULT_OPUS_MODEL;
 export const DEFAULT_SUBAGENT_MODEL = DEFAULT_HAIKU_MODEL;
+
+const FIREWORKS_ROUTER_SHORT_IDS = new Set([
+  "glm-latest",
+  "kimi-fast-latest",
+  "kimi-k2p6-turbo",
+  "kimi-k2p7-code-fast",
+  "kimi-latest",
+]);
 
 export const DEFAULT_DATA_DIR = ".fireconnect/claude";
 export const USER_SETTINGS_RELATIVE_PATH = ".claude/settings.json";
@@ -47,13 +56,13 @@ export const FIREWORKS_TOP_LEVEL_KEYS = [
 ];
 
 export const DEFAULT_FIREWORKS_PRESET = {
-  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+  ANTHROPIC_MODEL: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_DEFAULT_OPUS_MODEL: GLM_LATEST_ROUTER_ID,
   ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/models/glm-5p1",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/models/minimax-m2p5",
   CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/minimax-m2p5",
-  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.7 Code Fast via Fireworks",
+  ANTHROPIC_CUSTOM_MODEL_OPTION: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "glm-latest via Fireworks",
   ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks Anthropic-compatible open model",
   CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
   CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
@@ -62,13 +71,13 @@ export const DEFAULT_FIREWORKS_PRESET = {
 
 export const DEFAULT_FIREPASS_PRESET = {
   ...DEFAULT_FIREWORKS_PRESET,
-  ANTHROPIC_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.7 Code Fast via Fireworks",
+  ANTHROPIC_MODEL: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_DEFAULT_OPUS_MODEL: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_DEFAULT_SONNET_MODEL: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: GLM_LATEST_ROUTER_ID,
+  CLAUDE_CODE_SUBAGENT_MODEL: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_CUSTOM_MODEL_OPTION: GLM_LATEST_ROUTER_ID,
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "glm-latest via Fireworks",
 };
 
 export async function readJsonIfExists(filePath) {
@@ -150,18 +159,15 @@ export function normalizeModelId(model) {
   if (model.includes("/")) {
     return model;
   }
-  if (model === "kimi-k2p6-turbo") {
-    return "accounts/fireworks/routers/kimi-k2p6-turbo";
-  }
-  if (model === "kimi-k2p7-code-fast") {
-    return "accounts/fireworks/routers/kimi-k2p7-code-fast";
+  if (FIREWORKS_ROUTER_SHORT_IDS.has(model)) {
+    return `accounts/fireworks/routers/${model}`;
   }
   return `accounts/fireworks/models/${model}`;
 }
 
 export function validateModelId(model, flag) {
   if (!model.startsWith("accounts/") && model.includes("/")) {
-    throw new Error(`${flag} must be a Fireworks model or router ID like kimi-k2p7-code-fast or accounts/fireworks/routers/kimi-k2p7-code-fast`);
+    throw new Error(`${flag} must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest`);
   }
 }
 
