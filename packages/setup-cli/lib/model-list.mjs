@@ -30,7 +30,7 @@ export async function runModelListCommand({ options, harness = "", apiKey }) {
   }
 
   if (keyType === "firepass") {
-    console.log("Fire Pass key: showing the kimi-k2p7-code-fast serverless router only.");
+    console.log("Fire Pass key: showing Fire Pass-supported serverless routers.");
     console.log("");
   }
 

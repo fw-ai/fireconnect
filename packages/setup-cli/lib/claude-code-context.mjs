@@ -1,5 +1,7 @@
 export const CLAUDE_CODE_1M_CONTEXT_MODELS = new Set([
   "deepseek-v4-pro",
+  "glm-5p2",
+  "glm-latest",
 ]);
 
 const CLAUDE_CODE_1M_SUFFIX = "[1m]";

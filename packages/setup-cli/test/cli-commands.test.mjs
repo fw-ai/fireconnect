@@ -3,11 +3,14 @@ import { describe, test } from "node:test";
 
 import { OPENCODE_API_KEY_ENV_REF } from "../lib/opencode-core.mjs";
 import {
-  FIREPASS_ROUTER,
   FIREWORKS_INFERENCE_URL,
   FPK_KEY,
   FW_CLAUDE_KEY,
+  FIREPASS_ROUTER,
+  FIREPASS_ROUTER_1M,
+  GLM_LATEST,
   K2P7_FAST,
+  KIMI_FAST_LATEST,
   NO_ENV_KEY,
   readClaudeSettings,
   readOpencodeConfig,
@@ -20,11 +23,25 @@ import {
 } from "./helpers.mjs";
 
 describe("fireconnect claude on", () => {
-  test("fpk_ routes Claude Code to kimi-k2p7-code-fast", async () => {
+  test("fw_ uses glm-latest as default main router", async () => {
+    await withTempHome("on-fw", async (home) => {
+      const result = await runCli(["claude", "on", "--api-key", FW_CLAUDE_KEY], { home });
+      assert.equal(result.code, 0, result.stderr);
+
+      const settings = await readClaudeSettings(home);
+      assert.match(settings.model, /glm-latest/);
+      assert.equal(settings.env.ANTHROPIC_MODEL, FIREPASS_ROUTER_1M);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREPASS_ROUTER_1M);
+      assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, FIREPASS_ROUTER_1M);
+      assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
+    });
+  });
+
+  test("fpk_ routes Claude Code to glm-latest", async () => {
     await withTempHome("on-fpk", async (home) => {
       const result = await runCli(["claude", "on", "--api-key", FPK_KEY], { home });
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /kimi-k2p7-code-fast/);
+      assert.match(result.stdout, /glm-latest/);
 
       const { env } = await readClaudeSettings(home);
       for (const key of [
@@ -34,8 +51,9 @@ describe("fireconnect claude on", () => {
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "CLAUDE_CODE_SUBAGENT_MODEL",
       ]) {
-        assert.equal(env[key], FIREPASS_ROUTER);
+        assert.equal(env[key], FIREPASS_ROUTER_1M);
       }
+      assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
 
@@ -72,7 +90,23 @@ describe("fireconnect claude on", () => {
 });
 
 describe("fireconnect opencode on", () => {
-  test("fpk_ uses kimi-k2p7-code-fast", async () => {
+  test("fw_ uses glm-latest as default model", async () => {
+    await withTempHome("on-fw-oc", async (home) => {
+      const result = await runCli(
+        ["opencode", "on", "--api-key", FW_CLAUDE_KEY],
+        { home },
+      );
+      assert.equal(result.code, 0, result.stderr);
+
+      const config = await readOpencodeConfig(home);
+      assert.equal(config.model, `fireworks-ai/${FIREPASS_ROUTER}`);
+      assert.deepEqual(config.provider["fireworks-ai"].models[FIREPASS_ROUTER], {
+        name: FIREPASS_ROUTER,
+      });
+    });
+  });
+
+  test("fpk_ uses glm-latest", async () => {
     await withTempHome("on-fpk-oc", async (home) => {
       const result = await runCli(
         ["opencode", "on", "--api-key", FPK_KEY],
@@ -81,21 +115,27 @@ describe("fireconnect opencode on", () => {
       assert.equal(result.code, 0, result.stderr);
 
       const config = await readOpencodeConfig(home);
-      assert.match(config.model, /kimi-k2p7-code-fast/);
+      assert.equal(config.model, `fireworks-ai/${FIREPASS_ROUTER}`);
+      assert.deepEqual(config.provider["fireworks-ai"].models[FIREPASS_ROUTER], {
+        name: FIREPASS_ROUTER,
+      });
     });
   });
 });
 
 describe("fireconnect <harness> model list", () => {
-  test("Fire Pass key shows kimi-k2p7-code-fast only", async () => {
+  test("Fire Pass key shows supported routers", async () => {
     await withTempHome("ml-fpk", async (home) => {
       const { json } = await runCliJson(
         ["claude", "model", "list", "--api-key", FPK_KEY, "--json"],
         { home, env: NO_ENV_KEY },
       );
       assert.equal(json.keyType, "firepass");
-      assert.equal(json.count, 1);
-      assert.equal(json.models[0].shortId, K2P7_FAST);
+      assert.equal(json.count, 3);
+      assert.deepEqual(
+        json.models.map((entry) => entry.shortId),
+        [GLM_LATEST, KIMI_FAST_LATEST, K2P7_FAST],
+      );
     });
   });
 
@@ -108,7 +148,9 @@ describe("fireconnect <harness> model list", () => {
       );
       assert.equal(code, 0, stderr);
       assert.equal(json.keyType, "firepass");
-      assert.equal(json.models[0].shortId, K2P7_FAST);
+      assert.equal(json.models[0].shortId, GLM_LATEST);
+      assert.match(stdout, /glm-latest/);
+      assert.match(stdout, /kimi-fast-latest/);
       assert.match(stdout, /kimi-k2p7-code-fast/);
     });
   });
@@ -156,15 +198,18 @@ describe("fireconnect <harness> model list", () => {
     });
   });
 
-  test("text banner mentions kimi-k2p7-code-fast for Fire Pass", async () => {
+  test("text banner mentions Fire Pass-supported routers", async () => {
     await withTempHome("ml-banner", async (home) => {
       const result = await runCli(
         ["claude", "model", "list", "--api-key", FPK_KEY],
         { home, env: NO_ENV_KEY },
       );
       assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /glm-latest/);
+      assert.match(result.stdout, /kimi-fast-latest/);
       assert.match(result.stdout, /kimi-k2p7-code-fast/);
       assert.doesNotMatch(result.stdout, /kimi-k2p6-turbo/);
+      assert.doesNotMatch(result.stdout, /kimi-latest/);
     });
   });
 
@@ -182,12 +227,12 @@ describe("fireconnect <harness> status", () => {
     await withTempHome("status-cc-fpk", async (home) => {
       await writeClaudeSettings(home, FPK_KEY);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
-      assert.equal(json.defaults.main, K2P7_FAST);
-      assert.equal(json.defaults.opus, K2P7_FAST);
+      assert.equal(json.defaults.main, GLM_LATEST);
+      assert.equal(json.defaults.opus, GLM_LATEST);
 
       const text = await runCli(["claude", "status"], { home, env: NO_ENV_KEY });
       assert.equal(text.code, 0, text.stderr);
-      assert.match(text.stdout, /kimi-k2p7-code-fast only/);
+      assert.match(text.stdout, /default: glm-latest/);
       assert.doesNotMatch(text.stdout, /kimi-k2p6-turbo/);
     });
   });
@@ -196,7 +241,8 @@ describe("fireconnect <harness> status", () => {
     await withTempHome("status-fw", async (home) => {
       await writeClaudeSettings(home, FW_CLAUDE_KEY);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
-      assert.equal(json.defaults.main, K2P7_FAST);
+      assert.equal(json.defaults.main, GLM_LATEST);
+      assert.equal(json.defaults.opus, GLM_LATEST);
       assert.equal(json.defaults.sonnet, "glm-5p1");
       assert.equal(json.defaults.haiku, "minimax-m2p5");
     });
@@ -211,14 +257,14 @@ describe("fireconnect <harness> status", () => {
     });
   });
 
-  test("opencode with Fire Pass key shows kimi-k2p7-code-fast default", async () => {
+  test("opencode with Fire Pass key shows glm-latest default", async () => {
     await withTempHome("status-oc-fpk", async (home) => {
       await writeOpencodeConfig(home, FPK_KEY);
       const { json } = await runCliJson(
         ["opencode", "status", "--json"],
         { home, env: NO_ENV_KEY },
       );
-      assert.equal(json.defaults.main, K2P7_FAST);
+      assert.equal(json.defaults.main, GLM_LATEST);
     });
   });
 
@@ -229,7 +275,7 @@ describe("fireconnect <harness> status", () => {
         ["opencode", "status", "--json"],
         { home, env: { FIREWORKS_API_KEY: FPK_KEY } },
       );
-      assert.equal(json.defaults.main, K2P7_FAST);
+      assert.equal(json.defaults.main, GLM_LATEST);
     });
   });
 });
@@ -245,9 +291,9 @@ describe("fireconnect claude model reset", () => {
       assert.equal(result.code, 0, result.stderr);
 
       const { env } = await readClaudeSettings(home);
-      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, FIREPASS_ROUTER);
-      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FIREPASS_ROUTER);
-      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, FIREPASS_ROUTER);
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, FIREPASS_ROUTER_1M);
+      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FIREPASS_ROUTER_1M);
+      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, FIREPASS_ROUTER_1M);
       assert.equal(env.ANTHROPIC_API_KEY, FPK_KEY);
     });
   });

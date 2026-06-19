@@ -160,15 +160,15 @@ main() {
   ensure_durable_source
 
   read_api_key
-  node "${CLI}" claude on --api-key "${FIREWORKS_API_KEY}" --base-url "${BASE_URL}" >/dev/null
+  node "${CLI}" configure --api-key "${FIREWORKS_API_KEY}" --harnesses claude,opencode
   install_cli_launcher
 
   echo
-  echo "FireConnect is installed and Claude Code is routed through Fireworks."
+  echo "FireConnect is installed."
   echo
   node "${CLI}" help
   echo
-  echo "Restart Claude Code, then test with: hi"
+  echo "Enable a harness to get started: fireconnect claude on"
 }
 
 main "$@"

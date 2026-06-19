@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { USER_SETTINGS_RELATIVE_PATH } from "../lib/fireconnect-core.mjs";
 import { OPENCODE_CONFIG_RELATIVE_PATH } from "../lib/opencode-core.mjs";
+import { CODEX_CONFIG_RELATIVE_PATH } from "../lib/codex-core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
@@ -13,14 +14,32 @@ const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
 export const FPK_KEY = "fpk_test_firepass_key_000000000000";
 export const FW_CLAUDE_KEY = "fw_test_claude_key_00000000000000";
 export const FW_OPENCODE_KEY = "fw_test_opencode_key_00000000000";
+export const FW_CODEX_KEY = "fw_test_codex_key_00000000000000";
 export const SK_ANT_KEY = "sk-ant-test-non-fireworks-token";
 
+export const NO_ENV_KEY = { FIREWORKS_API_KEY: "" };
+
+export async function withoutEnvFireworksKey(fn) {
+  const prev = process.env.FIREWORKS_API_KEY;
+  delete process.env.FIREWORKS_API_KEY;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) {
+      delete process.env.FIREWORKS_API_KEY;
+    } else {
+      process.env.FIREWORKS_API_KEY = prev;
+    }
+  }
+}
+
+export const GLM_LATEST = "glm-latest";
+export const KIMI_FAST_LATEST = "kimi-fast-latest";
 export const K2P7_FAST = "kimi-k2p7-code-fast";
-export const FIREPASS_ROUTER = "accounts/fireworks/routers/kimi-k2p7-code-fast";
+export const FIREPASS_ROUTER = "accounts/fireworks/routers/glm-latest";
+export const FIREPASS_ROUTER_1M = `${FIREPASS_ROUTER}[1m]`;
 export const FIREWORKS_INFERENCE_URL = "https://api.fireworks.ai/inference";
 
-/** Clear FIREWORKS_API_KEY in the child process (overrides the parent shell). */
-export const NO_ENV_KEY = { FIREWORKS_API_KEY: "" };
 
 export function claudePaths(home) {
   return {
@@ -94,8 +113,30 @@ export async function writeOpencodeConfig(home, apiKey) {
     provider: {
       "fireworks-ai": { options: { apiKey } },
     },
-    model: `fireworks-ai/accounts/fireworks/routers/${K2P7_FAST}`,
+    model: `fireworks-ai/accounts/fireworks/routers/${GLM_LATEST}`,
   });
+  return configPath;
+}
+
+export async function writeCodexConfig(home, { apiKey = FW_CODEX_KEY, envRef = false } = {}) {
+  const configPath = path.join(home, CODEX_CONFIG_RELATIVE_PATH);
+  const authLines = envRef
+    ? ['env_key = "FIREWORKS_API_KEY"']
+    : [`experimental_bearer_token = "${apiKey}"`];
+  const toml = [
+    'model_provider = "fireworks-ai"',
+    `model = "accounts/fireworks/routers/${K2P7_FAST}"`,
+    "",
+    "[model_providers.fireworks-ai]",
+    'name = "Fireworks"',
+    'base_url = "https://api.fireworks.ai/inference/v1"',
+    'wire_api = "responses"',
+    ...authLines,
+    "requires_openai_auth = false",
+    "",
+  ].join("\n");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, toml);
   return configPath;
 }
 

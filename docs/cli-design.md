@@ -10,13 +10,13 @@ fireconnect <harness> <noun> <verb>
 
 **Harness first**, then resource, then action.
 
-### Per harness (`claude`, `opencode`)
+### Per harness (`claude`, `opencode`, `codex`, `pi`)
 
 ```bash
 fireconnect claude on
 fireconnect claude off
 fireconnect claude status
-fireconnect claude on --main kimi-k2p7-code-fast
+fireconnect claude on --main glm-latest
 fireconnect claude model list
 fireconnect claude model select --slot sonnet
 fireconnect claude model reset
@@ -26,6 +26,20 @@ fireconnect opencode off
 fireconnect opencode model list
 fireconnect opencode model select
 fireconnect opencode model reset
+
+fireconnect codex on
+fireconnect codex off
+fireconnect codex model list
+fireconnect codex model select
+fireconnect codex model reset
+
+fireconnect pi on
+fireconnect pi off
+fireconnect pi status
+fireconnect pi on --main glm-latest
+fireconnect pi model list
+fireconnect pi model select
+fireconnect pi model reset
 ```
 
 Bare harness runs `on` (e.g. `fireconnect claude`).
@@ -52,6 +66,7 @@ Fireworks key is resolved from that harness's settings.
 | `fireconnect set` | `fireconnect claude on --main <id>` |
 | `fireconnect reset` | `fireconnect claude model reset` |
 | `fireconnect on --harness opencode` | `fireconnect opencode on` |
+| `fireconnect on --harness pi` | `fireconnect pi on` |
 | `fireconnect model list` | `fireconnect claude model list` / `fireconnect opencode model list` |
 | `fireconnect model select --harness opencode` | `fireconnect opencode model select` |
 | `fireconnect uninstall` (Claude only) | Off all configured harnesses, then uninstall |
@@ -72,13 +87,17 @@ Shared config at `~/.fireconnect/config.json`:
   "apiKey": "{env:FIREWORKS_API_KEY}",
   "harnesses": {
     "claude": { "enabled": true },
-    "opencode": { "enabled": false }
+    "opencode": { "enabled": false },
+    "codex": { "enabled": false },
+    "pi": { "enabled": false }
   }
 }
 ```
 
-Per-harness data dirs (`~/.fireconnect/claude`, `~/.fireconnect/opencode`) hold
-backups and harness-local metadata; on/off state lives in `config.json`.
+Per-harness data dirs (`~/.fireconnect/claude`, `~/.fireconnect/opencode`,
+`~/.fireconnect/codex`, `~/.fireconnect/pi`) hold backups and harness-local metadata; on/off state lives
+in `config.json`. Pi also writes `~/.pi/agent/settings.json` and
+`~/.pi/agent/auth.json`.
 
 ## API key resolution
 

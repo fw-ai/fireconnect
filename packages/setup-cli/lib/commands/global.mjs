@@ -10,6 +10,12 @@ import {
   OPENCODE_DATA_RELATIVE_DIR,
 } from "../opencode-core.mjs";
 import {
+  CODEX_DATA_RELATIVE_DIR,
+} from "../codex-core.mjs";
+import {
+  PI_DATA_RELATIVE_DIR,
+} from "../pi-core.mjs";
+import {
   discoverHarnessesForUninstall,
   globalConfigPath,
 } from "../global-config.mjs";
@@ -70,13 +76,57 @@ Options:
   --home <path>             Override HOME for config resolution.
   --config-path <path>      Explicit opencode.json path.
   --data-dir <path>         Override backup/state directory.`,
+    codex: `Usage:
+  ${CLI_NAME} codex [command] [options]
+
+Manage Fireworks routing for OpenAI Codex CLI. Bare "${CLI_NAME} codex" runs on.
+
+Commands:
+  on              Route Codex through Fireworks (default).
+  off             Restore your previous config.
+  status          Show the provider, auth, and model.
+  model list      Browse callable Fireworks serverless models.
+  model select    Interactively pick the default model.
+  model reset     Reset the model to the default.
+  help            Show this help.
+
+Options:
+  --api-key <key>           Fireworks API key (validates setup; Codex reads FIREWORKS_API_KEY).
+  --main, --model <id>      Default model (on).
+  --search <query>          Filter models (model list, model select).
+  --json                    Machine-readable output (model list, status).
+  --home <path>             Override HOME for config resolution.
+  --config-path <path>      Explicit ~/.codex/config.toml path.
+  --data-dir <path>         Override backup/state directory.`,
+    pi: `Usage:
+  ${CLI_NAME} pi [command] [options]
+
+Manage Fireworks routing for Pi. Bare "${CLI_NAME} pi" runs on.
+
+Commands:
+  on              Route Pi through Fireworks (default).
+  off             Restore your previous settings and auth.
+  status          Show the provider, auth, and model.
+  model list      Browse callable Fireworks serverless models.
+  model select    Interactively pick the default model.
+  model reset     Reset the model to the default.
+  help            Show this help.
+
+Options:
+  --api-key <key>           Fireworks API key. Defaults to FIREWORKS_API_KEY.
+  --main, --model <id>      Default model (on).
+  --search <query>          Filter models (model list, model select).
+  --json                    Machine-readable output (model list, status).
+  --home <path>             Override HOME for settings resolution.
+  --settings-path <path>    Explicit Pi settings.json path.
+  --data-dir <path>         Override backup/state directory.`,
     configure: `Usage:
   ${CLI_NAME} configure [options]
 
 Register which harnesses you use and store API key preferences.
 
 Options:
-  --harnesses <ids>         Comma-separated harness ids (e.g. claude,opencode).
+  --harnesses <ids>         Comma-separated harness ids (e.g. claude,opencode,codex,pi).
   --api-key <key>           Fireworks API key.
   --api-key-mode <mode>     env or literal.
   --home <path>             Override HOME.`,
@@ -97,7 +147,7 @@ Only works when installed via the curl installer (requires git).`,
     return;
   }
 
-  console.log(`FireConnect — use Fireworks models in Claude Code and OpenCode.
+  console.log(`FireConnect — use Fireworks models in Claude Code, OpenCode, Codex, and Pi.
 
 Usage:
   ${CLI_NAME} <command> [options]
@@ -112,6 +162,8 @@ Global commands:
 Harnesses:
   claude      Claude Code (${CLI_NAME} claude on|off|...)
   opencode    OpenCode (${CLI_NAME} opencode on|off|...)
+  codex       OpenAI Codex CLI (${CLI_NAME} codex on|off|...)
+  pi          Pi (${CLI_NAME} pi on|off|...)
 
 Examples:
   # Global
@@ -129,6 +181,16 @@ Examples:
   ${CLI_NAME} opencode on
   ${CLI_NAME} opencode model list
   ${CLI_NAME} opencode model select
+
+  # Codex
+  ${CLI_NAME} codex on
+  ${CLI_NAME} codex model list
+  ${CLI_NAME} codex model select
+
+  # Pi
+  ${CLI_NAME} pi on
+  ${CLI_NAME} pi on --main glm-5p1
+  ${CLI_NAME} pi model select
 
 Run "${CLI_NAME} help <topic>" or "${CLI_NAME} <harness> help" for details.
 `);
@@ -166,6 +228,7 @@ export async function runUpgradeCommand() {
   try {
     beforeHash = execFileSync("git", ["-C", installDir, "rev-parse", "HEAD"], { stdio: "pipe", encoding: "utf8" }).trim();
   } catch { /* non-fatal */ }
+
 
   console.log("Checking for updates...");
   try {
@@ -246,6 +309,8 @@ export async function runUninstallCommand(ctx) {
   const pathsToRemove = [
     path.join(home, DEFAULT_DATA_DIR),
     path.join(home, OPENCODE_DATA_RELATIVE_DIR),
+    path.join(home, CODEX_DATA_RELATIVE_DIR),
+    path.join(home, PI_DATA_RELATIVE_DIR),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),
     path.join(home, ".local/bin/fireconnect"),
@@ -261,7 +326,7 @@ export async function runUninstallCommand(ctx) {
 
   const hasErrors = offErrors.length > 0 || removalFailures.length > 0;
   if (!hasErrors) {
-    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode) to fully apply.");
+    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi) to fully apply.");
   } else {
     if (removalFailures.length > 0) {
       console.error("FireConnect uninstall completed with file removal errors:");

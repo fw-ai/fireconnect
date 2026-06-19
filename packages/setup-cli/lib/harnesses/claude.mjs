@@ -14,7 +14,7 @@ import {
 import { isFireworksKey, resolveFireworksApiKey } from "../fireworks-models.mjs";
 import { runModelListCommand } from "../model-list.mjs";
 import { runClaudeModelSelect } from "../model-select.mjs";
-import { printClaudeModelRoutingHint } from "../claude-hints.mjs";
+import { printClaudeModelActivationHint } from "../claude-hints.mjs";
 import { defineHarness } from "../harness-types.mjs";
 import {
   claudePathsFor,
@@ -78,9 +78,9 @@ export default defineHarness({
     });
     await setHarnessEnabled(ctx.home, HARNESS.CLAUDE, true);
     console.log("Fireworks provider enabled.");
-    printClaudeModelRoutingHint();
+    printClaudeModelActivationHint();
     if (keyType === "firepass") {
-      console.log("Fire Pass key detected: using kimi-k2p7-code-fast for all aliases.");
+      console.log("Fire Pass key detected: using glm-latest for all aliases.");
     } else {
       console.log("Browse models: fireconnect claude model list");
       console.log("Pick a model:  fireconnect claude model select");
@@ -124,7 +124,7 @@ export default defineHarness({
     console.log(`Base URL: ${payload.baseUrl ?? "(unset)"}`);
     console.log(`Auth token present: ${payload.hasAuthToken ? "yes" : "no"}`);
     if (keyType === "firepass") {
-      console.log("Key type: Fire Pass (kimi-k2p7-code-fast only)");
+      console.log("Key type: Fire Pass (default: glm-latest)");
     }
     console.log("");
 
@@ -166,7 +166,7 @@ export default defineHarness({
     const keyType = detectApiKeyType(token);
     await applyModelMapping({ settingsPath, mapping: resolveModelMapping({}, keyType) });
     console.log("Reset Claude Code model aliases to defaults.");
-    printClaudeModelRoutingHint();
+    printClaudeModelActivationHint();
   },
 
   async modelSelect(ctx) {
