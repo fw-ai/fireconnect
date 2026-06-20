@@ -1,4 +1,5 @@
 import process from "node:process";
+import { existsSync } from "node:fs";
 import {
   defaultModelIds,
   detectApiKeyType,
@@ -26,8 +27,10 @@ import {
   setHarnessEnabled,
 } from "../global-config.mjs";
 import {
+  fetchServerlessCatalogRaw,
   isFireworksKey,
 } from "../fireworks-models.mjs";
+import { buildCodexCatalog } from "../codex-catalog.mjs";
 import { runModelListCommand } from "../model-list.mjs";
 import { runCodexModelSelect } from "../model-select.mjs";
 import { defineHarness } from "../harness-types.mjs";
@@ -78,6 +81,20 @@ async function codexApiKey(ctx) {
   return process.env.FIREWORKS_API_KEY?.trim() ?? "";
 }
 
+async function buildCatalogFor(apiKey) {
+  if (!apiKey) {
+    return null;
+  }
+  try {
+    const rawModels = await fetchServerlessCatalogRaw(apiKey);
+    return buildCodexCatalog(rawModels);
+  } catch (error) {
+    console.log(`Warning: could not generate model catalog: ${error.message}`);
+    console.log("Codex will use default model metadata. Re-run 'fireconnect codex on' to retry.");
+    return null;
+  }
+}
+
 export default defineHarness({
   id: HARNESS.CODEX,
   label: "Codex",
@@ -85,7 +102,7 @@ export default defineHarness({
 
   async on(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
-    const { configPath, dataDir } = codexPathsFor(ctx);
+    const { configPath, dataDir, catalogPath } = codexPathsFor(ctx);
 
     let apiKey = ctx.apiKey;
     let apiKeyFromFlag = ctx.apiKeyFromFlag;
@@ -124,6 +141,7 @@ export default defineHarness({
         "Use a standard Fireworks API key (fw_...).",
       );
     }
+    const catalog = await buildCatalogFor(effectiveApiKey);
     const result = await enableCodexFireworks({
       configPath,
       dataDir,
@@ -131,9 +149,14 @@ export default defineHarness({
       apiKeyFromFlag,
       modelId: ctx.main,
       keyType,
+      catalogPath,
+      catalog,
     });
     await setHarnessEnabled(ctx.home, HARNESS.CODEX, true);
     console.log(`Fireworks provider enabled for Codex (model: ${result.model}).`);
+    if (result.catalogWritten) {
+      console.log("Model catalog written to ~/.codex/fireworks-model-catalog.json.");
+    }
     if (reusedExistingKey) {
       console.log("Reused the API key already configured in ~/.codex/config.toml.");
     } else if (result.apiKeyMode === "env-reference") {
@@ -152,9 +175,9 @@ export default defineHarness({
 
   async off(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
-    const { configPath, dataDir } = codexPathsFor(ctx);
+    const { configPath, dataDir, catalogPath } = codexPathsFor(ctx);
     const wasEnabled = await isHarnessEnabled(ctx.home, HARNESS.CODEX);
-    const outcome = await disableCodexFireworks({ configPath, dataDir, wasEnabled });
+    const outcome = await disableCodexFireworks({ configPath, dataDir, catalogPath, wasEnabled });
     await setHarnessEnabled(ctx.home, HARNESS.CODEX, false);
     if (outcome === "restored") {
       console.log("Fireworks provider disabled for Codex; original config restored.");
@@ -168,7 +191,7 @@ export default defineHarness({
 
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
-    const { configPath } = codexPathsFor(ctx);
+    const { configPath, catalogPath } = codexPathsFor(ctx);
     const { doc } = await readCodexTomlIfExists(configPath);
     const model = codexCurrentModelId(doc);
     const storedAuth = codexStoredAuthRef(doc);
@@ -180,6 +203,11 @@ export default defineHarness({
       hasAuthToken: Boolean(storedAuth || process.env.FIREWORKS_API_KEY),
       defaults: { main: defaultModelIds().main },
       current: { main: model },
+      modelCatalog: {
+        set: Boolean(doc.root.model_catalog_json),
+        path: catalogPath,
+        exists: existsSync(catalogPath),
+      },
     };
 
     if (ctx.json) {
@@ -192,6 +220,7 @@ export default defineHarness({
     console.log(`Base URL: ${payload.baseUrl}`);
     console.log(`Model provider id: ${payload.modelProvider}`);
     console.log(`API key configured: ${payload.hasAuthToken ? "yes" : "no"}`);
+    console.log(`Model catalog: ${payload.modelCatalog.set ? "set" : "not set"} (${payload.modelCatalog.exists ? "file present" : "file missing"})`);
     console.log("");
     console.log("Default mapping:");
     console.log(`  main -> ${payload.defaults.main}`);
@@ -212,7 +241,7 @@ export default defineHarness({
 
   async modelReset(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
-    const { configPath } = codexPathsFor(ctx);
+    const { configPath, catalogPath } = codexPathsFor(ctx);
     const { doc } = await readCodexTomlIfExists(configPath);
     if (codexProviderStatus(doc) !== "fireworks") {
       throw new Error(
@@ -224,11 +253,14 @@ export default defineHarness({
     const catalogKey = await codexApiKey(ctx);
     const keyType = detectApiKeyType(catalogKey || effectiveCodexApiKey(storedAuth));
     const writeAuth = ctx.apiKeyFromFlag ? ctx.apiKey : storedAuth;
+    const catalog = await buildCatalogFor(catalogKey || effectiveCodexApiKey(storedAuth));
     const result = await updateCodexModel({
       configPath,
       modelId: defaultModelIds(keyType).main,
       apiKey: writeAuth || catalogKey,
       literalAuth: ctx.apiKeyFromFlag || codexLiteralAuthFromDoc(doc),
+      catalogPath,
+      catalog,
     });
     console.log(`Reset Codex model to default: ${result.model}`);
     printCodexRestartHint();
@@ -236,11 +268,12 @@ export default defineHarness({
 
   async modelSelect(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
-    const { configPath } = codexPathsFor(ctx);
+    const { configPath, catalogPath } = codexPathsFor(ctx);
     const { doc } = await readCodexTomlIfExists(configPath);
     const apiKey = await codexApiKey(ctx);
+    const catalog = await buildCatalogFor(apiKey);
     await runCodexModelSelect({
-      options: ctx,
+      options: { ...ctx, catalogPath, catalog },
       configPath,
       apiKey,
       literalAuth: codexLiteralAuthFromDoc(doc),

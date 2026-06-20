@@ -10,6 +10,7 @@ import {
   OPENCODE_DATA_RELATIVE_DIR,
 } from "../opencode-core.mjs";
 import {
+  CODEX_CATALOG_RELATIVE_PATH,
   CODEX_DATA_RELATIVE_DIR,
 } from "../codex-core.mjs";
 import {
@@ -310,6 +311,7 @@ export async function runUninstallCommand(ctx) {
     path.join(home, DEFAULT_DATA_DIR),
     path.join(home, OPENCODE_DATA_RELATIVE_DIR),
     path.join(home, CODEX_DATA_RELATIVE_DIR),
+    path.join(home, CODEX_CATALOG_RELATIVE_PATH),
     path.join(home, PI_DATA_RELATIVE_DIR),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),

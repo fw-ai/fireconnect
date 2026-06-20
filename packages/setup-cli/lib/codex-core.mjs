@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -18,9 +19,12 @@ import {
   patchFireconnectRoutingRaw,
   stripFireconnectRoutingRaw,
 } from "./codex-toml-patch.mjs";
+import { writeCodexCatalog } from "./codex-catalog.mjs";
 
 export const CODEX_CONFIG_RELATIVE_PATH = ".codex/config.toml";
 export const CODEX_DATA_RELATIVE_DIR = ".fireconnect/codex";
+export const CODEX_CATALOG_RELATIVE_PATH = ".codex/fireworks-model-catalog.json";
+export const CODEX_CATALOG_TOML_REF = `~/${CODEX_CATALOG_RELATIVE_PATH}`;
 export const CODEX_FIREWORKS_PROVIDER_ID = "fireworks-ai";
 export const CODEX_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1";
 export const CODEX_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
@@ -39,6 +43,10 @@ export function codexConfigPath(home, configPath = "") {
 
 export function codexDataDir(home, dataDir = "") {
   return dataDir || path.join(home, CODEX_DATA_RELATIVE_DIR);
+}
+
+export function codexCatalogPath(home, catalogPath = "") {
+  return catalogPath || path.join(home, CODEX_CATALOG_RELATIVE_PATH);
 }
 
 export function codexBackupPath(dataDir, configPath) {
@@ -219,6 +227,8 @@ export async function enableCodexFireworks({
   apiKeyFromFlag = false,
   modelId,
   keyType = "fireworks",
+  catalogPath = "",
+  catalog = null,
 }) {
   const effectiveApiKey = apiKey === CODEX_API_KEY_ENV_REF
     ? (process.env.FIREWORKS_API_KEY ?? "")
@@ -256,10 +266,21 @@ export async function enableCodexFireworks({
     await chmod(backupPath, 0o600);
   }
 
+  let effectiveCatalogPath = "";
+  if (catalog && catalogPath) {
+    try {
+      await writeCodexCatalog(catalogPath, catalog);
+      effectiveCatalogPath = CODEX_CATALOG_TOML_REF;
+    } catch {
+      effectiveCatalogPath = "";
+    }
+  }
+
   const nextRaw = patchFireconnectRoutingRaw(snapshot.raw, {
     providerId: CODEX_FIREWORKS_PROVIDER_ID,
     baseUrl: CODEX_FIREWORKS_BASE_URL,
     modelId: resolvedModel,
+    catalogPath: effectiveCatalogPath,
     apiKey: effectiveApiKey,
     literalAuth: apiKeyFromFlag,
   });
@@ -275,10 +296,11 @@ export async function enableCodexFireworks({
     model: resolvedModel,
     keyType: resolvedKeyType,
     apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference",
+    catalogWritten: Boolean(effectiveCatalogPath),
   };
 }
 
-export async function disableCodexFireworks({ configPath, dataDir, wasEnabled = false }) {
+export async function disableCodexFireworks({ configPath, dataDir, catalogPath = "", wasEnabled = false }) {
   const backupPath = codexBackupPath(dataDir, configPath);
   const backup = await readJsonIfExists(backupPath);
   const snapshot = await readRawIfExists(configPath);
@@ -289,6 +311,16 @@ export async function disableCodexFireworks({ configPath, dataDir, wasEnabled = 
 
   if (!wasEnabled && !hasBackup && codexProviderStatus(doc) !== "fireworks") {
     return "noop";
+  }
+
+  if (catalogPath) {
+    try {
+      await unlink(catalogPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
   }
 
   assertBackupMatchesConfig(backup, configPath, backupPath);
@@ -324,6 +356,8 @@ export async function updateCodexModel({
   modelId,
   apiKey = "",
   literalAuth = false,
+  catalogPath = "",
+  catalog = null,
 }) {
   const snapshot = await readRawIfExists(configPath);
   if (!snapshot.existed) {
@@ -345,6 +379,9 @@ export async function updateCodexModel({
   // If we just wrote a literal bearer token, restrict the file to owner-only.
   if (authKey && literalAuth) {
     await chmod(configPath, 0o600);
+  }
+  if (catalog && catalogPath && !existsSync(catalogPath)) {
+    await writeCodexCatalog(catalogPath, catalog);
   }
   return { model: resolvedModel };
 }

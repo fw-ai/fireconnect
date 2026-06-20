@@ -10,6 +10,7 @@ const LEGACY_FIRECONNECT_PROFILE_LINE = /^profile\s*=\s*["']fireconnect["']\s*$/
 const ROOT_PROFILE_LINE = /^profile\s*=.+$/;
 const ROOT_MODEL_PROVIDER_LINE = /^model_provider\s*=.+$/;
 const ROOT_MODEL_LINE = /^model\s*=.+$/;
+const ROOT_MODEL_CATALOG_LINE = /^model_catalog_json\s*=.+$/;
 const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
 
@@ -59,6 +60,7 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
     if (atRoot && stripRootRouting) {
       if (ROOT_PROFILE_LINE.test(trimmed)
         || ROOT_MODEL_PROVIDER_LINE.test(trimmed)
+        || ROOT_MODEL_CATALOG_LINE.test(trimmed)
         || ROOT_MODEL_LINE.test(trimmed)) {
         continue;
       }
@@ -85,18 +87,20 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
 
 /**
  * @param {string} raw
- * @param {{ providerId: string, baseUrl: string, modelId: string, apiKey?: string, literalAuth?: boolean }} routing
+ * @param {{ providerId: string, baseUrl: string, modelId: string, catalogPath?: string, apiKey?: string, literalAuth?: boolean }} routing
  */
 export function patchFireconnectRoutingRaw(raw, {
   providerId,
   baseUrl,
   modelId,
+  catalogPath = "",
   apiKey = "",
   literalAuth = false,
 }) {
   const base = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   const routingBlock = [
     `model_provider = "${providerId}"`,
+    ...(catalogPath ? [`model_catalog_json = "${catalogPath}"`] : []),
     `model = "${modelId}"`,
   ].join("\n");
   const tablesBlock = [

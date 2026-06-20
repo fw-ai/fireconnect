@@ -296,6 +296,8 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
       modelId: picked.shortId,
       apiKey: writeAuth,
       literalAuth: options.apiKeyFromFlag || literalAuth,
+      catalogPath: options.catalogPath ?? "",
+      catalog: options.catalog ?? null,
     });
 
     console.log(`Updated Codex model: ${result.model}`);

@@ -12,7 +12,7 @@ export const FIREPASS_ROUTER_IDS = new Set([
   "accounts/fireworks/routers/kimi-k2p7-code-fast",
 ]);
 
-const BUILTIN_ROUTERS = [
+export const BUILTIN_ROUTERS = [
   {
     id: "accounts/fireworks/routers/glm-latest",
     shortId: "glm-latest",
@@ -194,6 +194,14 @@ export async function fetchServerlessCatalog(apiKey) {
     catalog: dedupeCatalog([...modelEntries, ...BUILTIN_ROUTERS]),
     routersUnavailable: false,
   };
+}
+
+export async function fetchServerlessCatalogRaw(apiKey) {
+  return fetchAllPages(
+    `/v1/accounts/${PLATFORM_ACCOUNT_ID}/models?filter=${encodeURIComponent("supports_serverless=true")}&pageSize=200`,
+    apiKey,
+    "models",
+  );
 }
 
 export function filterCatalogForKeyType(catalog, keyType) {

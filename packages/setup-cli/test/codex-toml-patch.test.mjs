@@ -131,4 +131,47 @@ describe("codex-toml-patch", () => {
     assert.match(withAuth, /model = "accounts\/fireworks\/models\/glm-5p2"/);
     assert.match(withAuth, /experimental_bearer_token = "fw_test_key_12345"/);
   });
+
+  it("patchFireconnectRoutingRaw includes model_catalog_json between model_provider and model when catalogPath is set", () => {
+    const patched = patchFireconnectRoutingRaw("", {
+      ...ROUTING,
+      catalogPath: "~/.codex/fireworks-model-catalog.json",
+    });
+    const lines = patched.split("\n");
+    const providerIndex = lines.findIndex((line) => line.startsWith('model_provider = '));
+    const catalogIndex = lines.findIndex((line) => line.startsWith('model_catalog_json = '));
+    const modelIndex = lines.findIndex((line) => line.startsWith('model = '));
+    assert.ok(providerIndex >= 0);
+    assert.ok(catalogIndex > providerIndex, "catalog line should come after model_provider");
+    assert.ok(modelIndex > catalogIndex, "model line should come after model_catalog_json");
+    assert.match(patched, /model_catalog_json = "~\/\.codex\/fireworks-model-catalog\.json"/);
+  });
+
+  it("patchFireconnectRoutingRaw without catalogPath omits model_catalog_json", () => {
+    const patched = patchFireconnectRoutingRaw("", ROUTING);
+    assert.doesNotMatch(patched, /model_catalog_json/);
+    assert.match(patched, /model_provider = "fireworks-ai"/);
+    assert.match(patched, /model = "accounts\/fireworks\/routers\/glm-5p1"/);
+  });
+
+  it("stripFireconnectRoutingRaw with stripRootRouting removes model_catalog_json lines", () => {
+    const input = [
+      'model_provider = "fireworks-ai"',
+      'model_catalog_json = "~/.codex/fireworks-model-catalog.json"',
+      'model = "accounts/fireworks/routers/glm-latest"',
+      "",
+      "[model_providers.fireworks-ai]",
+      'name = "Fireworks"',
+      'base_url = "https://api.fireworks.ai/inference/v1"',
+      'env_key = "FIREWORKS_API_KEY"',
+      "requires_openai_auth = false",
+      "",
+    ].join("\n");
+
+    const stripped = stripFireconnectRoutingRaw(input, { stripRootRouting: true });
+    assert.doesNotMatch(stripped, /model_catalog_json/);
+    assert.doesNotMatch(stripped, /model_provider = "fireworks-ai"/);
+    assert.doesNotMatch(stripped, /^model = /m);
+    assert.doesNotMatch(stripped, /\[model_providers\.fireworks-ai\]/);
+  });
 });

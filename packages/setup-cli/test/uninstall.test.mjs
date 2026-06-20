@@ -89,6 +89,7 @@ describe("uninstall", () => {
     assert.equal(await pathExists(path.join(home, ".fireconnect/claude")), false);
     assert.equal(await pathExists(path.join(home, ".fireconnect/opencode")), false);
     assert.equal(await pathExists(path.join(home, ".fireconnect/codex")), false);
+    assert.equal(await pathExists(path.join(home, ".codex/fireworks-model-catalog.json")), false);
   });
 
   it("does not mutate settings when harness was configured but not enabled", async () => {

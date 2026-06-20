@@ -4,6 +4,7 @@ import {
 } from "./fireconnect-core.mjs";
 import {
   codexConfigPath,
+  codexCatalogPath,
   codexDataDir,
 } from "./codex-core.mjs";
 import {
@@ -45,6 +46,7 @@ export function codexPathsFor(ctx) {
   return {
     configPath: codexConfigPath(ctx.home, ctx.configPath),
     dataDir: codexDataDir(ctx.home, ctx.dataDir),
+    catalogPath: codexCatalogPath(ctx.home, ctx.catalogPath),
   };
 }
 
