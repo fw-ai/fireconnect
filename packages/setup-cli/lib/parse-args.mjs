@@ -31,6 +31,7 @@ export function createBaseContext() {
     json: false,
     harnesses: "",
     apiKeyMode: "",
+    attribution: false,
   };
 }
 
@@ -110,6 +111,8 @@ function parseFlagsAndPositionals(argv) {
     } else if (arg === "--api-key-mode") {
       ctx.apiKeyMode = requireValue(arg, next);
       i += 1;
+    } else if (arg === "--attribution") {
+      ctx.attribution = true;
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown argument: ${arg}`);
     } else {

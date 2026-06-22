@@ -44,6 +44,7 @@ export const FIREWORKS_ENV_KEYS = [
 export const FIREWORKS_TOP_LEVEL_KEYS = [
   "model",
   "effortLevel",
+  "attribution",
 ];
 
 export const DEFAULT_FIREWORKS_PRESET = {
@@ -69,6 +70,17 @@ export const DEFAULT_FIREPASS_PRESET = {
   CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/routers/kimi-k2p7-code-fast",
   ANTHROPIC_CUSTOM_MODEL_OPTION: "accounts/fireworks/routers/kimi-k2p7-code-fast",
   ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Kimi K2.7 Code Fast via Fireworks",
+};
+
+export const DEFAULT_FIREWORKS_COMMIT_ATTRIBUTION =
+  "Co-Authored-By: Claude Code via Fireworks AI <noreply@fireworks.ai>";
+
+export const DEFAULT_FIREWORKS_PR_ATTRIBUTION =
+  "🤖 Generated with Claude Code via Fireworks AI";
+
+export const DEFAULT_FIREWORKS_ATTRIBUTION = {
+  commit: DEFAULT_FIREWORKS_COMMIT_ATTRIBUTION,
+  pr: DEFAULT_FIREWORKS_PR_ATTRIBUTION,
 };
 
 export async function readJsonIfExists(filePath) {
@@ -410,6 +422,7 @@ export async function enableFireworksProvider({
   mapping = resolveModelMapping(),
   preset = DEFAULT_FIREWORKS_PRESET,
   keyType = "fireworks",
+  attribution = false,
 }) {
   const backupPath = providerBackupPath(dataDir);
   const statePath = providerStatePath(dataDir);
@@ -422,6 +435,20 @@ export async function enableFireworksProvider({
     if (!existingBackup.values) {
       await writeJson(backupPath, backupFromSettings(settings));
     } else if (!existingBackup.topLevel) {
+      await writeJson(backupPath, {
+        ...existingBackup,
+        topLevel: backupTopLevelFromSettings(settings),
+      });
+    }
+  } else if (attribution) {
+    const existingBackup = await readJsonIfExists(backupPath);
+    const hasAttributionBackup = existingBackup.values
+      && existingBackup.topLevel
+      && (
+        Object.hasOwn(existingBackup.topLevel.values ?? {}, "attribution")
+        || (existingBackup.topLevel.missing ?? []).includes("attribution")
+      );
+    if (!hasAttributionBackup) {
       await writeJson(backupPath, {
         ...existingBackup,
         topLevel: backupTopLevelFromSettings(settings),
@@ -443,6 +470,10 @@ export async function enableFireworksProvider({
 
   if (providerStatusFromEnv(next.env) === "fireworks") {
     next.model = claudeCodeModelId(mapping.main);
+  }
+
+  if (attribution) {
+    next.attribution = { ...DEFAULT_FIREWORKS_ATTRIBUTION };
   }
 
   await writeJson(settingsPath, next);

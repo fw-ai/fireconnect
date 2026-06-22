@@ -69,6 +69,18 @@ describe("fireconnect claude on", () => {
       assert.equal(env.ANTHROPIC_API_KEY, FW_CLAUDE_KEY);
     });
   });
+
+  test("--attribution writes Fireworks-branded attribution", async () => {
+    await withTempHome("on-attribution", async (home) => {
+      const result = await runCli(["claude", "on", "--attribution", "--api-key", FW_CLAUDE_KEY], { home });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /attribution updated/);
+
+      const settings = await readClaudeSettings(home);
+      assert.equal(settings.attribution.commit, "Co-Authored-By: Claude Code via Fireworks AI <noreply@fireworks.ai>");
+      assert.equal(settings.attribution.pr, "🤖 Generated with Claude Code via Fireworks AI");
+    });
+  });
 });
 
 describe("fireconnect opencode on", () => {

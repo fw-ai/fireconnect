@@ -47,7 +47,8 @@ Options:
   --json                    Machine-readable output (model list, status).
   --home <path>             Override HOME for settings resolution.
   --settings-path <path>    Explicit Claude Code settings file.
-  --data-dir <path>         Override backup/state directory.`,
+  --data-dir <path>         Override backup/state directory.
+  --attribution             Use Fireworks-branded Claude Code attribution (commit + PR).`,
     opencode: `Usage:
   ${CLI_NAME} opencode [command] [options]
 

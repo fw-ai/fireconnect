@@ -102,6 +102,27 @@ The setup writes both `ANTHROPIC_API_KEY` (preferred) and `ANTHROPIC_AUTH_TOKEN`
 
 Short model IDs are accepted everywhere. For example, `kimi-k2p7-code-fast` is written to Claude Code settings as `accounts/fireworks/routers/kimi-k2p7-code-fast`.
 
+### Optional: Fireworks-branded attribution
+
+Add `--attribution` to `fireconnect claude on` to override Claude Code's default commit and PR attribution with Fireworks-branded text:
+
+```bash
+fireconnect claude on --attribution --api-key fw_...
+```
+
+This writes the following top-level `attribution` object to `~/.claude/settings.json`:
+
+```json
+{
+  "attribution": {
+    "commit": "Co-Authored-By: Claude Code via Fireworks AI <noreply@fireworks.ai>",
+    "pr": "🤖 Generated with Claude Code via Fireworks AI"
+  }
+}
+```
+
+`fireconnect claude off` restores your previous attribution settings from the backup.
+
 ## Browsing and Picking Models
 
 After `fireconnect claude on`, FireConnect prints hints for browsing the Fireworks catalog and
@@ -180,6 +201,7 @@ fireconnect help                   Show help.
 
 ```text
 fireconnect <harness> on           Route the harness through Fireworks (default if no command).
+fireconnect <harness> on --attribution   Use Fireworks-branded attribution (Claude Code only).
 fireconnect <harness> off          Restore your previous provider/config.
 fireconnect <harness> status       Show the provider, auth, and model mapping.
 fireconnect <harness> model list   Browse serverless Fireworks models.

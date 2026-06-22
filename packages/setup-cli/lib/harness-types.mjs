@@ -19,6 +19,7 @@ import { HARNESSES } from "./harness.mjs";
  * @property {string} slot
  * @property {string} search
  * @property {boolean} json
+ * @property {boolean} attribution
  */
 
 /**

@@ -75,9 +75,13 @@ export default defineHarness({
       baseUrl: ctx.baseUrl || FIREWORKS_BASE_URL,
       mapping: resolveModelMapping(modelOverridesFrom(ctx), keyType),
       keyType,
+      attribution: ctx.attribution,
     });
     await setHarnessEnabled(ctx.home, HARNESS.CLAUDE, true);
     console.log("Fireworks provider enabled.");
+    if (ctx.attribution) {
+      console.log("Claude Code attribution updated to Fireworks branding.");
+    }
     printClaudeModelRoutingHint();
     if (keyType === "firepass") {
       console.log("Fire Pass key detected: using kimi-k2p7-code-fast for all aliases.");

@@ -110,4 +110,98 @@ describe("claude harness integration", () => {
     assert.equal(afterSecondOff.env.ANTHROPIC_API_KEY, "sk-ant-original");
     assert.equal(afterSecondOff.env.ANTHROPIC_BASE_URL, "https://api.anthropic.com");
   });
+
+  it("on --attribution writes Fireworks attribution and off restores it", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-attribution-"));
+    const settingsDir = path.join(home, ".claude");
+    await mkdir(settingsDir, { recursive: true });
+    const settingsPath = userSettingsPath(home);
+    const originalAttribution = {
+      commit: "Co-Authored-By: Original <noreply@example.com>",
+      pr: "Original PR line",
+    };
+    await writeFile(
+      settingsPath,
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+          ANTHROPIC_API_KEY: "sk-ant-original",
+        },
+        attribution: originalAttribution,
+      }),
+    );
+
+    const onResult = await runFireconnect(
+      ["claude", "on", "--attribution", "--api-key", "fw_test_key_12345"],
+      { HOME: home },
+    );
+    assert.equal(onResult.code, 0);
+    assert.match(onResult.stdout, /attribution updated/);
+
+    const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.equal(enabled.attribution.commit, "Co-Authored-By: Claude Code via Fireworks AI <noreply@fireworks.ai>");
+    assert.equal(enabled.attribution.pr, "🤖 Generated with Claude Code via Fireworks AI");
+
+    const offResult = await runFireconnect(["claude", "off"], { HOME: home });
+    assert.equal(offResult.code, 0);
+
+    const restored = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.deepEqual(restored.attribution, originalAttribution);
+  });
+
+  it("on without --attribution does not modify existing attribution", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-no-attribution-"));
+    const settingsDir = path.join(home, ".claude");
+    await mkdir(settingsDir, { recursive: true });
+    const settingsPath = userSettingsPath(home);
+    const originalAttribution = {
+      commit: "Co-Authored-By: Original <noreply@example.com>",
+      pr: "Original PR line",
+    };
+    await writeFile(
+      settingsPath,
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+          ANTHROPIC_API_KEY: "sk-ant-original",
+        },
+        attribution: originalAttribution,
+      }),
+    );
+
+    const onResult = await runFireconnect(
+      ["claude", "on", "--api-key", "fw_test_key_12345"],
+      { HOME: home },
+    );
+    assert.equal(onResult.code, 0);
+    assert.doesNotMatch(onResult.stdout, /attribution updated/);
+
+    const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.deepEqual(enabled.attribution, originalAttribution);
+  });
+
+  it("attribution survives model reset", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-attribution-reset-"));
+    const settingsDir = path.join(home, ".claude");
+    await mkdir(settingsDir, { recursive: true });
+    const settingsPath = userSettingsPath(home);
+    await writeFile(
+      settingsPath,
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+          ANTHROPIC_API_KEY: "sk-ant-original",
+        },
+      }),
+    );
+
+    await runFireconnect(
+      ["claude", "on", "--attribution", "--api-key", "fw_test_key_12345"],
+      { HOME: home },
+    );
+    await runFireconnect(["claude", "model", "reset"], { HOME: home });
+
+    const afterReset = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.equal(afterReset.attribution.commit, "Co-Authored-By: Claude Code via Fireworks AI <noreply@fireworks.ai>");
+  });
 });
