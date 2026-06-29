@@ -4,6 +4,7 @@
  */
 
 const CODEX_PROVIDER_TABLE_HEADER = "[model_providers.fireworks-ai]";
+const CODEX_AZURE_PROVIDER_TABLE_HEADER = "[model_providers.fireworks-azure]";
 const LEGACY_PROFILE_TABLE_HEADER = "[profiles.fireconnect]";
 const LEGACY_FIRECONNECT_PROFILE_LINE = /^profile\s*=\s*["']fireconnect["']\s*$/;
 
@@ -14,7 +15,7 @@ const ROOT_MODEL_CATALOG_LINE = /^model_catalog_json\s*=.+$/;
 const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
 
-function providerAuthLines({ literal, apiKey }) {
+function providerAuthLines({ literal, apiKey, envKey = "FIREWORKS_API_KEY" }) {
   if (literal && apiKey) {
     return [
       `experimental_bearer_token = "${apiKey}"`,
@@ -22,7 +23,7 @@ function providerAuthLines({ literal, apiKey }) {
     ];
   }
   return [
-    'env_key = "FIREWORKS_API_KEY"',
+    `env_key = "${envKey}"`,
     "requires_openai_auth = false",
   ];
 }
@@ -32,7 +33,9 @@ function isAnyTableHeader(trimmed) {
 }
 
 function isManagedTableHeader(trimmed) {
-  return trimmed === CODEX_PROVIDER_TABLE_HEADER || trimmed === LEGACY_PROFILE_TABLE_HEADER;
+  return trimmed === CODEX_PROVIDER_TABLE_HEADER
+    || trimmed === CODEX_AZURE_PROVIDER_TABLE_HEADER
+    || trimmed === LEGACY_PROFILE_TABLE_HEADER;
 }
 
 function ensureTrailingNewline(text) {
@@ -135,7 +138,17 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
 
 /**
  * @param {string} raw
- * @param {{ providerId: string, baseUrl: string, modelId: string, catalogPath?: string, apiKey?: string, literalAuth?: boolean }} routing
+ * @param {{
+ *   providerId: string,
+ *   baseUrl: string,
+ *   modelId: string,
+ *   catalogPath?: string,
+ *   apiKey?: string,
+ *   literalAuth?: boolean,
+ *   wireApi?: string,
+ *   providerName?: string,
+ *   authEnvKey?: string,
+ * }} routing
  */
 export function patchFireconnectRoutingRaw(raw, {
   providerId,
@@ -144,6 +157,9 @@ export function patchFireconnectRoutingRaw(raw, {
   catalogPath = "",
   apiKey = "",
   literalAuth = false,
+  wireApi = "responses",
+  providerName = "Fireworks",
+  authEnvKey = "FIREWORKS_API_KEY",
 }) {
   const base = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   const routingBlock = [
@@ -152,11 +168,11 @@ export function patchFireconnectRoutingRaw(raw, {
     `model = "${modelId}"`,
   ].join("\n");
   const tablesBlock = [
-    CODEX_PROVIDER_TABLE_HEADER,
-    'name = "Fireworks"',
+    `[model_providers.${providerId}]`,
+    `name = "${providerName}"`,
     `base_url = "${baseUrl}"`,
-    'wire_api = "responses"',
-    ...providerAuthLines({ literal: literalAuth, apiKey }),
+    `wire_api = "${wireApi}"`,
+    ...providerAuthLines({ literal: literalAuth, apiKey, envKey: authEnvKey }),
   ].join("\n");
 
   if (!base.trim()) {

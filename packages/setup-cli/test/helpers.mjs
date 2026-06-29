@@ -34,10 +34,14 @@ export async function withoutEnvFireworksKey(fn) {
 }
 
 export const GLM_LATEST = "glm-latest";
+export const GLM_FAST_LATEST = "glm-fast-latest";
 export const KIMI_FAST_LATEST = "kimi-fast-latest";
 export const K2P7_FAST = "kimi-k2p7-code-fast";
 export const FIREPASS_ROUTER = "accounts/fireworks/routers/glm-latest";
 export const FIREPASS_ROUTER_1M = `${FIREPASS_ROUTER}[1m]`;
+// Default model for Fire Pass keys (and the opus slot for fw_ keys).
+export const FIREPASS_DEFAULT_ROUTER = FIREPASS_ROUTER;
+export const FIREPASS_DEFAULT_ROUTER_1M = `${FIREPASS_DEFAULT_ROUTER}[1m]`;
 export const FIREWORKS_INFERENCE_URL = "https://api.fireworks.ai/inference";
 
 

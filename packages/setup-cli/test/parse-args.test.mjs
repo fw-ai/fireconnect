@@ -16,6 +16,43 @@ describe("parseCli", () => {
     assert.equal(parsed.command, "upgrade");
   });
 
+  it("rejects version subcommand", () => {
+    assert.throws(() => parseCli(["version"]), /Unknown command: version/);
+  });
+
+  it("parses --version flag", () => {
+    const parsed = parseCli(["--version"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "version");
+  });
+
+  it("parses -V flag", () => {
+    const parsed = parseCli(["-V"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "version");
+  });
+
+  it("parses --version with trailing --json", () => {
+    const parsed = parseCli(["--version", "--json"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "version");
+    assert.equal(parsed.ctx.json, true);
+  });
+
+  it("parses -V with trailing --json", () => {
+    const parsed = parseCli(["-V", "--json"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "version");
+    assert.equal(parsed.ctx.json, true);
+  });
+
+  it("parses --json before --version", () => {
+    const parsed = parseCli(["--json", "--version"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "version");
+    assert.equal(parsed.ctx.json, true);
+  });
+
   it("parses harness model list", () => {
     const parsed = parseCli(["claude", "model", "list", "--search", "glm"]);
     assert.equal(parsed.kind, "harness");
@@ -37,6 +74,16 @@ describe("parseCli", () => {
     assert.equal(parsed.route.harnessId, "opencode");
     assert.equal(parsed.route.verb, "status");
     assert.equal(parsed.ctx.json, true);
+  });
+
+  it("parses --router and router key flags", () => {
+    const parsed = parseCli([
+      "claude", "on", "--router",
+      "--anthropic-api-key", "sk-ant-test",
+    ]);
+    assert.equal(parsed.route.harnessId, "claude");
+    assert.equal(parsed.ctx.router, true);
+    assert.equal(parsed.ctx.anthropicKey, "sk-ant-test");
   });
 
   it("parses harness model select", () => {

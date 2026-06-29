@@ -5,7 +5,11 @@ import claude from "../lib/harnesses/claude.mjs";
 import opencode from "../lib/harnesses/opencode.mjs";
 import codex from "../lib/harnesses/codex.mjs";
 import pi from "../lib/harnesses/pi.mjs";
-import { resolveFireworksApiKey } from "../lib/fireworks-models.mjs";
+import { resolveFireworksApiKey, resolveHarnessOnApiKey } from "../lib/fireworks-models.mjs";
+import {
+  FIREWORKS_API_KEY_ENV_REF,
+  writeGlobalConfig,
+} from "../lib/global-config.mjs";
 import {
   FW_CLAUDE_KEY,
   FW_CODEX_KEY,
@@ -214,6 +218,75 @@ describe("resolveFireworksApiKey with harness resolveKey", () => {
         });
         assert.equal(resolved, FW_OPENCODE_KEY);
       });
+    });
+  });
+});
+
+describe("resolveHarnessOnApiKey", () => {
+  test("uses global literal before env", async () => {
+    await withTempHome("on-global-literal", async (home) => {
+      await writeGlobalConfig(home, {
+        apiKey: "fw_global_key_12345",
+        harnesses: { pi: { enabled: false } },
+      });
+
+      await withoutEnvFireworksKey(async () => {
+        const resolved = await resolveHarnessOnApiKey({
+          home,
+          harnessEnvRef: PI_API_KEY_ENV_REF,
+        });
+        assert.equal(resolved.apiKey, "fw_global_key_12345");
+        assert.equal(resolved.apiKeyFromFlag, true);
+        assert.equal(resolved.source, "global-literal");
+      });
+    });
+  });
+
+  test("uses legacy global env ref when FIREWORKS_API_KEY is set", async () => {
+    await withTempHome("on-global-envref", async (home) => {
+      await writeGlobalConfig(home, {
+        apiKey: FIREWORKS_API_KEY_ENV_REF,
+        harnesses: { pi: { enabled: false } },
+      });
+
+      const prev = process.env.FIREWORKS_API_KEY;
+      process.env.FIREWORKS_API_KEY = "fw_test_key_12345";
+      try {
+        const resolved = await resolveHarnessOnApiKey({
+          home,
+          harnessEnvRef: PI_API_KEY_ENV_REF,
+        });
+        assert.equal(resolved.apiKey, PI_API_KEY_ENV_REF);
+        assert.equal(resolved.apiKeyFromFlag, false);
+        assert.equal(resolved.source, "global-env-ref");
+      } finally {
+        if (prev === undefined) {
+          delete process.env.FIREWORKS_API_KEY;
+        } else {
+          process.env.FIREWORKS_API_KEY = prev;
+        }
+      }
+    });
+  });
+
+  test("falls back to env when global config has no key", async () => {
+    await withTempHome("on-env-only", async (home) => {
+      const prev = process.env.FIREWORKS_API_KEY;
+      process.env.FIREWORKS_API_KEY = "fw_test_key_12345";
+      try {
+        const resolved = await resolveHarnessOnApiKey({
+          home,
+          harnessEnvRef: OPENCODE_API_KEY_ENV_REF,
+        });
+        assert.equal(resolved.apiKey, OPENCODE_API_KEY_ENV_REF);
+        assert.equal(resolved.source, "env");
+      } finally {
+        if (prev === undefined) {
+          delete process.env.FIREWORKS_API_KEY;
+        } else {
+          process.env.FIREWORKS_API_KEY = prev;
+        }
+      }
     });
   });
 });

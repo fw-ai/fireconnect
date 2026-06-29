@@ -140,7 +140,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     const routerSlugs = catalog.models
       .map((entry) => entry.slug)
       .filter((slug) => slug.startsWith("accounts/fireworks/routers/"));
-    assert.equal(routerSlugs.length, 5);
+    assert.equal(routerSlugs.length, 7);
     for (const routerId of Object.keys(ROUTER_BASE_MODEL)) {
       assert.ok(routerSlugs.includes(routerId), `missing router ${routerId}`);
     }
@@ -209,7 +209,7 @@ describe("codex-catalog metadata tables", () => {
   });
 
   it("ROUTER_BASE_MODEL maps each router to a base model", () => {
-    assert.equal(Object.keys(ROUTER_BASE_MODEL).length, 5);
+    assert.equal(Object.keys(ROUTER_BASE_MODEL).length, 7);
     assert.equal(ROUTER_BASE_MODEL["accounts/fireworks/routers/glm-latest"], "accounts/fireworks/models/glm-5p2");
   });
 

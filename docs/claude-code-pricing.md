@@ -110,5 +110,4 @@ models, FireConnect falls back to a link to the [pricing docs](https://docs.fire
 ## Related
 
 - [FireConnect README](../README.md) — setup and model commands
-- [CLI design](cli-design.md) — harness-first command reference
 - [Fireworks serverless pricing](https://docs.fireworks.ai/serverless/pricing)

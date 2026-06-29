@@ -6,18 +6,30 @@ import {
 } from "../fireconnect-core.mjs";
 import {
   PI_API_KEY_ENV_REF,
+  PI_AZURE_PROVIDER,
   disablePiFireworks,
+  enablePiAzure,
   enablePiFireworks,
   piAuthKeyMode,
+  piAzureCurrentModelId,
   piProviderStatus,
   resolvePiApiKeyValue,
+  resolvePiAzureApiKeyValue,
 } from "../pi-core.mjs";
 import {
-  FIREWORKS_API_KEY_ENV_REF,
-  readGlobalConfig,
+  readProviderSettings,
   setHarnessEnabled,
 } from "../global-config.mjs";
-import { isFireworksKey, resolveFireworksApiKey } from "../fireworks-models.mjs";
+import {
+  isFireworksKey,
+  resolveFireworksApiKey,
+  resolveHarnessOnApiKey,
+} from "../fireworks-models.mjs";
+import {
+  AZURE_PROVIDER_LABEL,
+  DEFAULT_AZURE_MODEL,
+  resolveAzureOnApiKey,
+} from "../azure-core.mjs";
 import { runModelListCommand } from "../model-list.mjs";
 import { runPiModelSelect } from "../model-select.mjs";
 import { printPiRestartHint } from "../pi-hints.mjs";
@@ -30,6 +42,58 @@ import { HARNESS } from "../harness.mjs";
 
 function piStoredApiKeyRef(auth) {
   return auth.fireworks?.key ?? "";
+}
+
+function piStoredAzureApiKeyRef(modelsConfig) {
+  return modelsConfig.providers?.[PI_AZURE_PROVIDER]?.apiKey ?? "";
+}
+
+function piAzureBaseUrl(modelsConfig) {
+  return modelsConfig.providers?.[PI_AZURE_PROVIDER]?.baseUrl ?? null;
+}
+
+/**
+ * Route Pi through Fireworks on Microsoft Foundry. The endpoint and key come
+ * from `fireconnect configure` (global config) unless overridden by
+ * `--base-url` / `--api-key`.
+ * @param {import("../harness-types.mjs").HarnessContext} ctx
+ * @param {{ baseUrl: string, apiKey: string }} configured
+ */
+async function piAzureOn(ctx, configured) {
+  const paths = piPathsFor(ctx);
+  const modelsConfig = await readJsonIfExists(paths.modelsPath);
+
+  const { apiKey, apiKeyFromFlag, reusedExistingKey } = await resolveAzureOnApiKey({
+    apiKey: ctx.apiKey,
+    apiKeyFromFlag: ctx.apiKeyFromFlag,
+    configuredApiKey: configured.apiKey,
+    getExistingKey: async () => piStoredAzureApiKeyRef(modelsConfig),
+  });
+
+  // Endpoint precedence: explicit --base-url > configured global endpoint > the
+  // endpoint already stored from a previous `on --azure`.
+  const storedBaseUrl = piAzureBaseUrl(modelsConfig) ?? "";
+  const baseUrl = ctx.baseUrlFromFlag ? ctx.baseUrl : (configured.baseUrl || storedBaseUrl);
+  const result = await enablePiAzure({
+    settingsPath: paths.settingsPath,
+    modelsPath: paths.modelsPath,
+    dataDir: paths.dataDir,
+    apiKey,
+    apiKeyFromFlag,
+    baseUrl,
+    modelId: ctx.main,
+  });
+  await setHarnessEnabled(ctx.home, HARNESS.PI, true);
+  console.log(`${AZURE_PROVIDER_LABEL} enabled for Pi (model: ${result.model}).`);
+  console.log(`Endpoint: ${result.baseUrl}`);
+  if (reusedExistingKey) {
+    console.log("Reused the Azure API key already configured in models.json.");
+  } else if (result.apiKeyMode === "env-reference") {
+    console.log("API key written as $AZURE_API_KEY — keep AZURE_API_KEY set in your shell.");
+  } else {
+    console.log("API key written into models.json (passed via --api-key).");
+  }
+  printPiRestartHint();
 }
 
 /**
@@ -63,34 +127,22 @@ export default defineHarness({
 
   async on(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
+    const { provider, azure } = await readProviderSettings(ctx.home);
+    if (ctx.azure || provider === "azure") {
+      await piAzureOn(ctx, azure);
+      return;
+    }
     const paths = piPathsFor(ctx);
 
-    let apiKey = ctx.apiKey;
-    let apiKeyFromFlag = ctx.apiKeyFromFlag;
-    let reusedExistingKey = false;
-    if (!apiKey) {
-      const auth = await readJsonIfExists(paths.authPath);
-      const existingKey = piStoredApiKeyRef(auth);
-      if (existingKey) {
-        apiKey = existingKey;
-        apiKeyFromFlag = true;
-        reusedExistingKey = true;
-      }
-    }
-
-    if (!apiKey && ctx.home) {
-      const globalConfig = await readGlobalConfig(ctx.home);
-      const storedKey = globalConfig.apiKey;
-      if (storedKey && storedKey !== FIREWORKS_API_KEY_ENV_REF) {
-        apiKey = storedKey;
-        apiKeyFromFlag = true;
-      }
-    }
-
-    if (!apiKey && process.env.FIREWORKS_API_KEY) {
-      apiKey = PI_API_KEY_ENV_REF;
-      apiKeyFromFlag = false;
-    }
+    const { apiKey, apiKeyFromFlag, reusedExistingKey } = await resolveHarnessOnApiKey({
+      apiKey: ctx.apiKey,
+      home: ctx.home,
+      harnessEnvRef: PI_API_KEY_ENV_REF,
+      getExistingHarnessKey: async () => {
+        const auth = await readJsonIfExists(paths.authPath);
+        return piStoredApiKeyRef(auth);
+      },
+    });
 
     const effectiveApiKey = apiKey === PI_API_KEY_ENV_REF
       ? (process.env.FIREWORKS_API_KEY ?? "")
@@ -136,8 +188,40 @@ export default defineHarness({
 
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
-    const { settingsPath, authPath } = piPathsFor(ctx);
+    const { settingsPath, authPath, modelsPath } = piPathsFor(ctx);
     const settings = await readJsonIfExists(settingsPath);
+    const provider = piProviderStatus(settings);
+
+    if (provider === "azure") {
+      const modelsConfig = await readJsonIfExists(modelsPath);
+      const storedAzure = piStoredAzureApiKeyRef(modelsConfig);
+      const payload = {
+        harness: HARNESS.PI,
+        provider,
+        baseUrl: piAzureBaseUrl(modelsConfig),
+        hasAuthToken: Boolean(resolvePiAzureApiKeyValue(storedAzure)),
+        defaults: { main: DEFAULT_AZURE_MODEL },
+        current: { main: piAzureCurrentModelId(settings) },
+        defaultProvider: settings.defaultProvider ?? null,
+      };
+      if (ctx.json) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(`Harness: ${HARNESS.PI}`);
+      console.log(`Provider: azure (${AZURE_PROVIDER_LABEL})`);
+      console.log(`Default provider: ${payload.defaultProvider ?? "(unset)"}`);
+      console.log(`Base URL: ${payload.baseUrl ?? "(unset)"}`);
+      console.log(`API key configured: ${payload.hasAuthToken ? "yes" : "no"}`);
+      console.log("");
+      console.log("Default mapping:");
+      console.log(`  main -> ${payload.defaults.main}`);
+      console.log("");
+      console.log("Current mapping:");
+      console.log(`  main -> ${payload.current.main ?? "(unset)"}`);
+      return;
+    }
+
     const auth = await readJsonIfExists(authPath);
     const authKey = piStoredApiKeyRef(auth);
     const keyType = detectApiKeyType(resolvePiApiKeyValue(authKey));
@@ -145,7 +229,7 @@ export default defineHarness({
     const currentModel = model?.startsWith("accounts/fireworks/") ? model : null;
     const payload = {
       harness: HARNESS.PI,
-      provider: piProviderStatus(settings),
+      provider,
       hasAuthToken: Boolean(authKey || process.env.FIREWORKS_API_KEY),
       apiKeyMode: piAuthKeyMode(authKey),
       defaults: { main: defaultModelIds(keyType).main },

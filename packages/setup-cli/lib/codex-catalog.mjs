@@ -1,4 +1,7 @@
+import { MODEL_API_OVERRIDES as MODEL_OVERRIDES } from "./fireworks-model-specs.mjs";
 import { BUILTIN_ROUTERS } from "./fireworks-models.mjs";
+
+export { MODEL_OVERRIDES };
 
 export const CODEX_CONSTANT_FIELDS = {
   shell_type: "shell_command",
@@ -79,10 +82,6 @@ export const MODEL_REASONING = {
 const DEFAULT_REASONING = {
   default: "high",
   levels: [reasoningLevel("high")],
-};
-
-export const MODEL_OVERRIDES = {
-  "accounts/fireworks/models/qwen3p7-plus": { contextLength: 262144, supportsImageInput: true },
 };
 
 export const DEPRECATED_MODELS = new Set([

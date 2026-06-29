@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { FIREROUTER_BASE_URL } from "../firerouter-core.mjs";
 import {
   DEFAULT_DATA_DIR,
 } from "../fireconnect-core.mjs";
@@ -25,6 +26,7 @@ import {
 import { getHarness } from "../harness-registry.mjs";
 import { HARNESS } from "../harness.mjs";
 import { runConfigureCommand } from "./configure.mjs";
+import { readLocalVersion } from "../version.mjs";
 
 const CLI_NAME = "fireconnect";
 
@@ -45,8 +47,10 @@ Commands:
   help            Show this help.
 
 Options:
-  --api-key <key>           Fireworks API key. Defaults to FIREWORKS_API_KEY.
-  --base-url <url>          Anthropic-compatible URL.
+  --api-key <key>           Fireworks API key. Passing to on also saves ~/.fireconnect/config.json.
+  --router                  Route through FireRouter (${FIREROUTER_BASE_URL}).
+  --anthropic-api-key <key> Optional Anthropic API key for frontier models (--router). Alias: --anthropic-key.
+  --base-url <url>          Anthropic-compatible URL (direct) or FireRouter URL (--router).
   --main, --model <id>      Main model (on).
   --opus <id>               Model for the opus alias (on).
   --sonnet <id>             Model for the sonnet alias (on).
@@ -73,7 +77,9 @@ Commands:
   help            Show this help.
 
 Options:
-  --api-key <key>           Fireworks API key. Defaults to FIREWORKS_API_KEY.
+  --api-key <key>           Fireworks API key. Passing to on also saves ~/.fireconnect/config.json.
+  --router                  Retarget OpenCode's Anthropic provider at FireRouter (${FIREROUTER_BASE_URL}).
+  --anthropic-api-key <key> Optional Anthropic API key for frontier models (--router). Alias: --anthropic-key.
   --main, --model <id>      Default model (on).
   --search <query>          Filter models (model list, model select).
   --json                    Machine-readable output (model list, status).
@@ -95,7 +101,7 @@ Commands:
   help            Show this help.
 
 Options:
-  --api-key <key>           Fireworks API key (validates setup; Codex reads FIREWORKS_API_KEY).
+  --api-key <key>           Fireworks API key (validates setup; on also saves global config).
   --main, --model <id>      Default model (on).
   --search <query>          Filter models (model list, model select).
   --json                    Machine-readable output (model list, status).
@@ -117,22 +123,81 @@ Commands:
   help            Show this help.
 
 Options:
-  --api-key <key>           Fireworks API key. Defaults to FIREWORKS_API_KEY.
+  --api-key <key>           Fireworks API key. Passing to on also saves ~/.fireconnect/config.json.
   --main, --model <id>      Default model (on).
   --search <query>          Filter models (model list, model select).
   --json                    Machine-readable output (model list, status).
   --home <path>             Override HOME for settings resolution.
   --settings-path <path>    Explicit Pi settings.json path.
   --data-dir <path>         Override backup/state directory.`,
+    cursor: `Usage:
+  ${CLI_NAME} cursor [command] [options]
+
+Manage Fireworks routing for the Cursor IDE. Bare "${CLI_NAME} cursor" runs on.
+
+Cursor stores AI settings in a SQLite DB (state.vscdb), so writes require
+Cursor to be quit first (Cmd-Q / File > Quit) — otherwise Cursor's in-memory
+state overwrites them. status and model list are read-only and work any time.
+
+Commands:
+  on              Route Cursor through Fireworks (default).
+  off             Restore your previous Cursor AI settings.
+  status          Show the provider, auth, modes, and per-mode model.
+  model list      Browse callable Fireworks serverless models.
+  model add <id>  Register a model in Cursor's picker without changing the active mode.
+  model select    Interactively pick a model for a Cursor mode.
+  model reset     Reset fireconnect-managed model selections to default.
+  help            Show this help.
+
+Options:
+  --api-key <key>           Fireworks API key. Defaults to FIREWORKS_API_KEY.
+  --main, --model <id>      Model id (on, model add).
+  --mode <mode>             Cursor mode for model select (composer, cmd-k, ...).
+  --search <query>          Filter models (model list, model select).
+  --json                    Machine-readable output (model list, status).
+  --home <path>             Override HOME for state.vscdb resolution.
+  --db-path <path>          Explicit Cursor state.vscdb path.
+  --force                   Write even if Cursor is running, without asking you to quit it first.`,
+    vscode: `Usage:
+  ${CLI_NAME} vscode [command] [options]
+
+Manage Fireworks routing for VS Code Chat (custom language models).
+
+VS Code Chat reads custom OpenAI-compatible providers from
+chatLanguageModels.json; their API keys live (encrypted) in VS Code's secret
+storage (state.vscdb), which is where fireconnect stores the Fireworks key.
+on/off write state.vscdb, so quit VS Code first (they hard-error otherwise);
+restart VS Code for the change to take effect. model add/select/reset only edit
+chatLanguageModels.json, which VS Code hot-reloads. status and model list are
+read-only and work any time.
+
+Commands:
+  on              Add the Fireworks provider to VS Code Chat (default).
+  off             Restore your previous chatLanguageModels.json + remove the key.
+  status          Show the provider, auth, and registered models.
+  model list      Browse callable Fireworks serverless models.
+  model add <id>  Register a model in the Fireworks provider.
+  model select    Interactively pick a model to add.
+  model reset     Reset fireconnect-managed models to the default.
+  help            Show this help.
+
+Options:
+  --api-key <key>           Fireworks API key. Defaults to FIREWORKS_API_KEY.
+  --main, --model <id>      Model id (on, model add).
+  --search <query>          Filter models (model list, model select).
+  --json                    Machine-readable output (model list, status).
+  --home <path>             Override HOME for chatLanguageModels.json resolution.
+  --vscode-path <path>      Explicit chatLanguageModels.json path.
+  --force                   Write even if VS Code is running (not recommended).`,
     configure: `Usage:
   ${CLI_NAME} configure [options]
 
 Register which harnesses you use and store API key preferences.
 
 Options:
-  --harnesses <ids>         Comma-separated harness ids (e.g. claude,opencode,codex,pi).
-  --api-key <key>           Fireworks API key.
-  --api-key-mode <mode>     env or literal.
+  --harnesses <ids>         Comma-separated harness ids (e.g. claude,opencode,codex,pi,cursor).
+  --api-key <key>           Fireworks API key (stored in ~/.fireconnect/config.json).
+  --anthropic-api-key <key> Anthropic API key for FireRouter (optional).
   --home <path>             Override HOME.`,
     uninstall: `Usage:
   ${CLI_NAME} uninstall
@@ -151,11 +216,12 @@ Only works when installed via the curl installer (requires git).`,
     return;
   }
 
-  console.log(`FireConnect — use Fireworks models in Claude Code, OpenCode, Codex, and Pi.
+  console.log(`FireConnect — use Fireworks models in Claude Code, OpenCode, Codex, Pi, Cursor, and VS Code.
 
 Usage:
   ${CLI_NAME} <command> [options]
-  ${CLI_NAME} <harness> [on|off|status|model select|model reset] [options]
+  ${CLI_NAME} <harness> [on|off|status|model select|model add|model reset] [options]
+  ${CLI_NAME} --version
 
 Global commands:
   configure   Register harnesses and API key preferences.
@@ -163,15 +229,21 @@ Global commands:
   uninstall   Remove FireConnect from this machine.
   help        Show help.
 
+Options:
+  --version, -V   Print the installed CLI version (--json for machine-readable output).
+
 Harnesses:
   claude      Claude Code (${CLI_NAME} claude on|off|...)
   opencode    OpenCode (${CLI_NAME} opencode on|off|...)
   codex       OpenAI Codex CLI (${CLI_NAME} codex on|off|...)
   pi          Pi (${CLI_NAME} pi on|off|...)
+  cursor      Cursor IDE (${CLI_NAME} cursor on|off|...)
+  vscode      VS Code Chat (${CLI_NAME} vscode on|off|...)
 
 Examples:
   # Global
   ${CLI_NAME} configure
+  ${CLI_NAME} --version
   ${CLI_NAME} uninstall
 
   # Claude Code
@@ -196,6 +268,20 @@ Examples:
   ${CLI_NAME} pi on --main glm-5p1
   ${CLI_NAME} pi model select
 
+  # Cursor (quit Cursor before on/off/model select/model add)
+  ${CLI_NAME} cursor on --api-key fw_...
+  ${CLI_NAME} cursor status
+  ${CLI_NAME} cursor model list --search glm
+  ${CLI_NAME} cursor model add deepseek-v4-flash
+  ${CLI_NAME} cursor model select --mode composer
+
+  # VS Code Chat (changes apply live; quit VS Code only to avoid concurrent-edit clobber)
+  ${CLI_NAME} vscode on --api-key fw_...
+  ${CLI_NAME} vscode status
+  ${CLI_NAME} vscode model list --search glm
+  ${CLI_NAME} vscode model add deepseek-v4-flash
+  ${CLI_NAME} vscode model select
+
 Run "${CLI_NAME} help <topic>" or "${CLI_NAME} <harness> help" for details.
 `);
 }
@@ -207,6 +293,23 @@ async function readInstalledVersion(installDir) {
   } catch {
     return "";
   }
+}
+
+/**
+ * @param {import("../harness-types.mjs").HarnessContext} ctx
+ */
+export function runVersionCommand(ctx) {
+  const version = readLocalVersion();
+  if (!version) {
+    throw new Error("Unable to determine FireConnect version.");
+  }
+
+  if (ctx.json) {
+    console.log(JSON.stringify({ version }, null, 2));
+    return;
+  }
+
+  console.log(`v${version}`);
 }
 
 export async function runUpgradeCommand() {
@@ -298,6 +401,11 @@ export async function runUninstallCommand(ctx) {
       settingsPath: "",
       configPath: "",
       dataDir: "",
+      // Uninstall is a destructive, user-initiated operation. Force writes
+      // past the "is the IDE running?" guard so uninstall completes even if
+      // Cursor is open — otherwise the backup files get deleted below while
+      // Fireworks settings remain in state.vscdb, making `off` unrecoverable.
+      force: true,
     };
     try {
       await adapter.off(offCtx);
@@ -378,6 +486,11 @@ export async function runGlobalCommand(parsed) {
 
   if (command === "upgrade") {
     await runUpgradeCommand();
+    return;
+  }
+
+  if (command === "version") {
+    runVersionCommand(ctx);
     return;
   }
 

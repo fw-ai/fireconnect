@@ -148,7 +148,14 @@ install_cli_launcher() {
 
   cat > "${launcher_path}" <<EOF
 #!/usr/bin/env bash
-exec node "${CLI}" "\$@"
+# Suppress Node's ExperimentalWarning for node:sqlite (used on Node >= 22).
+# --disable-warning landed in Node 21.3.0, so only pass it on >= 22 where the
+# warning can actually appear; older Node would reject the flag.
+node_flags=""
+if node_major=\$(node -p "process.versions.node.split('.')[0]" 2>/dev/null) && [ "\${node_major}" -ge 22 ] 2>/dev/null; then
+  node_flags="--disable-warning=ExperimentalWarning"
+fi
+exec node \${node_flags} "${CLI}" "\$@"
 EOF
   chmod +x "${launcher_path}"
 

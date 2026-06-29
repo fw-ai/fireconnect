@@ -1,4 +1,4 @@
-import { detectApiKeyType } from "./fireconnect-core.mjs";
+import { detectApiKeyType, MISSING_FIREWORKS_API_KEY_MESSAGE } from "./fireconnect-core.mjs";
 import { resolveStoredApiKey } from "./global-config.mjs";
 import { OPENCODE_API_KEY_ENV_REF } from "./opencode-core.mjs";
 
@@ -8,6 +8,8 @@ export const KIND_SERVERLESS = "serverless";
 export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/glm-latest";
 export const FIREPASS_ROUTER_IDS = new Set([
   FIREPASS_ROUTER_ID,
+  "accounts/fireworks/routers/glm-fast-latest",
+  "accounts/fireworks/routers/glm-5p2-fast",
   "accounts/fireworks/routers/kimi-fast-latest",
   "accounts/fireworks/routers/kimi-k2p7-code-fast",
 ]);
@@ -17,6 +19,20 @@ export const BUILTIN_ROUTERS = [
     id: "accounts/fireworks/routers/glm-latest",
     shortId: "glm-latest",
     displayName: "GLM Latest via Fireworks",
+    baseModelId: "accounts/fireworks/models/glm-5p2",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/glm-fast-latest",
+    shortId: "glm-fast-latest",
+    displayName: "GLM Fast Latest via Fireworks",
+    baseModelId: "accounts/fireworks/models/glm-5p2",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/glm-5p2-fast",
+    shortId: "glm-5p2-fast",
+    displayName: "GLM 5.2 Fast via Fireworks",
     baseModelId: "accounts/fireworks/models/glm-5p2",
     kind: KIND_SERVERLESS,
   },
@@ -76,6 +92,120 @@ export function effectiveOpencodeApiKey(storedKey) {
 
 export function isFireworksKey(key) {
   return typeof key === "string" && (key.startsWith("fw_") || key.startsWith("fpk_"));
+}
+
+/**
+ * Turn a model id into a human-readable name for display, without any network
+ * call. e.g. `accounts/fireworks/models/glm-5p2` -> "GLM 5.2",
+ * `accounts/fireworks/routers/glm-latest` -> "GLM Latest",
+ * `kimi-k2p7-code-fast` -> "Kimi K2.7 Code Fast", `composer-2.5` -> "Composer 2.5".
+ * Falls back to the last path segment if prettification yields nothing better.
+ * @param {string} modelId
+ * @returns {string}
+ */
+export function prettyModelName(modelId) {
+  if (!modelId) {
+    return "(unset)";
+  }
+  if (modelId === "default") {
+    return "default";
+  }
+  const last = String(modelId).split("/").at(-1) ?? modelId;
+  const tokens = last.split(/[-_]/).filter(Boolean);
+  const pretty = tokens.map((tok) => {
+    if (/^[a-z]+$/i.test(tok)) {
+      // short all-letter tokens are acronyms (GLM); longer ones are names (Kimi, Qwen, Deepseek)
+      return tok.length <= 3 ? tok.toUpperCase() : tok.charAt(0).toUpperCase() + tok.slice(1);
+    }
+    let m = tok.match(/^([a-zA-Z])(\d+)p(\d+)$/); // k2p6 -> K2.6
+    if (m) {
+      return `${m[1].toUpperCase()}${m[2]}.${m[3]}`;
+    }
+    m = tok.match(/^(\d+)p(\d+)$/); // 5p2 -> 5.2
+    if (m) {
+      return `${m[1]}.${m[2]}`;
+    }
+    m = tok.match(/^v(\d+)$/i); // v4 -> V4
+    if (m) {
+      return `V${m[1]}`;
+    }
+    // mixed alphanumeric like "2.5" or "k25" — capitalise a leading letter
+    return tok.charAt(0).toUpperCase() + tok.slice(1);
+  });
+  return pretty.join(" ");
+}
+
+export { MISSING_FIREWORKS_API_KEY_MESSAGE } from "./fireconnect-core.mjs";
+
+/**
+ * Resolve credentials for `<harness> on`: flag > harness-local > global > env.
+ * Returns harness-native storage values (literal key or harness env ref).
+ *
+ * @param {{
+ *   apiKey?: string,
+ *   home?: string,
+ *   harnessEnvRef: string,
+ *   getExistingHarnessKey?: () => Promise<string>,
+ * }} args
+ */
+export async function resolveHarnessOnApiKey({
+  apiKey = "",
+  home = process.env.HOME ?? "",
+  harnessEnvRef,
+  getExistingHarnessKey,
+}) {
+  if (apiKey?.trim()) {
+    return {
+      apiKey: apiKey.trim(),
+      apiKeyFromFlag: true,
+      reusedExistingKey: false,
+      source: "flag",
+    };
+  }
+
+  if (getExistingHarnessKey) {
+    const existingKey = await getExistingHarnessKey();
+    if (existingKey) {
+      return {
+        apiKey: existingKey,
+        apiKeyFromFlag: existingKey !== harnessEnvRef,
+        reusedExistingKey: true,
+        source: "harness-local",
+      };
+    }
+  }
+
+  if (home) {
+    const { readGlobalConfig, FIREWORKS_API_KEY_ENV_REF } = await import("./global-config.mjs");
+    const storedKey = (await readGlobalConfig(home)).apiKey;
+    if (storedKey && storedKey !== FIREWORKS_API_KEY_ENV_REF) {
+      return {
+        apiKey: storedKey,
+        apiKeyFromFlag: true,
+        reusedExistingKey: false,
+        source: "global-literal",
+      };
+    }
+    if (storedKey === FIREWORKS_API_KEY_ENV_REF && resolveStoredApiKey(storedKey)) {
+      return {
+        apiKey: harnessEnvRef,
+        apiKeyFromFlag: false,
+        reusedExistingKey: false,
+        source: "global-env-ref",
+      };
+    }
+  }
+
+  if (process.env.FIREWORKS_API_KEY?.trim()) {
+    return {
+      apiKey: harnessEnvRef,
+      apiKeyFromFlag: false,
+      reusedExistingKey: false,
+      source: "env",
+    };
+  }
+
+  throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
 }
 
 /**
@@ -230,7 +360,7 @@ export function filterCatalogBySearch(catalog, search = "") {
 export async function loadServerlessCatalog({ apiKey, keyType = "" }) {
   const resolvedKey = apiKey;
   if (!resolvedKey) {
-    throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
   const resolvedKeyType = keyType || detectApiKeyType(resolvedKey);

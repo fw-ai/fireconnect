@@ -11,6 +11,12 @@ import { HARNESSES } from "./harness.mjs";
  * @property {string} apiKey
  * @property {boolean} apiKeyFromFlag
  * @property {string} baseUrl
+ * @property {boolean} [baseUrlFromFlag]
+ * @property {boolean} router
+ * @property {boolean} [azure]
+ * @property {string} [provider]
+ * @property {string} anthropicKey
+ * @property {boolean} anthropicKeyFromFlag
  * @property {string} main
  * @property {string} opus
  * @property {string} sonnet
@@ -19,6 +25,10 @@ import { HARNESSES } from "./harness.mjs";
  * @property {string} slot
  * @property {string} search
  * @property {boolean} json
+ * @property {string} [dbPath]   // cursor: explicit state.vscdb path
+ * @property {string} [mode]     // cursor: which Cursor mode to set (model select)
+ * @property {boolean} [force]   // cursor/vscode: write even if the IDE is running
+ * @property {string} [vscodePath]      // vscode: explicit chatLanguageModels.json path
  */
 
 /**
@@ -31,6 +41,7 @@ import { HARNESSES } from "./harness.mjs";
  * @property {(ctx: HarnessContext) => Promise<void>} modelList
  * @property {(ctx: HarnessContext) => Promise<void>} modelSelect
  * @property {(ctx: HarnessContext) => Promise<void>} modelReset
+ * @property {(ctx: HarnessContext) => Promise<void>} [modelAdd]  // optional; cursor-only today
  * @property {(ctx: HarnessContext) => Promise<string>} resolveKey
  */
 
@@ -82,6 +93,15 @@ export async function dispatchHarnessCommand(adapter, route, ctx) {
     }
     if (verb === "reset") {
       await adapter.modelReset(ctx);
+      return;
+    }
+    if (verb === "add") {
+      if (typeof adapter.modelAdd !== "function") {
+        throw new Error(
+          `model add is not supported for ${adapter.id}. Run: fireconnect help ${adapter.id}`,
+        );
+      }
+      await adapter.modelAdd(ctx);
       return;
     }
     throw new Error(

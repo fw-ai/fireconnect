@@ -1,0 +1,5 @@
+# Scratch / test SQLite DBs (Cursor state.vscdb snapshots used during dev)
+*.vscdb
+
+# Node
+node_modules/

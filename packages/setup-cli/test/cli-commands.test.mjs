@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { OPENCODE_API_KEY_ENV_REF } from "../lib/opencode-core.mjs";
 import {
@@ -8,7 +11,10 @@ import {
   FW_CLAUDE_KEY,
   FIREPASS_ROUTER,
   FIREPASS_ROUTER_1M,
+  FIREPASS_DEFAULT_ROUTER,
+  FIREPASS_DEFAULT_ROUTER_1M,
   GLM_LATEST,
+  GLM_FAST_LATEST,
   K2P7_FAST,
   KIMI_FAST_LATEST,
   NO_ENV_KEY,
@@ -22,6 +28,47 @@ import {
   writeOpencodeConfig,
 } from "./helpers.mjs";
 
+const packageJsonPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../package.json",
+);
+
+describe("fireconnect version", () => {
+  test("supports --version flag", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    const result = await runCli(["--version"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), `v${pkg.version}`);
+  });
+
+  test("supports -V flag", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    const result = await runCli(["-V"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), `v${pkg.version}`);
+  });
+
+  test("rejects version subcommand", async () => {
+    const result = await runCli(["version"]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Unknown command: version/);
+  });
+
+  test("supports --version --json", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    const { code, stderr, json } = await runCliJson(["--version", "--json"]);
+    assert.equal(code, 0, stderr);
+    assert.equal(json.version, pkg.version);
+  });
+
+  test("supports -V --json", async () => {
+    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    const { code, stderr, json } = await runCliJson(["-V", "--json"]);
+    assert.equal(code, 0, stderr);
+    assert.equal(json.version, pkg.version);
+  });
+});
+
 describe("fireconnect claude on", () => {
   test("fw_ uses glm-latest as default main router", async () => {
     await withTempHome("on-fw", async (home) => {
@@ -33,6 +80,7 @@ describe("fireconnect claude on", () => {
       assert.equal(settings.env.ANTHROPIC_MODEL, FIREPASS_ROUTER_1M);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREPASS_ROUTER_1M);
       assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, FIREPASS_ROUTER_1M);
+      assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, "0");
       assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
@@ -49,10 +97,12 @@ describe("fireconnect claude on", () => {
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL",
       ]) {
         assert.equal(env[key], FIREPASS_ROUTER_1M);
       }
+      // Subagent model is forwarded verbatim to the provider, so the [1m] beta
+      // tag must be stripped (Fireworks has no "...glm-latest[1m]" model).
+      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, FIREPASS_ROUTER);
       assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
@@ -131,10 +181,10 @@ describe("fireconnect <harness> model list", () => {
         { home, env: NO_ENV_KEY },
       );
       assert.equal(json.keyType, "firepass");
-      assert.equal(json.count, 3);
+      assert.equal(json.count, 5);
       assert.deepEqual(
         json.models.map((entry) => entry.shortId),
-        [GLM_LATEST, KIMI_FAST_LATEST, K2P7_FAST],
+        [GLM_LATEST, GLM_FAST_LATEST, "glm-5p2-fast", KIMI_FAST_LATEST, K2P7_FAST],
       );
     });
   });
@@ -291,9 +341,9 @@ describe("fireconnect claude model reset", () => {
       assert.equal(result.code, 0, result.stderr);
 
       const { env } = await readClaudeSettings(home);
-      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, FIREPASS_ROUTER_1M);
-      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FIREPASS_ROUTER_1M);
-      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, FIREPASS_ROUTER_1M);
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, FIREPASS_DEFAULT_ROUTER_1M);
+      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FIREPASS_DEFAULT_ROUTER_1M);
+      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, FIREPASS_DEFAULT_ROUTER);
       assert.equal(env.ANTHROPIC_API_KEY, FPK_KEY);
     });
   });

@@ -21,6 +21,12 @@ export function createBaseContext() {
     apiKey: "",
     apiKeyFromFlag: false,
     baseUrl: FIREWORKS_BASE_URL,
+    baseUrlFromFlag: false,
+    router: false,
+    azure: false,
+    provider: "",
+    anthropicKey: "",
+    anthropicKeyFromFlag: false,
     main: "",
     opus: "",
     sonnet: "",
@@ -30,7 +36,10 @@ export function createBaseContext() {
     search: "",
     json: false,
     harnesses: "",
-    apiKeyMode: "",
+    dbPath: "",
+    mode: "",
+    force: false,
+    vscodePath: "",
   };
 }
 
@@ -47,6 +56,7 @@ function requireValue(flag, value) {
 function parseFlagsAndPositionals(argv) {
   const ctx = createBaseContext();
   const positional = [];
+  let version = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -59,7 +69,13 @@ function parseFlagsAndPositionals(argv) {
         positional,
         help: true,
         helpTopic: explicitTopic || positional[positional.length - 1] || "",
+        version: false,
       };
+    }
+
+    if (arg === "--version" || arg === "-V") {
+      version = true;
+      continue;
     }
 
     if (arg === "--json") {
@@ -82,6 +98,19 @@ function parseFlagsAndPositionals(argv) {
       i += 1;
     } else if (arg === "--base-url") {
       ctx.baseUrl = requireValue(arg, next);
+      ctx.baseUrlFromFlag = true;
+      i += 1;
+    } else if (arg === "--router") {
+      ctx.router = true;
+    } else if (arg === "--azure") {
+      ctx.azure = true;
+      ctx.provider = "azure";
+    } else if (arg === "--provider") {
+      ctx.provider = requireValue(arg, next);
+      i += 1;
+    } else if (arg === "--anthropic-key" || arg === "--anthropic-api-key") {
+      ctx.anthropicKey = requireValue(arg, next);
+      ctx.anthropicKeyFromFlag = true;
       i += 1;
     } else if (arg === "--main" || arg === "--model") {
       ctx.main = requireValue(arg, next);
@@ -107,9 +136,17 @@ function parseFlagsAndPositionals(argv) {
     } else if (arg === "--harnesses") {
       ctx.harnesses = requireValue(arg, next);
       i += 1;
-    } else if (arg === "--api-key-mode") {
-      ctx.apiKeyMode = requireValue(arg, next);
+    } else if (arg === "--db-path") {
+      ctx.dbPath = requireValue(arg, next);
       i += 1;
+    } else if (arg === "--mode") {
+      ctx.mode = requireValue(arg, next);
+      i += 1;
+    } else if (arg === "--vscode-path") {
+      ctx.vscodePath = requireValue(arg, next);
+      i += 1;
+    } else if (arg === "--force") {
+      ctx.force = true;
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown argument: ${arg}`);
     } else {
@@ -117,7 +154,7 @@ function parseFlagsAndPositionals(argv) {
     }
   }
 
-  return { ctx, positional, help: false, helpTopic: "" };
+  return { ctx, positional, help: false, helpTopic: "", version };
 }
 
 /**
@@ -131,8 +168,15 @@ function parseHarnessRoute(harnessId, tokens) {
 
   if (tokens[0] === "model") {
     const sub = tokens[1];
+    if (sub === "add") {
+      // `model add` takes one optional positional: the model id to register.
+      if (tokens.length > 3) {
+        throw new Error(`fireconnect ${harnessId} model add takes at most one model id`);
+      }
+      return { harnessId, noun: "model", verb: "add", arg: tokens[2] ?? "" };
+    }
     if (sub !== "list" && sub !== "select" && sub !== "reset") {
-      throw new Error(`Usage: fireconnect ${harnessId} model <list|select|reset>`);
+      throw new Error(`Usage: fireconnect ${harnessId} model <list|select|reset|add>`);
     }
     if (tokens.length > 2) {
       throw new Error(`fireconnect ${harnessId} model ${sub} does not accept positional arguments`);
@@ -155,7 +199,11 @@ function parseHarnessRoute(harnessId, tokens) {
  * @param {string[]} argv
  */
 export function parseCli(argv) {
-  const { ctx, positional, help, helpTopic } = parseFlagsAndPositionals(argv);
+  const { ctx, positional, help, helpTopic, version } = parseFlagsAndPositionals(argv);
+
+  if (version) {
+    return { kind: "global", command: "version", ctx };
+  }
 
   if (help) {
     return { kind: "global", command: "help", ctx, helpTopic };
@@ -187,6 +235,11 @@ export function parseCli(argv) {
       return { kind: "global", command: "help", ctx, helpTopic: first };
     }
     const route = parseHarnessRoute(first, rest);
+    // Fold a `model add <id>` positional into ctx.main so the handler reads it
+    // the same way as `--model`/`--main`. An explicit flag wins over positional.
+    if (route.arg && !ctx.main) {
+      ctx.main = route.arg;
+    }
     return { kind: "harness", route, ctx };
   }
 

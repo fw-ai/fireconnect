@@ -7,11 +7,16 @@ import {
   claudeCodeModelId,
   stripClaudeCodeContextSuffix,
 } from "./claude-code-context.mjs";
+import { firerouterStatusFromEnv, stripFirerouterOwnedEnv } from "./firerouter-core.mjs";
+import { formatPricingDescription, lookupFireworksPricing } from "./fireworks-pricing.mjs";
 
 export { CLAUDE_CODE_1M_CONTEXT_MODELS } from "./claude-code-context.mjs";
 
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
+export const MISSING_FIREWORKS_API_KEY_MESSAGE =
+  "No Fireworks API key found. Run `fireconnect configure`, export FIREWORKS_API_KEY, or pass --api-key.";
 export const GLM_LATEST_ROUTER_ID = "accounts/fireworks/routers/glm-latest";
+export const GLM_FAST_LATEST_ROUTER_ID = "accounts/fireworks/routers/glm-fast-latest";
 export const DEFAULT_OPUS_MODEL = "glm-latest";
 export const DEFAULT_FIREPASS_MAIN_MODEL = "glm-latest";
 export const DEFAULT_MAIN_MODEL = "glm-latest";
@@ -21,6 +26,8 @@ export const DEFAULT_SUBAGENT_MODEL = DEFAULT_HAIKU_MODEL;
 
 const FIREWORKS_ROUTER_SHORT_IDS = new Set([
   "glm-latest",
+  "glm-fast-latest",
+  "glm-5p2-fast",
   "kimi-fast-latest",
   "kimi-k2p6-turbo",
   "kimi-k2p7-code-fast",
@@ -50,10 +57,30 @@ export const FIREWORKS_ENV_KEYS = [
   "ENABLE_TOOL_SEARCH",
 ];
 
+/** Env keys that steer Claude Code client-side model selection. */
+export const MODEL_MAPPING_ENV_KEYS = [
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+  "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
+];
+
 export const FIREWORKS_TOP_LEVEL_KEYS = [
   "model",
   "effortLevel",
 ];
+
+/** Claude Code behavior tuning shared by direct and router modes (not model mapping). */
+export const CLAUDE_CODE_BEHAVIOR_ENV = {
+  CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+  CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
+  CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE: "0",
+};
 
 export const DEFAULT_FIREWORKS_PRESET = {
   ANTHROPIC_MODEL: GLM_LATEST_ROUTER_ID,
@@ -63,10 +90,8 @@ export const DEFAULT_FIREWORKS_PRESET = {
   CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
   ANTHROPIC_CUSTOM_MODEL_OPTION: GLM_LATEST_ROUTER_ID,
   ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "glm-latest via Fireworks",
-  ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks Anthropic-compatible open model",
-  CLAUDE_CODE_DISABLE_1M_CONTEXT: "1",
-  CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
-  CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE: "0",
+  ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks serverless model",
+  ...CLAUDE_CODE_BEHAVIOR_ENV,
 };
 
 export const DEFAULT_FIREPASS_PRESET = {
@@ -123,9 +148,8 @@ export function isSafeDataDirRemoval(dataDir, home) {
     return false;
   }
 
-  const hasState = existsSync(path.join(resolvedDir, "provider-state.json"));
   const hasBackup = existsSync(path.join(resolvedDir, "provider-backup.json"));
-  return hasState || hasBackup;
+  return hasBackup;
 }
 
 export function resolveDataDir({ home, dataDir = "" }) {
@@ -141,10 +165,6 @@ export function userSettingsPath(home, settingsPath = "") {
     return settingsPath;
   }
   return path.join(home, USER_SETTINGS_RELATIVE_PATH);
-}
-
-export function providerStatePath(dataDir) {
-  return path.join(dataDir, "provider-state.json");
 }
 
 export function providerBackupPath(dataDir) {
@@ -218,7 +238,10 @@ export function mappingFromEnv(env) {
   };
 }
 
-export function providerStatusFromEnv(env) {
+export function providerStatusFromEnv(env, { routerBaseUrl = "" } = {}) {
+  if (firerouterStatusFromEnv(env, { routerBaseUrl }) === "firerouter") {
+    return "firerouter";
+  }
   if (env.ANTHROPIC_BASE_URL === FIREWORKS_BASE_URL) {
     return "fireworks";
   }
@@ -273,17 +296,9 @@ export function fireworksKeyOrEmpty(key) {
   return isFireworksShapedKey(key) ? key.trim() : "";
 }
 
-export function claudeFireworksKeyFrom({ env = {}, state = {} } = {}) {
+export function claudeFireworksKeyFrom({ env = {} } = {}) {
   return fireworksKeyOrEmpty(env.ANTHROPIC_API_KEY)
-    || fireworksKeyOrEmpty(env.ANTHROPIC_AUTH_TOKEN)
-    || fireworksKeyOrEmpty(state.fireworksApiKey);
-}
-
-export function resolveClaudeToken({ apiKeyFromFlag, apiKey }, { env, state }) {
-  if (apiKeyFromFlag) {
-    return apiKey;
-  }
-  return claudeFireworksKeyFrom({ env, state }) || process.env.FIREWORKS_API_KEY || "";
+    || fireworksKeyOrEmpty(env.ANTHROPIC_AUTH_TOKEN);
 }
 
 /** Detect whether a key is a Fire Pass subscription key (fpk_...) or a
@@ -350,13 +365,29 @@ export function stripFireworksOwnedEnv(env) {
   return { env: nextEnv, changed };
 }
 
+/**
+ * Remove client-side model mapping env entries (for FireRouter server-side routing).
+ * @param {Record<string, string>} env
+ */
+export function stripModelMappingEnv(env) {
+  const nextEnv = { ...env };
+  let changed = false;
+  for (const key of MODEL_MAPPING_ENV_KEYS) {
+    if (Object.hasOwn(nextEnv, key)) {
+      delete nextEnv[key];
+      changed = true;
+    }
+  }
+  return { env: nextEnv, changed };
+}
+
 export function fireworksCustomOptionFields(mainModelId) {
   const resolved = claudeCodeModelId(mainModelId);
   const shortId = stripClaudeCodeContextSuffix(mainModelId).split("/").at(-1) ?? "Fireworks model";
   return {
     ANTHROPIC_CUSTOM_MODEL_OPTION: resolved,
     ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: `${shortId} via Fireworks`,
-    ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks Anthropic-compatible open model",
+    ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: formatPricingDescription(lookupFireworksPricing(mainModelId)),
   };
 }
 
@@ -373,7 +404,11 @@ export function modelEnvFromMapping(mapping) {
     ANTHROPIC_DEFAULT_OPUS_MODEL: claudeCodeModelId(mapping.opus),
     ANTHROPIC_DEFAULT_SONNET_MODEL: claudeCodeModelId(mapping.sonnet),
     ANTHROPIC_DEFAULT_HAIKU_MODEL: claudeCodeModelId(mapping.haiku),
-    CLAUDE_CODE_SUBAGENT_MODEL: claudeCodeModelId(mapping.subagent),
+    // Claude Code forwards the subagent model id verbatim to the provider API,
+    // unlike ANTHROPIC_MODEL/DEFAULT_* slots where it consumes the [1m] beta tag.
+    // Fireworks has no model literally named "...glm-latest[1m]", so the suffix
+    // must be stripped here or subagent/agent-team spawns fail with "model may not exist".
+    CLAUDE_CODE_SUBAGENT_MODEL: stripClaudeCodeContextSuffix(claudeCodeModelId(mapping.subagent)),
   };
 }
 
@@ -416,14 +451,14 @@ export async function enableFireworksProvider({
   mapping = resolveModelMapping(),
   preset = DEFAULT_FIREWORKS_PRESET,
   keyType = "fireworks",
+  routerBaseUrl = "",
 }) {
   const backupPath = providerBackupPath(dataDir);
-  const statePath = providerStatePath(dataDir);
   const settings = await readJsonIfExists(settingsPath);
-  const state = await readJsonIfExists(statePath);
   const env = settings.env ?? {};
+  const routerOptions = { routerBaseUrl };
 
-  if (providerStatusFromEnv(env) !== "fireworks") {
+  if (providerStatusFromEnv(env, routerOptions) !== "fireworks") {
     const existingBackup = await readJsonIfExists(backupPath);
     if (!existingBackup.values) {
       await writeJson(backupPath, backupFromSettings(settings));
@@ -435,33 +470,31 @@ export async function enableFireworksProvider({
     }
   }
 
-  const token = apiKey || claudeFireworksKeyFrom({ env, state }) || process.env.FIREWORKS_API_KEY || "";
+  const token = apiKey || claudeFireworksKeyFrom({ env }) || process.env.FIREWORKS_API_KEY || "";
   if (!token) {
-    throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
   const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(token) : keyType;
+  const { env: strippedEnv } = stripFirerouterOwnedEnv(env, routerOptions);
 
   const next = {
     ...settings,
-    env: buildFireworksProviderEnv(env, { apiKey: token, baseUrl, mapping, preset, keyType: resolvedKeyType }),
+    env: buildFireworksProviderEnv(strippedEnv, { apiKey: token, baseUrl, mapping, preset, keyType: resolvedKeyType }),
   };
 
-  if (providerStatusFromEnv(next.env) === "fireworks") {
+  if (providerStatusFromEnv(next.env, routerOptions) === "fireworks") {
     next.model = claudeCodeModelId(mapping.main);
   }
 
   await writeJson(settingsPath, next);
-  await writeJson(statePath, { ...state, fireworksApiKey: token });
   return token;
 }
 
 export async function disableFireworksProvider({ settingsPath, dataDir, wasEnabled = false }) {
   const backupPath = providerBackupPath(dataDir);
-  const statePath = providerStatePath(dataDir);
   const settings = await readJsonIfExists(settingsPath);
   const backup = await readJsonIfExists(backupPath);
-  const state = await readJsonIfExists(statePath);
   const env = settings.env ?? {};
   const status = providerStatusFromEnv(env);
   const hasBackup = Boolean(backup.values);
@@ -490,10 +523,6 @@ export async function disableFireworksProvider({ settingsPath, dataDir, wasEnabl
     }
 
     await writeJson(settingsPath, nextSettings);
-    await writeJson(statePath, {
-      ...state,
-      fireworksApiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey,
-    });
     await unlink(backupPath).catch(() => {});
     return;
   }
@@ -508,11 +537,6 @@ export async function disableFireworksProvider({ settingsPath, dataDir, wasEnabl
   if (envChanged || hadFireworksModel) {
     await writeJson(settingsPath, nextSettings);
   }
-
-  await writeJson(statePath, {
-    ...state,
-    fireworksApiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || state.fireworksApiKey,
-  });
 }
 
 export async function applyModelMapping({ settingsPath, mapping }) {

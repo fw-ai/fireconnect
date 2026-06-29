@@ -1,13 +1,15 @@
 import claude from "./harnesses/claude.mjs";
 import codex from "./harnesses/codex.mjs";
+import cursor from "./harnesses/cursor.mjs";
 import opencode from "./harnesses/opencode.mjs";
 import pi from "./harnesses/pi.mjs";
+import vscode from "./harnesses/vscode.mjs";
 import { HARNESSES } from "./harness.mjs";
 
 /** @typedef {import("./harness-types.mjs").HarnessAdapter} HarnessAdapter */
 
 const REGISTRY = new Map(
-  [claude, opencode, codex, pi].map((adapter) => [adapter.id, adapter]),
+  [claude, opencode, codex, pi, cursor, vscode].map((adapter) => [adapter.id, adapter]),
 );
 
 /**

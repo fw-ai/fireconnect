@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
+import { readLocalVersion } from "./version.mjs";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FAILURE_RETRY_MS = 60 * 60 * 1000;
@@ -22,15 +23,6 @@ function cacheFilePath(home) {
 
 function lockFilePath(home) {
   return path.join(home, ".fireconnect", "update-check.lock");
-}
-
-function readLocalVersion() {
-  try {
-    const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
-    return JSON.parse(readFileSync(pkgPath, "utf8")).version ?? "";
-  } catch {
-    return "";
-  }
 }
 
 function readCache(home) {
@@ -124,7 +116,7 @@ function spawnChecker(home) {
 }
 
 export function checkForUpdates(command, homeOverride) {
-  if (command === "upgrade" || command === "uninstall") return;
+  if (command === "upgrade" || command === "uninstall" || command === "version") return;
 
   const home = homeOverride || process.env.HOME || "";
   if (!home) return;

@@ -15,6 +15,13 @@ import {
 } from "../lib/global-config.mjs";
 
 describe("global-config", () => {
+  it("reads empty apiKey when config file is missing", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-config-missing-"));
+    const config = await readGlobalConfig(home);
+    assert.equal(config.apiKey, "");
+    assert.equal(config._exists, false);
+  });
+
   it("writes and reads config", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-config-"));
     await writeGlobalConfig(home, {

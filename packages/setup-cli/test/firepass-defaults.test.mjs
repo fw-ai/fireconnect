@@ -17,6 +17,7 @@ import {
 } from "../lib/fireworks-models.mjs";
 import {
   FIREPASS_ROUTER,
+  FIREPASS_DEFAULT_ROUTER,
   GLM_LATEST,
   K2P7_FAST,
   KIMI_FAST_LATEST,
@@ -36,7 +37,7 @@ describe("Fire Pass defaults", () => {
       "CLAUDE_CODE_SUBAGENT_MODEL",
     ];
     for (const key of aliasKeys) {
-      assert.equal(DEFAULT_FIREPASS_PRESET[key], FIREPASS_ROUTER);
+      assert.equal(DEFAULT_FIREPASS_PRESET[key], FIREPASS_DEFAULT_ROUTER);
     }
   });
 
@@ -51,6 +52,7 @@ describe("Fire Pass defaults", () => {
       const { catalog } = await fetchServerlessCatalog("fw_test_key");
       const ids = catalog.map((entry) => entry.id);
       assert.ok(ids.includes("accounts/fireworks/routers/glm-latest"));
+      assert.ok(ids.includes("accounts/fireworks/routers/glm-5p2-fast"));
       assert.ok(ids.includes("accounts/fireworks/routers/kimi-fast-latest"));
       assert.ok(ids.includes("accounts/fireworks/routers/kimi-latest"));
     } finally {
@@ -60,6 +62,7 @@ describe("Fire Pass defaults", () => {
 
   test("latest router short IDs normalize as routers", () => {
     assert.equal(normalizeModelId("glm-latest"), "accounts/fireworks/routers/glm-latest");
+    assert.equal(normalizeModelId("glm-5p2-fast"), "accounts/fireworks/routers/glm-5p2-fast");
     assert.equal(normalizeModelId("kimi-fast-latest"), "accounts/fireworks/routers/kimi-fast-latest");
     assert.equal(normalizeModelId("kimi-latest"), "accounts/fireworks/routers/kimi-latest");
   });
@@ -67,6 +70,7 @@ describe("Fire Pass defaults", () => {
   test("Fire Pass catalog includes all supported routers", () => {
     const catalog = [
       { id: "accounts/fireworks/routers/glm-latest", shortId: GLM_LATEST },
+      { id: "accounts/fireworks/routers/glm-5p2-fast", shortId: "glm-5p2-fast" },
       { id: "accounts/fireworks/routers/kimi-fast-latest", shortId: KIMI_FAST_LATEST },
       { id: "accounts/fireworks/routers/kimi-k2p6-turbo", shortId: "kimi-k2p6-turbo" },
       { id: "accounts/fireworks/routers/kimi-k2p7-code-fast", shortId: K2P7_FAST },
@@ -75,7 +79,7 @@ describe("Fire Pass defaults", () => {
 
     assert.deepEqual(
       filterCatalogForKeyType(catalog, "firepass").map((entry) => entry.shortId),
-      [GLM_LATEST, KIMI_FAST_LATEST, K2P7_FAST],
+      [GLM_LATEST, "glm-5p2-fast", KIMI_FAST_LATEST, K2P7_FAST],
     );
   });
 
@@ -89,6 +93,7 @@ describe("Fire Pass defaults", () => {
   test("GLM latest and GLM 5P2 use Claude Code 1m context", () => {
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/glm-latest"), "accounts/fireworks/routers/glm-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/glm-5p2"), "accounts/fireworks/models/glm-5p2[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/glm-5p2-fast"), "accounts/fireworks/routers/glm-5p2-fast[1m]");
 
     const env = applyClaudeCodeContextPolicy(
       { CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" },

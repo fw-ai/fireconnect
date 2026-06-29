@@ -65,7 +65,7 @@ describe("uninstall", () => {
     await writeFile(codexPath, codexOriginal);
 
     await runFireconnect(
-      ["configure", "--harnesses", "claude,opencode,codex", "--api-key", "fw_test_key_12345", "--api-key-mode", "literal"],
+      ["configure", "--harnesses", "claude,opencode,codex", "--api-key", "fw_test_key_12345"],
       { HOME: home },
     );
     await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], { HOME: home });
@@ -99,7 +99,7 @@ describe("uninstall", () => {
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
     await runFireconnect(
-      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345", "--api-key-mode", "literal"],
+      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345"],
       { HOME: home },
     );
     await runFireconnect(
@@ -134,7 +134,7 @@ describe("uninstall", () => {
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
     await runFireconnect(
-      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345", "--api-key-mode", "literal"],
+      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345"],
       { HOME: home },
     );
     await runFireconnect(
@@ -184,7 +184,7 @@ describe("uninstall", () => {
     await writeFile(settingsPath, originalSettings);
 
     await runFireconnect(
-      ["configure", "--harnesses", "claude", "--api-key", "fw_test_key_12345", "--api-key-mode", "literal"],
+      ["configure", "--harnesses", "claude", "--api-key", "fw_test_key_12345"],
       { HOME: home },
     );
 

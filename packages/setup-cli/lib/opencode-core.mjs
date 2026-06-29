@@ -3,21 +3,37 @@ import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import {
+  AZURE_API_KEY_ENV_REF,
+  AZURE_OPENAI_COMPATIBLE_NPM,
+  AZURE_PROVIDER_LABEL,
+  DEFAULT_AZURE_MODEL,
+  effectiveAzureApiKey,
+  normalizeAzureBaseUrl,
+} from "./azure-core.mjs";
+import {
   DEFAULT_FIREPASS_MAIN_MODEL,
   DEFAULT_MAIN_MODEL,
   detectApiKeyType,
+  MISSING_FIREWORKS_API_KEY_MESSAGE,
   normalizeModelId,
   readJsonIfExists,
   writeJson,
 } from "./fireconnect-core.mjs";
 import { isHarnessEnabled } from "./global-config.mjs";
 import { HARNESS } from "./harness.mjs";
+import {
+  anthropicDisplayNameBeforeRouter,
+  firerouterBackupPath,
+  firerouterProviderStatus,
+  stripFirerouterFromConfig,
+} from "./opencode-firerouter-core.mjs";
 
 export const OPENCODE_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1";
 export const OPENCODE_CONFIG_RELATIVE_PATH = ".config/opencode/opencode.json";
 export const OPENCODE_DATA_RELATIVE_DIR = ".fireconnect/opencode";
 export const OPENCODE_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
 export const OPENCODE_FIREWORKS_PROVIDER_ID = "fireworks-ai";
+export const OPENCODE_AZURE_PROVIDER_ID = "fireworks-azure";
 
 export function opencodeConfigPath(home, configPath) {
   if (configPath) {
@@ -56,6 +72,10 @@ export async function readRawIfExists(filePath) {
 
 export function opencodeCurrentModelId(config) {
   const modelRef = typeof config.model === "string" ? config.model : "";
+  const azurePrefix = `${OPENCODE_AZURE_PROVIDER_ID}/`;
+  if (modelRef.startsWith(azurePrefix)) {
+    return modelRef.slice(azurePrefix.length);
+  }
   const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
   if (modelRef.startsWith(prefix)) {
     return modelRef.slice(prefix.length);
@@ -68,14 +88,20 @@ export function opencodeCurrentModelId(config) {
 
 export function opencodeProviderStatus(config) {
   const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
+  const azurePrefix = `${OPENCODE_AZURE_PROVIDER_ID}/`;
+  const hasAzure = Boolean(config.provider?.[OPENCODE_AZURE_PROVIDER_ID]);
   const hasFireworksAi = Boolean(config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]);
   const hasLegacy = Boolean(config.provider?.fireworks);
   const model = typeof config.model === "string" ? config.model : "";
+  const azureModel = model.startsWith(azurePrefix);
+  if (hasAzure && azureModel) {
+    return "azure";
+  }
   const fireworksModel = model.startsWith(prefix) || model.startsWith("fireworks/");
   if ((hasFireworksAi || hasLegacy) && fireworksModel) {
     return "fireworks";
   }
-  if (hasFireworksAi || hasLegacy || fireworksModel) {
+  if (hasAzure || azureModel || hasFireworksAi || hasLegacy || fireworksModel) {
     return "custom";
   }
   return "default";
@@ -97,7 +123,7 @@ export async function enableOpencodeFireworks({
   keyType = "fireworks",
 }) {
   if (!apiKey) {
-    throw new Error("No Fireworks API key found. Pass --api-key or set FIREWORKS_API_KEY.");
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
   const snapshot = await readRawIfExists(configPath);
@@ -140,7 +166,7 @@ export async function enableOpencodeFireworks({
   const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
   const hasFireconnectRouting = Boolean(
     config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] || config.provider?.fireworks,
-  );
+  ) || firerouterProviderStatus(config) === "firerouter";
   const home = homeFromDataDir(dataDir);
   const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
   const shouldSnapshot = !hasBackup
@@ -174,8 +200,108 @@ export async function enableOpencodeFireworks({
     model: `${prefix}${resolvedModel}`,
   };
 
+  // Direct and FireRouter modes are mutually exclusive: drop any FireRouter
+  // wiring left on the Anthropic provider by a prior `on --router`.
+  const frBackup = await readJsonIfExists(
+    firerouterBackupPath(path.join(dataDir, "firerouter"), configPath),
+  );
+  stripFirerouterFromConfig(next, {
+    restoreAnthropicDisplayName: anthropicDisplayNameBeforeRouter(frBackup),
+  });
+
   await writeJson(configPath, next);
   return { model: next.model, apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference", keyType: resolvedKeyType };
+}
+
+export async function enableOpencodeAzure({
+  configPath,
+  dataDir,
+  apiKey,
+  apiKeyFromFlag = false,
+  baseUrl,
+  modelId,
+}) {
+  if (!apiKey || (apiKey === AZURE_API_KEY_ENV_REF && !effectiveAzureApiKey(apiKey))) {
+    throw new Error("No Azure API key found. Export AZURE_API_KEY or pass --api-key with your Foundry key.");
+  }
+
+  const normalizedBaseUrl = normalizeAzureBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) {
+    throw new Error(
+      "No Azure endpoint found. Pass --base-url with your Microsoft Foundry project endpoint "
+      + "(e.g. https://<resource>.services.ai.azure.com).",
+    );
+  }
+
+  const snapshot = await readRawIfExists(configPath);
+  let config = {};
+  if (snapshot.existed && snapshot.raw.trim()) {
+    try {
+      config = JSON.parse(snapshot.raw);
+    } catch {
+      throw new Error(`${configPath} is not valid JSON`);
+    }
+  }
+
+  const backupPath = opencodeBackupPath(dataDir, configPath);
+  const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
+  const hasFireconnectRouting = opencodeProviderStatus(config) === "fireworks"
+    || opencodeProviderStatus(config) === "azure"
+    || firerouterProviderStatus(config) === "firerouter";
+  const home = homeFromDataDir(dataDir);
+  const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
+  const shouldSnapshot = !hasBackup
+    ? !hasFireconnectRouting || !wasGloballyEnabled
+    : !hasFireconnectRouting;
+  if (shouldSnapshot) {
+    await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
+    await writeJson(backupPath, { configPath: path.resolve(configPath), snapshot });
+    await chmod(backupPath, 0o600);
+  }
+
+  const provider = { ...(config.provider ?? {}) };
+  delete provider.fireworks;
+  delete provider[OPENCODE_FIREWORKS_PROVIDER_ID];
+
+  const existing = provider[OPENCODE_AZURE_PROVIDER_ID] ?? {};
+  const resolvedModel = modelId || opencodeProviderStatus(config) === "azure"
+    ? (modelId || opencodeCurrentModelId(config) || DEFAULT_AZURE_MODEL)
+    : DEFAULT_AZURE_MODEL;
+  const apiKeyValue = apiKeyFromFlag ? apiKey : AZURE_API_KEY_ENV_REF;
+  provider[OPENCODE_AZURE_PROVIDER_ID] = {
+    ...existing,
+    npm: AZURE_OPENAI_COMPATIBLE_NPM,
+    name: AZURE_PROVIDER_LABEL,
+    options: {
+      ...(existing.options ?? {}),
+      baseURL: normalizedBaseUrl,
+      apiKey: apiKeyValue,
+    },
+    models: {
+      ...(existing.models ?? {}),
+      [resolvedModel]: { name: resolvedModel },
+    },
+  };
+
+  const next = {
+    ...config,
+    provider,
+    model: `${OPENCODE_AZURE_PROVIDER_ID}/${resolvedModel}`,
+  };
+
+  const frBackup = await readJsonIfExists(
+    firerouterBackupPath(path.join(dataDir, "firerouter"), configPath),
+  );
+  stripFirerouterFromConfig(next, {
+    restoreAnthropicDisplayName: anthropicDisplayNameBeforeRouter(frBackup),
+  });
+
+  await writeJson(configPath, next);
+  return {
+    model: next.model,
+    baseUrl: normalizedBaseUrl,
+    apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference",
+  };
 }
 
 export async function disableOpencodeFireworks({ configPath, dataDir, wasEnabled = false }) {
