@@ -2,7 +2,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fw-ai/fireconnect/blob/main/LICENSE)
 
-> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, and Cursor.
+> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, Cursor, and VS Code.
 
 **Install in one line:**
 
@@ -16,7 +16,7 @@ Or with `bash` directly:
 curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash
 ```
 
-Install the `fireconnect` CLI once, then use it to manage Fireworks routing for Claude Code, OpenCode, Codex, Pi, and Cursor. Run `fireconnect help` to see what it can do.
+Install the `fireconnect` CLI once, then use it to manage Fireworks routing for Claude Code, OpenCode, Codex, Pi, Cursor, and VS Code. Run `fireconnect help` to see what it can do.
 
 ## Quick Setup
 
