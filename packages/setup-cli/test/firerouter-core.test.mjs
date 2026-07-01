@@ -24,10 +24,16 @@ import {
   hasEnterpriseAnthropicCredentials,
   opencodeAuthPath,
   resolveEnterpriseAnthropicAuth,
+  _setTestClaudeKeychainBlob,
 } from "../lib/anthropic-enterprise.mjs";
 import { HARNESS } from "../lib/harness.mjs";
 
 describe("firerouter-core", () => {
+  // Neutralize the macOS keychain so tests that don't explicitly test it
+  // aren't affected by a real Claude Code keychain entry on the dev machine.
+  // Keychain-specific tests override this with _setTestClaudeKeychainBlob.
+  _setTestClaudeKeychainBlob("");
+
   it("detects FireRouter base URL", () => {
     assert.equal(isFirerouterBaseUrl(FIREROUTER_BASE_URL), true);
     assert.equal(isFirerouterBaseUrl("https://api.fireworks.ai/inference"), false);
@@ -320,6 +326,87 @@ describe("firerouter-core", () => {
     } finally {
       if (saved !== undefined) {
         process.env.ANTHROPIC_API_KEY = saved;
+      } else {
+        delete process.env.ANTHROPIC_API_KEY;
+      }
+    }
+  });
+
+  it("resolveHarnessOnAnthropicKey uses macOS keychain when credentials file is absent", async () => {
+    const savedAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _setTestClaudeKeychainBlob(JSON.stringify({
+      claudeAiOauth: { accessToken: "enterprise-keychain-token" },
+    }));
+    try {
+      const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-keychain-"));
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+
+      const resolved = await resolveHarnessOnAnthropicKey({
+        home,
+        harness: HARNESS.CLAUDE,
+      });
+      assert.equal(resolved.anthropicKey, "");
+      assert.equal(resolved.enterpriseAuth, true);
+      assert.equal(resolved.source, "claude-keychain");
+    } finally {
+      _setTestClaudeKeychainBlob("");
+      if (savedAnthropic !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedAnthropic;
+      } else {
+        delete process.env.ANTHROPIC_API_KEY;
+      }
+    }
+  });
+
+  it("credentials file takes priority over keychain", async () => {
+    const savedAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _setTestClaudeKeychainBlob(JSON.stringify({
+      claudeAiOauth: { accessToken: "keychain-token" },
+    }));
+    try {
+      const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-file-over-keychain-"));
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+      await writeFile(
+        claudeCredentialsPath(home),
+        JSON.stringify({ claudeAiOauth: { accessToken: "file-token" } }),
+      );
+
+      const resolved = await resolveHarnessOnAnthropicKey({
+        home,
+        harness: HARNESS.CLAUDE,
+      });
+      assert.equal(resolved.enterpriseAuth, true);
+      assert.equal(resolved.source, "claude-credentials");
+    } finally {
+      _setTestClaudeKeychainBlob("");
+      if (savedAnthropic !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedAnthropic;
+      } else {
+        delete process.env.ANTHROPIC_API_KEY;
+      }
+    }
+  });
+
+  it("keychain with empty OAuth material does not count as enterprise auth", async () => {
+    const savedAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    _setTestClaudeKeychainBlob(JSON.stringify({
+      claudeAiOauth: {},
+    }));
+    try {
+      const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-keychain-empty-oauth-"));
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+
+      await assert.rejects(
+        () => resolveHarnessOnAnthropicKey({ home, harness: HARNESS.CLAUDE }),
+        (error) => error.message === MISSING_ANTHROPIC_KEY_MESSAGE,
+      );
+    } finally {
+      _setTestClaudeKeychainBlob("");
+      if (savedAnthropic !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedAnthropic;
       } else {
         delete process.env.ANTHROPIC_API_KEY;
       }

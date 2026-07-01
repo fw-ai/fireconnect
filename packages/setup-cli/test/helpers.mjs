@@ -18,6 +18,9 @@ export const FW_CODEX_KEY = "fw_test_codex_key_00000000000000";
 export const SK_ANT_KEY = "sk-ant-test-non-fireworks-token";
 
 export const NO_ENV_KEY = { FIREWORKS_API_KEY: "" };
+// Neutralize the macOS keychain in spawned CLI subprocesses so tests don't
+// pick up a real Claude Code keychain entry on the dev machine.
+const TEST_ENV_NEUTRALIZE_KEYCHAIN = { FIRECONNECT_TEST_CLAUDE_KEYCHAIN: "" };
 
 export async function withoutEnvFireworksKey(fn) {
   const prev = process.env.FIREWORKS_API_KEY;
@@ -66,6 +69,7 @@ export async function runCli(args, { home, env = {} } = {}) {
     const child = spawn(process.execPath, [CLI, ...args], {
       env: {
         ...process.env,
+        ...TEST_ENV_NEUTRALIZE_KEYCHAIN,
         ...env,
         HOME: home,
         FIREWORKS_API_KEY: env.FIREWORKS_API_KEY ?? "",

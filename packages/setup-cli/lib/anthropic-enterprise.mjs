@@ -1,11 +1,43 @@
 import path from "node:path";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
 import { readJsonIfExists } from "./fireconnect-core.mjs";
 import { HARNESS } from "./harness.mjs";
 import { OPENCODE_ANTHROPIC_PROVIDER_ID } from "./opencode-firerouter-core.mjs";
 
 export const CLAUDE_CREDENTIALS_FILENAME = ".credentials.json";
 export const OPENCODE_AUTH_RELATIVE_PATH = ".local/share/opencode/auth.json";
+
+/** macOS Keychain service name Claude Code stores OAuth credentials under. */
+export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+
+/**
+ * Test-only override for the keychain credentials blob. When set to a string,
+ * {@link readClaudeKeychainCredentials} parses it instead of querying the OS
+ * keychain. Set to "" to simulate an empty keychain. `null` restores production
+ * behavior. This avoids race conditions from concurrent tests mutating
+ * `process.env`.
+ * @type {string | null}
+ */
+let testKeychainBlob = null;
+
+/**
+ * @internal — test seam for the macOS keychain Claude credentials blob.
+ * In-process tests use this setter; spawned-child tests use the
+ * `FIRECONNECT_TEST_CLAUDE_KEYCHAIN` env var (read once at module load).
+ * @param {string | null} blob
+ */
+export function _setTestClaudeKeychainBlob(blob) {
+  testKeychainBlob = blob;
+}
+
+/**
+ * Env-based test seam for spawned CLI subprocesses. Read once at module load
+ * so child processes inherit a neutralized keychain from the test runner env.
+ * Values: a JSON string to inject, "" to simulate an empty keychain, or unset
+ * for production behavior.
+ */
+const ENV_TEST_KEYCHAIN_BLOB = process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN ?? null;
 
 /** @typedef {"none" | "api-key" | "oauth"} AnthropicAuthKind */
 
@@ -100,6 +132,60 @@ export function opencodeAuthPath(home) {
 }
 
 /**
+ * Read the Claude Code credentials blob from the macOS login keychain.
+ * Claude Code stores its OAuth token (same shape as `.credentials.json`)
+ * under the generic-password service "Claude Code-credentials".
+ * @returns {string} raw JSON string, or "" if not found / not on macOS.
+ */
+function macReadClaudeKeychainCredentials() {
+  const r = spawnSync("security", ["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"], {
+    encoding: "utf8",
+  });
+  if (r.status !== 0) {
+    return "";
+  }
+  return (r.stdout || "").trim();
+}
+
+/**
+ * Read Claude Code credentials from the OS keychain, returning a parsed
+ * object (same shape as `.credentials.json`) or `null` when absent.
+ * macOS is the only platform where Claude Code is known to use the keychain
+ * today; Linux/Windows fall through to the credentials file.
+ *
+ * Tests inject a fake blob via `FIRECONNECT_TEST_CLAUDE_KEYCHAIN` so the
+ * keychain path can be exercised on any OS without hitting the real keychain.
+ * @returns {Record<string, unknown> | null}
+ */
+function readClaudeKeychainCredentials() {
+  const blob = testKeychainBlob !== null ? testKeychainBlob : ENV_TEST_KEYCHAIN_BLOB;
+  if (blob !== null) {
+    if (!blob) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(blob);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform !== "darwin") {
+    return null;
+  }
+  const raw = macReadClaudeKeychainCredentials();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Anthropic key already stored on the OpenCode anthropic provider block.
  * @param {object} config parsed opencode.json
  */
@@ -135,14 +221,22 @@ export async function readOpencodeAnthropicAuth(home) {
 }
 
 /**
+ * Read Claude Code's Anthropic auth. Checks the credentials file
+ * (`~/.claude/.credentials.json`) first, then falls back to the macOS
+ * keychain entry Claude Code writes when no credentials file is present.
  * @param {string} home
- * @returns {Promise<{ kind: AnthropicAuthKind, source: "claude-credentials" | "" }>}
+ * @returns {Promise<{ kind: AnthropicAuthKind, source: "claude-credentials" | "claude-keychain" | "" }>}
  */
 export async function readClaudeAnthropicAuth(home) {
   const creds = await readJsonIfExists(claudeCredentialsPath(home));
   const kind = classifyClaudeCredentials(creds);
   if (kind === "oauth") {
     return { kind, source: "claude-credentials" };
+  }
+  const keychainCreds = readClaudeKeychainCredentials();
+  const keychainKind = classifyClaudeCredentials(keychainCreds);
+  if (keychainKind === "oauth") {
+    return { kind: keychainKind, source: "claude-keychain" };
   }
   return { kind: "none", source: "" };
 }
@@ -174,7 +268,7 @@ export async function resolveEnterpriseAnthropicAuth(home, harness) {
   if (harness === HARNESS.OPENCODE) {
     const claude = await readClaudeAnthropicAuth(home);
     if (claude.kind === "oauth") {
-      return { enterpriseAuth: true, source: "claude-credentials" };
+      return { enterpriseAuth: true, source: claude.source };
     }
     return { enterpriseAuth: false, source: "" };
   }
@@ -182,7 +276,7 @@ export async function resolveEnterpriseAnthropicAuth(home, harness) {
   if (harness === HARNESS.CLAUDE) {
     const claude = await readClaudeAnthropicAuth(home);
     if (claude.kind === "oauth") {
-      return { enterpriseAuth: true, source: "claude-credentials" };
+      return { enterpriseAuth: true, source: claude.source };
     }
     return { enterpriseAuth: false, source: "" };
   }
