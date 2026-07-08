@@ -28,6 +28,12 @@ import {
 } from "../lib/anthropic-enterprise.mjs";
 import { HARNESS } from "../lib/harness.mjs";
 
+// claudeCredentialsPath() honors CLAUDE_CONFIG_DIR over the temp HOME these
+// tests pass, so a dev machine running Claude Code under a custom config dir
+// leaks real OAuth creds in (enterpriseAuth flips true). It's the only reader
+// of CLAUDE_CONFIG_DIR, so dropping it makes the temp home authoritative.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 describe("firerouter-core", () => {
   // Neutralize the macOS keychain so tests that don't explicitly test it
   // aren't affected by a real Claude Code keychain entry on the dev machine.

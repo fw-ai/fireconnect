@@ -2,30 +2,12 @@ import { mkdtemp, readFile, writeFile, mkdir, unlink, access, stat } from "node:
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { codexBackupPath, codexConfigPath, codexDataDir } from "../lib/codex-core.mjs";
 import { writeJson } from "../lib/fireconnect-core.mjs";
 import { writeGlobalConfig } from "../lib/global-config.mjs";
-import { FPK_KEY, withoutEnvFireworksKey } from "./helpers.mjs";
-
-const CLI = path.join(import.meta.dirname, "..", "bin", "fireconnect.mjs");
-
-function runFireconnect(args, env = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.on("error", reject);
-  });
-}
+import { FPK_KEY, FW_CODEX_KEY, runFireconnect, seedKeychainConfig, withoutEnvFireworksKey, writeCodexConfig } from "./helpers.mjs";
 
 describe("codex harness integration", () => {
   it("on/off round-trip restores config.toml", async () => {
@@ -46,7 +28,7 @@ describe("codex harness integration", () => {
 
     const onResult = await runFireconnect(
       ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+      { HOME: home, FIREWORKS_API_KEY: "" },
     );
     assert.equal(onResult.code, 0);
 
@@ -58,7 +40,8 @@ describe("codex harness integration", () => {
     assert.doesNotMatch(enabled, /model_catalog_json/);
     assert.equal(existsSync(path.join(home, ".codex", "fireworks-model-catalog.json")), false);
     assert.match(onResult.stdout, /could not generate model catalog/i);
-    assert.match(enabled, /experimental_bearer_token = "fw_test_key_12345"/);
+    assert.match(enabled, /env_key = "FIREWORKS_API_KEY"/);
+    assert.doesNotMatch(enabled, /experimental_bearer_token/);
     assert.match(enabled, /wire_api = "responses"/);
     assert.match(enabled, /\[\[mcp_servers\]\]/);
 
@@ -70,23 +53,41 @@ describe("codex harness integration", () => {
     assert.equal(restored, original);
   });
 
-  it("on resolves API key from global config when env is unset", async () => {
+  it("on resolves API key from keychain when env is unset", async () => {
     await withoutEnvFireworksKey(async () => {
       const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-global-"));
       await mkdir(path.join(home, ".codex"), { recursive: true });
-      await writeGlobalConfig(home, {
-        apiKey: "fw_test_key_12345",
-        harnesses: { codex: { enabled: false } },
-      });
+      await seedKeychainConfig(home, "fw_test_key_12345");
 
-      const onResult = await runFireconnect(["codex", "on"], { HOME: home });
+      const onResult = await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(onResult.code, 0);
-      assert.match(onResult.stdout, /API key written into ~\/\.codex\/config\.toml \(passed via --api-key\)/);
+      assert.match(onResult.stdout, /env_key FIREWORKS_API_KEY/);
 
       const configPath = codexConfigPath(home);
       const enabled = await readFile(configPath, "utf8");
       assert.match(enabled, /model_provider = "fireworks-ai"/);
       assert.doesNotMatch(enabled, /profile = "fireconnect"/);
+    });
+  });
+
+  it("on reuses harness-local bearer token when global config and env are unset", async () => {
+    await withoutEnvFireworksKey(async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-harness-literal-"));
+      await writeCodexConfig(home, { apiKey: FW_CODEX_KEY, envRef: false });
+
+      const onResult = await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
+      assert.equal(onResult.code, 0, onResult.stderr);
+
+      const config = await readFile(codexConfigPath(home), "utf8");
+      assert.match(config, /env_key = "FIREWORKS_API_KEY"/);
+      assert.doesNotMatch(config, /experimental_bearer_token/);
+
+      const exportResult = await runFireconnect(["key", "export"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+      });
+      assert.equal(exportResult.code, 0, exportResult.stderr);
+      assert.equal(exportResult.stdout.trim(), FW_CODEX_KEY);
     });
   });
 
@@ -106,23 +107,6 @@ describe("codex harness integration", () => {
     });
   });
 
-  it("on with --api-key restricts config.toml to owner-only (0o600)", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-perms-"));
-    await mkdir(path.join(home, ".codex"), { recursive: true });
-    const configPath = codexConfigPath(home);
-
-    const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
-    const onResult = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
-    assert.equal(onResult.code, 0);
-
-    const enabled = await readFile(configPath, "utf8");
-    assert.match(enabled, /experimental_bearer_token = "fw_test_key_12345"/);
-
-    const st = await stat(configPath);
-    // Mask off file-type bits; expect owner-only read/write (0o600).
-    assert.equal(st.mode & 0o777, 0o600, "config.toml should be 0o600 when a literal key is written");
-  });
-
   it("on with env reference does not tighten config.toml permissions", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-env-perms-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
@@ -136,8 +120,6 @@ describe("codex harness integration", () => {
     assert.match(enabled, /env_key = "FIREWORKS_API_KEY"/);
     assert.doesNotMatch(enabled, /experimental_bearer_token/);
 
-    // No literal key, so the mode should NOT be forced to 0o600. We only assert
-    // it is writable+readable by owner (the 0o600 bit is not required here).
     const st = await stat(configPath);
     assert.equal(st.mode & 0o700, 0o600, "config.toml should remain owner-readable/writable");
   });
@@ -231,7 +213,7 @@ describe("codex harness integration", () => {
     assert.match(result.stderr, /standard Fireworks API key/);
   });
 
-  it("model reset keeps stored bearer when FIREWORKS_API_KEY env differs", async () => {
+  it("model reset keeps env_key when FIREWORKS_API_KEY env differs", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-reset-env-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
@@ -248,20 +230,17 @@ describe("codex harness integration", () => {
     assert.equal(resetResult.code, 0);
 
     const config = await readFile(codexConfigPath(home), "utf8");
-    assert.match(config, /experimental_bearer_token = "fw_test_key_12345"/);
-    assert.doesNotMatch(config, /fw_test_key_different/);
+    assert.match(config, /env_key = "FIREWORKS_API_KEY"/);
+    assert.doesNotMatch(config, /experimental_bearer_token/);
   });
 
   it("codex on rejects Fire Pass key sourced from global config", async () => {
     await withoutEnvFireworksKey(async () => {
       const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-reset-"));
       await mkdir(path.join(home, ".codex"), { recursive: true });
-      await writeGlobalConfig(home, {
-        apiKey: FPK_KEY,
-        harnesses: { codex: { enabled: false } },
-      });
+      await seedKeychainConfig(home, FPK_KEY);
 
-      const env = { HOME: home };
+      const env = { HOME: home, FIREWORKS_API_KEY: "" };
       const result = await runFireconnect(["codex", "on"], env);
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /\/responses endpoint is not supported for Fire Pass keys yet/);

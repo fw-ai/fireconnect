@@ -18,7 +18,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", ...env },
+      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -44,7 +44,7 @@ async function withHome(fn) {
 
 async function configureAzure(home, extraArgs = [], env = {}) {
   return runFireconnect(
-    ["configure", "--harnesses", "opencode,codex,pi", "--provider", "azure", "--base-url", AZURE_ENDPOINT, ...extraArgs],
+    ["configure", "--provider", "azure", "--base-url", AZURE_ENDPOINT, ...extraArgs],
     { HOME: home, ...env },
   );
 }
@@ -65,7 +65,7 @@ describe("configure azure endpoint (top-level provider)", () => {
   it("fails when azure is selected without an endpoint", async () => {
     await withHome(async (home) => {
       const result = await runFireconnect(
-        ["configure", "--harnesses", "opencode", "--provider", "azure", "--api-key", AZURE_KEY],
+        ["configure", "--provider", "azure", "--api-key", AZURE_KEY],
         { HOME: home },
       );
       assert.notEqual(result.code, 0);
@@ -76,7 +76,7 @@ describe("configure azure endpoint (top-level provider)", () => {
   it("rejects an unknown provider", async () => {
     await withHome(async (home) => {
       const result = await runFireconnect(
-        ["configure", "--harnesses", "opencode", "--provider", "bedrock"],
+        ["configure", "--provider", "bedrock"],
         { HOME: home },
       );
       assert.notEqual(result.code, 0);

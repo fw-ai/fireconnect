@@ -2,7 +2,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fw-ai/fireconnect/blob/main/LICENSE)
 
-> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, Cursor, and VS Code.
+> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, and Deep Agents.
 
 **Install in one line:**
 
@@ -16,7 +16,7 @@ Or with `bash` directly:
 curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash
 ```
 
-Install the `fireconnect` CLI once, then use it to manage Fireworks routing for Claude Code, OpenCode, Codex, Pi, Cursor, and VS Code. Run `fireconnect help` to see what it can do.
+Install the `fireconnect` CLI once, then use it to manage Fireworks routing for Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, and Deep Agents. Run `fireconnect help` to see what it can do.
 
 ## Quick Setup
 
@@ -26,14 +26,14 @@ Run this from a terminal:
 curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash
 ```
 
-For non-interactive setup:
+The installer installs the `fireconnect` CLI; it does not prompt for a key. Once it finishes, sign in and enable a harness:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | FIREWORKS_API_KEY="fw_..." bash
+fireconnect login        # guided sign-in (browser or paste a key)
+fireconnect claude on    # route Claude Code through Fireworks
 ```
 
-Fire Pass users can use a `fpk_...` key directly — FireConnect detects the key type and
-uses the correct defaults for Fire Pass (glm-latest for all aliases).
+Fire Pass users can use a `fpk_...` key directly — FireConnect detects the key type and uses the correct defaults for Fire Pass (`glm-fast-latest` for all aliases).
 
 If you prefer installing from an SSH checkout:
 
@@ -43,22 +43,18 @@ mkdir -p ~/.fireconnect && git clone git@github.com:fw-ai/fireconnect.git ~/.fir
 
 The installer:
 
-- Uses Node.js to update Claude Code settings. If Node.js is missing, asks before installing it with Homebrew or apt. It does not install or update npm packages.
-- Points you to the Fireworks API key page and prompts once for your Fireworks API key.
-- Applies the default model mapping and writes Claude Code settings.
+- Requires Node.js 18+. If it's missing or too old, installs it with Homebrew on macOS or prints upgrade instructions (nvm / nodejs.org / NodeSource) elsewhere.
+- Clones the FireConnect CLI source to `~/.fireconnect/cli` and runs `npm install --omit=dev` for its one runtime dependency (`cross-keychain`, used for secure API-key storage).
 - Installs the `fireconnect` CLI launcher to `~/.local/bin` and adds it to your shell `PATH`.
 
-Then fully restart Claude Code and test with:
+It does **not** sign you in or write any harness settings — run `fireconnect login` then `fireconnect <harness> on` (e.g. `claude`, `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepagents`) after it finishes, then fully restart that tool.
+
+Default models (Claude Code):
 
 ```text
-hi
-```
-
-Default models:
-
-```text
-main     -> glm-latest
-opus     -> glm-latest
+main     -> glm-fast-latest
+opus     -> glm-fast-latest
+fable    -> glm-fast-latest
 sonnet   -> glm-5p1
 haiku    -> deepseek-v4-flash
 subagent -> deepseek-v4-flash
@@ -75,33 +71,34 @@ https://app.fireworks.ai/settings/users/api-keys
 Then enable Fireworks routing from a terminal:
 
 ```bash
-fireconnect claude on --api-key fw_...   # also saves key to ~/.fireconnect/config.json
+fireconnect login                        # sign in (browser or paste); stores the key in the OS keychain
+fireconnect claude on                    # uses apiKeyHelper (no literal key in settings)
 ```
 
 Restart Claude Code after this completes.
 
 ## What Gets Written
 
-The setup writes these Claude Code settings:
+The setup writes these Claude Code settings (no literal API key in the file — the key lives in the OS keychain and is fetched at runtime via `apiKeyHelper`):
 
 ```json
 {
+  "apiKeyHelper": "/path/to/fireconnect key export",
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.fireworks.ai/inference",
-    "ANTHROPIC_API_KEY": "fw_YOUR_FIREWORKS_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN": "fw_YOUR_FIREWORKS_API_KEY",
-    "ANTHROPIC_MODEL": "accounts/fireworks/routers/glm-latest[1m]",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "accounts/fireworks/routers/glm-latest[1m]",
+    "ANTHROPIC_MODEL": "accounts/fireworks/routers/glm-fast-latest[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "accounts/fireworks/routers/glm-fast-latest[1m]",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "accounts/fireworks/models/glm-5p1",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "accounts/fireworks/models/deepseek-v4-flash",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "accounts/fireworks/routers/glm-fast-latest[1m]",
     "CLAUDE_CODE_SUBAGENT_MODEL": "accounts/fireworks/models/deepseek-v4-flash"
   }
 }
 ```
 
-The setup writes both `ANTHROPIC_API_KEY` (preferred) and `ANTHROPIC_AUTH_TOKEN` (compatibility alias) with the same Fireworks key. It saves a backup of your previous provider settings so `fireconnect claude off` can restore them.
+Claude Code calls `apiKeyHelper` at runtime to fetch the key from the OS keychain. It saves a backup of your previous provider settings so `fireconnect claude off` can restore them.
 
-Short model IDs are accepted everywhere. For example, `glm-latest` is written to Claude Code settings as `accounts/fireworks/routers/glm-latest[1m]`.
+Short model IDs are accepted everywhere. For example, `glm-fast-latest` is written to Claude Code settings as `accounts/fireworks/routers/glm-fast-latest[1m]`.
 
 ### Cursor IDE
 
@@ -128,7 +125,7 @@ fireconnect cursor off                   # restores your previous settings
 
 VS Code Chat's custom language models are configured in `chatLanguageModels.json` (a JSON array of providers). fireconnect adds a `Fireworks` provider (vendor `customendpoint`, `apiType: chat-completions`) whose models point at `https://api.fireworks.ai/inference` (VS Code appends `/v1/chat/completions`).
 
-The API key is **not** stored in the JSON — VS Code stores it in the OS keychain (macOS Keychain / Windows Credential Manager / libsecret on Linux) and the JSON holds a `${input:chat.lm.secret.<id>}` reference. `fireconnect vscode on` writes both: the provider entry to `chatLanguageModels.json` and the key to the keychain under VS Code's `product.nameLong` service (e.g. `Visual Studio Code`).
+The API key is **not** stored in the JSON — VS Code resolves the `${input:chat.lm.secret.<id>}` reference through its secret storage, which keeps the key as an Electron `safeStorage`-encrypted blob inside VS Code's application-scoped `state.vscdb` (SQLite `ItemTable`, key `secret://<id>`). `fireconnect vscode on` writes both: the provider entry to `chatLanguageModels.json` and the encrypted key to `state.vscdb` under a `chat.lm.secret.fw-*` id.
 
 ```bash
 fireconnect vscode on --api-key fw_...    # quit VS Code first
@@ -139,11 +136,31 @@ fireconnect vscode model select
 fireconnect vscode off                    # restores chatLanguageModels.json + removes the key
 ```
 
-**No restart needed** — VS Code watches `chatLanguageModels.json` and hot-reloads provider changes (including the keychain-resolved API key), so `on`/`off`/`model add`/`model select`/`model reset` take effect immediately in the Chat picker. Quit VS Code only to avoid a concurrent-edit clobber (if you edit models in VS Code's UI at the same moment fireconnect writes). `status` and `model list` are read-only and work any time.
+**Quit VS Code (`Cmd-Q` / File > Quit) before `on` or `off`** — those write `state.vscdb`, which a running VS Code owns (it loads the DB into memory at startup and rewrites it on exit, so the write would be silently lost). Pass `--force` to write anyway. `model add` / `model select` / `model reset` only edit `chatLanguageModels.json`, which VS Code hot-reloads via a file watcher — so those take effect immediately in the Chat picker and only warn if VS Code is running (concurrent-edit clobber risk). `status` and `model list` are read-only and work any time.
 
 Per-model `toolCalling`/`vision`/`maxInputTokens`/`maxOutputTokens` are defined alongside serverless pricing in `packages/setup-cli/lib/fireworks-model-specs.mjs` (sourced from the Fireworks model library and API). Unmapped models default to `toolCalling: true` and `vision: false`; token limits are omitted until the model is added to the specs registry. VS Code sends `maxOutputTokens` as `max_output_tokens`, so mapped values must not exceed the model limit.
 
-On macOS the first time VS Code reads the fireconnect-written keychain entry it may show a Keychain access prompt — click **Always Allow** once. On Linux, `libsecret` (`secret-tool`) must be installed. `--keychain-service` overrides the service name for custom installs / Insiders. `off` restores your original `chatLanguageModels.json` and deletes the `chat.lm.secret.fw-*` keychain entry; any providers you configured manually are preserved.
+On macOS, `safeStorage` encrypts with a master key VS Code stores in the login Keychain under "<App> Safe Storage" (e.g. `Visual Studio Code Safe Storage`); opening VS Code once creates it, so the first `on` may need that. Insiders is detected automatically (it reads `Code - Insiders Safe Storage` and targets the Insiders `state.vscdb`); `--vscode-path` pointing inside an Insiders user-data dir is also inferred. On Linux, `safeStorage` needs `libsecret` (`secret-tool`) for real encryption — without it, Chromium falls back to a hardcoded password (obfuscated, not encrypted), which fireconnect still writes but warns about. `off` restores your original `chatLanguageModels.json` byte-for-byte and deletes the `chat.lm.secret.fw-*` secret row from `state.vscdb`; any providers you configured manually are preserved.
+
+### FireRouter mode
+
+`fireconnect vscode on --router` retargets VS Code Chat at FireRouter so it speaks the **Anthropic Messages** wire format (`https://router.fireworks.ai/v1/messages`) and routes Anthropic models server-side. This requires both a Fireworks key and an Anthropic key:
+
+```bash
+fireconnect vscode on --router --api-key fw_... --anthropic-api-key sk-ant-...
+fireconnect vscode status
+fireconnect vscode off
+```
+
+VS Code's custom endpoint resolves exactly **one** credential from secret storage (the provider `apiKey`), so FireRouter's two-header auth can't both be encrypted. In `messages` mode VS Code auto-sends `x-api-key: <apiKey>`, so fireconnect uses **Layout A**:
+
+- the **Anthropic key** is stored encrypted in `state.vscdb` under the `chat.lm.secret.fw-*` row (the `apiKey` field);
+- the **Fireworks key** is written as a **plaintext literal** in each model's `requestHeaders["X-FireRouter-Fireworks-Key"]`.
+
+This mirrors Claude Code's router mode (which also writes the Fireworks key in plaintext). The Anthropic key — the more expensive credential — stays encrypted. The provider is written with `apiType: "messages"` and each model's `url` points at `…/v1/messages`. Fire Pass keys are rejected (router mode is Anthropic-only).
+
+`on --router` registers the Claude models FireRouter advertises — **pick one in the VS Code Chat picker**. Because VS Code has no built-in Anthropic catalog to override (unlike the Pi harness), fireconnect enumerates them itself: it reads FireRouter's published catalog (`https://router.fireworks.ai/.well-known/opencode.json`, the `firerouter` provider's models), keeps the Claude models (the Messages endpoint is Anthropic-format), and collapses near-duplicate `[1m]` context variants and dated snapshots onto their plain alias. If the catalog can't be fetched (offline), it falls back to a bundled default set (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5`). Pin an explicit list with `FIRECONNECT_ROUTER_MODELS=id1,id2` to skip the network. `--main` and the model commands (`list`/`select`/`add`/`reset`) are disabled in router mode; model choice lives entirely in the Chat picker. Switching between `on` (direct) and `on --router` cleanly replaces the model set — a direct→router switch drops the Fireworks models for the advertised Claude set, and router→direct drops the router-shaped models. `off` restores your `chatLanguageModels.json` byte-for-byte and removes the secret.
+
 
 ## Browsing and Picking Models
 
@@ -172,8 +189,8 @@ fireconnect claude model list --search glm
 fireconnect opencode model list --json
 ```
 
-Resolves the key in documented order: `--api-key`, then the harness's stored key, then
-`~/.fireconnect/config.json`, then `FIREWORKS_API_KEY`. Non-Fireworks-shaped keys (for example
+Resolves the key in documented order: `--api-key`, then `FIREWORKS_API_KEY`, then the OS
+keychain, then legacy harness/global refs. Non-Fireworks-shaped keys (for example
 Anthropic `sk-ant-...`) are skipped when resolving harness-local keys.
 
 Fire Pass keys (`fpk_...`) show Fire Pass-supported routers: `glm-latest`, `glm-fast-latest`, `glm-5p2-fast`, `kimi-fast-latest`, and `kimi-k2p7-code-fast`.
@@ -182,7 +199,7 @@ Fire Pass keys (`fpk_...`) show Fire Pass-supported routers: `glm-latest`, `glm-
 
 Interactive picker. Requires a terminal and Fireworks to be enabled for that harness.
 
-**Claude Code** — pick one of five aliases (`main`, `opus`, `sonnet`, `haiku`, `subagent`):
+**Claude Code** — pick one of six aliases (`main`, `opus`, `fable`, `sonnet`, `haiku`, `subagent`):
 
 ```bash
 fireconnect claude model select
@@ -221,8 +238,8 @@ fireconnect vscode model select --search glm
 ### Claude Code pricing estimates (important)
 
 Claude Code’s `/model` picker and session cost estimates use **Anthropic list prices** (for
-example **$5 / $25 per Mtok** on the default Opus-style mapping for `glm-latest`). **Fireworks
-bills at serverless model rates** (for example about **$1.40 / $4.40 per Mtok** for GLM 5.2 on
+example **$5 / $25 per Mtok** on the default Opus-style mapping for `glm-fast-latest`). **Fireworks
+bills at serverless model rates** (for example about **$2.10 / $6.60 per Mtok** for GLM 5.2 Fast on
 standard serverless) — the UI estimate can be much higher than your real bill.
 
 FireConnect cannot override Claude Code’s price column. Use `fireconnect claude status` and
@@ -241,13 +258,13 @@ Short IDs are accepted everywhere and are normalized to their full paths automat
 
 | Short ID | Best for | Notes |
 |----------|----------|-------|
-| `glm-latest` | All-around use, agentic tasks | Default for `main` and `opus` slots. Version-tracking router; strong reasoning, 1M context. |
-| `glm-fast-latest` | Latency-sensitive agentic use | Version-tracking router on the high-speed Fast serving path (100+ tok/s), at a higher per-token price. 1M context. |
+| `glm-latest` | All-around use, agentic tasks | Version-tracking router; strong reasoning, 1M context. |
+| `glm-fast-latest` | Latency-sensitive agentic use | Default for `main`, `opus`, and `fable` slots. Version-tracking router on the high-speed Fast serving path (100+ tok/s), at a higher per-token price. 1M context. |
 | `glm-5p2-fast` | Latency-sensitive agentic use | Same as `glm-fast-latest` but pinned to GLM 5.2 rather than version-tracking. 1M context. |
 | `glm-5p1` | General use (lighter) | Default `sonnet` slot. Good balance of speed and quality. |
 | `deepseek-v4-flash` | Background / fast tasks | Default `haiku` and `subagent` slots. Lowest latency. |
 
-**Fire Pass keys** (`fpk_...`): all slots default to `glm-latest`.
+**Fire Pass keys** (`fpk_...`): all slots default to `glm-fast-latest`.
 
 **Switching a single slot** (Claude Code only):
 
@@ -267,15 +284,43 @@ global (no harness). Commands below are listed in the same order as `fireconnect
 **Global**
 
 ```text
-fireconnect configure              Register harnesses and API key preferences.
+fireconnect login                  Sign in — browser (creates a key) or paste a key you have.
+fireconnect logout                 Clear the stored key (keychain entry + config ref).
+fireconnect status                 Show sign-in state (signed in as whom) and where the key is stored.
+fireconnect configure              Set the provider (Azure/Foundry) and the Anthropic key.
+fireconnect demo                   Race your provider vs Fireworks GLM 5.2 Fast on the same prompt.
+fireconnect upgrade                Pull the latest FireConnect from GitHub; re-probe secret storage.
 fireconnect uninstall              Disable + restore all harnesses, then remove FireConnect.
+fireconnect --version              Print the installed CLI version (-V; --json for machine-readable).
 fireconnect help                   Show help.
 ```
 
-`fireconnect configure` stores a provided API key in `~/.fireconnect/config.json`.
-`<harness> on` reads that global key (or `FIREWORKS_API_KEY`) and writes harness-local auth.
+`login` asks the one question that matters: create an API key for this
+machine, or paste one you already have. Create opens the browser (sign-in or
+sign-up), mints `fireconnect-{hostname}`, and stores it in the OS keychain —
+confirming the account it belongs to and exactly where the key went. Paste
+walks you to the key page, masks the pasted key, validates it live, and
+stores it only on success. `--paste` skips the chooser and goes straight to
+pasting; `--with-token` reads a key from stdin (CI). Everything is reversible
+and says so: `logout` removes the local key and offers to revoke the machine
+key server-side (`--revoke`/`--keep-key` skip the question); `<harness> off`
+restores the backed-up settings. You don't have to start with `login` — a
+key-needing command like `fireconnect claude on` runs the same sign-in
+inline, then finishes the job. Staging and history: `login_roadmap.md`.
 
-**Per harness** (`claude`, `opencode`, `codex`, `pi`)
+Recommended flow:
+
+```bash
+fireconnect login                        # guided sign-in (browser or paste)
+fireconnect claude on                    # Claude uses apiKeyHelper (no literal key in settings)
+fireconnect codex on                     # Codex/OpenCode/Pi: env ref + shell hook (keychain mode)
+source ~/.zshrc                          # load FIREWORKS_API_KEY for Codex/OpenCode/Pi
+```
+
+`~/.fireconnect/config.json` stores `{keychain:fireworks-api-key}` or `{env:FIREWORKS_API_KEY}` — never a literal key.
+`<harness> on` validates credentials and writes env references in harness configs.
+
+**Per harness** (`claude`, `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepagents`)
 
 ```text
 fireconnect <harness> on           Route the harness through Fireworks (default if no command).
@@ -287,32 +332,33 @@ fireconnect <harness> model reset  Reset models to defaults.
 fireconnect <harness> help         Show help for that harness.
 ```
 
-Run `fireconnect help` for the overview, or `fireconnect claude help` / `fireconnect opencode help` /
-`fireconnect codex help` / `fireconnect pi help` for everything available at the harness level.
+Claude Code also has `fireconnect claude usage` (estimate usage cost from a session log). Cursor and VS Code also have `fireconnect <harness> model add <id>` (register a model in the picker without changing the active selection).
+
+Run `fireconnect help` for the overview, or `fireconnect <harness> help` (e.g. `fireconnect claude help`, `fireconnect cursor help`, `fireconnect vscode help`, `fireconnect deepagents help`) for everything available at the harness level.
 
 ## Codex Harness
 
 FireConnect routes [OpenAI Codex CLI](https://developers.openai.com/codex) through Fireworks via the Responses API:
 
 ```bash
-export FIREWORKS_API_KEY=fw_...
+fireconnect login
 fireconnect codex on                  # route Codex through Fireworks (~/.codex/config.toml)
-fireconnect codex on --api-key fw_... # pass key once; later model commands reuse it
 fireconnect codex status              # check current provider and model
 fireconnect codex on --main glm-5p1   # switch model (non-interactive)
 fireconnect codex model select        # switch model (interactive)
 fireconnect codex off                 # restore your original config
+source ~/.zshrc                       # keychain mode: load FIREWORKS_API_KEY for Codex
 ```
 
 What it does:
 
 - Sets root `model_provider` / `model` for Codex 0.134+ and adds a
-  `[model_providers.fireworks-ai]` block with `wire_api = "responses"`. With `--api-key` or a
-  key from `~/.fireconnect/config.json`, FireConnect writes `experimental_bearer_token` so later
-  `model list` / `select` / `reset` work without passing the key again. With only
-  `FIREWORKS_API_KEY` in the environment, it writes `env_key = "FIREWORKS_API_KEY"` instead.
+  `[model_providers.fireworks-ai]` block with `wire_api = "responses"` and
+  `env_key = "FIREWORKS_API_KEY"`. Harness configs never contain literal keys.
+- In keychain mode, installs a marked block in `~/.zshrc` (or bash profile) that exports
+  `FIREWORKS_API_KEY="$(fireconnect key export)"`. Open a new terminal or `source` your profile.
 - Snapshots your original `~/.codex/config.toml` before the first change. `fireconnect codex off`
-  restores it byte-for-byte. The snapshot lives in `~/.fireconnect/codex/`.
+  restores it byte-for-byte and removes the shell hook when no env-based harnesses remain.
 - Preserves unrelated Codex settings (for example `[[mcp_servers]]`) via surgical TOML edits.
 
 After `fireconnect codex on`, `off`, `model select`, or `model reset`, `config.toml` is updated
@@ -324,7 +370,7 @@ session, start a new session, or `/exit` and resume the conversation with `codex
 FireConnect routes [OpenCode](https://opencode.ai) through Fireworks with harness-first commands:
 
 ```bash
-export FIREWORKS_API_KEY=fw_...
+fireconnect login
 fireconnect opencode on                  # route OpenCode through Fireworks
 fireconnect opencode status              # check current provider
 fireconnect opencode on --main glm-5p1   # switch model (non-interactive)
@@ -334,16 +380,12 @@ fireconnect opencode off                 # restore your original config
 
 What it does:
 
-- Merges a `provider.fireworks` block into `~/.config/opencode/opencode.json` (the
-  OpenAI-compatible adapter pointed at `https://api.fireworks.ai/inference/v1`) and sets the
-  default `model`. Your other providers are left untouched.
+- Merges a `provider.fireworks-ai` block into `~/.config/opencode/opencode.json` and sets the
+  default `model`. API key is stored as `{env:FIREWORKS_API_KEY}` — never a literal.
+- Keychain mode installs the same shell profile hook as Codex so `FIREWORKS_API_KEY` is available
+  when you launch OpenCode.
 - Snapshots your original `opencode.json` before the first change. `fireconnect opencode off`
-  restores it **byte-for-byte** (formatting, key order, everything). The snapshot lives in
-  `~/.fireconnect/opencode/`.
-- Keeps secrets out of the config file: when the key comes from the `FIREWORKS_API_KEY`
-  environment variable, it is written as the `{env:FIREWORKS_API_KEY}` reference. Passing
-  `--api-key` explicitly writes the literal key instead. OpenCode's `auth.json` is never
-  touched.
+  restores it **byte-for-byte**. The snapshot lives in `~/.fireconnect/opencode/`.
 
 Use `--config-path <path>` to target a non-default config file (also handy for testing
 without touching your real config). Run `fireconnect help` for the full CLI reference.
@@ -356,23 +398,46 @@ OpenCode also supports routing through Fireworks models on Microsoft Foundry (Az
 FireConnect routes [Pi](https://pi.dev) through Fireworks with harness-first commands:
 
 ```bash
-export FIREWORKS_API_KEY=fw_...
+fireconnect login
 fireconnect pi on                        # route Pi through Fireworks
 fireconnect pi status                    # check current provider
 fireconnect pi on --main glm-5p1         # switch model (non-interactive)
+fireconnect pi on --router               # route Anthropic models through FireRouter
 fireconnect pi model select              # switch model (interactive)
-fireconnect pi off                     # restore your original settings and auth
+fireconnect pi off                       # restore your original settings and auth
 ```
 
 What it does:
 
 - Sets `defaultProvider` / `defaultModel` in `~/.pi/agent/settings.json` and stores the API
   key in `~/.pi/agent/auth.json` (`$FIREWORKS_API_KEY` when from env, literal with
-  `--api-key`). `on` applies the default model (`glm-latest`) unless you pass
-  `--main`.
+  `--api-key`; never a literal in keychain mode). `on` applies the default model
+  (`glm-fast-latest`) unless you pass `--main`.
+- Keychain mode installs the shell profile hook so Pi can read `FIREWORKS_API_KEY` at launch.
 - Snapshots both files under `~/.fireconnect/pi/` before the first change. `fireconnect pi off`
   restores them **byte-for-byte**. `auth.json` is written at mode `0600`.
 - Restart Pi after `on`, `model select`, `model reset`, or `off` when Pi is already running.
+
+### FireRouter mode
+
+`fireconnect pi on --router` overrides Pi's built-in Anthropic provider so its existing
+Claude model catalog is sent through `https://router.fireworks.ai/v1`. The Fireworks key
+is supplied through `X-FireRouter-Fireworks-Key`; an Anthropic API key is also required:
+
+```bash
+fireconnect pi on --router --anthropic-api-key sk-ant-...
+fireconnect pi on --router
+# Then choose an Anthropic model inside Pi with /model.
+```
+
+You can switch among Anthropic models inside Pi without re-running FireConnect. FireConnect
+backs up `settings.json`, `auth.json`, and `models.json`, and `fireconnect pi off` restores
+all three byte-for-byte. `model select` and `model reset` do not apply in router mode.
+
+> **Note:** In router mode, Pi's `/model` picker still shows Anthropic's built-in model names
+> (e.g. `Claude Sonnet 4.5`). The selected name is passed through FireRouter, but the display
+> label is Pi's own — it does **not** reflect the Fireworks model actually serving the request
+> behind the router. Use `fireconnect pi status` to see the underlying routing.
 
 Use `--settings-path <path>` to target a non-default settings file.
 
@@ -391,7 +456,7 @@ the Fireworks gateway.
 **Configure the endpoint once**, then `<harness> on` leverages it — no per-command flags:
 
 ```bash
-fireconnect configure --harnesses opencode,codex,pi --provider azure \
+fireconnect configure --provider azure \
   --base-url https://<resource>.services.ai.azure.com \
   --api-key <azure-api-key>
 
@@ -443,4 +508,34 @@ model.
 > Claude Code is intentionally excluded: its harness speaks the Anthropic Messages API,
 > which Foundry does not expose. `model list` / `model select` read the Fireworks catalog
 > and are not used in Azure mode — select a Foundry deployment with `--main`.
+
+## Deep Agents Harness
+
+FireConnect routes [LangChain Deep Agents Code](https://docs.langchain.com/oss/python/deepagents/cli) (`dcode`) through Fireworks:
+
+```bash
+export FIREWORKS_API_KEY=fw_...
+fireconnect deepagents on                # route Deep Agents through Fireworks
+fireconnect deepagents status            # check current provider
+fireconnect deepagents on --main glm-5p1 # switch model (non-interactive)
+fireconnect deepagents model select      # switch model (interactive)
+fireconnect deepagents off               # restore your original config
+```
+
+What it does:
+
+- Sets `[models].default` to `fireworks:<model>` and configures
+  `[models.providers.fireworks]` in `~/.deepagents/config.toml` with the Fireworks
+  OpenAI-compatible base URL (`https://api.fireworks.ai/inference`) and
+  `api_key_env = "FIREWORKS_API_KEY"`.
+- Stores your Fireworks API key in the FireConnect keychain (via `configure` or
+  `deepagents on --api-key`) and installs a shell hook that exports
+  `FIREWORKS_API_KEY` for `dcode`. FireConnect does not write
+  `~/.deepagents/.state/auth.json` — use dcode's `/auth` for credentials stored
+  in that file.
+- Snapshots `config.toml` under `~/.fireconnect/deepagents/` before the first
+  change. `fireconnect deepagents off` restores byte-for-byte.
+- Restart `dcode` after `on`, `model select`, `model reset`, or `off`.
+
+Use `--config-path <path>` to target a non-default config file.
 

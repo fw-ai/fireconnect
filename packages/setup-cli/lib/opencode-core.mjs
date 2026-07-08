@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -22,9 +22,11 @@ import {
 import { isHarnessEnabled } from "./global-config.mjs";
 import { HARNESS } from "./harness.mjs";
 import {
+  anthropicApiKeyBeforeRouter,
   anthropicDisplayNameBeforeRouter,
   firerouterBackupPath,
   firerouterProviderStatus,
+  restoreOpencodeSnapshot,
   stripFirerouterFromConfig,
 } from "./opencode-firerouter-core.mjs";
 
@@ -119,6 +121,7 @@ export async function enableOpencodeFireworks({
   dataDir,
   apiKey,
   apiKeyFromFlag = false,
+  effectiveApiKey = "",
   modelId,
   keyType = "fireworks",
 }) {
@@ -136,12 +139,16 @@ export async function enableOpencodeFireworks({
     }
   }
 
-  // Resolve the {env:FIREWORKS_API_KEY} placeholder to the real env value before
-  // detecting key type — otherwise env-ref stored keys always detect as "fireworks".
-  const effectiveApiKey = apiKey === OPENCODE_API_KEY_ENV_REF
-    ? (process.env.FIREWORKS_API_KEY ?? "")
-    : apiKey;
-  const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(effectiveApiKey) : keyType;
+  // The resolved plaintext key (from the harness: flag > stored > env > keychain
+  // fallback). Prefer it; fall back to resolving the {env:…} placeholder from the
+  // environment for callers that don't pass it. This is what we write into
+  // opencode.json so OpenCode loads it immediately — no shell hook / new shell.
+  const resolvedEffective = effectiveApiKey?.trim()
+    || (apiKey === OPENCODE_API_KEY_ENV_REF ? (process.env.FIREWORKS_API_KEY ?? "") : apiKey);
+  if (!resolvedEffective?.trim()) {
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
+  }
+  const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(resolvedEffective) : keyType;
 
   const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
   const modelRef = typeof config.model === "string" ? config.model : "";
@@ -164,12 +171,20 @@ export async function enableOpencodeFireworks({
 
   const backupPath = opencodeBackupPath(dataDir, configPath);
   const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
+  // A FireRouter backup (same filename, in the firerouter subdir) means
+  // fireconnect is already active in router mode — so switching router→direct
+  // must not snapshot the router-modified config over the true original that the
+  // firerouter backup still holds. Derived from the backup's existence (not
+  // `wasGloballyEnabled`) so it also holds for a custom --data-dir.
+  const frBackupPath = firerouterBackupPath(path.join(dataDir, "firerouter"), configPath);
+  const hasFrBackup = (await readJsonIfExists(frBackupPath)).snapshot !== undefined;
+  const hasAnyBackup = hasBackup || hasFrBackup;
   const hasFireconnectRouting = Boolean(
     config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] || config.provider?.fireworks,
   ) || firerouterProviderStatus(config) === "firerouter";
   const home = homeFromDataDir(dataDir);
   const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
-  const shouldSnapshot = !hasBackup
+  const shouldSnapshot = !hasAnyBackup
     ? !hasFireconnectRouting || !wasGloballyEnabled
     : !hasFireconnectRouting;
   if (shouldSnapshot) {
@@ -184,10 +199,11 @@ export async function enableOpencodeFireworks({
   delete provider.fireworks;
 
   const existing = provider[OPENCODE_FIREWORKS_PROVIDER_ID] ?? {};
-  const apiKeyValue = apiKeyFromFlag ? apiKey : OPENCODE_API_KEY_ENV_REF;
   provider[OPENCODE_FIREWORKS_PROVIDER_ID] = {
     ...existing,
-    options: { ...(existing.options ?? {}), apiKey: apiKeyValue },
+    // Plaintext key: OpenCode reads options.apiKey directly (auth.json isn't a
+    // reliable store for custom providers). File is written 0600 below.
+    options: { ...(existing.options ?? {}), apiKey: resolvedEffective },
     models: {
       ...(existing.models ?? {}),
       [resolvedModel]: { name: resolvedModel },
@@ -207,10 +223,12 @@ export async function enableOpencodeFireworks({
   );
   stripFirerouterFromConfig(next, {
     restoreAnthropicDisplayName: anthropicDisplayNameBeforeRouter(frBackup),
+    priorApiKey: anthropicApiKeyBeforeRouter(frBackup),
   });
 
-  await writeJson(configPath, next);
-  return { model: next.model, apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference", keyType: resolvedKeyType };
+  // 0600: the config now holds a plaintext API key.
+  await writeJson(configPath, next, { mode: 0o600 });
+  return { model: next.model, apiKeyMode: "literal", keyType: resolvedKeyType };
 }
 
 export async function enableOpencodeAzure({
@@ -294,9 +312,10 @@ export async function enableOpencodeAzure({
   );
   stripFirerouterFromConfig(next, {
     restoreAnthropicDisplayName: anthropicDisplayNameBeforeRouter(frBackup),
+    priorApiKey: anthropicApiKeyBeforeRouter(frBackup),
   });
 
-  await writeJson(configPath, next);
+  await writeJson(configPath, next, { mode: apiKeyFromFlag ? 0o600 : undefined });
   return {
     model: next.model,
     baseUrl: normalizedBaseUrl,
@@ -312,35 +331,27 @@ export async function disableOpencodeFireworks({ configPath, dataDir, wasEnabled
   const hasBackup = backup.snapshot !== undefined;
   const prefix = `${OPENCODE_FIREWORKS_PROVIDER_ID}/`;
 
-  if (!wasEnabled && !hasBackup && status !== "fireworks") {
+  // Cross-mode fallback: when direct `on` took over from router mode, the true
+  // pre-fireconnect original lives in the firerouter backup (same filename, in
+  // the firerouter subdir). Consult it so router→direct→off restores the
+  // original instead of dropping it.
+  const frBackupPath = firerouterBackupPath(path.join(dataDir, "firerouter"), configPath);
+  const frBackup = hasBackup ? null : await readJsonIfExists(frBackupPath);
+  const hasFrBackup = frBackup?.snapshot !== undefined;
+
+  if (!wasEnabled && !hasBackup && !hasFrBackup && status !== "fireworks") {
     return;
   }
 
-  // Refuse to restore a snapshot that was taken for a different config file
-  // (legacy un-keyed backups have no configPath recorded).
-  if (backup.snapshot !== undefined
-    && backup.configPath !== undefined
-    && backup.configPath !== path.resolve(configPath)) {
-    throw new Error(
-      `Backup at ${backupPath} was taken for ${backup.configPath}, not ${configPath}; refusing to restore.`,
-    );
+  if (await restoreOpencodeSnapshot({ configPath, backupPath, backup })) {
+    return;
+  }
+  if (hasFrBackup
+    && await restoreOpencodeSnapshot({ configPath, backupPath: frBackupPath, backup: frBackup })) {
+    return;
   }
 
-  if (backup.snapshot !== undefined) {
-    if (backup.snapshot.existed) {
-      await mkdir(path.dirname(configPath), { recursive: true });
-      await writeFile(configPath, backup.snapshot.raw, "utf8");
-    } else {
-      try {
-        await unlink(configPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") {
-          throw error;
-        }
-      }
-    }
-    await unlink(backupPath);
-  } else {
+  {
     // No backup: strip only what we own, and only touch the file if we actually
     // removed something — never create a config that didn't exist, and never
     // re-serialize a config Fireworks was not enabled on.

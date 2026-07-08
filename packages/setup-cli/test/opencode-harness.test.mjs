@@ -11,17 +11,17 @@ import {
   opencodeDataDir,
 } from "../lib/opencode-core.mjs";
 import {
-  FALLBACK_FIREROUTER_MAIN_MODEL,
   FIREROUTER_ANTHROPIC_PROVIDER_NAME,
   OPENCODE_ANTHROPIC_PROVIDER_ID,
   firerouterBackupPath,
   firerouterDataDir,
 } from "../lib/opencode-firerouter-core.mjs";
+import { FALLBACK_FIREROUTER_MAIN_MODEL } from "../lib/firerouter-catalog.mjs";
 import http from "node:http";
 import { readJsonIfExists } from "../lib/fireconnect-core.mjs";
 import { FIREROUTER_FIREWORKS_HEADER } from "../lib/firerouter-core.mjs";
 import { claudeCredentialsPath, opencodeAuthPath } from "../lib/anthropic-enterprise.mjs";
-import { GLM_LATEST } from "./helpers.mjs";
+import { GLM_FAST_LATEST, seedKeychainConfig, withoutEnvFireworksKey } from "./helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "bin", "fireconnect.mjs");
 
@@ -33,6 +33,7 @@ function runFireconnect(args, env = {}) {
       // fetch/fallback path override this with FIRECONNECT_ROUTER_MAIN_MODEL: "".
       env: {
         ...process.env,
+        FIRECONNECT_SECRET_STORE: "memory",
         FIRECONNECT_ROUTER_MAIN_MODEL: FALLBACK_FIREROUTER_MAIN_MODEL,
         ANTHROPIC_API_KEY: "sk-ant-test-12345", // pragma: allowlist secret
         ...env,
@@ -59,14 +60,14 @@ describe("opencode harness integration", () => {
 
     const onResult = await runFireconnect(
       ["opencode", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+      { HOME: home, FIREWORKS_API_KEY: "" },
     );
     assert.equal(onResult.code, 0);
 
     const enabled = JSON.parse(await readFile(configPath, "utf8"));
     assert.ok(enabled.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]);
     assert.equal(enabled.provider?.fireworks, undefined);
-    const defaultModel = `accounts/fireworks/routers/${GLM_LATEST}`;
+    const defaultModel = `accounts/fireworks/routers/${GLM_FAST_LATEST}`;
     assert.equal(enabled.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/${defaultModel}`);
     assert.equal(enabled.provider[OPENCODE_FIREWORKS_PROVIDER_ID].models[defaultModel].name, defaultModel);
 
@@ -92,7 +93,7 @@ describe("opencode harness integration", () => {
     const output = `${onResult.stdout}\n${onResult.stderr}`;
     assert.match(output, /FireRouter enabled for OpenCode\./);
     assert.match(output, /provider:\s+Anthropic \(FireRouter\)/);
-    assert.match(output, /Anthropic key written as \{env:ANTHROPIC_API_KEY\}/);
+    assert.match(output, /Anthropic key written into opencode\.json/);
     assert.doesNotMatch(output, /redirect-only/i);
     assert.doesNotMatch(output, /No Anthropic key set/i);
   });
@@ -162,10 +163,12 @@ describe("opencode harness integration", () => {
     assert.ok(headers[FIREROUTER_FIREWORKS_HEADER]);
   });
 
-  it("router on works with Claude OAuth credentials when OpenCode auth.json is absent", async () => {
+  it("router on does NOT borrow Claude OAuth credentials; requires an explicit Anthropic key", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-router-claude-oauth-"));
     const configDir = path.join(home, ".config/opencode");
     await mkdir(configDir, { recursive: true });
+    // A Claude Code enterprise login exists on the machine, but that's a
+    // different app's credential — OpenCode must not silently reuse it.
     await mkdir(path.join(home, ".claude"), { recursive: true });
     await writeFile(
       claudeCredentialsPath(home),
@@ -174,17 +177,21 @@ describe("opencode harness integration", () => {
     const configPath = opencodeConfigPath(home);
     await writeFile(configPath, JSON.stringify({ provider: {} }, null, 2) + "\n");
 
+    // Non-interactive (no TTY) with ANTHROPIC_API_KEY unset: rather than pull
+    // the key from the Claude keychain/credentials, the command must fail and
+    // ask for an explicit key.
     const onResult = await runFireconnect(
       ["opencode", "on", "--router", "--api-key", "fw_test_key_12345"],
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345", ANTHROPIC_API_KEY: "" },
     );
-    assert.equal(onResult.code, 0, onResult.stderr);
-    assert.match(onResult.stdout, /enterprise credentials/i);
+    assert.notEqual(onResult.code, 0);
+    assert.match(onResult.stderr, /No Anthropic API key found/i);
 
+    // The router wiring must not have been written from the borrowed login.
     const config = JSON.parse(await readFile(configPath, "utf8"));
     const headers = config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options?.headers ?? {};
     assert.equal(headers["x-api-key"], undefined);
-    assert.ok(headers[FIREROUTER_FIREWORKS_HEADER]);
+    assert.equal(headers[FIREROUTER_FIREWORKS_HEADER], undefined);
   });
 
   it("router on reuses anthropic provider options.apiKey when no flag or env is set", async () => {
@@ -214,8 +221,11 @@ describe("opencode harness integration", () => {
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    const headers = config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options?.headers ?? {};
-    assert.equal(headers["x-api-key"], "sk-ant-test-12345"); // pragma: allowlist secret
+    const options = config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options ?? {};
+    // The reused key lands in options.apiKey (where @ai-sdk/anthropic reads it),
+    // not in a hand-written x-api-key header.
+    assert.equal(options.apiKey, "sk-ant-test-12345"); // pragma: allowlist secret
+    assert.equal(options.headers?.["x-api-key"], undefined);
   });
 
   it("router on retargets the anthropic provider and leaves model untouched", async () => {
@@ -291,7 +301,7 @@ describe("opencode harness integration", () => {
     assert.equal(enabled.model, `${OPENCODE_ANTHROPIC_PROVIDER_ID}/claude-sonnet-4-6`);
   });
 
-  it("router with --anthropic-api-key adds an x-api-key passthrough header", async () => {
+  it("router with --anthropic-api-key writes the key to options.apiKey", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-router-ant-"));
     const configDir = path.join(home, ".config/opencode");
     await mkdir(configDir, { recursive: true });
@@ -309,9 +319,21 @@ describe("opencode harness integration", () => {
     assert.equal(onResult.code, 0);
 
     const enabled = JSON.parse(await readFile(configPath, "utf8"));
-    const headers = enabled.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options?.headers ?? {};
-    assert.equal(headers[FIREROUTER_FIREWORKS_HEADER], "fw_test_key_12345");
-    assert.equal(headers["x-api-key"], "sk-ant-test-12345"); // pragma: allowlist secret
+    const options = enabled.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options ?? {};
+    assert.equal(options.headers?.[FIREROUTER_FIREWORKS_HEADER], "fw_test_key_12345");
+    // The Anthropic key goes in options.apiKey (@ai-sdk/anthropic derives the
+    // x-api-key request header from it); no hand-written x-api-key header.
+    assert.equal(options.apiKey, "sk-ant-test-12345"); // pragma: allowlist secret
+    assert.equal(options.headers?.["x-api-key"], undefined);
+
+    const statusResult = await runFireconnect(
+      ["opencode", "status", "--json"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345", ANTHROPIC_API_KEY: undefined },
+    );
+    assert.equal(statusResult.code, 0);
+    const status = JSON.parse(statusResult.stdout);
+    assert.equal(status.mode, "router");
+    assert.equal(status.hasAnthropicKey, true);
   });
 
   it("switching router -> direct -> off does not restore FireRouter wiring", async () => {
@@ -444,7 +466,7 @@ describe("opencode harness integration", () => {
     await writeFile(configPath, JSON.stringify({ provider: {} }, null, 2) + "\n");
 
     const firstOn = await runFireconnect(
-      ["opencode", "on", "--router", "--api-key", "fw_test_key_12345"],
+      ["opencode", "on", "--router", "--api-key", "fw_test_key_12345", "--anthropic-api-key", "sk-ant-test-reuse-12345"],
       { HOME: home, PATH: process.env.PATH },
     );
     assert.equal(firstOn.code, 0);
@@ -478,7 +500,7 @@ describe("opencode harness integration", () => {
     await rm(path.join(home, ".fireconnect/config.json"), { force: true });
 
     const routerOn = await runFireconnect(
-      ["opencode", "on", "--router"],
+      ["opencode", "on", "--router", "--anthropic-api-key", "sk-ant-test-reuse-12345"],
       { HOME: home, PATH: process.env.PATH },
     );
     assert.equal(routerOn.code, 0);
@@ -520,13 +542,133 @@ describe("opencode harness integration", () => {
     assert.notEqual(directBackupPath, routerBackupPath);
     assert.equal((await readJsonIfExists(directBackupPath)).snapshot?.raw, original);
 
-    const routerOff = await runFireconnect(["opencode", "off", ...dataDirArg], { HOME: home });
-    assert.equal(routerOff.code, 0);
-    assert.ok(JSON.parse(await readFile(configPath, "utf8")).provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]);
-
-    const directOff = await runFireconnect(["opencode", "off", ...dataDirArg], { HOME: home });
-    assert.equal(directOff.code, 0);
+    // A mode switch does not create nested restore layers: a single `off`
+    // restores the true pre-fireconnect original (not the intermediate
+    // direct-mode config), consuming the direct backup it falls back to.
+    const off = await runFireconnect(["opencode", "off", ...dataDirArg], { HOME: home });
+    assert.equal(off.code, 0);
     assert.equal(await readFile(configPath, "utf8"), original);
+    assert.equal((await readJsonIfExists(directBackupPath)).snapshot, undefined);
+  });
+
+  it("router on -> direct on -> off restores the original model (no lost model)", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-switch-rd-"));
+    await mkdir(path.join(home, ".config/opencode"), { recursive: true });
+    const configPath = opencodeConfigPath(home);
+    const original = JSON.stringify({ model: "deepseek/deepseek-chat", provider: {} }, null, 2) + "\n";
+    await writeFile(configPath, original);
+
+    const routerOn = await runFireconnect(
+      ["opencode", "on", "--router", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+    assert.equal(routerOn.code, 0);
+
+    const directOn = await runFireconnect(
+      ["opencode", "on", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+    assert.equal(directOn.code, 0);
+
+    const off = await runFireconnect(["opencode", "off"], { HOME: home });
+    assert.equal(off.code, 0);
+    assert.equal(await readFile(configPath, "utf8"), original);
+  });
+
+  it("direct on -> router on -> off restores the original model (no lost model)", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-switch-dr-"));
+    await mkdir(path.join(home, ".config/opencode"), { recursive: true });
+    const configPath = opencodeConfigPath(home);
+    const original = JSON.stringify({ model: "deepseek/deepseek-chat", provider: {} }, null, 2) + "\n";
+    await writeFile(configPath, original);
+
+    const directOn = await runFireconnect(
+      ["opencode", "on", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+    assert.equal(directOn.code, 0);
+
+    const routerOn = await runFireconnect(
+      ["opencode", "on", "--router", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+    assert.equal(routerOn.code, 0);
+
+    const off = await runFireconnect(["opencode", "off"], { HOME: home });
+    assert.equal(off.code, 0);
+    assert.equal(await readFile(configPath, "utf8"), original);
+  });
+
+  it("router off with no backup keeps the written plaintext Anthropic key and its model", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-stranded-model-"));
+    await mkdir(path.join(home, ".config/opencode"), { recursive: true });
+    const configPath = opencodeConfigPath(home);
+    await writeFile(configPath, JSON.stringify({ provider: {} }, null, 2) + "\n");
+
+    const onResult = await runFireconnect(
+      ["opencode", "on", "--router", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+    assert.equal(onResult.code, 0);
+    // Router on pins the fallback anthropic model and writes the resolved
+    // Anthropic key (from ANTHROPIC_API_KEY in the test env) as plaintext.
+    const enabled = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(enabled.model, `${OPENCODE_ANTHROPIC_PROVIDER_ID}/${FALLBACK_FIREROUTER_MAIN_MODEL}`);
+    assert.equal(enabled.provider[OPENCODE_ANTHROPIC_PROVIDER_ID].options.apiKey, "sk-ant-test-12345"); // pragma: allowlist secret
+
+    // Drop the backup so `off` must take the strip path with no original to restore.
+    await rm(path.join(home, ".fireconnect/opencode/firerouter"), { recursive: true, force: true });
+
+    const offResult = await runFireconnect(["opencode", "off"], { HOME: home });
+    assert.equal(offResult.code, 0);
+
+    // The plaintext key is the user's resolved key — it stays as a usable
+    // direct-Anthropic setup (so the model is NOT stranded). Only the FireRouter
+    // wiring (baseURL, header, display name) is stripped.
+    const restored = JSON.parse(await readFile(configPath, "utf8"));
+    const anthropic = restored.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID];
+    assert.equal(anthropic.options.apiKey, "sk-ant-test-12345"); // pragma: allowlist secret
+    assert.equal(anthropic.options.baseURL, undefined);
+    assert.equal(anthropic.options.headers, undefined);
+    assert.equal(anthropic.name, undefined);
+    assert.equal(restored.model, `${OPENCODE_ANTHROPIC_PROVIDER_ID}/${FALLBACK_FIREROUTER_MAIN_MODEL}`);
+  });
+
+  it("router off preserves a pre-existing anthropic model when no backup exists", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-router-model-strip-"));
+    const configDir = path.join(home, ".config/opencode");
+    await mkdir(configDir, { recursive: true });
+    const configPath = opencodeConfigPath(home);
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          model: "anthropic/claude-opus-4-8",
+          provider: {
+            [OPENCODE_ANTHROPIC_PROVIDER_ID]: {
+              options: { apiKey: "sk-ant-user" },
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const onResult = await runFireconnect(
+      ["opencode", "on", "--router", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+    assert.equal(onResult.code, 0);
+
+    await rm(path.join(home, ".fireconnect/opencode/firerouter"), { recursive: true, force: true });
+
+    const offResult = await runFireconnect(["opencode", "off"], { HOME: home });
+    assert.equal(offResult.code, 0);
+
+    const restored = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(restored.model, "anthropic/claude-opus-4-8");
+    assert.equal(restored.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options?.apiKey, "sk-ant-user");
   });
 
   it("router off preserves a pre-existing anthropic provider when no backup exists", async () => {
@@ -707,5 +849,27 @@ describe("opencode harness integration", () => {
 
     const enabled = JSON.parse(await readFile(configPath, "utf8"));
     assert.equal(enabled.model, `${OPENCODE_ANTHROPIC_PROVIDER_ID}/claude-haiku-4-5`);
+  });
+
+  it("model reset keeps resolved keychain key when FIREWORKS_API_KEY env is unset", async () => {
+    await withoutEnvFireworksKey(async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-reset-keychain-"));
+      await mkdir(path.join(home, ".config/opencode"), { recursive: true });
+      await seedKeychainConfig(home, "fw_test_key_12345");
+      const env = { HOME: home, FIREWORKS_API_KEY: "" };
+      const configPath = opencodeConfigPath(home);
+
+      const onResult = await runFireconnect(["opencode", "on"], env);
+      assert.equal(onResult.code, 0, onResult.stderr);
+
+      const resetResult = await runFireconnect(["opencode", "model", "reset"], env);
+      assert.equal(resetResult.code, 0, resetResult.stderr);
+
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(
+        config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID]?.options?.apiKey,
+        "fw_test_key_12345",
+      );
+    });
   });
 });

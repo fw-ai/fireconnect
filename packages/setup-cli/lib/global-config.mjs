@@ -6,10 +6,19 @@ import {
   normalizeAzureBaseUrl,
 } from "./azure-core.mjs";
 import { readJsonIfExists, writeJson } from "./fireconnect-core.mjs";
+import { isFireworksShapedKey } from "./fireconnect-core.mjs";
 
 export const GLOBAL_CONFIG_RELATIVE_PATH = ".fireconnect/config.json";
 export const FIREWORKS_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
 export const ANTHROPIC_API_KEY_ENV_REF = "{env:ANTHROPIC_API_KEY}";
+// The keychain ref names the account the key is stored under — SECRET_ACCOUNT
+// ("fireworks-api-key") in secret-store.mjs. It's a fixed sentinel, not parsed;
+// getSecret() always reads that one account. The `keychain-ref-account-name`
+// test guards this string against drift from SECRET_ACCOUNT.
+export const FIREWORKS_API_KEY_KEYCHAIN_REF = "{keychain:fireworks-api-key}";
+
+/** Harnesses that read FIREWORKS_API_KEY from the shell at runtime. */
+export const ENV_SHELL_HARNESS_IDS = ["codex", "opencode", "pi", "deepagents"];
 
 /** @typedef {{ enabled: boolean, mode?: "router" | "direct" }} HarnessConfigEntry */
 /** @typedef {Record<string, HarnessConfigEntry>} HarnessConfigMap */
@@ -21,12 +30,27 @@ export function globalConfigPath(home) {
 /**
  * @param {string} stored
  */
+export function isKnownApiKeyRef(stored) {
+  return stored === FIREWORKS_API_KEY_ENV_REF || stored === FIREWORKS_API_KEY_KEYCHAIN_REF;
+}
+
+/**
+ * Sync resolver for env ref only (legacy callers/tests).
+ * Prefer resolveStoredApiKeyValue() for keychain-aware resolution.
+ * @param {string} stored
+ */
 export function resolveStoredApiKey(stored) {
   if (!stored) {
     return "";
   }
   if (stored === FIREWORKS_API_KEY_ENV_REF) {
     return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+  }
+  if (stored === FIREWORKS_API_KEY_KEYCHAIN_REF) {
+    return "";
+  }
+  if (isFireworksShapedKey(stored)) {
+    return stored.trim();
   }
   return stored.trim();
 }
@@ -217,33 +241,40 @@ export async function persistGlobalRouterBaseUrl(home, routerBaseUrl) {
  * }} config
  */
 export async function writeGlobalConfig(home, config) {
+  const { apiKeyRefForWrite } = await import("./api-key.mjs");
   const filePath = globalConfigPath(home);
   const existing = await readJsonIfExists(filePath);
   const existingAzure = normalizeAzureSettings(existing.azure);
-  const payload = {
-    apiKey: config.apiKey !== undefined ? config.apiKey : (existing.apiKey ?? ""),
-    anthropicApiKey: config.anthropicApiKey !== undefined
-      ? config.anthropicApiKey
-      : (existing.anthropicApiKey ?? ""),
-    routerBaseUrl: config.routerBaseUrl !== undefined
-      ? config.routerBaseUrl
-      : (existing.routerBaseUrl ?? ""),
-    provider: config.provider !== undefined
-      ? normalizeProvider(config.provider)
-      : normalizeProvider(existing.provider),
-    azure: config.azure !== undefined
-      ? {
-        baseUrl: config.azure.baseUrl !== undefined
-          ? normalizeAzureBaseUrl(config.azure.baseUrl)
-          : existingAzure.baseUrl,
-        apiKey: config.azure.apiKey !== undefined ? config.azure.apiKey : existingAzure.apiKey,
-      }
-      : existingAzure,
-    harnesses: config.harnesses !== undefined
-      ? config.harnesses
-      : normalizeHarnessMap(existing.harnesses),
-  };
-  const hasLiteralKey = (payload.apiKey && payload.apiKey !== FIREWORKS_API_KEY_ENV_REF)
+  const apiKey = config.apiKey !== undefined ? config.apiKey : (existing.apiKey ?? "");
+  const anthropicApiKey = config.anthropicApiKey !== undefined
+    ? config.anthropicApiKey
+    : (existing.anthropicApiKey ?? "");
+  const routerBaseUrl = config.routerBaseUrl !== undefined
+    ? config.routerBaseUrl
+    : (existing.routerBaseUrl ?? "");
+  const provider = config.provider !== undefined
+    ? normalizeProvider(config.provider)
+    : normalizeProvider(existing.provider);
+  const azure = config.azure !== undefined
+    ? {
+      baseUrl: config.azure.baseUrl !== undefined
+        ? normalizeAzureBaseUrl(config.azure.baseUrl)
+        : existingAzure.baseUrl,
+      apiKey: config.azure.apiKey !== undefined ? config.azure.apiKey : existingAzure.apiKey,
+    }
+    : existingAzure;
+  const harnesses = config.harnesses !== undefined
+    ? config.harnesses
+    : normalizeHarnessMap(existing.harnesses);
+const payload = {
+    apiKey: await apiKeyRefForWrite(home, apiKey),
+    anthropicApiKey,
+    routerBaseUrl,
+    provider,
+    azure,
+    harnesses,
+ };
+  const hasLiteralKey = (payload.apiKey && payload.apiKey !== FIREWORKS_API_KEY_ENV_REF && payload.apiKey !== FIREWORKS_API_KEY_KEYCHAIN_REF)
     || (payload.anthropicApiKey && payload.anthropicApiKey !== ANTHROPIC_API_KEY_ENV_REF);
   await writeJson(filePath, payload, { mode: hasLiteralKey ? 0o600 : undefined });
   return payload;
@@ -294,9 +325,6 @@ export async function isHarnessEnabled(home, harnessId) {
 }
 
 /**
- * Harnesses to disable during uninstall — all registered harnesses, regardless
- * of enabled state, so uninstall fully restores configs even for harnesses that
- * were manually turned off before uninstalling.
  * @param {string} home
  */
 export async function discoverHarnessesForUninstall(home) {

@@ -1,5 +1,15 @@
 # Scratch / test SQLite DBs (Cursor state.vscdb snapshots used during dev)
 *.vscdb
 
+# Local FireConnect CLI state (mirrors ~/.fireconnect when run from this repo)
+.fireconnect/
+
 # Node
 node_modules/
+
+# macOS / editor junk
+.DS_Store
+
+# fireconnect demo — generated output + local scratch (any dir, not just root)
+fireconnect-demo/
+debug.log

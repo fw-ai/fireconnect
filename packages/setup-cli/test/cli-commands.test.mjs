@@ -5,14 +5,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { OPENCODE_API_KEY_ENV_REF } from "../lib/opencode-core.mjs";
+import { DEFAULT_HAIKU_MODEL, DEFAULT_SONNET_MODEL, DEFAULT_SUBAGENT_MODEL } from "../lib/fireconnect-core.mjs";
 import {
   FIREWORKS_INFERENCE_URL,
   FPK_KEY,
   FW_CLAUDE_KEY,
   FIREPASS_ROUTER,
   FIREPASS_ROUTER_1M,
-  FIREPASS_DEFAULT_ROUTER,
-  FIREPASS_DEFAULT_ROUTER_1M,
   GLM_LATEST,
   GLM_FAST_LATEST,
   K2P7_FAST,
@@ -70,26 +69,30 @@ describe("fireconnect version", () => {
 });
 
 describe("fireconnect claude on", () => {
-  test("fw_ uses glm-latest as default main router", async () => {
+  test("fw_ uses glm-fast-latest as default main router", async () => {
     await withTempHome("on-fw", async (home) => {
       const result = await runCli(["claude", "on", "--api-key", FW_CLAUDE_KEY], { home });
       assert.equal(result.code, 0, result.stderr);
 
       const settings = await readClaudeSettings(home);
-      assert.match(settings.model, /glm-latest/);
+      assert.match(settings.model, /glm-fast-latest/);
       assert.equal(settings.env.ANTHROPIC_MODEL, FIREPASS_ROUTER_1M);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREPASS_ROUTER_1M);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREPASS_ROUTER_1M);
       assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, FIREPASS_ROUTER_1M);
       assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, "0");
+      assert.equal(settings.env.DISABLE_TELEMETRY, "1");
+      assert.equal(settings.env.DO_NOT_TRACK, "1");
+      assert.equal(settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
       assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
 
-  test("fpk_ routes Claude Code to glm-latest", async () => {
+  test("fpk_ routes Claude Code to glm-fast-latest", async () => {
     await withTempHome("on-fpk", async (home) => {
       const result = await runCli(["claude", "on", "--api-key", FPK_KEY], { home });
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /glm-latest/);
+      assert.match(result.stdout, /glm-fast-latest/);
 
       const { env } = await readClaudeSettings(home);
       for (const key of [
@@ -97,6 +100,7 @@ describe("fireconnect claude on", () => {
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
       ]) {
         assert.equal(env[key], FIREPASS_ROUTER_1M);
       }
@@ -116,9 +120,10 @@ describe("fireconnect claude on", () => {
       });
       assert.equal(result.code, 0, result.stderr);
 
-      const { env } = await readClaudeSettings(home);
-      assert.equal(env.ANTHROPIC_API_KEY, FW_CLAUDE_KEY);
-      assert.equal(env.ANTHROPIC_BASE_URL, FIREWORKS_INFERENCE_URL);
+      const settings = await readClaudeSettings(home);
+      assert.ok(settings.apiKeyHelper);
+      assert.equal(settings.env?.ANTHROPIC_API_KEY, undefined);
+      assert.equal(settings.env.ANTHROPIC_BASE_URL, FIREWORKS_INFERENCE_URL);
     });
   });
 
@@ -130,17 +135,17 @@ describe("fireconnect claude on", () => {
         env: { FIREWORKS_API_KEY: FW_CLAUDE_KEY },
       });
       assert.equal(result.code, 0, result.stderr);
-      // env key (fw_) wins — no Fire Pass announcement
       assert.doesNotMatch(result.stdout, /Fire Pass/);
 
-      const { env } = await readClaudeSettings(home);
-      assert.equal(env.ANTHROPIC_API_KEY, FW_CLAUDE_KEY);
+      const settings = await readClaudeSettings(home);
+      assert.ok(settings.apiKeyHelper);
+      assert.equal(settings.env?.ANTHROPIC_API_KEY, undefined);
     });
   });
 });
 
 describe("fireconnect opencode on", () => {
-  test("fw_ uses glm-latest as default model", async () => {
+  test("fw_ uses glm-fast-latest as default model", async () => {
     await withTempHome("on-fw-oc", async (home) => {
       const result = await runCli(
         ["opencode", "on", "--api-key", FW_CLAUDE_KEY],
@@ -156,7 +161,7 @@ describe("fireconnect opencode on", () => {
     });
   });
 
-  test("fpk_ uses glm-latest", async () => {
+  test("fpk_ uses glm-fast-latest", async () => {
     await withTempHome("on-fpk-oc", async (home) => {
       const result = await runCli(
         ["opencode", "on", "--api-key", FPK_KEY],
@@ -200,6 +205,7 @@ describe("fireconnect <harness> model list", () => {
       assert.equal(json.keyType, "firepass");
       assert.equal(json.models[0].shortId, GLM_LATEST);
       assert.match(stdout, /glm-latest/);
+      assert.match(stdout, /glm-fast-latest/);
       assert.match(stdout, /kimi-fast-latest/);
       assert.match(stdout, /kimi-k2p7-code-fast/);
     });
@@ -256,6 +262,8 @@ describe("fireconnect <harness> model list", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /glm-latest/);
+      assert.match(result.stdout, /glm-fast-latest/);
+      assert.match(result.stdout, /glm-5p2-fast/);
       assert.match(result.stdout, /kimi-fast-latest/);
       assert.match(result.stdout, /kimi-k2p7-code-fast/);
       assert.doesNotMatch(result.stdout, /kimi-k2p6-turbo/);
@@ -277,12 +285,12 @@ describe("fireconnect <harness> status", () => {
     await withTempHome("status-cc-fpk", async (home) => {
       await writeClaudeSettings(home, FPK_KEY);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
-      assert.equal(json.defaults.main, GLM_LATEST);
-      assert.equal(json.defaults.opus, GLM_LATEST);
+      assert.equal(json.defaults.main, GLM_FAST_LATEST);
+      assert.equal(json.defaults.opus, GLM_FAST_LATEST);
 
       const text = await runCli(["claude", "status"], { home, env: NO_ENV_KEY });
       assert.equal(text.code, 0, text.stderr);
-      assert.match(text.stdout, /default: glm-latest/);
+      assert.match(text.stdout, /default: glm-fast-latest/);
       assert.doesNotMatch(text.stdout, /kimi-k2p6-turbo/);
     });
   });
@@ -291,8 +299,8 @@ describe("fireconnect <harness> status", () => {
     await withTempHome("status-fw", async (home) => {
       await writeClaudeSettings(home, FW_CLAUDE_KEY);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
-      assert.equal(json.defaults.main, GLM_LATEST);
-      assert.equal(json.defaults.opus, GLM_LATEST);
+      assert.equal(json.defaults.main, GLM_FAST_LATEST);
+      assert.equal(json.defaults.opus, GLM_FAST_LATEST);
       assert.equal(json.defaults.sonnet, "glm-5p1");
       assert.equal(json.defaults.haiku, "deepseek-v4-flash");
     });
@@ -307,14 +315,14 @@ describe("fireconnect <harness> status", () => {
     });
   });
 
-  test("opencode with Fire Pass key shows glm-latest default", async () => {
+  test("opencode with Fire Pass key shows glm-fast-latest default", async () => {
     await withTempHome("status-oc-fpk", async (home) => {
       await writeOpencodeConfig(home, FPK_KEY);
       const { json } = await runCliJson(
         ["opencode", "status", "--json"],
         { home, env: NO_ENV_KEY },
       );
-      assert.equal(json.defaults.main, GLM_LATEST);
+      assert.equal(json.defaults.main, GLM_FAST_LATEST);
     });
   });
 
@@ -325,13 +333,13 @@ describe("fireconnect <harness> status", () => {
         ["opencode", "status", "--json"],
         { home, env: { FIREWORKS_API_KEY: FPK_KEY } },
       );
-      assert.equal(json.defaults.main, GLM_LATEST);
+      assert.equal(json.defaults.main, GLM_FAST_LATEST);
     });
   });
 });
 
 describe("fireconnect claude model reset", () => {
-  test("keeps Fire Pass defaults when FIREWORKS_API_KEY env differs", async () => {
+  test("model reset follows env key type when FIREWORKS_API_KEY env differs", async () => {
     await withTempHome("reset-fpk", async (home) => {
       await runCli(["claude", "on", "--api-key", FPK_KEY], { home });
       const result = await runCli(["claude", "model", "reset"], {
@@ -341,10 +349,10 @@ describe("fireconnect claude model reset", () => {
       assert.equal(result.code, 0, result.stderr);
 
       const { env } = await readClaudeSettings(home);
-      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, FIREPASS_DEFAULT_ROUTER_1M);
-      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FIREPASS_DEFAULT_ROUTER_1M);
-      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, FIREPASS_DEFAULT_ROUTER);
-      assert.equal(env.ANTHROPIC_API_KEY, FPK_KEY);
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, `accounts/fireworks/models/${DEFAULT_SONNET_MODEL}`);
+      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, `accounts/fireworks/models/${DEFAULT_HAIKU_MODEL}`);
+      assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, `accounts/fireworks/models/${DEFAULT_SUBAGENT_MODEL}`);
+      assert.equal(env.ANTHROPIC_API_KEY, undefined);
     });
   });
 });

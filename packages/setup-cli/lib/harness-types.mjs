@@ -21,13 +21,18 @@ import { HARNESSES } from "./harness.mjs";
  * @property {string} opus
  * @property {string} sonnet
  * @property {string} haiku
+ * @property {string} fable
  * @property {string} subagent
  * @property {string} slot
  * @property {string} search
+ * @property {string} [session] // claude usage: session id prefix or explicit .jsonl path
+ * @property {string} [lastN]   // claude usage: latest N parent sessions
+ * @property {boolean} [verbose]
  * @property {boolean} json
  * @property {string} [dbPath]   // cursor: explicit state.vscdb path
  * @property {string} [mode]     // cursor: which Cursor mode to set (model select)
  * @property {boolean} [force]   // cursor/vscode: write even if the IDE is running
+ * @property {boolean} [storedOnly] // key export: read secret store only, ignore FIREWORKS_API_KEY env
  * @property {string} [vscodePath]      // vscode: explicit chatLanguageModels.json path
  */
 
@@ -38,6 +43,7 @@ import { HARNESSES } from "./harness.mjs";
  * @property {(ctx: HarnessContext) => Promise<void>} on
  * @property {(ctx: HarnessContext) => Promise<void>} off
  * @property {(ctx: HarnessContext) => Promise<void>} status
+ * @property {(ctx: HarnessContext) => Promise<void>} [usage]
  * @property {(ctx: HarnessContext) => Promise<void>} modelList
  * @property {(ctx: HarnessContext) => Promise<void>} modelSelect
  * @property {(ctx: HarnessContext) => Promise<void>} modelReset
@@ -118,6 +124,14 @@ export async function dispatchHarnessCommand(adapter, route, ctx) {
       return;
     case "status":
       await adapter.status(ctx);
+      return;
+    case "usage":
+      if (typeof adapter.usage !== "function") {
+        throw new Error(
+          `usage is not supported for ${adapter.id}. Run: fireconnect help ${adapter.id}`,
+        );
+      }
+      await adapter.usage(ctx);
       return;
     default:
       throw new Error(

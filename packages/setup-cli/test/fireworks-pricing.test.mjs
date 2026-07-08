@@ -14,6 +14,7 @@ describe("fireworks-pricing", () => {
     const pricing = lookupFireworksPricing("accounts/fireworks/routers/glm-latest");
     assert.ok(pricing);
     assert.equal(pricing.input, 1.40);
+    assert.equal(pricing.cachedInput, 0.14);
     assert.equal(pricing.output, 4.40);
     assert.equal(pricing.tier, "standard");
   });
@@ -46,7 +47,7 @@ describe("fireworks-pricing", () => {
 
   it("formats a full pricing line for status output", () => {
     const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p2");
-    assert.match(formatPricingLine(pricing), /\$1\.4 in \/ \$0\.26 cached in \/ \$4\.4 out per Mtok/);
+    assert.match(formatPricingLine(pricing), /\$1\.4 in \/ \$0\.14 cached in \/ \$4\.4 out per Mtok/);
   });
 
   it("includes Fireworks rates in custom model descriptions", () => {

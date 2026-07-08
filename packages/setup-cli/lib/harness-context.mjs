@@ -8,6 +8,10 @@ import {
   codexDataDir,
 } from "./codex-core.mjs";
 import {
+  deepagentsConfigPath,
+  deepagentsDataDir,
+} from "./deepagents-core.mjs";
+import {
   opencodeConfigPath,
   opencodeDataDir,
 } from "./opencode-core.mjs";
@@ -90,12 +94,24 @@ export function vscodePathsFor(ctx) {
 /**
  * @param {HarnessContext} ctx
  */
+export function deepagentsPathsFor(ctx) {
+  const configPath = deepagentsConfigPath(ctx.home, ctx.configPath);
+  return {
+    configPath,
+    dataDir: deepagentsDataDir(ctx.home, ctx.dataDir),
+  };
+}
+
+/**
+ * @param {HarnessContext} ctx
+ */
 export function modelOverridesFrom(ctx) {
   return {
     main: ctx.main,
     opus: ctx.opus,
     sonnet: ctx.sonnet,
     haiku: ctx.haiku,
+    fable: ctx.fable,
     subagent: ctx.subagent,
   };
 }
@@ -108,11 +124,12 @@ const HOME_VALIDATION = {
   pi: { fields: ["settingsPath", "configPath"], flag: "--settings-path" },
   cursor: { fields: ["dbPath"], flag: "--db-path" },
   vscode: { fields: ["vscodePath"], flag: "--vscode-path" },
+  deepagents: { fields: ["configPath"], flag: "--config-path" },
 };
 
 /**
  * @param {HarnessContext} ctx
- * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode"} harnessId
+ * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepagents"} harnessId
  */
 export function ensureHomeForHarness(ctx, harnessId) {
   const req = HOME_VALIDATION[harnessId] ?? HOME_VALIDATION.claude;

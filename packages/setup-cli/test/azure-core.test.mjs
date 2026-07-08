@@ -116,6 +116,27 @@ describe("resolveAzureOnApiKey", () => {
     assert.deepEqual(result, { apiKey: AZURE_API_KEY_ENV_REF, apiKeyFromFlag: false, reusedExistingKey: true });
   });
 
+  it("treats Pi's $AZURE_API_KEY ref as env-reference, not literal", async () => {
+    // Pi stores its env reference as `$AZURE_API_KEY` (not `{env:AZURE_API_KEY}`).
+    // resolveAzureOnApiKey must recognize that shape so enablePiAzure writes
+    // models.json at default perms, not 0600 (no literal key is on disk).
+    const result = await resolveAzureOnApiKey({ getExistingKey: async () => "$AZURE_API_KEY" });
+    assert.deepEqual(result, { apiKey: "$AZURE_API_KEY", apiKeyFromFlag: false, reusedExistingKey: true });
+  });
+
+  it("treats the ${AZURE_API_KEY} ref form as env-reference, not literal", async () => {
+    const result = await resolveAzureOnApiKey({ getExistingKey: async () => "${AZURE_API_KEY}" });
+    assert.deepEqual(result, { apiKey: "${AZURE_API_KEY}", apiKeyFromFlag: false, reusedExistingKey: true });
+  });
+
+  it("a configured env-ref is not promoted to literal", async () => {
+    await withEnv(AZURE_API_KEY_ENV, "env-azure-key", async () => {
+      const result = await resolveAzureOnApiKey({ configuredApiKey: "$AZURE_API_KEY" });
+      assert.equal(result.apiKeyFromFlag, false);
+      assert.equal(result.apiKey, AZURE_API_KEY_ENV_REF);
+    });
+  });
+
   it("falls back to the AZURE_API_KEY env reference", async () => {
     await withEnv(AZURE_API_KEY_ENV, "env-azure-key", async () => {
       const result = await resolveAzureOnApiKey({});

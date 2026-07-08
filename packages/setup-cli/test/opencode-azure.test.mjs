@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -19,7 +19,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", ...env },
+      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -63,6 +63,11 @@ describe("opencode azure harness", () => {
       assert.equal(config.model, `${OPENCODE_AZURE_PROVIDER_ID}/FW-GLM-5.1`);
       assert.ok(provider.models["FW-GLM-5.1"]);
       assert.equal(config.provider[OPENCODE_FIREWORKS_PROVIDER_ID], undefined);
+
+      // A literal key is stored in opencode.json, so it must be owner-only (0600):
+      // no group/other access bits.
+      const st = await stat(configPath);
+      assert.equal(st.mode & 0o077, 0o000, "opencode.json should be owner-only (0600) with a literal key");
     });
   });
 
@@ -105,6 +110,10 @@ describe("opencode azure harness", () => {
         config.provider[OPENCODE_AZURE_PROVIDER_ID].options.apiKey,
         "{env:AZURE_API_KEY}",
       );
+      // Env-reference mode stores no secret on disk, so opencode.json must NOT
+      // be locked to owner-only — it keeps the tool's default (group/other read).
+      const st = await stat(configPath);
+      assert.notEqual(st.mode & 0o077, 0o000, "env-reference opencode.json should keep default perms");
     });
   });
 

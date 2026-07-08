@@ -31,6 +31,8 @@ import {
 } from "../harness-context.mjs";
 import { HARNESS } from "../harness.mjs";
 import { isHarnessEnabled, setHarnessEnabled } from "../global-config.mjs";
+import { persistApiKeyFromFlag } from "../api-key.mjs";
+import { linuxSafeStorageIsObfuscatedFallback } from "../vscode-safestorage.mjs";
 
 /**
  * Harness-local Fireworks key for Cursor: the OpenAI key cell in state.vscdb.
@@ -64,6 +66,15 @@ export default defineHarness({
     ensureHomeForHarness(ctx, HARNESS.CURSOR);
     const { dbPath, dataDir } = cursorPathsFor(ctx);
 
+    if (ctx.apiKey?.trim()) {
+      await persistApiKeyFromFlag(ctx.home, ctx.apiKey);
+    } else {
+      const harnessLocalKey = await cursorResolveKey(ctx);
+      if (harnessLocalKey) {
+        await persistApiKeyFromFlag(ctx.home, harnessLocalKey);
+      }
+    }
+
     const token = await cursorApiKey(ctx);
     if (!token) {
       throw new Error(
@@ -89,8 +100,14 @@ export default defineHarness({
     console.log(`Base URL: ${CURSOR_FIREWORKS_BASE_URL}`);
     console.log(`Default model: ${result.model} (${prettyModelName(result.model)})`);
     console.log(`Applied to ${modesSet.length} mode${modesSet.length === 1 ? "" : "s"}: ${modesSet.join(", ")}`);
+    if (linuxSafeStorageIsObfuscatedFallback()) {
+      console.log(
+        "Note: no Secret Service / libsecret was detected on this Linux host, so Cursor will obfuscate "
+          + "(not encrypt) the stored key. Install gnome-keyring + secret-service (and libsecret-tools) for real encryption.",
+      );
+    }
     if (result.keyType === "firepass") {
-      console.log("Fire Pass key detected: using glm-latest (Fire Pass router).");
+      console.log("Fire Pass key detected: using glm-fast-latest (Fire Pass router).");
     }
     console.log("Quit & reopen Cursor for the change to take effect.");
     console.log("Browse models: fireconnect cursor model list");
@@ -154,6 +171,9 @@ export default defineHarness({
     console.log(`Base URL: ${baseUrl ?? "(unset)"}`);
     console.log(`Use OpenAI key: ${payload.useOpenAIKey ? "yes" : "no"}`);
     console.log(`Key present: ${payload.hasKey ? "yes" : "no"}`);
+    if (linuxSafeStorageIsObfuscatedFallback()) {
+      console.log("Key storage: obfuscated (no Secret Service / libsecret on Linux — install gnome-keyring + secret-service for encryption)");
+    }
     if (keyType === "firepass") {
       console.log("Key type: Fire Pass");
     }

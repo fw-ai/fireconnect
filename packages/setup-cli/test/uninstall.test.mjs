@@ -1,32 +1,15 @@
 import { mkdtemp, readFile, writeFile, mkdir, access } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { userSettingsPath } from "../lib/fireconnect-core.mjs";
 import { opencodeConfigPath } from "../lib/opencode-core.mjs";
 import { codexBackupPath, codexConfigPath, codexDataDir, CODEX_CATALOG_TOML_REF } from "../lib/codex-core.mjs";
 import { patchCodexCatalogRefRaw } from "../lib/codex-toml-patch.mjs";
-import { globalConfigPath } from "../lib/global-config.mjs";
+import { globalConfigPath, writeGlobalConfig } from "../lib/global-config.mjs";
 import { writeJson } from "../lib/fireconnect-core.mjs";
-
-const CLI = path.join(import.meta.dirname, "..", "bin", "fireconnect.mjs");
-
-function runFireconnect(args, env = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.on("error", reject);
-  });
-}
+import { runFireconnect } from "./helpers.mjs";
 
 async function pathExists(filePath) {
   try {
@@ -64,10 +47,6 @@ describe("uninstall", () => {
     ].join("\n") + "\n";
     await writeFile(codexPath, codexOriginal);
 
-    await runFireconnect(
-      ["configure", "--harnesses", "claude,opencode,codex", "--api-key", "fw_test_key_12345"],
-      { HOME: home },
-    );
     await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], { HOME: home });
     await runFireconnect(["opencode", "on", "--api-key", "fw_test_key_12345"], { HOME: home });
     await runFireconnect(
@@ -99,10 +78,6 @@ describe("uninstall", () => {
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
     await runFireconnect(
-      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345"],
-      { HOME: home },
-    );
-    await runFireconnect(
       ["codex", "on", "--api-key", "fw_test_key_12345"],
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
     );
@@ -133,10 +108,6 @@ describe("uninstall", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-keep-catalog-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
-    await runFireconnect(
-      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345"],
-      { HOME: home },
-    );
     await runFireconnect(
       ["codex", "on", "--api-key", "fw_test_key_12345"],
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
@@ -183,10 +154,8 @@ describe("uninstall", () => {
     });
     await writeFile(settingsPath, originalSettings);
 
-    await runFireconnect(
-      ["configure", "--harnesses", "claude", "--api-key", "fw_test_key_12345"],
-      { HOME: home },
-    );
+    // Harness registered (present in config) but never enabled.
+    await writeGlobalConfig(home, { harnesses: { claude: { enabled: false } } });
 
     const uninstallResult = await runFireconnect(["uninstall"], { HOME: home });
     assert.equal(uninstallResult.code, 0);

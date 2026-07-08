@@ -1,4 +1,5 @@
-import { readFile, mkdir, writeFile, unlink } from "node:fs/promises";
+import { writeFileAtomic } from "./atomic-write.mjs";
+import { readFile, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
 
 const REMOTE_URL =
@@ -24,7 +25,7 @@ async function readExistingCache(home) {
 async function writeCache(home, payload) {
   const filePath = cachePath(home);
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(payload), "utf8");
+  await writeFileAtomic(filePath, JSON.stringify(payload));
 }
 
 async function releaseLock(home) {

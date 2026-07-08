@@ -11,13 +11,16 @@ import {
   readGlobalConfig,
   resolveStoredAnthropicApiKey,
 } from "./global-config.mjs";
-import { readSecret } from "./read-secret.mjs";
+import { readLineVisible, readSecret } from "./read-secret.mjs";
 import { HARNESS } from "./harness.mjs";
 
 export const FIREROUTER_BASE_URL = "https://router.fireworks.ai";
 const FIREROUTER_HOST = new URL(FIREROUTER_BASE_URL).hostname;
 export const ANTHROPIC_API_KEY_CONFIG_FIELD = "anthropicApiKey";
 export const FIREROUTER_FIREWORKS_HEADER = "X-FireRouter-Fireworks-Key";
+// Last-resort model when a harness cannot derive one from an explicit choice,
+// an environment override, or FireRouter's advertised configuration.
+export const FALLBACK_FIREROUTER_MAIN_MODEL = "claude-opus-4-8";
 
 export const CLAUDE_FIREROUTER_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
@@ -262,27 +265,101 @@ export async function resolveHarnessOnAnthropicKey({
           runtimeAuth: true,
         });
       }
-    }
-    const enterprise = await resolveEnterpriseAnthropicAuth(home, harness);
-    if (enterprise.enterpriseAuth) {
-      return anthropicKeyResult({
-        source: enterprise.source || "enterprise-auth",
-        enterpriseAuth: true,
-      });
+      // Deliberately do NOT fall back to Claude Code's enterprise OAuth in the
+      // macOS keychain for OpenCode: that's a different app's login. Require an
+      // explicit Anthropic key (flag/global/env) or an interactive prompt.
+    } else {
+      const enterprise = await resolveEnterpriseAnthropicAuth(home, harness);
+      if (enterprise.enterpriseAuth) {
+        return anthropicKeyResult({
+          source: enterprise.source || "enterprise-auth",
+          enterpriseAuth: true,
+        });
+      }
     }
   }
 
   if (input.isTTY && home) {
-    const prompted = await readSecret("Anthropic API key (sk-ant-...): ");
-    if (!isAnthropicShapedKey(prompted)) {
-      throw new Error("--anthropic-api-key must be an Anthropic API key (sk-ant-...).");
+    return promptForAnthropicAuth({ home, harness });
+  }
+
+  throw new Error(MISSING_ANTHROPIC_KEY_MESSAGE);
+}
+
+/**
+ * Prompt once for an Anthropic API key, validate its shape, and persist it to
+ * global config. Returns the resolved result, or null when the entry was blank
+ * or malformed (a reason is printed so the caller can re-ask).
+ * @param {{ home: string }} args
+ */
+async function readAnthropicApiKeyOnce({ home }) {
+  const prompted = await readSecret("Anthropic API key (sk-ant-...): ", { allowEmpty: true });
+  if (!prompted) {
+    console.log("No key entered — try again, or press Ctrl+C to cancel.");
+    return null;
+  }
+  if (!isAnthropicShapedKey(prompted)) {
+    console.log("That doesn't look like an Anthropic API key (should start with sk-ant-). Try again.");
+    return null;
+  }
+  await persistGlobalAnthropicApiKey(home, prompted);
+  return anthropicKeyResult({
+    anthropicKey: prompted,
+    anthropicKeyFromFlag: true,
+    source: "prompt",
+  });
+}
+
+/**
+ * No stored key or enterprise auth was found. Offer a choice instead of
+ * jumping straight to an API-key prompt, and don't crash the whole command
+ * on a blank/mistyped answer — re-ask instead.
+ *
+ * OpenCode is deliberately excluded from the "already logged in elsewhere"
+ * option: it must not borrow Claude Code's keychain/enterprise login (a
+ * different app's credential), so it is prompted for an explicit key only.
+ * @param {{ home: string, harness: string }} args
+ */
+async function promptForAnthropicAuth({ home, harness }) {
+  if (harness === HARNESS.OPENCODE) {
+    console.log("No Anthropic API key found for FireRouter (ANTHROPIC_API_KEY is not set).");
+    console.log("Enter an Anthropic API key to route OpenCode through FireRouter.");
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await readAnthropicApiKeyOnce({ home });
+      if (result) return result;
     }
-    await persistGlobalAnthropicApiKey(home, prompted);
-    return anthropicKeyResult({
-      anthropicKey: prompted,
-      anthropicKeyFromFlag: true,
-      source: "prompt",
-    });
+    throw new Error(MISSING_ANTHROPIC_KEY_MESSAGE);
+  }
+
+  console.log("No stored Anthropic key or Claude Enterprise login was found.");
+  console.log("  1) I'm already logged into Claude Code elsewhere (Enterprise/Pro/Team) — retry detection");
+  console.log("  2) Enter an Anthropic API key");
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const choice = (await readLineVisible("Choice (1/2): ")).trim();
+
+    if (choice === "1") {
+      const enterprise = await resolveEnterpriseAnthropicAuth(home, harness);
+      if (enterprise.enterpriseAuth) {
+        return anthropicKeyResult({
+          source: enterprise.source || "enterprise-auth",
+          enterpriseAuth: true,
+        });
+      }
+      console.log(
+        "No Claude Enterprise login was found. Run `claude` and log in first, then retry "
+          + "`fireconnect claude on --router` — or enter an API key now.",
+      );
+      continue;
+    }
+
+    if (choice === "2" || choice === "") {
+      const result = await readAnthropicApiKeyOnce({ home });
+      if (result) return result;
+      continue;
+    }
+
+    console.log('Please enter "1" or "2".');
   }
 
   throw new Error(MISSING_ANTHROPIC_KEY_MESSAGE);

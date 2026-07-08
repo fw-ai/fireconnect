@@ -11,6 +11,18 @@ import { CODEX_CONFIG_RELATIVE_PATH } from "../lib/codex-core.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
 
+process.env.FIRECONNECT_SECRET_STORE ??= "memory";
+process.env.FIRECONNECT_TEST ??= "1";
+process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN ??= "";
+// Tests pass a temp HOME and expect it to isolate Claude credentials. But
+// claudeCredentialsPath() honors CLAUDE_CONFIG_DIR over home, so a dev
+// machine running Claude Code under a custom config dir leaks real OAuth
+// creds into the tests (e.g. "claude on --router" succeeds when it should
+// fail for lack of an Anthropic key). claudeCredentialsPath is the only
+// reader of CLAUDE_CONFIG_DIR, so dropping it here is safe and makes the
+// temp home authoritative.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 export const FPK_KEY = "fpk_test_firepass_key_000000000000";
 export const FW_CLAUDE_KEY = "fw_test_claude_key_00000000000000";
 export const FW_OPENCODE_KEY = "fw_test_opencode_key_00000000000";
@@ -18,9 +30,11 @@ export const FW_CODEX_KEY = "fw_test_codex_key_00000000000000";
 export const SK_ANT_KEY = "sk-ant-test-non-fireworks-token";
 
 export const NO_ENV_KEY = { FIREWORKS_API_KEY: "" };
-// Neutralize the macOS keychain in spawned CLI subprocesses so tests don't
-// pick up a real Claude Code keychain entry on the dev machine.
-const TEST_ENV_NEUTRALIZE_KEYCHAIN = { FIRECONNECT_TEST_CLAUDE_KEYCHAIN: "" };
+export const TEST_SECRET_STORE_ENV = {
+  FIRECONNECT_SECRET_STORE: "memory",
+  FIRECONNECT_TEST: "1",
+  FIRECONNECT_TEST_CLAUDE_KEYCHAIN: "",
+};
 
 export async function withoutEnvFireworksKey(fn) {
   const prev = process.env.FIREWORKS_API_KEY;
@@ -38,11 +52,12 @@ export async function withoutEnvFireworksKey(fn) {
 
 export const GLM_LATEST = "glm-latest";
 export const GLM_FAST_LATEST = "glm-fast-latest";
+export const GLM_5P2_FAST = "glm-5p2-fast";
 export const KIMI_FAST_LATEST = "kimi-fast-latest";
 export const K2P7_FAST = "kimi-k2p7-code-fast";
-export const FIREPASS_ROUTER = "accounts/fireworks/routers/glm-latest";
+export const FIREPASS_ROUTER = "accounts/fireworks/routers/glm-fast-latest";
 export const FIREPASS_ROUTER_1M = `${FIREPASS_ROUTER}[1m]`;
-// Default model for Fire Pass keys (and the opus slot for fw_ keys).
+// Default model for Fire Pass keys (and the main/opus slot for fw_ keys).
 export const FIREPASS_DEFAULT_ROUTER = FIREPASS_ROUTER;
 export const FIREPASS_DEFAULT_ROUTER_1M = `${FIREPASS_DEFAULT_ROUTER}[1m]`;
 export const FIREWORKS_INFERENCE_URL = "https://api.fireworks.ai/inference";
@@ -64,14 +79,62 @@ export async function withTempHome(prefix, fn) {
   }
 }
 
+export function runFireconnect(args, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      env: {
+        ...process.env,
+        ...TEST_SECRET_STORE_ENV,
+        ...env,
+        FIRECONNECT_SECRET_STORE: "memory",
+        FIRECONNECT_TEST: "1",
+        FIREWORKS_API_KEY: env.FIREWORKS_API_KEY ?? process.env.FIREWORKS_API_KEY ?? "",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+export async function seedKeychainConfig(home, apiKey) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    // The in-memory secret store keeps module-global backend state; reset it so
+    // this seed initializes for THIS home (otherwise a prior seed's home stays
+    // pinned in-process and this key lands in the wrong sandbox's store).
+    const { resetSecretStoreForTests } = await import("../lib/secret-store.mjs");
+    resetSecretStoreForTests();
+    const { persistApiKeyToKeychain } = await import("../lib/api-key.mjs");
+    await persistApiKeyToKeychain(home, apiKey);
+  } finally {
+    if (prevHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = prevHome;
+    }
+  }
+}
+
 export async function runCli(args, { home, env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
       env: {
         ...process.env,
-        ...TEST_ENV_NEUTRALIZE_KEYCHAIN,
+        ...TEST_SECRET_STORE_ENV,
         ...env,
         HOME: home,
+        FIRECONNECT_SECRET_STORE: "memory",
+        FIRECONNECT_TEST: "1",
         FIREWORKS_API_KEY: env.FIREWORKS_API_KEY ?? "",
       },
       stdio: ["ignore", "pipe", "pipe"],

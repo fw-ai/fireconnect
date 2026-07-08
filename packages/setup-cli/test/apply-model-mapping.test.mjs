@@ -20,7 +20,7 @@ describe("applyModelMapping", () => {
     await enableFireworksProvider({
       settingsPath,
       dataDir,
-      apiKey: "fw_test_key_12345",
+      effectiveApiKey: "fw_test_key_12345",
       baseUrl: FIREWORKS_BASE_URL,
     });
 
@@ -32,6 +32,7 @@ describe("applyModelMapping", () => {
         opus: "accounts/fireworks/routers/kimi-k2p7-code-fast",
         sonnet: "accounts/fireworks/models/glm-5p1",
         haiku: "accounts/fireworks/models/deepseek-v4-flash",
+        fable: "accounts/fireworks/routers/glm-latest",
         subagent: "accounts/fireworks/models/deepseek-v4-flash",
       },
     });
@@ -41,5 +42,10 @@ describe("applyModelMapping", () => {
     assert.equal(settings.model, newMain);
     assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, newMain);
     assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME, "glm-5p1 via Fireworks");
+    assert.equal(
+      settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL,
+      "accounts/fireworks/routers/glm-latest[1m]",
+    );
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "glm-latest via Fireworks");
   });
 });

@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { chmod, mkdir, unlink } from "node:fs/promises";
 import {
-  GLM_LATEST_ROUTER_ID,
+  GLM_FAST_LATEST_ROUTER_ID,
   detectApiKeyType,
   isFireworksShapedKey,
   normalizeModelId,
@@ -346,18 +346,18 @@ function dedupe(arr) {
 
 /**
  * Default model id fireconnect registers for Cursor. Fire Pass keys are
- * restricted to the glm-latest router; regular keys also default to it.
+ * restricted to the glm-fast-latest router; regular keys also default to it.
  * Users can pick more via `fireconnect cursor model select` or `on --main`.
  * @param {"fireworks" | "firepass"} keyType
  * @returns {string}
  */
 export function defaultModelIdFor(keyType) {
-  return keyType === "firepass" ? FIREPASS_ROUTER_ID : GLM_LATEST_ROUTER_ID;
+  return keyType === "firepass" ? FIREPASS_ROUTER_ID : GLM_FAST_LATEST_ROUTER_ID;
 }
 
 /**
  * Resolve a user-supplied model id (`--main`) for `on`. Fire Pass keys are
- * restricted to the glm-latest router regardless of `--main`; otherwise the
+ * restricted to the glm-fast-latest router regardless of `--main`; otherwise the
  * id is normalized like OpenCode/Codex (e.g. `glm-5p2` ->
  * `accounts/fireworks/models/glm-5p2`), falling back to the key-type default.
  * @param {string | undefined} modelId

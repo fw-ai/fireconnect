@@ -20,7 +20,7 @@ import {
   setOpenAiBaseUrl,
   setUseOpenAiKey,
 } from "../lib/cursor-core.mjs";
-import { runCli, runCliJson, withTempHome } from "./helpers.mjs";
+import { runCli, runCliJson, runFireconnect, withTempHome } from "./helpers.mjs";
 
 const APPLICATION_USER_KEY =
   "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
@@ -216,6 +216,51 @@ describe("cursor-core pure transforms", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("cursor harness integration", () => {
+  itIfSqlite("on persists --api-key flag to keychain", async () => {
+    await withTempHome("cursor-keychain-flag-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+      const apiKey = "fw_cursor_on_flag_key_123456";
+
+      const r = await runCli(
+        ["cursor", "on", "--api-key", apiKey, "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+
+      const exportR = await runFireconnect(["key", "export"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+      });
+      assert.equal(exportR.code, 0, exportR.stderr);
+      assert.equal(exportR.stdout.trim(), apiKey);
+    });
+  });
+
+  itIfSqlite("on persists harness-local Fireworks key to keychain", async () => {
+    await withTempHome("cursor-keychain-local-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      const harnessKey = "fw_cursor_harness_local_key12";
+      const blob = baseBlob();
+      blob.useOpenAIKey = true;
+      blob.openAIBaseUrl = CURSOR_FIREWORKS_BASE_URL;
+      writeCursorDb(dbPath, blob, { openAIKey: harnessKey });
+
+      const r = await runCli(
+        ["cursor", "on", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+
+      const exportR = await runFireconnect(["key", "export"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+      });
+      assert.equal(exportR.code, 0, exportR.stderr);
+      assert.equal(exportR.stdout.trim(), harnessKey);
+    });
+  });
+
   itIfSqlite("on writes base url, key, registers default model, sets composer", async () => {
     await withTempHome("cursor-on-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
@@ -230,14 +275,14 @@ describe("cursor harness integration", () => {
       const blob = readBlob(dbPath);
       assert.equal(blob.openAIBaseUrl, CURSOR_FIREWORKS_BASE_URL);
       assert.equal(blob.useOpenAIKey, true);
-      assert.ok(blob.aiSettings.userAddedModels.includes("accounts/fireworks/routers/glm-latest"));
-      assert.ok(blob.aiSettings.fireconnectAddedModels.includes("accounts/fireworks/routers/glm-latest"));
-      assert.equal(cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE), "accounts/fireworks/routers/glm-latest");
+      assert.ok(blob.aiSettings.userAddedModels.includes("accounts/fireworks/routers/glm-fast-latest"));
+      assert.ok(blob.aiSettings.fireconnectAddedModels.includes("accounts/fireworks/routers/glm-fast-latest"));
+      assert.equal(cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE), "accounts/fireworks/routers/glm-fast-latest");
       assert.equal(readKey(dbPath), "fw_test_key_12345");
     });
   });
 
-  itIfSqlite("on with Fire Pass key registers glm-latest router only", async () => {
+  itIfSqlite("on with Fire Pass key registers glm-fast-latest router only", async () => {
     await withTempHome("cursor-fp-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
@@ -249,7 +294,7 @@ describe("cursor harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const blob = readBlob(dbPath);
-      assert.deepEqual(blob.aiSettings.userAddedModels, ["accounts/fireworks/routers/glm-latest"]);
+      assert.deepEqual(blob.aiSettings.userAddedModels, ["accounts/fireworks/routers/glm-fast-latest"]);
     });
   });
 
@@ -268,9 +313,9 @@ describe("cursor harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const after = readBlob(dbPath);
-      assert.equal(after.aiSettings.modelConfig.composer.modelName, "accounts/fireworks/routers/glm-latest");
-      assert.equal(after.aiSettings.modelConfig["cmd-k"].modelName, "accounts/fireworks/routers/glm-latest");
-      assert.equal(after.aiSettings.modelConfig["background-composer"].modelName, "accounts/fireworks/routers/glm-latest");
+      assert.equal(after.aiSettings.modelConfig.composer.modelName, "accounts/fireworks/routers/glm-fast-latest");
+      assert.equal(after.aiSettings.modelConfig["cmd-k"].modelName, "accounts/fireworks/routers/glm-fast-latest");
+      assert.equal(after.aiSettings.modelConfig["background-composer"].modelName, "accounts/fireworks/routers/glm-fast-latest");
       // no new modes created beyond the three that existed
       assert.deepEqual(Object.keys(after.aiSettings.modelConfig).sort(), ["background-composer", "cmd-k", "composer"]);
     });
@@ -326,7 +371,7 @@ describe("cursor harness integration", () => {
       assert.equal(r.json.baseUrl, CURSOR_FIREWORKS_BASE_URL);
       assert.equal(r.json.hasKey, true);
       assert.equal(r.json.defaultMode, "composer");
-      assert.equal(r.json.modes.composer, "accounts/fireworks/routers/glm-latest");
+      assert.equal(r.json.modes.composer, "accounts/fireworks/routers/glm-fast-latest");
     });
   });
 
@@ -345,7 +390,7 @@ describe("cursor harness integration", () => {
       assert.equal(blob.useOpenAIKey, true);
       assert.equal(
         blob.aiSettings.modelConfig.composer.modelName,
-        "accounts/fireworks/routers/glm-latest",
+        "accounts/fireworks/routers/glm-fast-latest",
       );
       assert.deepEqual(blob.aiSettings.fireconnectTouchedModes, []);
     });
@@ -462,12 +507,12 @@ describe("cursor harness integration", () => {
 
       const blob = readBlob(dbPath);
       // Both the on() default and the newly added model are registered.
-      assert.ok(blob.aiSettings.userAddedModels.includes("accounts/fireworks/routers/glm-latest"));
+      assert.ok(blob.aiSettings.userAddedModels.includes("accounts/fireworks/routers/glm-fast-latest"));
       assert.ok(blob.aiSettings.userAddedModels.includes("accounts/fireworks/models/deepseek-v4-flash"));
       assert.ok(blob.aiSettings.fireconnectAddedModels.includes("accounts/fireworks/models/deepseek-v4-flash"));
       // Active mode selection is unchanged — composer still points at the on()
       // default, not deepseek-v4-flash. `add` must not clobber active modes.
-      assert.equal(cursorCurrentModelId(blob, "composer"), "accounts/fireworks/routers/glm-latest");
+      assert.equal(cursorCurrentModelId(blob, "composer"), "accounts/fireworks/routers/glm-fast-latest");
       // `add` touched no new modes.
       assert.deepEqual(blob.aiSettings.fireconnectTouchedModes, ["composer"]);
     });

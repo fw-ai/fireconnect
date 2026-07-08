@@ -78,7 +78,7 @@ describe("vscode-core pure transforms", () => {
     assert.equal(m.url, VSCODE_FIREWORKS_MODEL_URL);
     assert.equal(m.toolCalling, true);
     assert.equal(m.vision, false);
-    assert.equal(m.maxInputTokens, 1048576);
+    assert.equal(m.maxInputTokens, 1_048_575);
     assert.equal(m.maxOutputTokens, 131072);
     const other = buildModelEntry("accounts/fireworks/models/some-other");
     assert.equal(other.toolCalling, true);
@@ -177,7 +177,7 @@ describe("vscode harness integration", () => {
       assert.equal(provider.vendor, "customendpoint");
       assert.equal(provider.apiType, "chat-completions");
       assert.match(provider.apiKey, /^\$\{input:chat\.lm\.secret\.fw-[0-9a-f]+\}$/);
-      assert.equal(provider.models[0].id, "accounts/fireworks/routers/glm-latest");
+      assert.equal(provider.models[0].id, "accounts/fireworks/routers/glm-fast-latest");
       assert.equal(provider.models[0].url, VSCODE_FIREWORKS_MODEL_URL);
 
       // The key is stored in state.vscdb under secret://<secretId>, NOT a
@@ -237,7 +237,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       const ids = arr.find(isFireconnectProvider).models.map((m) => m.id);
-      assert.deepEqual(ids, ["accounts/fireworks/routers/glm-latest", "accounts/fireworks/models/deepseek-v4-flash"]);
+      assert.deepEqual(ids, ["accounts/fireworks/routers/glm-fast-latest", "accounts/fireworks/models/deepseek-v4-flash"]);
     });
   });
 
@@ -249,7 +249,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       const ids = arr.find(isFireconnectProvider).models.map((m) => m.id);
-      assert.deepEqual(ids, ["accounts/fireworks/routers/glm-latest"]);
+      assert.deepEqual(ids, ["accounts/fireworks/routers/glm-fast-latest"]);
     });
   });
 
@@ -272,7 +272,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.json.provider, "fireworks");
       assert.equal(r.json.modelUrl, VSCODE_FIREWORKS_MODEL_URL);
       assert.equal(r.json.hasKey, true);
-      assert.deepEqual(r.json.registeredModels, ["accounts/fireworks/routers/glm-latest"]);
+      assert.deepEqual(r.json.registeredModels, ["accounts/fireworks/routers/glm-fast-latest"]);
     });
   });
 
@@ -322,7 +322,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       const ids = arr.find(isFireconnectProvider).models.map((m) => m.id);
-      assert.deepEqual(ids, ["accounts/fireworks/routers/glm-latest", "accounts/fireworks/models/deepseek-v4-flash"]);
+      assert.deepEqual(ids, ["accounts/fireworks/routers/glm-fast-latest", "accounts/fireworks/models/deepseek-v4-flash"]);
       // Key was rotated in place under the same secretId.
       const secretId = fireconnectSecretIds(arr)[0];
       assert.equal(readStateSecret(vscodePath, secretId), "fw_test_key_99999");
@@ -339,7 +339,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       assert.ok(Array.isArray(arr));
-      assert.equal(arr.find(isFireconnectProvider).models[0].id, "accounts/fireworks/routers/glm-latest");
+      assert.equal(arr.find(isFireconnectProvider).models[0].id, "accounts/fireworks/routers/glm-fast-latest");
     });
   });
 

@@ -19,7 +19,9 @@ export async function readLineVisible(prompt, { stdin: in_ = stdin, stdout: out_
 }
 
 /**
- * Read a secret from stdin without echoing typed characters on Unix TTYs.
+ * Read a secret from stdin, echoing a `*` mask per character on Unix TTYs so a
+ * paste is visible (and a backspace erases one mask char) without revealing the
+ * key. Non-TTY/Windows falls back to ordinary visible input.
  * @param {string} prompt
  * @param {{ allowEmpty?: boolean }} [options]
  */
@@ -56,10 +58,14 @@ export async function readSecret(prompt, { allowEmpty = false } = {}) {
             return;
           }
           if (char === "\u007f" || char === "\b") {
-            value = value.slice(0, -1);
+            if (value) {
+              value = value.slice(0, -1);
+              stdout.write(String.fromCharCode(8, 32, 8)); // backspace-space-backspace: erase one mask char
+            }
             continue;
           }
           value += char;
+          stdout.write("*"); // mask echo: confirms a paste landed without showing the key
         }
       };
       stdin.on("data", onData);

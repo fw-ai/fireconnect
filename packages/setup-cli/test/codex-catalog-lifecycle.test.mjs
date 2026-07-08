@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildCodexCatalog } from "../lib/codex-catalog.mjs";
 import {
+  CODEX_API_KEY_ENV_REF,
   CODEX_CATALOG_RELATIVE_PATH,
   CODEX_CATALOG_TOML_REF,
   codexBackupPath,
@@ -224,6 +225,25 @@ describe("codex catalog lifecycle via updateCodexModel", () => {
     assert.match(config, /experimental_bearer_token = "fw_test_key_12345"/);
     assert.equal(existsSync(catalogPath), true);
     assert.equal(existsSync(path.join(home, CODEX_CATALOG_RELATIVE_PATH)), true);
+  });
+
+  it("model select path uses env ref auth instead of bearer literal", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-model-select-auth-"));
+    const { configPath, catalogPath } = await seedCodexConfig(home);
+
+    const result = await updateCodexModel({
+      configPath,
+      modelId: "glm-latest",
+      apiKey: CODEX_API_KEY_ENV_REF,
+      literalAuth: false,
+      catalogPath,
+      catalog: mockCatalog(),
+    });
+
+    assert.equal(result.model, "accounts/fireworks/routers/glm-latest");
+    const config = await readFile(configPath, "utf8");
+    assert.match(config, /env_key = "FIREWORKS_API_KEY"/);
+    assert.doesNotMatch(config, /experimental_bearer_token/);
   });
 
   it("does not leave a stale catalog file when config reference is removed manually", async () => {

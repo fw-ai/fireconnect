@@ -6,20 +6,33 @@ import {
 } from "../fireconnect-core.mjs";
 import {
   PI_API_KEY_ENV_REF,
+  PI_ANTHROPIC_API_KEY_ENV_REF,
   PI_AZURE_PROVIDER,
+  enablePiFirerouter,
   disablePiFireworks,
   enablePiAzure,
   enablePiFireworks,
   piAuthKeyMode,
   piAzureCurrentModelId,
+  piFirerouterAnthropicKeyRef,
+  piFirerouterConfigured,
+  piFirerouterCurrentModel,
   piProviderStatus,
   resolvePiApiKeyValue,
   resolvePiAzureApiKeyValue,
 } from "../pi-core.mjs";
 import {
+  harnessModeFromConfig,
+  readGlobalConfig,
   readProviderSettings,
   setHarnessEnabled,
 } from "../global-config.mjs";
+import {
+  FIREROUTER_FIREWORKS_HEADER,
+  resolveFirerouterBaseUrl,
+  resolveHarnessOnAnthropicKey,
+} from "../firerouter-core.mjs";
+import { resolveFirerouterDefaultModel } from "../firerouter-catalog.mjs";
 import {
   isFireworksKey,
   resolveFireworksApiKey,
@@ -38,6 +51,7 @@ import {
   ensureHomeForHarness,
   piPathsFor,
 } from "../harness-context.mjs";
+import { finishEnvHarnessOff, finishEnvHarnessOn } from "../harness-env-hook.mjs";
 import { HARNESS } from "../harness.mjs";
 
 function piStoredApiKeyRef(auth) {
@@ -50,6 +64,12 @@ function piStoredAzureApiKeyRef(modelsConfig) {
 
 function piAzureBaseUrl(modelsConfig) {
   return modelsConfig.providers?.[PI_AZURE_PROVIDER]?.baseUrl ?? null;
+}
+
+async function piRouterModeConfigured(ctx, modelsConfig) {
+  const globalConfig = await readGlobalConfig(ctx.home);
+  return harnessModeFromConfig(globalConfig, HARNESS.PI) === "router"
+    || piFirerouterConfigured(modelsConfig);
 }
 
 /**
@@ -76,6 +96,7 @@ async function piAzureOn(ctx, configured) {
   const baseUrl = ctx.baseUrlFromFlag ? ctx.baseUrl : (configured.baseUrl || storedBaseUrl);
   const result = await enablePiAzure({
     settingsPath: paths.settingsPath,
+    authPath: paths.authPath,
     modelsPath: paths.modelsPath,
     dataDir: paths.dataDir,
     apiKey,
@@ -112,12 +133,75 @@ async function piResolveKey(ctx) {
  * Full resolution chain for Pi (flag > harness-local > global > env).
  * @param {import("../harness-types.mjs").HarnessContext} ctx
  */
-function piApiKey(ctx) {
+async function piApiKey(ctx) {
   return resolveFireworksApiKey({
     apiKey: ctx.apiKey,
     resolveKey: () => piResolveKey(ctx),
     home: ctx.home,
   });
+}
+
+async function piFirerouterOn(ctx) {
+  if (ctx.main) {
+    throw new Error(
+      "--main/--model is not supported with Pi router mode. Choose Anthropic models inside Pi with /model. "
+      + "To select a non-Anthropic model, turn off router mode first by running `fireconnect pi on`.",
+    );
+  }
+  const paths = piPathsFor(ctx);
+  const globalConfig = await readGlobalConfig(ctx.home);
+  const baseUrl = resolveFirerouterBaseUrl(ctx.baseUrl, globalConfig.routerBaseUrl ?? "");
+  const { apiKey, effectiveKey } = await resolveHarnessOnApiKey({
+    apiKey: ctx.apiKey,
+    home: ctx.home,
+    harnessEnvRef: PI_API_KEY_ENV_REF,
+    getExistingHarnessKey: async () => {
+      const auth = await readJsonIfExists(paths.authPath);
+      return piStoredApiKeyRef(auth);
+    },
+  });
+  const {
+    anthropicKey,
+    anthropicKeyFromFlag,
+    reusedExistingKey,
+    source,
+  } = await resolveHarnessOnAnthropicKey({
+    anthropicKey: ctx.anthropicKey,
+    anthropicKeyFromFlag: ctx.anthropicKeyFromFlag,
+    home: ctx.home,
+    harness: HARNESS.PI,
+    harnessEnvRef: PI_ANTHROPIC_API_KEY_ENV_REF,
+    getExistingHarnessKey: async () => {
+      const auth = await readJsonIfExists(paths.authPath);
+      return piFirerouterAnthropicKeyRef(auth);
+    },
+  });
+  const settings = await readJsonIfExists(paths.settingsPath);
+  const mainModel = piFirerouterCurrentModel(settings)
+    || await resolveFirerouterDefaultModel(baseUrl);
+  const result = await enablePiFirerouter({
+    ...paths,
+    baseUrl,
+    modelId: mainModel,
+    fireworksKey: effectiveKey || apiKey,
+    anthropicKey,
+    anthropicKeyFromFlag,
+  });
+  await setHarnessEnabled(ctx.home, HARNESS.PI, true, { mode: "router" });
+  await finishEnvHarnessOn(ctx.home, { harnessId: "pi" });
+  console.log("FireRouter enabled for Pi.");
+  console.log(`  provider:      anthropic`);
+  console.log(`  base URL:      ${result.baseUrl}`);
+  console.log(`  active model:  ${result.model}`);
+  console.log("Switch among Anthropic models in Pi without re-running fireconnect.");
+  console.log("Fireworks key written into models.json (0600) — no new shell needed.");
+  console.log(reusedExistingKey
+    ? "Reused the Anthropic API key already configured in auth.json."
+    : "Anthropic API key written into auth.json (0600).");
+  if (source === "prompt") {
+    console.log("Anthropic API key saved to ~/.fireconnect/config.json.");
+  }
+  printPiRestartHint();
 }
 
 export default defineHarness({
@@ -127,6 +211,10 @@ export default defineHarness({
 
   async on(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
+    if (ctx.router) {
+      await piFirerouterOn(ctx);
+      return;
+    }
     const { provider, azure } = await readProviderSettings(ctx.home);
     if (ctx.azure || provider === "azure") {
       await piAzureOn(ctx, azure);
@@ -134,7 +222,7 @@ export default defineHarness({
     }
     const paths = piPathsFor(ctx);
 
-    const { apiKey, apiKeyFromFlag, reusedExistingKey } = await resolveHarnessOnApiKey({
+    const { apiKey, reusedExistingKey, effectiveKey } = await resolveHarnessOnApiKey({
       apiKey: ctx.apiKey,
       home: ctx.home,
       harnessEnvRef: PI_API_KEY_ENV_REF,
@@ -144,28 +232,22 @@ export default defineHarness({
       },
     });
 
-    const effectiveApiKey = apiKey === PI_API_KEY_ENV_REF
-      ? (process.env.FIREWORKS_API_KEY ?? "")
-      : apiKey;
-    const keyType = detectApiKeyType(effectiveApiKey);
+    const keyType = detectApiKeyType(effectiveKey);
     const result = await enablePiFireworks({
       ...paths,
       apiKey,
-      apiKeyFromFlag,
+      effectiveApiKey: effectiveKey,
       modelId: ctx.main,
       keyType,
     });
-    await setHarnessEnabled(ctx.home, HARNESS.PI, true);
+    await setHarnessEnabled(ctx.home, HARNESS.PI, true, { mode: "direct" });
+    await finishEnvHarnessOn(ctx.home, { harnessId: "pi" });
     console.log(`Fireworks provider enabled for Pi (model: ${result.model}).`);
-    if (reusedExistingKey) {
-      console.log("Reused the API key already configured in auth.json.");
-    } else if (result.apiKeyMode === "env-reference") {
-      console.log("API key written as $FIREWORKS_API_KEY — keep FIREWORKS_API_KEY set in your shell.");
-    } else {
-      console.log("API key written into auth.json (passed via --api-key).");
-    }
+    console.log(reusedExistingKey
+      ? "Reused the Fireworks key already in auth.json."
+      : "API key written into auth.json (0600).");
     if (result.keyType === "firepass") {
-      console.log("Fire Pass key detected: using glm-latest for all aliases.");
+      console.log("Fire Pass key detected: using glm-fast-latest for all aliases.");
     } else {
       console.log("Browse models: fireconnect pi model list");
       console.log("Pick a model:  fireconnect pi model select");
@@ -178,6 +260,7 @@ export default defineHarness({
     const paths = piPathsFor(ctx);
     const { changed } = await disablePiFireworks(paths);
     await setHarnessEnabled(ctx.home, HARNESS.PI, false);
+    await finishEnvHarnessOff(ctx.home);
     if (changed) {
       console.log("Fireworks provider disabled for Pi; original settings and auth restored.");
       printPiRestartHint();
@@ -190,10 +273,60 @@ export default defineHarness({
     ensureHomeForHarness(ctx, HARNESS.PI);
     const { settingsPath, authPath, modelsPath } = piPathsFor(ctx);
     const settings = await readJsonIfExists(settingsPath);
+    const modelsConfig = await readJsonIfExists(modelsPath);
+    const globalConfig = await readGlobalConfig(ctx.home);
+    const routerConfigured = piFirerouterConfigured(modelsConfig);
+    if (
+      harnessModeFromConfig(globalConfig, HARNESS.PI) === "router"
+      || routerConfigured
+    ) {
+      const auth = await readJsonIfExists(authPath);
+      const anthropic = modelsConfig.providers?.anthropic ?? {};
+      const activeProvider = settings.defaultProvider ?? null;
+      const activeModel = typeof settings.defaultModel === "string"
+        ? settings.defaultModel
+        : null;
+      const routingActive = activeProvider === "anthropic" && routerConfigured;
+      const activeProviderConfig = activeProvider
+        ? modelsConfig.providers?.[activeProvider]
+        : undefined;
+      const activeBaseUrl = typeof activeProviderConfig?.baseUrl === "string"
+        ? activeProviderConfig.baseUrl
+        : null;
+      const payload = {
+        harness: HARNESS.PI,
+        provider: activeProvider,
+        mode: "router",
+        firerouterConfigured: routerConfigured,
+        routingActive,
+        baseUrl: activeBaseUrl,
+        hasFireworksKey: Boolean(
+          anthropic.headers?.[FIREROUTER_FIREWORKS_HEADER]
+          || process.env.FIREWORKS_API_KEY,
+        ),
+        hasAnthropicKey: Boolean(
+          piFirerouterAnthropicKeyRef(auth)
+          || process.env.ANTHROPIC_API_KEY,
+        ),
+        current: { main: activeModel },
+      };
+      if (ctx.json) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      console.log(`Harness: ${HARNESS.PI}`);
+      console.log(`FireRouter configured: ${payload.firerouterConfigured ? "yes" : "no"}`);
+      console.log(`Routing active: ${payload.routingActive ? "yes" : "no"}`);
+      console.log(`Active provider: ${payload.provider ?? "(unset)"}`);
+      console.log(`Active model: ${payload.current.main ?? "(unset)"}`);
+      console.log(`Base URL: ${payload.baseUrl ?? "(Pi provider default)"}`);
+      console.log(`Fireworks API key configured: ${payload.hasFireworksKey ? "yes" : "no"}`);
+      console.log(`Anthropic API key configured: ${payload.hasAnthropicKey ? "yes" : "no"}`);
+      return;
+    }
     const provider = piProviderStatus(settings);
 
     if (provider === "azure") {
-      const modelsConfig = await readJsonIfExists(modelsPath);
       const storedAzure = piStoredAzureApiKeyRef(modelsConfig);
       const payload = {
         harness: HARNESS.PI,
@@ -258,6 +391,14 @@ export default defineHarness({
 
   async modelList(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
+    const paths = piPathsFor(ctx);
+    const modelsConfig = await readJsonIfExists(paths.modelsPath);
+    if (await piRouterModeConfigured(ctx, modelsConfig)) {
+      throw new Error(
+        "model list does not apply in --router mode. Choose Anthropic models inside Pi with /model. "
+        + "To select a non-Anthropic model, turn off router mode first by running `fireconnect pi on`.",
+      );
+    }
     const apiKey = await piApiKey(ctx);
     await runModelListCommand({
       options: ctx,
@@ -270,6 +411,13 @@ export default defineHarness({
     ensureHomeForHarness(ctx, HARNESS.PI);
     const paths = piPathsFor(ctx);
     const settings = await readJsonIfExists(paths.settingsPath);
+    const modelsConfig = await readJsonIfExists(paths.modelsPath);
+    if (await piRouterModeConfigured(ctx, modelsConfig)) {
+      throw new Error(
+        "model reset does not apply in --router mode. Choose Anthropic models inside Pi with /model. "
+        + "To select a non-Anthropic model, turn off router mode first by running `fireconnect pi on`.",
+      );
+    }
     if (piProviderStatus(settings) !== "fireworks") {
       throw new Error(
         "model reset for pi requires Fireworks to be enabled; run: fireconnect pi on",
@@ -278,13 +426,13 @@ export default defineHarness({
 
     const auth = await readJsonIfExists(paths.authPath);
     const existingKey = piStoredApiKeyRef(auth);
-    const effectiveKey = resolvePiApiKeyValue(existingKey);
+    const effectiveKey = resolvePiApiKeyValue(existingKey) || (await piApiKey(ctx));
     const keyType = detectApiKeyType(effectiveKey);
 
     const result = await enablePiFireworks({
       ...paths,
-      apiKey: existingKey,
-      apiKeyFromFlag: Boolean(existingKey),
+      apiKey: PI_API_KEY_ENV_REF,
+      effectiveApiKey: effectiveKey,
       modelId: defaultModelIds(keyType).main,
       keyType,
     });
@@ -295,6 +443,14 @@ export default defineHarness({
   async modelSelect(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
     const paths = piPathsFor(ctx);
+    const settings = await readJsonIfExists(paths.settingsPath);
+    const modelsConfig = await readJsonIfExists(paths.modelsPath);
+    if (await piRouterModeConfigured(ctx, modelsConfig)) {
+      throw new Error(
+        "model select does not apply in --router mode. Choose Anthropic models inside Pi with /model. "
+        + "To select a non-Anthropic model, turn off router mode first by running `fireconnect pi on`.",
+      );
+    }
     const apiKey = await piApiKey(ctx);
     await runPiModelSelect({
       options: ctx,

@@ -1,6 +1,7 @@
+import { writeFileAtomic } from "./atomic-write.mjs";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -286,7 +287,7 @@ async function unlinkCatalogIfExists(catalogPath) {
 async function restoreConfigFromBackup(backup, configPath, backupPath) {
   if (backup.snapshot.existed) {
     await mkdir(path.dirname(configPath), { recursive: true });
-    await writeFile(configPath, backup.snapshot.raw, "utf8");
+    await writeFileAtomic(configPath, backup.snapshot.raw);
   } else {
     try {
       await unlink(configPath);
@@ -306,7 +307,7 @@ async function restoreConfigFromBackup(backup, configPath, backupPath) {
 async function stripManagedRoutingFromConfig(configPath, raw) {
   const stripped = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   if (stripped !== raw) {
-    await writeFile(configPath, stripped, "utf8");
+    await writeFileAtomic(configPath, stripped);
     return true;
   }
   return false;
@@ -373,16 +374,16 @@ export async function enableCodexFireworks({
   configPath,
   dataDir,
   apiKey,
+  effectiveApiKey = "",
   apiKeyFromFlag = false,
   modelId,
   keyType = "fireworks",
   catalogPath = "",
   catalog = null,
 }) {
-  const effectiveApiKey = apiKey === CODEX_API_KEY_ENV_REF
-    ? (process.env.FIREWORKS_API_KEY ?? "")
-    : apiKey;
-  if (!effectiveApiKey) {
+  const resolvedEffective = effectiveApiKey
+    || (apiKey === CODEX_API_KEY_ENV_REF ? (process.env.FIREWORKS_API_KEY ?? "") : apiKey);
+  if (!resolvedEffective) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
@@ -391,7 +392,7 @@ export async function enableCodexFireworks({
     ? readTomlDoc(snapshot.raw)
     : emptyTomlDoc();
 
-  const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(effectiveApiKey) : keyType;
+  const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(resolvedEffective) : keyType;
 
   let effectiveModelId = modelId;
   if (resolvedKeyType === "firepass" && !modelId) {
@@ -445,21 +446,16 @@ export async function enableCodexFireworks({
     baseUrl: CODEX_FIREWORKS_BASE_URL,
     modelId: resolvedModel,
     catalogPath: effectiveCatalogPath,
-    apiKey: effectiveApiKey,
-    literalAuth: apiKeyFromFlag,
+    apiKey: resolvedEffective,
+    literalAuth: false,
   });
   await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFile(configPath, nextRaw, "utf8");
-  // A literal bearer token can end up in config.toml when --api-key is passed.
-  // Restrict to owner-only so a permissive umask can't leak the key to other users.
-  if (apiKeyFromFlag) {
-    await chmod(configPath, 0o600);
-  }
+  await writeFileAtomic(configPath, nextRaw);
 
   return {
     model: resolvedModel,
     keyType: resolvedKeyType,
-    apiKeyMode: apiKeyFromFlag ? "literal" : "env-reference",
+    apiKeyMode: "env-reference",
     catalogWritten,
   };
 }
@@ -533,7 +529,7 @@ export async function enableCodexAzure({
     authEnvKey: AZURE_API_KEY_ENV,
   });
   await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFile(configPath, nextRaw, "utf8");
+  await writeFileAtomic(configPath, nextRaw);
   if (apiKeyFromFlag) {
     await chmod(configPath, 0o600);
   }
@@ -614,10 +610,13 @@ export async function updateCodexModel({
   }
   const resolvedModel = normalizeModelId(modelId);
   let nextRaw = patchCodexModelRaw(snapshot.raw, resolvedModel);
-  const authKey = apiKey === CODEX_API_KEY_ENV_REF
-    ? (process.env.FIREWORKS_API_KEY ?? "")
-    : apiKey;
-  if (authKey) {
+  const isEnvRef = apiKey === CODEX_API_KEY_ENV_REF;
+  const authKey = isEnvRef ? (process.env.FIREWORKS_API_KEY ?? "") : apiKey;
+  // For env-ref auth, always rewrite the auth lines to env_key — even when
+  // FIREWORKS_API_KEY isn't currently set, since the ref (not the resolved
+  // value) is what gets written to the file. For literal auth, only patch when
+  // we actually have a key to write.
+  if (authKey || isEnvRef) {
     nextRaw = patchCodexProviderAuthRaw(nextRaw, { apiKey: authKey, literalAuth });
   }
   let catalogReferenced = false;
@@ -632,7 +631,7 @@ export async function updateCodexModel({
     }
   }
 
-  await writeFile(configPath, nextRaw, "utf8");
+  await writeFileAtomic(configPath, nextRaw);
   // If we just wrote a literal bearer token, restrict the file to owner-only.
   if (authKey && literalAuth) {
     await chmod(configPath, 0o600);
