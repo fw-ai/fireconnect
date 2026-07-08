@@ -1,14 +1,24 @@
 import { detectApiKeyType, MISSING_FIREWORKS_API_KEY_MESSAGE } from "./fireconnect-core.mjs";
-import { resolveStoredApiKey } from "./global-config.mjs";
+import {
+  FIREWORKS_API_KEY_ENV_REF,
+  FIREWORKS_API_KEY_KEYCHAIN_REF,
+  readGlobalConfig,
+  writeGlobalConfig,
+} from "./global-config.mjs";
+import {
+  persistApiKeyFromFlag,
+  resolveFireworksApiKeyValue,
+  tryReadKeychainSecret,
+} from "./api-key.mjs";
 import { OPENCODE_API_KEY_ENV_REF } from "./opencode-core.mjs";
 
 export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
 export const PLATFORM_ACCOUNT_ID = "fireworks";
 export const KIND_SERVERLESS = "serverless";
-export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/glm-latest";
+export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/glm-fast-latest";
 export const FIREPASS_ROUTER_IDS = new Set([
   FIREPASS_ROUTER_ID,
-  "accounts/fireworks/routers/glm-fast-latest",
+  "accounts/fireworks/routers/glm-latest",
   "accounts/fireworks/routers/glm-5p2-fast",
   "accounts/fireworks/routers/kimi-fast-latest",
   "accounts/fireworks/routers/kimi-k2p7-code-fast",
@@ -138,8 +148,7 @@ export function prettyModelName(modelId) {
 export { MISSING_FIREWORKS_API_KEY_MESSAGE } from "./fireconnect-core.mjs";
 
 /**
- * Resolve credentials for `<harness> on`: flag > harness-local > global > env.
- * Returns harness-native storage values (literal key or harness env ref).
+ * Resolve credentials for `<harness> on`: persist flags to keychain, always return env ref for config.
  *
  * @param {{
  *   apiKey?: string,
@@ -154,66 +163,111 @@ export async function resolveHarnessOnApiKey({
   harnessEnvRef,
   getExistingHarnessKey,
 }) {
-  if (apiKey?.trim()) {
-    return {
-      apiKey: apiKey.trim(),
-      apiKeyFromFlag: true,
-      reusedExistingKey: false,
-      source: "flag",
-    };
+  if (apiKey?.trim() && home) {
+    await persistApiKeyFromFlag(home, apiKey.trim());
+  }
+
+  let effectiveKey = await resolveFireworksApiKeyValue({ apiKey, home });
+  let source = "env";
+
+  if (!effectiveKey && getExistingHarnessKey) {
+    const storedKey = await getExistingHarnessKey();
+    const harnessKey = effectiveHarnessStoredKey(storedKey, harnessEnvRef);
+    if (harnessKey) {
+      effectiveKey = harnessKey;
+      source = "harness-local-literal";
+      if (home) {
+        await persistApiKeyFromFlag(home, harnessKey);
+      }
+    }
+  }
+
+  // Last-resort fallback: the key may still be in the keychain even if
+  // config.json lost the {keychain:fireworks-api-key} ref (deleted/corrupted/manually
+  // edited) and no harness-local literal is available. Don't lose access to a
+  // stored key — uses the same keychain-read helper as `exportFireworksApiKey`.
+  // Skipped in env mode (config.apiKey === {env:…}): there the user manages
+  // FIREWORKS_API_KEY themselves, so recovering from the keychain would write
+  // {env:…} to the harness config while leaving the shell hook uninstalled —
+  // the harness would be enabled but unable to authenticate at runtime.
+  if (!effectiveKey && home) {
+    const config = await readGlobalConfig(home);
+    if (config.apiKey !== FIREWORKS_API_KEY_ENV_REF) {
+      const fromKeychain = await tryReadKeychainSecret(home);
+      if (fromKeychain) {
+        effectiveKey = fromKeychain;
+        source = "keychain-fallback";
+        // Repair the config ref so the shell env hook installs for
+        // Codex/OpenCode/Pi (its gate is isKeychainConfigRef(config.apiKey)) and
+        // future resolves find the key directly instead of re-running this fallback.
+        await writeGlobalConfig(home, { apiKey: FIREWORKS_API_KEY_KEYCHAIN_REF });
+      }
+    }
+  }
+
+  if (!effectiveKey) {
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
   if (getExistingHarnessKey) {
     const existingKey = await getExistingHarnessKey();
-    if (existingKey) {
-      return {
-        apiKey: existingKey,
-        apiKeyFromFlag: existingKey !== harnessEnvRef,
-        reusedExistingKey: true,
-        source: "harness-local",
-      };
-    }
-  }
-
-  if (home) {
-    const { readGlobalConfig, FIREWORKS_API_KEY_ENV_REF } = await import("./global-config.mjs");
-    const storedKey = (await readGlobalConfig(home)).apiKey;
-    if (storedKey && storedKey !== FIREWORKS_API_KEY_ENV_REF) {
-      return {
-        apiKey: storedKey,
-        apiKeyFromFlag: true,
-        reusedExistingKey: false,
-        source: "global-literal",
-      };
-    }
-    if (storedKey === FIREWORKS_API_KEY_ENV_REF && resolveStoredApiKey(storedKey)) {
+    if (existingKey && existingKey === harnessEnvRef) {
       return {
         apiKey: harnessEnvRef,
         apiKeyFromFlag: false,
-        reusedExistingKey: false,
-        source: "global-env-ref",
+        reusedExistingKey: true,
+        // Preserve where the key actually came from (e.g. "keychain-fallback")
+        // rather than overwriting it — the harness config having the env ref
+        // only means we're reusing the ref, not that the key came from there.
+        source,
+        effectiveKey,
       };
     }
   }
 
-  if (process.env.FIREWORKS_API_KEY?.trim()) {
-    return {
-      apiKey: harnessEnvRef,
-      apiKeyFromFlag: false,
-      reusedExistingKey: false,
-      source: "env",
-    };
+  if (apiKey?.trim()) {
+    source = "flag";
+  } else if (source !== "harness-local-literal" && home) {
+    const storedKey = (await readGlobalConfig(home)).apiKey;
+    if (storedKey === FIREWORKS_API_KEY_KEYCHAIN_REF) {
+      source = "global-keychain";
+    } else if (storedKey === FIREWORKS_API_KEY_ENV_REF) {
+      source = "global-env-ref";
+    } else if (storedKey) {
+      source = "global-legacy-literal";
+    }
   }
 
-  throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
+  return {
+    apiKey: harnessEnvRef,
+    apiKeyFromFlag: false,
+    reusedExistingKey: false,
+    source,
+    effectiveKey,
+  };
 }
 
 /**
- * Resolve a Fireworks API key in the documented order:
- *   1. explicit `--api-key`
- *   2. `FIREWORKS_API_KEY` environment variable (env override wins over stored keys)
- *   3. harness-local stored key (via the harness adapter's `resolveKey`)
- *   4. global `~/.fireconnect/config.json`
+ * Resolve a harness-stored credential ref to a usable API key value.
+ * @param {string} stored
+ * @param {string} harnessEnvRef
+ */
+function effectiveHarnessStoredKey(stored, harnessEnvRef) {
+  if (!stored?.trim()) {
+    return "";
+  }
+  const trimmed = stored.trim();
+  if (trimmed === harnessEnvRef || trimmed.startsWith("{env:")) {
+    return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+  }
+  if (trimmed === "${FIREWORKS_API_KEY}") {
+    return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+  }
+  return isFireworksKey(trimmed) ? trimmed : "";
+}
+
+/**
+ * Resolve a Fireworks API key in the documented order.
  *
  * @param {{ apiKey?: string, resolveKey?: () => Promise<string>, home?: string }} args
  */
@@ -222,27 +276,18 @@ export async function resolveFireworksApiKey({
   resolveKey,
   home = process.env.HOME ?? "",
 }) {
-  if (apiKey) {
-    return apiKey.trim();
-  }
-
-  if (process.env.FIREWORKS_API_KEY) {
-    return process.env.FIREWORKS_API_KEY.trim();
+  const fromStored = await resolveFireworksApiKeyValue({ apiKey, home });
+  if (fromStored) {
+    return fromStored;
   }
 
   if (resolveKey) {
     const harnessKey = await resolveKey();
-    if (harnessKey) {
-      return harnessKey.trim();
-    }
-  }
-
-  if (home) {
-    const { readGlobalConfig } = await import("./global-config.mjs");
-    const globalConfig = await readGlobalConfig(home);
-    const globalKey = resolveStoredApiKey(globalConfig.apiKey);
-    if (globalKey) {
-      return globalKey;
+    if (harnessKey && harnessKey !== OPENCODE_API_KEY_ENV_REF) {
+      const trimmed = harnessKey.trim();
+      if (isFireworksKey(trimmed)) {
+        return trimmed;
+      }
     }
   }
 

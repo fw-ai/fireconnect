@@ -4,10 +4,10 @@ import { parseCli } from "../lib/parse-args.mjs";
 
 describe("parseCli", () => {
   it("parses global configure", () => {
-    const parsed = parseCli(["configure", "--harnesses", "claude,opencode"]);
+    const parsed = parseCli(["configure", "--provider", "azure", "--base-url", "https://x.example.com"]);
     assert.equal(parsed.kind, "global");
     assert.equal(parsed.command, "configure");
-    assert.equal(parsed.ctx.harnesses, "claude,opencode");
+    assert.equal(parsed.ctx.provider, "azure");
   });
 
   it("parses global upgrade", () => {
@@ -76,6 +76,24 @@ describe("parseCli", () => {
     assert.equal(parsed.ctx.json, true);
   });
 
+  it("parses harness usage with session selector", () => {
+    const parsed = parseCli(["claude", "usage", "--session", "9b86", "--json"]);
+    assert.equal(parsed.kind, "harness");
+    assert.equal(parsed.route.harnessId, "claude");
+    assert.equal(parsed.route.verb, "usage");
+    assert.equal(parsed.ctx.session, "9b86");
+    assert.equal(parsed.ctx.json, true);
+  });
+
+  it("parses harness usage with last_n selector", () => {
+    const parsed = parseCli(["claude", "usage", "--last_n", "3", "-v"]);
+    assert.equal(parsed.kind, "harness");
+    assert.equal(parsed.route.harnessId, "claude");
+    assert.equal(parsed.route.verb, "usage");
+    assert.equal(parsed.ctx.lastN, "3");
+    assert.equal(parsed.ctx.verbose, true);
+  });
+
   it("parses --router and router key flags", () => {
     const parsed = parseCli([
       "claude", "on", "--router",
@@ -84,6 +102,15 @@ describe("parseCli", () => {
     assert.equal(parsed.route.harnessId, "claude");
     assert.equal(parsed.ctx.router, true);
     assert.equal(parsed.ctx.anthropicKey, "sk-ant-test");
+  });
+
+  it("parses login flags (--force, --with-token, --paste)", () => {
+    const parsed = parseCli(["login", "--paste", "--force"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "login");
+    assert.equal(parsed.ctx.paste, true);
+    assert.equal(parsed.ctx.force, true);
+    assert.equal(parsed.ctx.withToken, false);
   });
 
   it("parses harness model select", () => {

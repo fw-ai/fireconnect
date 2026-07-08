@@ -16,7 +16,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", ...env },
+      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

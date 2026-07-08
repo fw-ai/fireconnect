@@ -17,6 +17,9 @@ import {
   snapshotReferencesFireworksCatalog,
 } from "../codex-core.mjs";
 import {
+  DEEPAGENTS_DATA_RELATIVE_DIR,
+} from "../deepagents-core.mjs";
+import {
   PI_DATA_RELATIVE_DIR,
 } from "../pi-core.mjs";
 import {
@@ -27,6 +30,10 @@ import { getHarness } from "../harness-registry.mjs";
 import { HARNESS } from "../harness.mjs";
 import { runConfigureCommand } from "./configure.mjs";
 import { readLocalVersion } from "../version.mjs";
+import { removeShellEnvHook } from "../shell-env-hook.mjs";
+import { ensureCliDependencies, resolveSetupCliDir } from "../ensure-cli-deps.mjs";
+import { reprobeKeyStorage } from "../secret-store.mjs";
+import { demoHelpText } from "../demo/help.mjs";
 
 const CLI_NAME = "fireconnect";
 
@@ -41,6 +48,7 @@ Commands:
   on              Route Claude Code through Fireworks (default).
   off             Restore your previous provider.
   status          Show the provider, auth, and model mapping.
+  usage           Estimate usage cost from a Claude Code session log.
   model list      Browse callable Fireworks serverless models.
   model select    Interactively pick a model for a slot.
   model reset     Reset model aliases to the defaults.
@@ -55,9 +63,13 @@ Options:
   --opus <id>               Model for the opus alias (on).
   --sonnet <id>             Model for the sonnet alias (on).
   --haiku <id>              Model for the haiku alias (on).
+  --fable <id>              Model for the fable alias (on).
   --subagent <id>           Model for subagents (on).
-  --slot <alias>            For model select: main, opus, sonnet, haiku, subagent.
+  --slot <alias>            For model select: main, opus, fable, sonnet, haiku, subagent.
   --search <query>          Filter models (model list, model select).
+  --session <id-or-path>    Session id prefix or explicit Claude Code .jsonl path (usage).
+  --last_n <N>              Show usage for the latest N parent Claude Code sessions (usage).
+  -v, --verbose             Show request-level usage rows and rate details (usage).
   --json                    Machine-readable output (model list, status).
   --home <path>             Override HOME for settings resolution.
   --settings-path <path>    Explicit Claude Code settings file.
@@ -124,7 +136,10 @@ Commands:
 
 Options:
   --api-key <key>           Fireworks API key. Passing to on also saves ~/.fireconnect/config.json.
-  --main, --model <id>      Default model (on).
+  --router                  Retarget Pi's Anthropic provider at FireRouter (${FIREROUTER_BASE_URL}).
+  --anthropic-api-key <key> Optional Anthropic API key for frontier models (--router). Alias: --anthropic-key.
+  --base-url <url>          FireRouter URL (--router).
+  --main, --model <id>      Default model (direct mode only; rejected with --router).
   --search <query>          Filter models (model list, model select).
   --json                    Machine-readable output (model list, status).
   --home <path>             Override HOME for settings resolution.
@@ -189,16 +204,83 @@ Options:
   --home <path>             Override HOME for chatLanguageModels.json resolution.
   --vscode-path <path>      Explicit chatLanguageModels.json path.
   --force                   Write even if VS Code is running (not recommended).`,
+    deepagents: `Usage:
+  ${CLI_NAME} deepagents [command] [options]
+
+Manage Fireworks routing for LangChain Deep Agents Code (dcode). Bare "${CLI_NAME} deepagents" runs on.
+
+Commands:
+  on              Route Deep Agents through Fireworks (default).
+  off             Restore your previous config.
+  status          Show the provider, auth, and model.
+  model list      Browse callable Fireworks serverless models.
+  model select    Interactively pick the default model.
+  model reset     Reset the model to the default.
+  help            Show this help.
+
+Options:
+  --api-key <key>           Fireworks API key. Passing to on also saves ~/.fireconnect/config.json.
+  --main, --model <id>      Default model (on).
+  --search <query>          Filter models (model list, model select).
+  --json                    Machine-readable output (model list, status).
+  --home <path>             Override HOME for config resolution.
+  --config-path <path>      Explicit ~/.deepagents/config.toml path.
+  --data-dir <path>         Override backup/state directory.`,
+    login: `Usage:
+  ${CLI_NAME} login [options]
+
+Sign in to Fireworks. Asks whether to create an API key for this machine
+(browser sign-in or sign-up) or paste a key you already have, then stores it
+in the OS keychain (~/.fireconnect/config.json holds a reference, never the
+key). Falls back to guided key paste when a browser sign-in isn't possible.
+Everything is undone by fireconnect logout.
+
+Options:
+  --force                   Re-authenticate even when already signed in.
+  --with-token              Read a key from stdin (non-interactive/CI). No prompts.
+  --paste                   Skip the chooser and go straight to pasting a key.
+  --api-key <key>           Sign in with this key directly (validates, then stores).
+  --home <path>             Override HOME.
+
+Examples:
+  ${CLI_NAME} login
+  ${CLI_NAME} status
+  ${CLI_NAME} login --with-token < key.txt
+  ${CLI_NAME} login --paste`,
+    logout: `Usage:
+  ${CLI_NAME} logout [options]
+
+Clear the stored Fireworks API key (keychain entry and config reference).
+If browser sign-in created an API key for this machine, logout asks whether
+to also revoke it server-side (revocation is permanent and affects anywhere
+the key is used). Does not touch FIREWORKS_API_KEY in your shell environment.
+
+Options:
+  --revoke                  Also revoke this machine's created key, without asking.`,
+    status: `Usage:
+  ${CLI_NAME} status [options]
+
+Show whether you're signed in (validated live against the Fireworks API) and
+where the key is stored — config reference, secret backend, and the runtime
+key source for each configured harness. Exits non-zero when not signed in, so
+scripts can gate on it.
+
+Options:
+  --json                    Machine-readable output.
+  --home <path>             Override HOME.`,
     configure: `Usage:
   ${CLI_NAME} configure [options]
 
-Register which harnesses you use and store API key preferences.
+Set the provider and the Anthropic key (used in FireRouter mode). Your Fireworks API key is
+set separately with ${CLI_NAME} login; enable a harness with ${CLI_NAME} <harness> on.
 
 Options:
-  --harnesses <ids>         Comma-separated harness ids (e.g. claude,opencode,codex,pi,cursor).
-  --api-key <key>           Fireworks API key (stored in ~/.fireconnect/config.json).
+  --provider <name>         fireworks (default) or azure (Microsoft AI Foundry).
+  --base-url <url>          Azure/Foundry endpoint (with --provider azure).
+  --api-key <key>           Azure endpoint key (only with --provider azure).
   --anthropic-api-key <key> Anthropic API key for FireRouter (optional).
   --home <path>             Override HOME.`,
+    demo: demoHelpText(CLI_NAME),
     uninstall: `Usage:
   ${CLI_NAME} uninstall
 
@@ -208,7 +290,10 @@ Disable and restore all configured harnesses, then remove FireConnect
   ${CLI_NAME} upgrade
 
 Pull the latest FireConnect from GitHub and update in place.
-Only works when installed via the curl installer (requires git).`,
+Only works when installed via the curl installer (requires git).
+Also reinstalls CLI dependencies when needed and re-probes secret storage
+(clears ~/.fireconnect/key-storage.json; migrates off plaintext fallback
+when keychain or encrypted-file storage works again).`,
   };
 
   if (topic && harnessHelp[topic]) {
@@ -216,16 +301,21 @@ Only works when installed via the curl installer (requires git).`,
     return;
   }
 
-  console.log(`FireConnect — use Fireworks models in Claude Code, OpenCode, Codex, Pi, Cursor, and VS Code.
+  console.log(`FireConnect — use Fireworks models in Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, and Deep Agents.
 
 Usage:
   ${CLI_NAME} <command> [options]
-  ${CLI_NAME} <harness> [on|off|status|model select|model add|model reset] [options]
+  ${CLI_NAME} <harness> [on|off|status|usage|model select|model add|model reset] [options]
+  ${CLI_NAME} demo [preset] [options]
   ${CLI_NAME} --version
 
 Global commands:
-  configure   Register harnesses and API key preferences.
-  upgrade     Pull the latest FireConnect from GitHub.
+  login       Sign in to Fireworks (guided).
+  logout      Clear stored Fireworks credentials.
+  status      Show sign-in state and where the key is stored.
+  configure   Set the provider (Azure/Foundry) and the Anthropic key.
+  demo        Race your provider vs Fireworks GLM 5.2 Fast on the same prompt.
+  upgrade     Pull the latest FireConnect from GitHub; re-probe secret storage.
   uninstall   Remove FireConnect from this machine.
   help        Show help.
 
@@ -239,16 +329,24 @@ Harnesses:
   pi          Pi (${CLI_NAME} pi on|off|...)
   cursor      Cursor IDE (${CLI_NAME} cursor on|off|...)
   vscode      VS Code Chat (${CLI_NAME} vscode on|off|...)
+  deepagents  LangChain Deep Agents Code (${CLI_NAME} deepagents on|off|...)
 
 Examples:
   # Global
+  ${CLI_NAME} login
   ${CLI_NAME} configure
   ${CLI_NAME} --version
   ${CLI_NAME} uninstall
 
+  # Demo
+  ${CLI_NAME} demo
+  ${CLI_NAME} demo snake
+  ${CLI_NAME} demo --prompt-file my-prompt.txt --no-open
+
   # Claude Code
   ${CLI_NAME} claude on --api-key fw_...
   ${CLI_NAME} claude status
+  ${CLI_NAME} claude usage
   ${CLI_NAME} claude model list --search glm
   ${CLI_NAME} claude model select --slot sonnet
   ${CLI_NAME} claude model reset
@@ -312,6 +410,36 @@ export function runVersionCommand(ctx) {
   console.log(`v${version}`);
 }
 
+/**
+ * Reinstall CLI deps when possible and re-probe secret storage (clears
+ * ~/.fireconnect/key-storage.json, retries keychain/file, migrates off
+ * plaintext fallback when secure storage works again).
+ *
+ * @param {string} home
+ * @param {string} installDir
+ */
+async function finalizeUpgradeKeyStorage(home, installDir) {
+  const durableSetup = path.join(installDir, "packages/setup-cli");
+  const setupDir = existsSync(path.join(durableSetup, "package.json"))
+    ? durableSetup
+    : resolveSetupCliDir();
+  if (existsSync(path.join(setupDir, "package.json"))) {
+    ensureCliDependencies(setupDir);
+  }
+
+  const { migrated, backend } = await reprobeKeyStorage(home);
+  if (migrated) {
+    console.log("Moved Fireworks API key from plaintext fallback to secure storage.");
+    return;
+  }
+  if (backend.backend === "plaintext") {
+    console.log(
+      "API key is still in the plaintext fallback (~/.fireconnect/.api-key); "
+      + "secure storage is still unavailable on this host.",
+    );
+  }
+}
+
 export async function runUpgradeCommand() {
   const home = process.env.HOME ?? "";
   if (!home) {
@@ -323,6 +451,7 @@ export async function runUpgradeCommand() {
     console.log("Nothing to upgrade: FireConnect was not installed via the curl installer.");
     console.log("Re-run the installer to get the latest version:");
     console.log("  curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash");
+    await finalizeUpgradeKeyStorage(home, installDir);
     return;
   }
 
@@ -356,11 +485,48 @@ export async function runUpgradeCommand() {
 
   if (alreadyUpToDate) {
     console.log(`Already up to date${after ? ` (v${after})` : ""}.`);
-  } else if (before && after && before !== after) {
+    await finalizeUpgradeKeyStorage(home, installDir);
+    return;
+  }
+
+  // Reinstall runtime dependencies after the pull — a new release may have
+  // added/changed deps (e.g. cross-keychain). Without this, upgraded installs
+  // can hit "OS keychain is unavailable" if the dep was missing. Skip the npm
+  // resolution when the lockfile is unchanged between commits (code-only
+  // releases), to avoid ~300-800ms of overhead on every upgrade.
+  const lockfileRel = "packages/setup-cli/package-lock.json";
+  let depsChanged = true;
+  if (beforeHash && afterHash) {
+    try {
+      execFileSync("git", ["-C", installDir, "diff", "--quiet", beforeHash, afterHash, "--", lockfileRel], { stdio: "ignore" });
+      depsChanged = false; // exit 0 => no diff
+    } catch {
+      depsChanged = true; // non-zero => diff (or git error) => install
+    }
+  }
+
+  const setupDir = path.join(installDir, "packages/setup-cli");
+  if (depsChanged && existsSync(setupDir)) {
+    // npm is npm.cmd on Windows; execFileSync without shell:true doesn't resolve
+    // .cmd shims, so pick the right binary name per platform.
+    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+    try {
+      execFileSync(npmBin, ["install", "--omit=dev", "--no-fund", "--no-audit"], {
+        cwd: setupDir,
+        stdio: "inherit",
+      });
+    } catch (error) {
+      throw new Error(`Upgrade failed: could not install dependencies (${error.message}). Re-run the installer.`);
+    }
+  }
+
+  if (before && after && before !== after) {
     console.log(`Upgraded v${before} → v${after}.`);
   } else {
     console.log(`FireConnect upgraded successfully${after ? ` (v${after})` : ""}.`);
   }
+
+  await finalizeUpgradeKeyStorage(home, installDir);
 }
 
 async function removePath(pathToRemove) {
@@ -433,12 +599,15 @@ export async function runUninstallCommand(ctx) {
     }
   }
 
+  await removeShellEnvHook(home).catch(() => {});
+
   const pathsToRemove = [
     path.join(home, DEFAULT_DATA_DIR),
     path.join(home, OPENCODE_DATA_RELATIVE_DIR),
     path.join(home, CODEX_DATA_RELATIVE_DIR),
     ...(removeCatalog ? [path.join(home, CODEX_CATALOG_RELATIVE_PATH)] : []),
     path.join(home, PI_DATA_RELATIVE_DIR),
+    path.join(home, DEEPAGENTS_DATA_RELATIVE_DIR),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),
     path.join(home, ".local/bin/fireconnect"),
@@ -454,7 +623,7 @@ export async function runUninstallCommand(ctx) {
 
   const hasErrors = offErrors.length > 0 || removalFailures.length > 0;
   if (!hasErrors) {
-    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi) to fully apply.");
+    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents) to fully apply.");
   } else {
     if (removalFailures.length > 0) {
       console.error("FireConnect uninstall completed with file removal errors:");
@@ -479,8 +648,26 @@ export async function runGlobalCommand(parsed) {
     return;
   }
 
+  if (command === "login" || command === "logout") {
+    const { runLoginCommand, runLogoutCommand } = await import("./login.mjs");
+    await (command === "login" ? runLoginCommand(ctx) : runLogoutCommand(ctx));
+    return;
+  }
+
+  if (command === "status") {
+    const { runStatusCommand } = await import("./status.mjs");
+    await runStatusCommand(ctx);
+    return;
+  }
+
   if (command === "configure") {
     await runConfigureCommand(ctx);
+    return;
+  }
+
+  if (command === "key") {
+    const { runKeyCommand } = await import("./key.mjs");
+    await runKeyCommand(ctx, parsed.keySubcommand);
     return;
   }
 

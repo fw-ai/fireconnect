@@ -1,5 +1,4 @@
 import process from "node:process";
-import { existsSync } from "node:fs";
 import {
   defaultModelIds,
   detectApiKeyType,
@@ -12,7 +11,6 @@ import {
   CODEX_FIREWORKS_BASE_URL,
   CODEX_FIREWORKS_PROVIDER_ID,
   codexCurrentModelId,
-  codexLiteralAuthFromDoc,
   codexProviderStatus,
   codexStoredAuthRef,
   disableCodexFireworks,
@@ -34,7 +32,8 @@ import {
   readProviderSettings,
   setHarnessEnabled,
 } from "../global-config.mjs";
-import { isFireworksKey, resolveHarnessOnApiKey } from "../fireworks-models.mjs";
+import { isFireworksKey, resolveFireworksApiKey, resolveHarnessOnApiKey } from "../fireworks-models.mjs";
+import { finishEnvHarnessOff, finishEnvHarnessOn } from "../harness-env-hook.mjs";
 import { runModelListCommand } from "../model-list.mjs";
 import { runCodexModelSelect } from "../model-select.mjs";
 import { defineHarness } from "../harness-types.mjs";
@@ -43,12 +42,8 @@ import {
   ensureHomeForHarness,
 } from "../harness-context.mjs";
 import { HARNESS } from "../harness.mjs";
+import { existsSync } from "node:fs";
 
-/**
- * Harness-local Fireworks key for Codex: bearer token or env_key reference in
- * ~/.codex/config.toml. Returns "" when none.
- * @param {import("../harness-types.mjs").HarnessContext} ctx
- */
 async function codexResolveKey(ctx) {
   const { configPath } = codexPathsFor(ctx);
   const { doc } = await readCodexTomlIfExists(configPath);
@@ -59,31 +54,12 @@ async function codexResolveKey(ctx) {
   return isFireworksKey(key) ? key.trim() : "";
 }
 
-/**
- * Full resolution chain for Codex model commands (flag > harness-local > global > env).
- * Unlike `resolveFireworksApiKey`, harness-local auth in config.toml wins over env so
- * `codex on --api-key` keeps working after FIREWORKS_API_KEY is set elsewhere.
- * @param {import("../harness-types.mjs").HarnessContext} ctx
- */
 async function codexApiKey(ctx) {
-  if (ctx.apiKey?.trim()) {
-    return ctx.apiKey.trim();
-  }
-
-  const harnessKey = await codexResolveKey(ctx);
-  if (harnessKey) {
-    return harnessKey;
-  }
-
-  if (ctx.home) {
-    const { readGlobalConfig, resolveStoredApiKey } = await import("../global-config.mjs");
-    const globalKey = resolveStoredApiKey((await readGlobalConfig(ctx.home)).apiKey);
-    if (globalKey && isFireworksKey(globalKey)) {
-      return globalKey;
-    }
-  }
-
-  return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+  return resolveFireworksApiKey({
+    apiKey: ctx.apiKey,
+    resolveKey: () => codexResolveKey(ctx),
+    home: ctx.home,
+  });
 }
 
 /**
@@ -146,7 +122,7 @@ export default defineHarness({
     }
     const { configPath, dataDir, catalogPath } = codexPathsFor(ctx);
 
-    const { apiKey, apiKeyFromFlag, reusedExistingKey } = await resolveHarnessOnApiKey({
+    const { apiKey, reusedExistingKey, effectiveKey } = await resolveHarnessOnApiKey({
       apiKey: ctx.apiKey,
       home: ctx.home,
       harnessEnvRef: CODEX_API_KEY_ENV_REF,
@@ -159,45 +135,37 @@ export default defineHarness({
       },
     });
 
-    const effectiveApiKey = apiKey === CODEX_API_KEY_ENV_REF
-      ? (process.env.FIREWORKS_API_KEY ?? "")
-      : apiKey;
-    const keyType = detectApiKeyType(effectiveApiKey);
+    const keyType = detectApiKeyType(effectiveKey);
     if (keyType === "firepass") {
       throw new Error(
         "The /responses endpoint is not supported for Fire Pass keys yet. " +
         "Use a standard Fireworks API key (fw_...).",
       );
     }
-    const { codexCatalog } = await loadCodexCatalogBundle(effectiveApiKey);
+    const { codexCatalog } = await loadCodexCatalogBundle(effectiveKey);
     const result = await enableCodexFireworks({
       configPath,
       dataDir,
       apiKey,
-      apiKeyFromFlag,
+      effectiveApiKey: effectiveKey,
       modelId: ctx.main,
       keyType,
       catalogPath,
       catalog: codexCatalog,
     });
     await setHarnessEnabled(ctx.home, HARNESS.CODEX, true);
+    await finishEnvHarnessOn(ctx.home, { harnessId: "codex" });
     console.log(`Fireworks provider enabled for Codex (model: ${result.model}).`);
     if (result.catalogWritten) {
       console.log("Model catalog written to ~/.codex/fireworks-model-catalog.json.");
     }
     if (reusedExistingKey) {
-      console.log("Reused the API key already configured in ~/.codex/config.toml.");
-    } else if (result.apiKeyMode === "env-reference") {
-      console.log("API key written as env_key FIREWORKS_API_KEY — keep FIREWORKS_API_KEY set in your shell.");
+      console.log("Reused env_key FIREWORKS_API_KEY in ~/.codex/config.toml.");
     } else {
-      console.log("API key written into ~/.codex/config.toml (passed via --api-key).");
+      console.log("API key configured as env_key FIREWORKS_API_KEY.");
     }
-    if (result.keyType === "firepass") {
-      console.log("Fire Pass key detected: using kimi-k2p7-code-fast for the default model.");
-    } else {
-      console.log("Browse models: fireconnect codex model list");
-      console.log("Pick a model:  fireconnect codex model select");
-    }
+    console.log("Browse models: fireconnect codex model list");
+    console.log("Pick a model:  fireconnect codex model select");
     printCodexRestartHint();
   },
 
@@ -207,6 +175,7 @@ export default defineHarness({
     const wasEnabled = await isHarnessEnabled(ctx.home, HARNESS.CODEX);
     const outcome = await disableCodexFireworks({ configPath, dataDir, catalogPath, wasEnabled });
     await setHarnessEnabled(ctx.home, HARNESS.CODEX, false);
+    await finishEnvHarnessOff(ctx.home);
     if (outcome === "restored") {
       console.log("Fireworks provider disabled for Codex; original config restored.");
     } else if (outcome === "stripped") {
@@ -309,16 +278,14 @@ export default defineHarness({
       );
     }
 
-    const storedAuth = codexStoredAuthRef(doc);
     const catalogKey = await codexApiKey(ctx);
-    const keyType = detectApiKeyType(catalogKey || effectiveCodexApiKey(storedAuth));
-    const writeAuth = ctx.apiKeyFromFlag ? ctx.apiKey : storedAuth;
-    const { codexCatalog } = await loadCodexCatalogBundle(catalogKey || effectiveCodexApiKey(storedAuth));
+    const keyType = detectApiKeyType(catalogKey);
+    const { codexCatalog } = await loadCodexCatalogBundle(catalogKey);
     const result = await updateCodexModel({
       configPath,
       modelId: defaultModelIds(keyType).main,
-      apiKey: writeAuth || catalogKey,
-      literalAuth: ctx.apiKeyFromFlag || codexLiteralAuthFromDoc(doc),
+      apiKey: CODEX_API_KEY_ENV_REF,
+      literalAuth: false,
       catalogPath,
       catalog: codexCatalog,
     });
@@ -329,14 +296,12 @@ export default defineHarness({
   async modelSelect(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
     const { configPath, catalogPath } = codexPathsFor(ctx);
-    const { doc } = await readCodexTomlIfExists(configPath);
     const apiKey = await codexApiKey(ctx);
     const { pickerCatalog, codexCatalog } = await loadCodexCatalogBundle(apiKey);
     await runCodexModelSelect({
       options: { ...ctx, catalogPath, catalog: codexCatalog, pickerCatalog },
       configPath,
       apiKey,
-      literalAuth: codexLiteralAuthFromDoc(doc),
     });
   },
 });

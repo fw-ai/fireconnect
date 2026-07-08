@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -15,7 +15,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", ...env },
+      env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -57,6 +57,11 @@ describe("pi azure harness", () => {
       assert.equal(provider.authHeader, true);
       assert.equal(provider.apiKey, AZURE_KEY);
       assert.deepEqual(provider.models, [{ id: "FW-MiniMax-M2.5" }]);
+
+      // A literal key is stored in models.json, so it must be owner-only (0600):
+      // no group/other access bits.
+      const st = await stat(piModelsPath(home));
+      assert.equal(st.mode & 0o077, 0o000, "models.json should be owner-only (0600) with a literal key");
     });
   });
 
@@ -87,6 +92,10 @@ describe("pi azure harness", () => {
       assert.equal(result.code, 0, result.stderr);
       const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
       assert.equal(models.providers[PI_AZURE_PROVIDER].apiKey, "$AZURE_API_KEY");
+      // Env-reference mode stores no secret on disk, so models.json must NOT be
+      // locked to owner-only — it keeps the tool's default (group/other read).
+      const st = await stat(piModelsPath(home));
+      assert.notEqual(st.mode & 0o077, 0o000, "env-reference models.json should keep default perms");
     });
   });
 

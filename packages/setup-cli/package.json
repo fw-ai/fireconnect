@@ -1,6 +1,6 @@
 {
   "name": "@fireconnect/cli",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "FireConnect CLIs for using Fireworks models with Claude Code",
   "type": "module",
   "bin": {
@@ -15,6 +15,9 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "cross-keychain": "^1.1.0"
   },
   "license": "Apache-2.0"
 }

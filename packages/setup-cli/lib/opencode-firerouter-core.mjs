@@ -1,10 +1,11 @@
+import { writeFileAtomic } from "./atomic-write.mjs";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
 import { readJsonIfExists, writeJson } from "./fireconnect-core.mjs";
 import {
   buildFirerouterHttpHeaders,
+  FALLBACK_FIREROUTER_MAIN_MODEL,
   FIREROUTER_BASE_URL,
   FIREROUTER_FIREWORKS_HEADER,
   isFirerouterBaseUrl,
@@ -14,6 +15,7 @@ import { isHarnessEnabled } from "./global-config.mjs";
 import { HARNESS } from "./harness.mjs";
 
 export { FIREROUTER_BASE_URL } from "./firerouter-core.mjs";
+export { FALLBACK_FIREROUTER_MAIN_MODEL } from "./firerouter-core.mjs";
 export const FIREROUTER_DATA_RELATIVE_DIR = ".fireconnect/opencode/firerouter";
 export const ANTHROPIC_KEY_ENV_REF = "{env:ANTHROPIC_API_KEY}";
 export const FIREWORKS_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
@@ -26,60 +28,9 @@ export const OPENCODE_ANTHROPIC_PROVIDER_ID = "anthropic";
 // OpenCode merges provider.name into the built-in registry for UI display.
 export const FIREROUTER_ANTHROPIC_PROVIDER_NAME = "Anthropic (FireRouter)";
 
-// Last-resort default for the active model when none can be derived from the
-// flag, env override, or FireRouter's advertised config (offline first run).
-// Prefer resolveFirerouterDefaultModel() — the deployment is the source of truth.
-export const FALLBACK_FIREROUTER_MAIN_MODEL = "claude-opus-4-8";
-
-// Operator/CI override so a default model can be pinned without --main and
-// without a network call. Takes precedence over the well-known fetch.
-export const FIREROUTER_MAIN_MODEL_ENV = "FIRECONNECT_ROUTER_MAIN_MODEL";
-
-// FireRouter advertises its configured opencode bootstrap (incl. the default
-// model) at this path off the proxy root.
-const WELL_KNOWN_OPENCODE_PATH = "/.well-known/opencode.json";
-const WELL_KNOWN_TIMEOUT_MS = 5000;
-
 // Provider ids owned by fireconnect's direct (Fireworks) mode. Mirrors
 // OPENCODE_FIREWORKS_PROVIDER_ID + its legacy alias from opencode-core.mjs.
 const DIRECT_FIREWORKS_PROVIDER_IDS = ["fireworks-ai", "fireworks"];
-
-/**
- * Resolve the default Anthropic model for FireRouter mode. The deployment is the
- * source of truth: read it from `{baseUrl}/.well-known/opencode.json` (the same
- * config OpenCode/Claude Code bootstrap from). Precedence:
- *   FIRECONNECT_ROUTER_MAIN_MODEL env > well-known fetch > bundled fallback.
- * Only Claude-shaped server defaults are honored (this retargets the Anthropic
- * provider, so a gpt-5.x deployment default wouldn't apply); anything else falls
- * back. Always resolves — never throws — so `on` works offline.
- * @param {string} baseUrl FireRouter root (no /v1 suffix)
- * @returns {Promise<string>} bare model id (no provider prefix)
- */
-export async function resolveFirerouterDefaultModel(baseUrl) {
-  const override = process.env[FIREROUTER_MAIN_MODEL_ENV]?.trim();
-  if (override) return override;
-  const fetched = await _fetchFirerouterMainModel(baseUrl);
-  if (fetched && /^claude/i.test(fetched)) return fetched;
-  return FALLBACK_FIREROUTER_MAIN_MODEL;
-}
-
-async function _fetchFirerouterMainModel(baseUrl) {
-  const root = normalizeFirerouterUrl(baseUrl || FIREROUTER_BASE_URL);
-  try {
-    const res = await fetch(`${root}${WELL_KNOWN_OPENCODE_PATH}`, {
-      signal: AbortSignal.timeout(WELL_KNOWN_TIMEOUT_MS),
-    });
-    if (!res.ok) return "";
-    const config = await res.json();
-    const model = typeof config?.model === "string" ? config.model : "";
-    // Advertised as "<provider>/<id>" (e.g. firerouter/claude-opus-4-8); we want
-    // the bare id to hang off the Anthropic provider.
-    const slash = model.indexOf("/");
-    return slash === -1 ? model : model.slice(slash + 1);
-  } catch {
-    return "";
-  }
-}
 
 /**
  * Pick the `anthropic/<model>` reference to make active. An explicit model
@@ -151,6 +102,51 @@ export function firerouterCurrentModel(config) {
   return typeof config.model === "string" && config.model ? config.model : null;
 }
 
+/**
+ * Whether the Anthropic provider block still carries a direct Anthropic key after
+ * FireRouter wiring is stripped. Used by the no-backup `off` path to avoid
+ * dropping a user's pre-existing `anthropic/<model>` when direct Anthropic auth
+ * remains usable.
+ * @param {object} config parsed opencode.json (after stripFirerouterFromConfig)
+ */
+export function opencodeDirectAnthropicSetupWorks(config) {
+  const apiKey = config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options?.apiKey;
+  return typeof apiKey === "string" && apiKey.trim().length > 0;
+}
+
+/**
+ * Whether `model` matches an `anthropic/<id>` ref the user had before router `on`.
+ * @param {object | undefined | null} backup
+ * @param {string} model
+ */
+export function hadPreExistingAnthropicModel(backup, model) {
+  const priorModel = backup?.anthropicModelBeforeRouter;
+  const prefix = `${OPENCODE_ANTHROPIC_PROVIDER_ID}/`;
+  return typeof priorModel === "string"
+    && priorModel.startsWith(prefix)
+    && priorModel === model;
+}
+
+/**
+ * Drop a router-injected `anthropic/<model>` ref when stripping leaves no direct
+ * Anthropic auth and the model was not already the user's choice before router `on`.
+ * @param {object} config parsed opencode.json (mutated)
+ * @param {object | undefined | null} backup
+ * @returns {boolean} whether config.model was removed
+ */
+export function dropStrandedAnthropicModelIfNeeded(config, backup) {
+  const model = config.model;
+  const prefix = `${OPENCODE_ANTHROPIC_PROVIDER_ID}/`;
+  if (typeof model !== "string" || !model.startsWith(prefix)) {
+    return false;
+  }
+  if (opencodeDirectAnthropicSetupWorks(config) || hadPreExistingAnthropicModel(backup, model)) {
+    return false;
+  }
+  delete config.model;
+  return true;
+}
+
 function _homeFromDataDir(dataDir) {
   // Mirror FIREROUTER_DATA_RELATIVE_DIR: <home>/.fireconnect/opencode/firerouter
   const opencodeDir = path.dirname(dataDir);
@@ -208,18 +204,35 @@ export async function enableFirerouterOpencode({
   // Snapshot the original config before the first change so `off` can restore it.
   const backupPath = firerouterBackupPath(dataDir, configPath);
   const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
+  // A direct-mode backup (same filename, one dir up) means fireconnect is
+  // already active on this config in direct mode — so the current config is
+  // fireconnect-modified, and switching direct→router must not snapshot it over
+  // the true original that the direct backup still holds. This is derived from
+  // the backup's existence rather than `wasGloballyEnabled` so it also holds for
+  // a custom --data-dir, where the home (hence global state) can't be derived.
+  const directBackupPath = firerouterBackupPath(path.dirname(dataDir), configPath);
+  const hasDirectBackup = (await readJsonIfExists(directBackupPath)).snapshot !== undefined;
+  const hasAnyBackup = hasBackup || hasDirectBackup;
+  // Treat both FireRouter routing and direct-mode Fireworks providers as
+  // "already fireconnect-owned" so a fireconnect-modified config is never
+  // mistaken for a user original worth backing up.
   const hasFirerouterRouting = firerouterProviderStatus(config) === "firerouter";
+  const hasDirectFireworksProvider = DIRECT_FIREWORKS_PROVIDER_IDS.some(
+    (id) => Boolean(config.provider?.[id]),
+  );
+  const hasFireconnectRouting = hasFirerouterRouting || hasDirectFireworksProvider;
   const home = _homeFromDataDir(dataDir);
   const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
-  const shouldSnapshot = !hasBackup
-    ? !hasFirerouterRouting || !wasGloballyEnabled
-    : !hasFirerouterRouting;
+  const shouldSnapshot = !hasAnyBackup
+    ? !hasFireconnectRouting || !wasGloballyEnabled
+    : !hasFireconnectRouting;
 
   if (shouldSnapshot) {
     // The snapshot can contain credentials from the user's other providers —
     // keep the backup (and its directory) private to the owner.
     const priorDisplayName = config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.name;
-    /** @type {{ configPath: string, snapshot: { existed: boolean, raw: string }, anthropicDisplayNameBeforeRouter?: string }} */
+    const priorModel = typeof config.model === "string" ? config.model : "";
+    /** @type {{ configPath: string, snapshot: { existed: boolean, raw: string }, anthropicDisplayNameBeforeRouter?: string, anthropicModelBeforeRouter?: string }} */
     const backupPayload = { configPath: path.resolve(configPath), snapshot };
     if (
       typeof priorDisplayName === "string"
@@ -228,31 +241,55 @@ export async function enableFirerouterOpencode({
     ) {
       backupPayload.anthropicDisplayNameBeforeRouter = priorDisplayName;
     }
+    if (priorModel.startsWith(`${OPENCODE_ANTHROPIC_PROVIDER_ID}/`)) {
+      backupPayload.anthropicModelBeforeRouter = priorModel;
+    }
     await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
     await writeJson(backupPath, backupPayload);
     await chmod(backupPath, 0o600);
   }
 
-  const storedFireworksKey = fireworksKeyFromFlag ? fireworksKey : FIREWORKS_KEY_ENV_REF;
-  const storedAnthropicKey = anthropicKey
-    ? (anthropicKeyFromFlag ? anthropicKey : ANTHROPIC_KEY_ENV_REF)
-    : "";
+  // Write the resolved keys as PLAINTEXT so OpenCode loads them immediately — no
+  // shell env hook / new shell required. Both values are already resolved to
+  // real keys by the harness (flag > stored > env > keychain fallback);
+  // `anthropicKey` is "" only in the auth.json runtime-auth case, where we leave
+  // options.apiKey unset so OpenCode reads its own auth.json. The OS keychain
+  // remains the source of truth (config.json {keychain:…}); the values written
+  // here are just the immediately-usable copies. File is written 0600 below.
+  const storedFireworksKey = fireworksKey;
+  const storedAnthropicKey = anthropicKey || "";
 
+  // Only the FireRouter Fireworks-key header is written. The Anthropic key goes
+  // in options.apiKey (below) — OpenCode's @ai-sdk/anthropic provider derives
+  // the x-api-key request header from apiKey itself, so a separate x-api-key
+  // header entry is both redundant and insufficient (OpenCode resolves the
+  // provider's auth from options.apiKey / auth.json, not from a raw header).
   const headers = buildFirerouterHttpHeaders({
     fireworksKey: storedFireworksKey,
-    anthropicKey: storedAnthropicKey,
   });
 
   const anthropic = { ...(config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID] ?? {}) };
   const existingOptions = anthropic.options ?? {};
   // Drop any FireRouter-owned headers we set on a prior `on` (e.g. a stale
-  // x-api-key) before re-applying.
+  // x-api-key from an older FireConnect) before re-applying.
   const carriedHeaders = stripFirerouterHeaders({ ...(existingOptions.headers ?? {}) });
-  anthropic.options = {
+  const nextOptions = {
     ...existingOptions,
     baseURL: firerouterAnthropicBaseUrl(baseUrl),
     headers: { ...carriedHeaders, ...headers },
   };
+  // OpenCode's @ai-sdk/anthropic provider reads `options.apiKey` (not a header)
+  // to construct the client; without it the SDK throws "Anthropic API key is
+  // missing" before any request. FireRouter authenticates via the
+  // X-FireRouter-Fireworks-Key header, so this value is only passed through to
+  // Anthropic. When there's no stored key (auth.json runtime auth), leave
+  // apiKey unset so OpenCode resolves it from auth.json itself.
+  if (storedAnthropicKey) {
+    nextOptions.apiKey = storedAnthropicKey;
+  } else {
+    delete nextOptions.apiKey;
+  }
+  anthropic.options = nextOptions;
   anthropic.name = FIREROUTER_ANTHROPIC_PROVIDER_NAME;
 
   const provider = {
@@ -271,14 +308,13 @@ export async function enableFirerouterOpencode({
   const model = resolveAnthropicModelRef(mainModel, config.model);
   const next = { ...config, provider, model };
 
-  await writeJson(configPath, next);
+  // 0600: the config now holds plaintext API keys (Fireworks header + Anthropic apiKey).
+  await writeJson(configPath, next, { mode: 0o600 });
   return {
     baseUrl: anthropic.options.baseURL,
     model,
-    fireworksKeyMode: fireworksKeyFromFlag ? "literal" : "env-reference",
-    anthropicKeyMode: storedAnthropicKey
-      ? (anthropicKeyFromFlag ? "literal" : "env-reference")
-      : "unset",
+    fireworksKeyMode: "literal",
+    anthropicKeyMode: storedAnthropicKey ? "literal" : "unset",
   };
 }
 
@@ -289,6 +325,39 @@ function stripFirerouterHeaders(headers) {
   return headers;
 }
 
+/**
+ * Restore a config snapshot ({ existed, raw }) to `configPath` and remove the
+ * backup file. Refuses to restore a snapshot recorded for a different config
+ * file. Returns true when it restored (backup carried a snapshot), false when
+ * the backup had nothing to restore. Shared by both the direct and FireRouter
+ * `off` paths, including their cross-mode fallbacks.
+ * @param {{ configPath: string, backupPath: string, backup: { snapshot?: { existed: boolean, raw: string }, configPath?: string } }} args
+ */
+export async function restoreOpencodeSnapshot({ configPath, backupPath, backup }) {
+  if (!backup || backup.snapshot === undefined) {
+    return false;
+  }
+  // Refuse to restore a snapshot taken for a different config file (legacy
+  // un-keyed backups have no configPath recorded).
+  if (backup.configPath !== undefined && backup.configPath !== path.resolve(configPath)) {
+    throw new Error(
+      `Backup at ${backupPath} was taken for ${backup.configPath}, not ${configPath}; refusing to restore.`,
+    );
+  }
+  if (backup.snapshot.existed) {
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFileAtomic(configPath, backup.snapshot.raw);
+  } else {
+    try {
+      await unlink(configPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  await unlink(backupPath);
+  return true;
+}
+
 export async function disableFirerouterOpencode({ configPath, dataDir, wasEnabled = false }) {
   const backupPath = firerouterBackupPath(dataDir, configPath);
   const backup = await readJsonIfExists(backupPath);
@@ -296,42 +365,39 @@ export async function disableFirerouterOpencode({ configPath, dataDir, wasEnable
   const status = firerouterProviderStatus(config);
   const hasBackup = backup.snapshot !== undefined;
 
-  if (!wasEnabled && !hasBackup && status !== "firerouter") {
+  // Cross-mode fallback: when router `on` took over from direct mode, the true
+  // pre-fireconnect original lives in the direct backup (same filename, one dir
+  // up from the firerouter data dir). Consult it so router→direct→off never
+  // strands a fireconnect-modified config.
+  const directBackupPath = firerouterBackupPath(path.dirname(dataDir), configPath);
+  const directBackup = hasBackup ? null : await readJsonIfExists(directBackupPath);
+  const hasDirectBackup = directBackup?.snapshot !== undefined;
+
+  if (!wasEnabled && !hasBackup && !hasDirectBackup && status !== "firerouter") {
     return;
   }
 
-  // Refuse to restore a snapshot taken for a different config file.
-  if (
-    backup.configPath !== undefined &&
-    backup.configPath !== path.resolve(configPath)
-  ) {
-    throw new Error(
-      `Backup at ${backupPath} was taken for ${backup.configPath}, not ${configPath}; refusing to restore.`,
-    );
+  if (await restoreOpencodeSnapshot({ configPath, backupPath, backup })) {
+    return;
   }
-
-  if (backup.snapshot !== undefined) {
-    if (backup.snapshot.existed) {
-      await mkdir(path.dirname(configPath), { recursive: true });
-      await writeFile(configPath, backup.snapshot.raw, "utf8");
-    } else {
-      try {
-        await unlink(configPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
-    }
-    await unlink(backupPath);
+  if (hasDirectBackup
+    && await restoreOpencodeSnapshot({ configPath, backupPath: directBackupPath, backup: directBackup })) {
     return;
   }
 
-  // No backup: strip only the FireRouter wiring we own from the anthropic
-  // provider, and only touch the file if we actually removed something.
+  // No backup in either mode: strip only the FireRouter wiring we own from the
+  // anthropic provider, and only touch the file if we actually removed something.
   const { existed } = await readRawIfExists(configPath);
   if (!existed) return;
   const liveConfig = await readJsonIfExists(configPath);
   const restoreName = backup.anthropicDisplayNameBeforeRouter;
-  if (stripFirerouterFromConfig(liveConfig, { restoreAnthropicDisplayName: restoreName })) {
+  let changed = stripFirerouterFromConfig(liveConfig, { restoreAnthropicDisplayName: restoreName });
+  // Drop only router-injected `anthropic/<model>` refs that would be stranded
+  // after stripping (no direct Anthropic key and not the user's pre-router model).
+  if (dropStrandedAnthropicModelIfNeeded(liveConfig, backup)) {
+    changed = true;
+  }
+  if (changed) {
     await writeJson(configPath, liveConfig);
   }
 }
@@ -345,12 +411,38 @@ export function anthropicDisplayNameBeforeRouter(backup) {
 }
 
 /**
- * Remove the FireRouter wiring we own (baseURL, headers, display name) from the
- * Anthropic provider, cleaning up any containers we leave empty. Mutates
- * `config` and returns whether anything changed. Used by `off` (no-backup path)
- * and by the direct Fireworks path, so the two modes never coexist on one config.
+ * The Anthropic provider's `options.apiKey` in the pre-router snapshot, if any.
+ * Lets teardown tell a FireRouter-written key (strip) from a user's own
+ * pre-existing key (preserve). Returns "" when the snapshot had no such key.
+ * @param {object | undefined | null} backup
+ */
+export function anthropicApiKeyBeforeRouter(backup) {
+  const raw = backup?.snapshot?.raw;
+  if (typeof raw !== "string" || !raw.trim()) return "";
+  try {
+    const prior = JSON.parse(raw);
+    const key = prior?.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID]?.options?.apiKey;
+    return typeof key === "string" ? key : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Remove the FireRouter wiring we own (baseURL, headers, apiKey, display name)
+ * from the Anthropic provider, cleaning up any containers we leave empty.
+ * Mutates `config` and returns whether anything changed. Used by `off`
+ * (no-backup path) and by the direct Fireworks path, so the two modes never
+ * coexist on one config.
+ *
+ * `priorApiKey` (when the caller has the pre-router snapshot) is the Anthropic
+ * `options.apiKey` from before router mode. A FireRouter-owned apiKey is removed
+ * when it's the `{env:ANTHROPIC_API_KEY}` ref OR when it differs from
+ * `priorApiKey` (i.e. we introduced it) — a user's own pre-existing key is kept.
+ * When `priorApiKey` is undefined (no snapshot available), only the env ref is
+ * stripped, so we never delete a literal key we can't prove we wrote.
  * @param {object} config parsed opencode.json
- * @param {{ restoreAnthropicDisplayName?: string }} [options]
+ * @param {{ restoreAnthropicDisplayName?: string, priorApiKey?: string }} [stripOptions]
  */
 export function stripFirerouterFromConfig(config, stripOptions = {}) {
   const anthropic = config.provider?.[OPENCODE_ANTHROPIC_PROVIDER_ID];
@@ -359,6 +451,9 @@ export function stripFirerouterFromConfig(config, stripOptions = {}) {
   let changed = false;
   const options = anthropic.options;
   if (options) {
+    // Only touch an apiKey in a block we own: FireRouter header and/or baseURL present.
+    const firerouterOwned = Boolean(options.headers && FIREROUTER_FIREWORKS_HEADER in options.headers)
+      || (typeof options.baseURL === "string" && isFirerouterBaseUrl(options.baseURL));
     if (options.headers && FIREROUTER_FIREWORKS_HEADER in options.headers) {
       stripFirerouterHeaders(options.headers);
       changed = true;
@@ -366,6 +461,19 @@ export function stripFirerouterFromConfig(config, stripOptions = {}) {
     if (typeof options.baseURL === "string" && isFirerouterBaseUrl(options.baseURL)) {
       delete options.baseURL;
       changed = true;
+    }
+    // Strip the apiKey we wrote into options (the on-path now stores the
+    // Anthropic key here, not as an x-api-key header). The env ref is
+    // unambiguously ours; a literal is removed only when priorApiKey proves it
+    // differs from the user's pre-router value.
+    if (firerouterOwned && "apiKey" in options) {
+      const isEnvRef = options.apiKey === ANTHROPIC_KEY_ENV_REF;
+      const introducedByRouter = stripOptions.priorApiKey !== undefined
+        && options.apiKey !== stripOptions.priorApiKey;
+      if (isEnvRef || introducedByRouter) {
+        delete options.apiKey;
+        changed = true;
+      }
     }
   }
   if (anthropic.name === FIREROUTER_ANTHROPIC_PROVIDER_NAME) {

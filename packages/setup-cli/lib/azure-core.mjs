@@ -32,6 +32,24 @@ export const MISSING_AZURE_API_KEY_MESSAGE =
   `No Azure API key found. Export ${AZURE_API_KEY_ENV} or pass --api-key with your Foundry key.`;
 
 /**
+ * Does this stored value reference the AZURE_API_KEY env var rather than hold
+ * a literal key? Harnesses store the reference in different shapes — OpenCode
+ * and Codex use `{env:AZURE_API_KEY}`, Pi uses `$AZURE_API_KEY` (and the
+ * `${AZURE_API_KEY}` form is also accepted). All three mean "no secret on
+ * disk", which matters for file-permission decisions (env-ref configs must
+ * NOT be chmod'd to 0600).
+ * @param {string} key
+ */
+export function isAzureApiKeyEnvRef(key) {
+  if (typeof key !== "string" || !key) {
+    return false;
+  }
+  return key === AZURE_API_KEY_ENV_REF
+    || key === `$${AZURE_API_KEY_ENV}`
+    || key === `\${${AZURE_API_KEY_ENV}}`;
+}
+
+/**
  * Heuristic: does this URL look like a Microsoft Foundry / Azure AI endpoint?
  * @param {string} url
  */
@@ -116,13 +134,13 @@ export async function resolveAzureOnApiKey({
     if (existing) {
       return {
         apiKey: existing,
-        apiKeyFromFlag: existing !== AZURE_API_KEY_ENV_REF,
+        apiKeyFromFlag: !isAzureApiKeyEnvRef(existing),
         reusedExistingKey: true,
       };
     }
   }
 
-  if (configuredApiKey && configuredApiKey !== AZURE_API_KEY_ENV_REF) {
+  if (configuredApiKey && !isAzureApiKeyEnvRef(configuredApiKey)) {
     return { apiKey: configuredApiKey.trim(), apiKeyFromFlag: true, reusedExistingKey: false };
   }
 

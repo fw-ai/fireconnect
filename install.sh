@@ -12,37 +12,57 @@ else
 fi
 DEFAULT_SOURCE="https://github.com/fw-ai/fireconnect.git"
 SOURCE="${FIRECONNECT_SOURCE:-${DEFAULT_SOURCE}}"
+MIN_NODE_MAJOR=18
+
+node_major_version() {
+  node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo "0"
+}
+
+node_meets_minimum() {
+  local major
+  major="$(node_major_version)"
+  [[ "${major}" =~ ^[0-9]+$ ]] && (( major >= MIN_NODE_MAJOR ))
+}
+
+print_node_upgrade_instructions() {
+  echo "Install Node.js ${MIN_NODE_MAJOR}+ and rerun this installer." >&2
+  echo >&2
+  echo "Options:" >&2
+  echo "  - https://nodejs.org/en/download" >&2
+  echo "  - nvm: https://github.com/nvm-sh/nvm#installing-and-updating" >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "  - NodeSource on Debian/Ubuntu (review the setup script before running it):" >&2
+    echo "      curl -fsSL https://deb.nodesource.com/setup_${MIN_NODE_MAJOR}.x -o /tmp/nodesource-setup.sh" >&2
+    echo "      less /tmp/nodesource-setup.sh" >&2
+    echo "      sudo bash /tmp/nodesource-setup.sh && sudo apt-get install -y nodejs" >&2
+  fi
+}
 
 ensure_node_runtime() {
-  if command -v node >/dev/null 2>&1; then
+  if command -v node >/dev/null 2>&1 && node_meets_minimum; then
     return
   fi
 
-  echo "Node.js is required for setup."
-  echo "The installer uses Node to update settings; it does not install or update npm packages."
+  if command -v node >/dev/null 2>&1; then
+    local current
+    current="$(node -p "process.versions.node" 2>/dev/null || echo "unknown")"
+    echo "Node.js ${MIN_NODE_MAJOR}+ is required (found ${current})." >&2
+  else
+    echo "Node.js ${MIN_NODE_MAJOR}+ is required for setup." >&2
+  fi
+  echo "The installer uses Node to update settings; it does not install or update npm packages." >&2
 
   if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
     read -r -p "Install Node.js with Homebrew now? [y/N] " install_node
     if [[ ! "${install_node}" =~ ^[Yy]$ ]]; then
-      echo "Install Node.js from https://nodejs.org or with Homebrew, then rerun this installer." >&2
+      print_node_upgrade_instructions
       exit 1
     fi
 
     echo "Installing Node.js with Homebrew..."
     brew install node
-  elif [[ "$(uname -s)" == "Linux" ]] && command -v apt-get >/dev/null 2>&1; then
-    read -r -p "Install Node.js with apt now? [y/N] " install_node
-    if [[ ! "${install_node}" =~ ^[Yy]$ ]]; then
-      echo "Install Node.js from https://nodejs.org or with your package manager, then rerun this installer." >&2
-      exit 1
-    fi
-
-    echo "Installing Node.js with apt..."
-    sudo apt-get update
-    sudo apt-get install -y nodejs
   else
-    echo "Could not automatically install Node.js." >&2
-    echo "Install Node.js from https://nodejs.org, then rerun this installer." >&2
+    print_node_upgrade_instructions
     exit 1
   fi
 
@@ -50,10 +70,16 @@ ensure_node_runtime() {
     echo "Missing required command: node" >&2
     exit 1
   fi
+
+  if ! node_meets_minimum; then
+    local current
+    current="$(node -p "process.versions.node" 2>/dev/null || echo "unknown")"
+    echo "Node.js ${MIN_NODE_MAJOR}+ is still required after install (found ${current})." >&2
+    print_node_upgrade_instructions
+    exit 1
+  fi
 }
 
-# The CLI launcher needs a durable copy of the repo; a curl | bash checkout in
-# /tmp does not survive reboots, so keep one under ~/.fireconnect/cli.
 ensure_durable_source() {
   if [[ -f "${CLI}" ]]; then
     return
@@ -77,43 +103,24 @@ ensure_durable_source() {
   fi
 }
 
-read_api_key() {
-  if [[ -n "${FIREWORKS_API_KEY:-}" ]]; then
-    return
-  fi
-
-  echo "Create a Fireworks API key here:"
-  echo "https://app.fireworks.ai/settings/users/api-keys"
-  echo "(Fire Pass users: paste your fpk_... key directly.)"
-  echo
-
-  # Support interactive, piped (`curl | bash`), and non-interactive stdin flows.
-  local read_status=0
-  if [[ -t 0 ]]; then
-    read -r -s -p "Fireworks API key: " FIREWORKS_API_KEY || read_status=$?
-    echo
-  else
-    IFS= read -r FIREWORKS_API_KEY || read_status=$?
-    if [[ -z "${FIREWORKS_API_KEY:-}" ]] && { exec 3<> /dev/tty; } 2>/dev/null; then
-      read -r -s -p "Fireworks API key: " FIREWORKS_API_KEY <&3 || read_status=$?
-      echo >&3
-      exec 3>&-
-    fi
-  fi
-
-  if [[ ${read_status} -ne 0 && -z "${FIREWORKS_API_KEY:-}" ]]; then
-    echo "Failed to read Fireworks API key from terminal." >&2
-    echo "Set FIREWORKS_API_KEY in your environment and rerun the installer." >&2
+# Install runtime dependencies (cross-keychain, used for secure API-key storage).
+# Without it, `import("cross-keychain")` fails at runtime and every
+# `configure`/`<harness> on --api-key` aborts with "OS keychain is unavailable."
+# Run on every install — including re-installs over an existing CLI — so a
+# broken (dep-missing) install is repaired by re-running the installer, not just
+# by `fireconnect upgrade`. Skips dev/peer deps to keep the install lean.
+ensure_dependencies() {
+  local setup_dir
+  setup_dir="$(cd "$(dirname "${CLI}")/.." && pwd)"
+  if [[ ! -f "${setup_dir}/package.json" ]]; then
+    echo "FireConnect source not found; cannot install dependencies." >&2
     exit 1
   fi
-
-  FIREWORKS_API_KEY="${FIREWORKS_API_KEY//$'\r'/}"
-  if [[ -z "${FIREWORKS_API_KEY//[[:space:]]/}" ]]; then
-    echo "Fireworks API key is required." >&2
+  echo "Installing dependencies..."
+  if ! (cd "${setup_dir}" && npm install --omit=dev --no-fund --no-audit); then
+    echo "Failed to install FireConnect dependencies." >&2
     exit 1
   fi
-
-  export FIREWORKS_API_KEY
 }
 
 add_bin_dir_to_path() {
@@ -146,16 +153,30 @@ install_cli_launcher() {
 
   mkdir -p "${bin_dir}"
 
+  # Resolve an absolute Node path at install time and bake it into the launcher,
+  # with a PATH fallback. This keeps the launcher (and the shell env hook's
+  # `fireconnect key export`) working in non-interactive shells where `node`
+  # is not on PATH — common in sandboxes, containers, and CI.
+  local node_bin
+  node_bin="$(command -v node 2>/dev/null || true)"
+
   cat > "${launcher_path}" <<EOF
 #!/usr/bin/env bash
-# Suppress Node's ExperimentalWarning for node:sqlite (used on Node >= 22).
-# --disable-warning landed in Node 21.3.0, so only pass it on >= 22 where the
-# warning can actually appear; older Node would reject the flag.
+# FireConnect launcher. Uses the Node binary discovered at install time, falling
+# back to PATH lookup, so the shell env hook works without \`node\` on PATH.
+NODE_BIN="\${FIRECONNECT_NODE_BIN:-${node_bin}}"
+[ -x "\$NODE_BIN" ] || NODE_BIN="\$(command -v node 2>/dev/null)"
+if [ -z "\$NODE_BIN" ] || ! [ -x "\$NODE_BIN" ]; then
+  echo "fireconnect: Node.js was not found. Install Node and re-run the FireConnect installer." >&2
+  exit 1
+fi
+# Suppress Node's ExperimentalWarning for node:sqlite (Node >= 22).
+# --disable-warning landed in Node 21.3.0; older Node would reject the flag.
 node_flags=""
-if node_major=\$(node -p "process.versions.node.split('.')[0]" 2>/dev/null) && [ "\${node_major}" -ge 22 ] 2>/dev/null; then
+if node_major="\$(\$NODE_BIN -p "process.versions.node.split('.')[0]" 2>/dev/null)" && [ "\${node_major}" -ge 22 ] 2>/dev/null; then
   node_flags="--disable-warning=ExperimentalWarning"
 fi
-exec node \${node_flags} "${CLI}" "\$@"
+exec "\$NODE_BIN" \${node_flags} "${CLI}" "\$@"
 EOF
   chmod +x "${launcher_path}"
 
@@ -165,9 +186,8 @@ EOF
 main() {
   ensure_node_runtime
   ensure_durable_source
+  ensure_dependencies
 
-  read_api_key
-  node "${CLI}" configure --api-key "${FIREWORKS_API_KEY}" --harnesses claude,opencode
   install_cli_launcher
 
   echo
@@ -175,7 +195,8 @@ main() {
   echo
   node "${CLI}" help
   echo
-  echo "Enable a harness to get started: fireconnect claude on"
+  echo "Sign in to get started:        fireconnect login"
+  echo "Then enable a harness:         fireconnect claude on"
 }
 
 main "$@"

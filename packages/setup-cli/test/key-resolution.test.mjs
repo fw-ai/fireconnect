@@ -15,6 +15,7 @@ import {
   FW_CODEX_KEY,
   FW_OPENCODE_KEY,
   FPK_KEY,
+  seedKeychainConfig,
   withTempHome,
   withoutEnvFireworksKey,
   writeClaudeSettings,
@@ -40,6 +41,7 @@ function harnessCtx(home) {
     opus: "",
     sonnet: "",
     haiku: "",
+    fable: "",
     subagent: "",
     slot: "",
     search: "",
@@ -223,21 +225,19 @@ describe("resolveFireworksApiKey with harness resolveKey", () => {
 });
 
 describe("resolveHarnessOnApiKey", () => {
-  test("uses global literal before env", async () => {
-    await withTempHome("on-global-literal", async (home) => {
-      await writeGlobalConfig(home, {
-        apiKey: "fw_global_key_12345",
-        harnesses: { pi: { enabled: false } },
-      });
+  test("uses keychain ref when env is unset", async () => {
+    await withTempHome("on-global-keychain", async (home) => {
+      await seedKeychainConfig(home, "fw_global_key_12345");
 
       await withoutEnvFireworksKey(async () => {
         const resolved = await resolveHarnessOnApiKey({
           home,
           harnessEnvRef: PI_API_KEY_ENV_REF,
         });
-        assert.equal(resolved.apiKey, "fw_global_key_12345");
-        assert.equal(resolved.apiKeyFromFlag, true);
-        assert.equal(resolved.source, "global-literal");
+        assert.equal(resolved.apiKey, PI_API_KEY_ENV_REF);
+        assert.equal(resolved.apiKeyFromFlag, false);
+        assert.equal(resolved.effectiveKey, "fw_global_key_12345");
+        assert.equal(resolved.source, "global-keychain");
       });
     });
   });
@@ -285,6 +285,33 @@ describe("resolveHarnessOnApiKey", () => {
           delete process.env.FIREWORKS_API_KEY;
         } else {
           process.env.FIREWORKS_API_KEY = prev;
+        }
+      }
+    });
+  });
+
+  test("falls back to harness-local literal when global and env are unset", async () => {
+    await withTempHome("on-harness-literal", async (home) => {
+      const harnessKey = "fw_harness_only_key_123456";
+      const prevHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        await withoutEnvFireworksKey(async () => {
+          const resolved = await resolveHarnessOnApiKey({
+            home,
+            harnessEnvRef: OPENCODE_API_KEY_ENV_REF,
+            getExistingHarnessKey: async () => harnessKey,
+          });
+          assert.equal(resolved.effectiveKey, harnessKey);
+          assert.equal(resolved.source, "harness-local-literal");
+          assert.equal(resolved.apiKey, OPENCODE_API_KEY_ENV_REF);
+          assert.equal(resolved.reusedExistingKey, false);
+        });
+      } finally {
+        if (prevHome === undefined) {
+          delete process.env.HOME;
+        } else {
+          process.env.HOME = prevHome;
         }
       }
     });

@@ -20,22 +20,26 @@ import {
   PI_API_KEY_ENV_REF,
   enablePiFireworks,
   piProviderStatus,
+  resolvePiApiKeyValue,
 } from "./pi-core.mjs";
-import { filterCatalogBySearch,
+import {
+  effectiveOpencodeApiKey,
+  filterCatalogBySearch,
   loadServerlessCatalog,
 } from "./fireworks-models.mjs";
 import { filterPickerCatalogForCodex } from "./codex-catalog.mjs";
 import { HARNESS } from "./harness.mjs";
 import { printClaudeModelActivationHint } from "./claude-hints.mjs";
 import {
+  CODEX_API_KEY_ENV_REF,
   codexCurrentModelId,
   codexProviderStatus,
-  codexStoredAuthRef,
   loadCodexCatalogBundle,
   printCodexRestartHint,
   readCodexTomlIfExists,
   updateCodexModel,
 } from "./codex-core.mjs";
+import { persistApiKeyFromFlag } from "./api-key.mjs";
 import {
   CURSOR_MODES,
   CURSOR_DEFAULT_MODE,
@@ -49,6 +53,14 @@ import {
   writeApplicationUserBlob,
 } from "./cursor-core.mjs";
 import {
+  deepagentsCurrentModelId,
+  deepagentsProviderStatus,
+  printDeepagentsRestartHint,
+  readDeepagentsTomlIfExists,
+  updateDeepagentsModel,
+} from "./deepagents-core.mjs";
+import { printPiRestartHint } from "./pi-hints.mjs";
+import {
   addVscodeModel,
   fireworksProviderStatus,
   prettyModelName as vscodePrettyModelName,
@@ -56,11 +68,11 @@ import {
   readVscodeStoredKey,
   warnIfVscodeRunning,
 } from "./vscode-core.mjs";
-import { printPiRestartHint } from "./pi-hints.mjs";
 
 export const CLAUDE_CODE_SLOTS = [
   { key: "main", label: "main (primary conversation model)" },
   { key: "opus", label: "opus" },
+  { key: "fable", label: "fable" },
   { key: "sonnet", label: "sonnet" },
   { key: "haiku", label: "haiku" },
   { key: "subagent", label: "subagent" },
@@ -73,6 +85,7 @@ const NON_INTERACTIVE_HINT = {
   pi: "fireconnect pi on --main <id>",
   cursor: "fireconnect cursor on --main <id>",
   vscode: "fireconnect vscode on --main <id>  (or fireconnect vscode model add <id>)",
+  deepagents: "fireconnect deepagents on --main <id>",
 };
 
 function ensureInteractiveTerminal(harness) {
@@ -166,6 +179,7 @@ function buildMappingForSlot({ env, slot, pickedId, keyType }) {
     opus: current.opus ?? defaults.opus,
     sonnet: current.sonnet ?? defaults.sonnet,
     haiku: current.haiku ?? defaults.haiku,
+    fable: current.fable ?? defaults.fable,
     subagent: current.subagent ?? defaults.subagent,
   };
 
@@ -288,7 +302,11 @@ export async function runOpencodeModelSelect({ options, configPath, dataDir, api
     return;
   }
 
-  // Preserve the on-disk write mode: keep the stored value (literal or
+  if (options.apiKeyFromFlag && options.apiKey?.trim()) {
+   await persistApiKeyFromFlag(options.home, options.apiKey);
+  }
+
+ // Preserve the on-disk write mode: keep the stored value (literal or
   // {env:...} ref) unless the user passed an explicit --api-key.
   const writeKey = options.apiKeyFromFlag ? options.apiKey : (existingKey || options.apiKey);
   const existingKeyIsLiteral = Boolean(existingKey) && existingKey !== OPENCODE_API_KEY_ENV_REF;
@@ -298,6 +316,7 @@ export async function runOpencodeModelSelect({ options, configPath, dataDir, api
     dataDir,
     apiKey: writeKey,
     apiKeyFromFlag: options.apiKeyFromFlag || existingKeyIsLiteral,
+    effectiveApiKey: effectiveOpencodeApiKey(writeKey) || apiKey,
     modelId: picked.shortId,
     keyType,
   });
@@ -317,6 +336,11 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
   }
 
   const storedAuth = codexStoredAuthRef(doc);
+
+  if (options.apiKeyFromFlag && options.apiKey?.trim()) {
+    await persistApiKeyFromFlag(options.home, options.apiKey);
+  }
+
   const keyType = detectApiKeyType(apiKey);
   let pickerCatalog = options.pickerCatalog;
   let codexCatalog = options.catalog ?? null;
@@ -356,14 +380,14 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
     return;
   }
 
-  const writeAuth = options.apiKeyFromFlag ? options.apiKey : (storedAuth || apiKey);
-  const result = await updateCodexModel({
-    configPath,
-    modelId: picked.shortId,
-    apiKey: writeAuth,
-    literalAuth: options.apiKeyFromFlag || literalAuth,
-    catalogPath: options.catalogPath ?? "",
-    catalog: codexCatalog,
+ const writeAuth = options.apiKeyFromFlag ? options.apiKey : (storedAuth || apiKey);
+ const result = await updateCodexModel({
+   configPath,
+   modelId: picked.shortId,
+   apiKey: writeAuth,
+    literalAuth: false,
+   catalogPath: options.catalogPath ?? "",
+   catalog: codexCatalog,
   });
 
   console.log(`Updated Codex model: ${result.model}`);
@@ -401,8 +425,12 @@ export async function runPiModelSelect({ options, settingsPath, authPath, models
     return;
   }
 
-  const writeKey = options.apiKeyFromFlag ? options.apiKey : (existingKey || options.apiKey);
-  const existingKeyIsLiteral = Boolean(existingKey)
+  if (options.apiKeyFromFlag && options.apiKey?.trim()) {
+   await persistApiKeyFromFlag(options.home, options.apiKey);
+  }
+
+ const writeKey = options.apiKeyFromFlag ? options.apiKey : (existingKey || options.apiKey);
+ const existingKeyIsLiteral = Boolean(existingKey)
     && existingKey !== PI_API_KEY_ENV_REF
     && existingKey !== "${FIREWORKS_API_KEY}";
 
@@ -413,12 +441,54 @@ export async function runPiModelSelect({ options, settingsPath, authPath, models
     dataDir,
     apiKey: writeKey,
     apiKeyFromFlag: options.apiKeyFromFlag || existingKeyIsLiteral,
+    effectiveApiKey: resolvePiApiKeyValue(writeKey) || apiKey,
     modelId: picked.shortId,
     keyType,
   });
 
   console.log(`Updated Pi model: ${result.model}`);
   printPiRestartHint();
+}
+
+export async function runDeepagentsModelSelect({ options, configPath, apiKey }) {
+  if (options.slot) {
+    throw new Error("--slot is Claude Code only; Deep Agents uses a single model (omit --slot)");
+  }
+
+  const { doc } = await readDeepagentsTomlIfExists(configPath);
+  if (deepagentsProviderStatus(doc) !== "fireworks") {
+    throw new Error("model select requires Fireworks to be enabled; run: fireconnect deepagents on");
+  }
+
+  const keyType = detectApiKeyType(apiKey);
+  const { catalog } = await loadServerlessCatalog({ apiKey, keyType });
+  const currentModel = deepagentsCurrentModelId(doc)?.split("/").at(-1) ?? "(unset)";
+
+  const picked = await pickModelInteractive({
+    harness: HARNESS.DEEPAGENTS,
+    catalog,
+    options,
+    promptLabel: "Pick a serverless model for Deep Agents:",
+    beforePick: async () => {
+      console.log(`Current Deep Agents model: ${currentModel}`);
+    },
+  });
+  if (!picked) {
+    return;
+  }
+
+  const result = await updateDeepagentsModel({
+    configPath,
+    modelId: picked.shortId,
+  });
+
+  if (result.unchanged) {
+    console.log(`Deep Agents model already set to ${result.model.split("/").at(-1)}`);
+    return;
+  }
+
+  console.log(`Updated Deep Agents model: ${result.model}`);
+  printDeepagentsRestartHint();
 }
 
 /**

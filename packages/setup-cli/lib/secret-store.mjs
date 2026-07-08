@@ -1,0 +1,1116 @@
+import { mkdir, readFile, unlink } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+import {
+  builtinDeletePassword,
+  builtinFileStoreAvailable,
+  builtinGetPassword,
+  builtinHasPassword,
+  builtinSetPassword,
+  secretsFilePath,
+} from "./builtin-file-secret-store.mjs";
+import { ensureCliDependencies } from "./ensure-cli-deps.mjs";
+import {
+  deletePlaintextSecret,
+  hasPlaintextSecret,
+  plaintextSecretPath,
+  plaintextSecretStoreAvailable,
+  readPlaintextSecret,
+  writePlaintextSecret,
+} from "./plaintext-secret-store.mjs";
+import {
+  clearKeyStorageCache,
+  readKeyStorageCache,
+  readKeyStorageCacheEntry,
+  writeKeyStorageCache,
+} from "./key-storage-cache.mjs";
+import {
+  FIRECONNECT_KEY_STORAGE_ENV,
+  formatKeyStorageOverrideHint,
+  isKeyStorageForcedNull,
+  readKeyStorageOverride,
+} from "./key-storage-env.mjs";
+
+export {
+  FIRECONNECT_KEY_STORAGE_ENV,
+  LEGACY_FIRECONNECT_KEY_STORAGE_ENV as FIRECONNECT_SECRET_BACKEND_ENV,
+} from "./key-storage-env.mjs";
+
+import { writeFileAtomic } from "./atomic-write.mjs";
+
+export const SECRET_SERVICE = "FireworksAI";
+export const SECRET_ACCOUNT = "fireworks-api-key";
+
+/**
+ * FireConnect-controlled storage override. Maps to cross-keychain's
+ * `TS_KEYRING_BACKEND` (or an explicit native id) so the same backend is used
+ * in this process and in any spawned `fireconnect key export` child.
+ *   - `file`    → encrypted file backend (sandboxes / CI / no keychain)
+ *   - `keychain`→ force the native OS keychain (error if none detected)
+ *   - `null`    → explicit no-op backend (testing refusal paths)
+ *   - unset     → auto: native keychain if available, else encrypted file, else error
+ */
+
+/** cross-keychain's own backend-selection env (upstream). */
+const CROSS_KEYCHAIN_BACKEND_ENV = "TS_KEYRING_BACKEND";
+
+/** Backend ids cross-keychain exposes. */
+const NATIVE_BACKEND_IDS = ["native-macos", "macos", "native-windows", "windows", "native-linux", "secret-service"];
+const FILE_BACKEND_ID = "file";
+const NULL_BACKEND_ID = "null";
+
+/** @type {Map<string, string> | null} */
+let memoryBackend = null;
+
+/** @type {string | null} */
+let memoryStoreHomeOverride = null;
+
+/** Whether *we* set TS_KEYRING_BACKEND, so we can clean it up in tests. */
+let weSetCrossKeychainBackendEnv = false;
+
+/** The original TS_KEYRING_BACKEND value before we overrode it (for test reset). */
+let originalCrossKeychainBackendEnv = undefined;
+
+/** @type {Promise<typeof import("cross-keychain") | null> | null} */
+let keychainModulePromise = null;
+
+/** @type {typeof import("cross-keychain") | null} */
+let keychainModule = null;
+
+/**
+ * Resolve the HOME to use for the memory store. Tests pass an explicit home
+ * (the temp dir) so the memory file is written to the test sandbox, not the
+ * real user home. Production calls omit the param and fall back to process.env.HOME.
+ * @param {string} [home]
+ * @returns {string}
+ */
+function resolveHome(home) {
+  if (home) {
+    return home;
+  }
+  return process.env.HOME?.trim() ?? "";
+}
+
+/**
+ * True when an explicit `--home` (or caller home arg) differs from process HOME.
+ * Secure backends otherwise read/write via process.env.HOME / XDG, which would
+ * cross-contaminate sandboxed `--home` trees with the real user profile.
+ * @param {string} resolvedHome
+ */
+function isHomeOverride(resolvedHome) {
+  const resolved = resolvedHome?.trim() ?? "";
+  if (!resolved) {
+    return false;
+  }
+  return resolved !== (process.env.HOME?.trim() ?? "");
+}
+
+/**
+ * Align HOME/XDG with a `--home` override for secure-backend ops only.
+ * @template T
+ * @param {string} resolvedHome
+ * @param {() => T | Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function withHomeScopedEnv(resolvedHome, fn) {
+  if (!isHomeOverride(resolvedHome)) {
+    return fn();
+  }
+
+  const resolved = resolvedHome.trim();
+  const savedHome = process.env.HOME;
+  const savedXdgData = process.env.XDG_DATA_HOME;
+  const savedXdgConfig = process.env.XDG_CONFIG_HOME;
+
+  process.env.HOME = resolved;
+  process.env.XDG_DATA_HOME = path.join(resolved, ".local", "share");
+  process.env.XDG_CONFIG_HOME = path.join(resolved, ".config");
+
+  keychainModule = null;
+  keychainModulePromise = null;
+  try {
+    keychainModule?.__resetKeyringStateForTests?.();
+  } catch {
+    // best effort
+  }
+
+  try {
+    return await fn();
+  } finally {
+    if (savedHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = savedHome;
+    }
+    if (savedXdgData === undefined) {
+      delete process.env.XDG_DATA_HOME;
+    } else {
+      process.env.XDG_DATA_HOME = savedXdgData;
+    }
+    if (savedXdgConfig === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = savedXdgConfig;
+    }
+    keychainModule = null;
+    keychainModulePromise = null;
+    try {
+      keychainModule?.__resetKeyringStateForTests?.();
+    } catch {
+      // best effort
+    }
+  }
+}
+
+/**
+ * @param {string} resolvedHome
+ * @returns {Promise<string | null>}
+ */
+async function readPlaintextSecretIfAvailable(resolvedHome) {
+  if (!plaintextSecretStoreAvailable(resolvedHome)) {
+    return null;
+  }
+  try {
+    const plaintext = await readPlaintextSecret(resolvedHome);
+    if (plaintext?.trim()) {
+      lastReadError = null;
+      return plaintext;
+    }
+  } catch (error) {
+    lastReadError = /** @type {Error} */ (error);
+  }
+  return null;
+}
+
+function memoryStorePath(home) {
+  return path.join(resolveHome(home), ".fireconnect", ".secret-memory");
+}
+
+async function loadMemoryStoreFromDisk(home) {
+  const filePath = memoryStorePath(home);
+  if (!filePath) {
+    return;
+  }
+  try {
+    const value = (await readFile(filePath, "utf8")).trim();
+    if (!memoryBackend) {
+      useMemorySecretStore();
+    }
+    if (value) {
+      memoryBackend.set(memoryKey(), value);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function persistMemoryStoreToDisk(home) {
+  const filePath = memoryStorePath(home);
+  if (!filePath || !memoryBackend) {
+    return;
+  }
+  const value = memoryBackend.get(memoryKey()) ?? "";
+  await mkdir(path.dirname(filePath), { recursive: true });
+  if (value) {
+    await writeFileAtomic(filePath, value, { mode: 0o600 });
+  } else {
+    try {
+      await unlink(filePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+}
+
+async function ensureMemoryStoreLoaded(home) {
+  if (useMemoryStore()) {
+    if (!memoryBackend) {
+      useMemorySecretStore();
+    }
+    await loadMemoryStoreFromDisk(home);
+  }
+}
+
+/**
+ * Use an in-memory secret store (tests).
+ */
+export function useMemorySecretStore() {
+  memoryBackend = new Map();
+}
+
+/**
+ * Reset secret store backend selection (tests). Also resets cross-keychain's
+ * internal backend cache so XDG/path changes between tests take effect.
+ */
+export function resetSecretStoreForTests() {
+  memoryBackend = null;
+  memoryStoreHomeOverride = null;
+  keychainModule = null;
+  keychainModulePromise = null;
+  void clearKeyStorageCache();
+  if (weSetCrossKeychainBackendEnv) {
+    // Restore the original (or delete if it was unset) so test isolation is clean.
+    if (originalCrossKeychainBackendEnv === undefined) {
+      delete process.env[CROSS_KEYCHAIN_BACKEND_ENV];
+    } else {
+      process.env[CROSS_KEYCHAIN_BACKEND_ENV] = originalCrossKeychainBackendEnv;
+    }
+    weSetCrossKeychainBackendEnv = false;
+    originalCrossKeychainBackendEnv = undefined;
+  }
+  // Reset cross-keychain's module-level cache (always exported) so a changed
+  // XDG_DATA_HOME / FIRECONNECT_KEY_STORAGE is honored on the next op.
+  try {
+    if (keychainModule?.__resetKeyringStateForTests) {
+      keychainModule.__resetKeyringStateForTests();
+    }
+  } catch {
+    // ignore — best effort for test isolation
+  }
+}
+
+function memoryKey() {
+  return `${SECRET_SERVICE}/${SECRET_ACCOUNT}`;
+}
+
+async function memoryGet() {
+  return memoryBackend?.get(memoryKey()) ?? null;
+}
+
+async function memorySet(value) {
+  if (!memoryBackend) {
+    throw new Error("Memory secret store is not active");
+  }
+  memoryBackend.set(memoryKey(), value);
+}
+
+async function memoryDelete() {
+  memoryBackend?.delete(memoryKey());
+}
+
+async function memoryHas() {
+  return memoryBackend?.has(memoryKey()) ?? false;
+}
+
+/**
+ * Lazily import cross-keychain once per process. On first failure, attempts
+ * `npm install` in packages/setup-cli (repairs global/checkouts missing deps).
+ * Returns null if the module still cannot be loaded so callers can fall back
+ * to the built-in encrypted-file store.
+ * @returns {Promise<typeof import("cross-keychain") | null>}
+ */
+async function loadKeychainModule() {
+  if (keychainModule) {
+    return keychainModule;
+  }
+  if (!keychainModulePromise) {
+    keychainModulePromise = loadKeychainModuleAttempt();
+  }
+  return keychainModulePromise;
+}
+
+/**
+ * @param {boolean} [retried]
+ * @returns {Promise<typeof import("cross-keychain") | null>}
+ */
+async function loadKeychainModuleAttempt(retried = false) {
+  try {
+    const mod = await import("cross-keychain");
+    keychainModule = mod;
+    return mod;
+  } catch {
+    if (!retried && ensureCliDependencies()) {
+      keychainModulePromise = null;
+      return loadKeychainModuleAttempt(true);
+    }
+    keychainModule = null;
+    return null;
+  }
+}
+
+/**
+ * Use the built-in encrypted-file store when cross-keychain is unavailable
+ * but HOME/XDG paths are writable (same on-disk layout as cross-keychain file).
+ * @returns {boolean}
+ */
+function useBuiltinFileFallback() {
+  return !keychainModule && builtinFileStoreAvailable();
+}
+
+/**
+ * @param {string} [home]
+ * @returns {Promise<"keychain" | "file">}
+ */
+async function secureBackendKind(home) {
+  const keychain = await loadKeychainModule();
+  if (!keychain) {
+    return "file";
+  }
+  const forced = readKeyStorageOverride();
+  if (forced === FILE_BACKEND_ID) {
+    return "file";
+  }
+  if (forced === "keychain") {
+    return "keychain";
+  }
+  let backends = [];
+  try {
+    backends = await keychain.listBackends();
+  } catch {
+    backends = [];
+  }
+  return pickNativeBackendId(backends) ? "keychain" : "file";
+}
+
+/**
+ * @param {string} value
+ * @param {string} [home]
+ */
+async function storeSecretInSecureBackend(value, home) {
+  const trimmed = value?.trim() ?? "";
+  const resolvedHome = resolveHome(home);
+  await withHomeScopedEnv(resolvedHome, async () => {
+    const keychain = await loadKeychainModule();
+    if (!keychain) {
+      if (useBuiltinFileFallback()) {
+        await builtinSetPassword(SECRET_SERVICE, SECRET_ACCOUNT, trimmed);
+        const readback = await builtinGetPassword(SECRET_SERVICE, SECRET_ACCOUNT);
+        if (!readback || readback.trim() !== trimmed) {
+          const where = secretsFilePath() ?? "the encrypted file store";
+          throw new Error(`Storage verification failed: the key could not be read back from ${where}.`);
+        }
+        lastReadError = null;
+        return;
+      }
+      throw new Error(
+        "FireConnect's secret-storage module (cross-keychain) could not be loaded "
+          + "and the encrypted-file fallback is unavailable (set HOME or XDG_DATA_HOME).",
+      );
+    }
+
+    try {
+      await ensureBackendEnv(keychain);
+      await keychain.setPassword(SECRET_SERVICE, SECRET_ACCOUNT, trimmed);
+    } catch (error) {
+      throw friendlySecretError(error, home);
+    }
+
+    let readback = null;
+    try {
+      readback = await keychain.getPassword(SECRET_SERVICE, SECRET_ACCOUNT);
+    } catch (error) {
+      throw friendlySecretError(error, home);
+    }
+    if (!readback || readback.trim() !== trimmed) {
+      const where = secretsFilePath() ?? "the keychain";
+      throw new Error(
+        `Storage verification failed: the key could not be read back from ${where}. `
+          + "The keychain may be locked or the chosen backend is read-only.",
+      );
+    }
+    lastReadError = null;
+  });
+}
+
+/**
+ * @param {string} [home]
+ * @returns {Promise<string | null>}
+ */
+async function readSecretFromSecureBackend(home) {
+  const resolvedHome = resolveHome(home);
+  return withHomeScopedEnv(resolvedHome, async () => {
+    const keychain = await loadKeychainModule();
+    if (!keychain) {
+      if (useBuiltinFileFallback()) {
+        lastReadError = null;
+        return builtinGetPassword(SECRET_SERVICE, SECRET_ACCOUNT);
+      }
+      lastReadError = new Error("cross-keychain module unavailable");
+      return null;
+    }
+
+    try {
+      await ensureBackendEnv(keychain);
+      const value = await keychain.getPassword(SECRET_SERVICE, SECRET_ACCOUNT);
+      lastReadError = null;
+      return value;
+    } catch (error) {
+      lastReadError = /** @type {Error} */ (error);
+      return null;
+    }
+  });
+}
+
+/**
+ * @param {string} [home]
+ * @returns {Promise<boolean>}
+ */
+async function hasSecretInSecureBackend(home) {
+  const value = await readSecretFromSecureBackend(home);
+  return Boolean(value?.trim());
+}
+
+/**
+ * @param {string} [home]
+ */
+async function deleteSecretFromSecureBackend(home) {
+  const resolvedHome = resolveHome(home);
+  await withHomeScopedEnv(resolvedHome, async () => {
+    const keychain = await loadKeychainModule();
+    if (!keychain) {
+      if (useBuiltinFileFallback()) {
+        try {
+          await builtinDeletePassword(SECRET_SERVICE, SECRET_ACCOUNT);
+        } catch {
+          // Missing entry is fine.
+        }
+      }
+      return;
+    }
+
+    try {
+      await ensureBackendEnv(keychain);
+      await keychain.deletePassword(SECRET_SERVICE, SECRET_ACCOUNT);
+    } catch {
+      // Missing entry is fine.
+    }
+  });
+}
+
+/**
+ * @param {string} value
+ * @param {string} home
+ * @param {unknown} cause
+ */
+async function storeSecretInPlaintextFallback(value, home, cause) {
+  const trimmed = value?.trim() ?? "";
+  const previousPlaintext = await readPlaintextSecret(home);
+  await writePlaintextSecret(home, trimmed);
+  const readback = (await readPlaintextSecret(home))?.trim() ?? "";
+  if (readback !== trimmed) {
+    throw new Error(
+      "Storage verification failed: the key could not be read back from the plaintext fallback file.",
+    );
+  }
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  try {
+    await persistKeyStorageCache(home, "plaintext", reason, { required: true });
+  } catch (error) {
+    try {
+      if (previousPlaintext?.trim()) {
+        await writePlaintextSecret(home, previousPlaintext);
+      } else {
+        await deletePlaintextSecret(home);
+      }
+    } catch {
+      // Rollback is best-effort; surface the cache persist failure.
+    }
+    throw error;
+  }
+  try {
+    await deleteSecretFromSecureBackend(home);
+  } catch {
+    // Best-effort; getSecret/hasSecret ignore lingering secure copies once
+    // plaintext fallback has committed (cache carries the fallback reason).
+  }
+  lastReadError = null;
+  // Never let a secure→plaintext downgrade be silent: persisting the key in
+  // cleartext (0600) removes the keychain/encrypted-store guarantee, so warn
+  // on stderr at the moment it happens. Callers that print their own
+  // backend-aware summary (login, <harness> on) still do; this guarantees the
+  // warning even on the automatic migration paths that don't.
+  const location = plaintextSecretPath(home) ?? "~/.fireconnect/.api-key";
+  console.warn(
+    `Warning: secure storage was unavailable (${reason}); stored the Fireworks API key `
+      + `in a plaintext file at ${location} (0600). Run \`fireconnect upgrade\` once an OS `
+      + "keychain is available to move it back to secure storage.",
+  );
+}
+
+/**
+ * Write the storage cache, clearing a corrupt or stale entry on failure.
+ *
+ * @param {string} home
+ * @param {"keychain" | "file" | "plaintext"} storage
+ * @param {string} [reason]
+ * @param {{ required?: boolean }} [options]
+ */
+async function persistKeyStorageCache(home, storage, reason = "", options = {}) {
+  const { required = false } = options;
+  try {
+    await writeKeyStorageCache(home, storage, reason);
+    return;
+  } catch {
+    await clearKeyStorageCache(home);
+    try {
+      await writeKeyStorageCache(home, storage, reason);
+      return;
+    } catch (error) {
+      await clearKeyStorageCache(home);
+      if (required) {
+        throw error;
+      }
+    }
+  }
+}
+
+/**
+ * After a successful secure-backend write, align cache and plaintext without
+ * undoing the secure store. Cleanup is best-effort and must not throw.
+ *
+ * @param {string} resolvedHome
+ * @param {string} [home]
+ */
+async function finalizeSecureSecretWrite(resolvedHome, home) {
+  const kind = await secureBackendKind(home);
+  try {
+    await persistKeyStorageCache(resolvedHome, kind);
+  } catch {
+    await clearKeyStorageCache(resolvedHome);
+  }
+  try {
+    await deletePlaintextSecret(resolvedHome);
+  } catch {
+    // Secure storage + cache are authoritative once the cache is updated.
+  }
+}
+
+function isTestSecretStoreContext() {
+  return process.env.NODE_ENV === "test" || process.env.FIRECONNECT_TEST === "1";
+}
+
+function useMemoryStore() {
+  if (memoryBackend !== null) {
+    return true;
+  }
+  return process.env.FIRECONNECT_SECRET_STORE === "memory" && isTestSecretStoreContext();
+}
+
+/**
+ * The last error observed by a read-side op (getSecret/hasSecret), so
+ * `detectSecretBackend` can distinguish "no key stored" from "backend broken".
+ * @type {Error | null}
+ */
+let lastReadError = null;
+
+/**
+ * @returns {Error | null}
+ */
+export function getLastSecretReadError() {
+  return lastReadError;
+}
+
+/**
+ * Resolve the data root cross-keychain's file backend writes to, mirroring its
+ * XDG/HOME resolution. Returns "" when HOME is unavailable on a non-Windows OS.
+ * @returns {string}
+ */
+function keychainFileDataRoot() {
+  if (process.env.XDG_DATA_HOME) {
+    return path.join(process.env.XDG_DATA_HOME, "keyring");
+  }
+  if (process.platform === "win32") {
+    const root = process.env.LOCALAPPDATA || process.env.ProgramData || process.env.HOME || "";
+    return root ? path.join(root, "Keyring") : "";
+  }
+  const home = process.env.HOME?.trim() ?? "";
+  return home ? path.join(home, ".local", "share", "keyring") : "";
+}
+
+/**
+ * Friendly label for a native backend id.
+ * @param {string} id
+ * @returns {string}
+ */
+function nativeBackendLabel(id) {
+  if (id === "native-macos" || id === "macos") return "macOS Keychain";
+  if (id === "native-windows" || id === "windows") return "Windows Credential Manager";
+  if (id === "native-linux" || id === "secret-service") return "Secret Service (libsecret)";
+  return "OS keychain";
+}
+
+/**
+ * Pick the highest-priority native backend id from a list of supported backends.
+ * @param {{ id: string, priority?: number }[]} backends
+ * @returns {string | null}
+ */
+function pickNativeBackendId(backends) {
+  const native = backends.filter((b) => NATIVE_BACKEND_IDS.includes(b.id));
+  if (!native.length) {
+    return null;
+  }
+  native.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+  return native[0].id;
+}
+
+/**
+ * Apply FireConnect's backend override to cross-keychain by setting the
+ * upstream `TS_KEYCHAIN_BACKEND` env before cross-keychain initializes its
+ * active backend. The FireConnect override ALWAYS wins over a pre-existing
+ * `TS_KEYRING_BACKEND` (the user set FIRECONNECT_KEY_STORAGE explicitly).
+ * Throws (friendly) for `keychain`
+ * when no native backend is detected.
+ * @param {typeof import("cross-keychain")} keychain
+ */
+async function ensureBackendEnv(keychain) {
+  const forced = readKeyStorageOverride();
+  if (!forced) {
+    return;
+  }
+  if (forced === FILE_BACKEND_ID) {
+    applyCrossKeychainBackend(FILE_BACKEND_ID);
+    return;
+  }
+  if (forced === NULL_BACKEND_ID) {
+    applyCrossKeychainBackend(NULL_BACKEND_ID);
+    return;
+  }
+  if (forced === "keychain") {
+    let backends = [];
+    try {
+      backends = await keychain.listBackends();
+    } catch {
+      backends = [];
+    }
+    const nativeId = pickNativeBackendId(backends);
+    if (!nativeId) {
+      throw new Error(
+        `${formatKeyStorageOverrideHint("keychain")} but no OS keychain was detected on this system. `
+          + "Unset it to allow the encrypted-file fallback, or install a keychain (gnome-keyring + secret-service on Linux).",
+      );
+    }
+    applyCrossKeychainBackend(nativeId);
+    return;
+  }
+  // Unknown value: ignore silently rather than break storage.
+}
+
+/**
+ * Set cross-keychain's backend-selection env, capturing the original value once
+ * so {@link resetSecretStoreForTests} can restore it. The FireConnect override
+ * always wins over a pre-existing `TS_KEYRING_BACKEND`.
+ * @param {string} id
+ */
+function applyCrossKeychainBackend(id) {
+  if (!weSetCrossKeychainBackendEnv) {
+    originalCrossKeychainBackendEnv = process.env[CROSS_KEYCHAIN_BACKEND_ENV];
+  }
+  process.env[CROSS_KEYCHAIN_BACKEND_ENV] = id;
+  weSetCrossKeychainBackendEnv = true;
+}
+
+/**
+ * Translate a cross-keychain / filesystem error into a friendly, actionable message.
+ * @param {unknown} error
+ * @param {string} home
+ * @returns {Error}
+ */
+function friendlySecretError(error, home) {
+  const err = /** @type {Error & { code?: string, name?: string } } */ (error);
+  const name = err?.name ?? "";
+  const code = err?.code ?? "";
+  const dataRoot = keychainFileDataRoot();
+
+  if (name === "KeyringLockedError") {
+    return new Error(
+      "The OS keychain is locked. Unlock it (e.g. sign in to your desktop session / unlock the keyring) and re-run `fireconnect configure`.",
+    );
+  }
+  if (name === "NoKeyringError" || name === "InitError") {
+    return new Error(
+      "No OS keychain is available and the encrypted-file fallback could not be initialized. "
+        + "Set HOME and ensure ~/.local/share is writable (or set XDG_DATA_HOME), or install a keychain (gnome-keyring + secret-service on Linux).",
+    );
+  }
+  if (name === "PasswordSetError") {
+    return new Error(
+      "Could not write the API key to the secret store (the keychain rejected the write). "
+        + "Check keychain permissions and re-run `fireconnect configure`.",
+    );
+  }
+  if (code === "EACCES" || code === "EROFS") {
+    const where = dataRoot || "~/.local/share/keyring";
+    return new Error(
+      `Could not write the secret store: ${code} on ${where}. `
+        + `Make the directory writable (or set XDG_DATA_HOME / ${formatKeyStorageOverrideHint("file")} to a writable location).`,
+    );
+  }
+  if (code === "ENOSPC") {
+    return new Error("Could not write the secret store: the disk is full (ENOSPC).");
+  }
+  if (code === "ENOENT" || code === "ENAMETOOLONG") {
+    return new Error(
+      `Could not initialize the secret store (${code}). HOME=${home || "(unset)"}. `
+        + "Set HOME to a writable directory and re-run `fireconnect configure`.",
+    );
+  }
+  const detail = err?.message ? ` ${err.message}` : "";
+  return new Error(`Could not store the API key in the secret store.${detail}`);
+}
+
+/**
+ * Detect the active secret backend for reporting (no writes, no key material).
+ * Mirrors cross-keychain's selection: FireConnect override → native keychain →
+ * encrypted file → unavailable.
+ *
+ * `home` is only used for the in-memory test store's path; the file/keychain
+ * backend location comes from cross-keychain (XDG_DATA_HOME / os.homedir()).
+ *
+ * @param {string} [home]
+ * @returns {Promise<{
+ *   backend: "keychain" | "file" | "memory" | "plaintext" | "unavailable",
+ *   label: string,
+ *   location?: string,
+ *   forced?: boolean,
+ *   error?: string,
+ * }>}
+ */
+export async function detectSecretBackend(home = process.env.HOME ?? "") {
+  if (useMemoryStore()) {
+    return {
+      backend: "memory",
+      label: "In-memory test store",
+      location: memoryStorePath(home),
+    };
+  }
+
+  const cached = await readKeyStorageCache(home);
+  if (
+    cached === "plaintext"
+    && plaintextSecretStoreAvailable(home)
+    && await hasPlaintextSecret(home)
+  ) {
+    return {
+      backend: "plaintext",
+      label: "Plaintext file (0600, last-resort fallback)",
+      location: plaintextSecretPath(home) ?? undefined,
+      error: "Secure storage failed earlier; using ~/.fireconnect/.api-key. Run `fireconnect upgrade` to move the key to the OS keychain.",
+    };
+  }
+
+  const keychain = await loadKeychainModule();
+  if (!keychain) {
+    if (builtinFileStoreAvailable()) {
+      const fileLocation = secretsFilePath();
+      return {
+        backend: "file",
+        label: "Encrypted file (AES-256-GCM, 0600)",
+        location: fileLocation ?? undefined,
+        error: "The cross-keychain secret module could not be loaded; using the built-in encrypted-file fallback. Reinstall FireConnect (`fireconnect upgrade`) to restore full keychain support.",
+      };
+    }
+    return {
+      backend: "unavailable",
+      label: "Unavailable",
+      error: "The cross-keychain secret module could not be loaded. Reinstall FireConnect (`fireconnect upgrade`).",
+    };
+  }
+
+  const forced = readKeyStorageOverride();
+  // Prefer cross-keychain's own data root so the reported location matches
+  // where its file backend actually writes (it uses os.homedir()/XDG, which can
+  // differ from the process.env.HOME fallback in keychainFileDataRoot).
+  let dataRoot = "";
+  try {
+    dataRoot = typeof keychain.dataRoot === "function" ? keychain.dataRoot() : "";
+  } catch {
+    dataRoot = "";
+  }
+  if (!dataRoot) {
+    dataRoot = keychainFileDataRoot();
+  }
+  const fileLocation = dataRoot ? path.join(dataRoot, "secrets.json") : null;
+
+  if (forced === FILE_BACKEND_ID) {
+    if (!fileLocation) {
+      return {
+        backend: "unavailable",
+        label: "Unavailable",
+        error: `${formatKeyStorageOverrideHint("file")} but HOME is not set and XDG_DATA_HOME is unset. Set HOME or XDG_DATA_HOME to a writable path.`,
+      };
+    }
+    return {
+      backend: "file",
+      label: "Encrypted file (AES-256-GCM, 0600)",
+      location: fileLocation,
+      forced: true,
+    };
+  }
+  if (forced === NULL_BACKEND_ID) {
+    return {
+      backend: "unavailable",
+      label: "Disabled (null backend)",
+      forced: true,
+      error: `${formatKeyStorageOverrideHint("null")} disables secret storage. Unset it to store a key.`,
+    };
+  }
+
+  let backends = [];
+  try {
+    backends = await keychain.listBackends();
+  } catch {
+    backends = [];
+  }
+  const nativeId = pickNativeBackendId(backends);
+  const hasFile = backends.some((b) => b.id === FILE_BACKEND_ID);
+
+  if (forced === "keychain") {
+    if (!nativeId) {
+      return {
+        backend: "unavailable",
+        label: "Unavailable",
+        forced: true,
+        error: `${formatKeyStorageOverrideHint("keychain")} but no OS keychain was detected. Unset it to allow the encrypted-file fallback.`,
+      };
+    }
+    return {
+      backend: "keychain",
+      label: nativeBackendLabel(nativeId),
+      forced: true,
+    };
+  }
+
+  // auto
+  if (nativeId) {
+    return {
+      backend: "keychain",
+      label: nativeBackendLabel(nativeId),
+    };
+  }
+  if (hasFile) {
+    if (!fileLocation) {
+      return {
+        backend: "unavailable",
+        label: "Unavailable",
+        error: "HOME is not set and XDG_DATA_HOME is unset. Set HOME (or XDG_DATA_HOME) to a writable path so the encrypted-file store can be created.",
+      };
+    }
+    return {
+      backend: "file",
+      label: "Encrypted file (AES-256-GCM, 0600)",
+      location: fileLocation,
+    };
+  }
+  if (plaintextSecretStoreAvailable(home) && await hasPlaintextSecret(home)) {
+    return {
+      backend: "plaintext",
+      label: "Plaintext file (0600, last-resort fallback)",
+      location: plaintextSecretPath(home) ?? undefined,
+      error: "Secure storage is unavailable; reading from ~/.fireconnect/.api-key.",
+    };
+  }
+  return {
+    backend: "unavailable",
+    label: "Unavailable",
+    error: "No secret storage backend is available. Set HOME / XDG_DATA_HOME to a writable path, or install a keychain (gnome-keyring + secret-service on Linux).",
+  };
+}
+
+/**
+ * @param {string} [home]
+ * @returns {Promise<string | null>}
+ */
+export async function getSecret(home) {
+  if (useMemoryStore()) {
+    await ensureMemoryStoreLoaded(home);
+    return memoryGet();
+  }
+
+  const resolvedHome = resolveHome(home);
+  const homeOverride = isHomeOverride(resolvedHome);
+  const cacheEntry = await readKeyStorageCacheEntry(resolvedHome);
+  if (cacheEntry?.storage === "plaintext") {
+    try {
+      const plaintext = await readPlaintextSecret(resolvedHome);
+      if (plaintext?.trim()) {
+        lastReadError = null;
+        return plaintext;
+      }
+    } catch (error) {
+      lastReadError = /** @type {Error} */ (error);
+    }
+    await clearKeyStorageCache(resolvedHome);
+    if (cacheEntry.reason) {
+      return null;
+    }
+  }
+
+  if (homeOverride) {
+    const plaintext = await readPlaintextSecretIfAvailable(resolvedHome);
+    if (plaintext) {
+      return plaintext;
+    }
+  }
+
+  const secure = await readSecretFromSecureBackend(home);
+  if (secure?.trim()) {
+    lastReadError = null;
+    return secure;
+  }
+
+  if (!homeOverride) {
+    const plaintext = await readPlaintextSecretIfAvailable(resolvedHome);
+    if (plaintext) {
+      return plaintext;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Store a secret. Readback-verifies the write so a locked/null backend that
+ * accepts the write but returns nothing is surfaced as an error, not a silent
+ * empty key.
+ *
+ * @param {string} value
+ * @param {string} [home]
+ */
+export async function setSecret(value, home) {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    throw new Error("API key is required");
+  }
+
+  if (useMemoryStore()) {
+    await ensureMemoryStoreLoaded(home);
+    await memorySet(trimmed);
+    await persistMemoryStoreToDisk(home);
+    return;
+  }
+
+  const resolvedHome = resolveHome(home);
+  try {
+    await storeSecretInSecureBackend(trimmed, home);
+  } catch (error) {
+    if (isKeyStorageForcedNull() || !plaintextSecretStoreAvailable(resolvedHome)) {
+      throw error;
+    }
+    await storeSecretInPlaintextFallback(trimmed, resolvedHome, error);
+    return;
+  }
+
+  await finalizeSecureSecretWrite(resolvedHome, home);
+}
+
+/**
+ * @param {string} [home]
+ * @returns {Promise<boolean>}
+ */
+export async function hasSecret(home) {
+  if (useMemoryStore()) {
+    await ensureMemoryStoreLoaded(home);
+    return memoryHas();
+  }
+
+  const resolvedHome = resolveHome(home);
+  const homeOverride = isHomeOverride(resolvedHome);
+  const cacheEntry = await readKeyStorageCacheEntry(resolvedHome);
+  if (cacheEntry?.storage === "plaintext") {
+    try {
+      if (await hasPlaintextSecret(resolvedHome)) {
+        lastReadError = null;
+        return true;
+      }
+    } catch (error) {
+      lastReadError = /** @type {Error} */ (error);
+    }
+    await clearKeyStorageCache(resolvedHome);
+    if (cacheEntry.reason) {
+      return false;
+    }
+  }
+
+  if (homeOverride && plaintextSecretStoreAvailable(resolvedHome)) {
+    try {
+      if (await hasPlaintextSecret(resolvedHome)) {
+        lastReadError = null;
+        return true;
+      }
+    } catch (error) {
+      lastReadError = /** @type {Error} */ (error);
+    }
+  }
+
+  if (await hasSecretInSecureBackend(home)) {
+    return true;
+  }
+
+  if (!homeOverride && plaintextSecretStoreAvailable(resolvedHome)) {
+    try {
+      return await hasPlaintextSecret(resolvedHome);
+    } catch (error) {
+      lastReadError = /** @type {Error} */ (error);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * @param {string} [home]
+ */
+export async function deleteSecret(home) {
+  if (useMemoryStore()) {
+    await ensureMemoryStoreLoaded(home);
+    if (memoryBackend) {
+      await memoryDelete();
+    }
+    await persistMemoryStoreToDisk(home);
+    return;
+  }
+
+  const resolvedHome = resolveHome(home);
+  await deleteSecretFromSecureBackend(home);
+  await deletePlaintextSecret(resolvedHome);
+  await clearKeyStorageCache(resolvedHome);
+}
+
+/**
+ * Clear the cached storage choice and try secure storage again. Used by
+ * `fireconnect upgrade` and `FIRECONNECT_REPROBE_KEY_STORAGE=1`. When a
+ * plaintext fallback key exists, attempts to move it back to keychain/file.
+ *
+ * @param {string} [home]
+ * @returns {Promise<{ migrated: boolean, backend: Awaited<ReturnType<typeof detectSecretBackend>> }>}
+ */
+export async function reprobeKeyStorage(home = process.env.HOME ?? "") {
+  const resolvedHome = resolveHome(home);
+  if (!resolvedHome) {
+    return {
+      migrated: false,
+      backend: {
+        backend: "unavailable",
+        label: "Unavailable",
+        error: "HOME is not set.",
+      },
+    };
+  }
+
+  const plaintextKey = (await readPlaintextSecret(resolvedHome))?.trim() ?? "";
+  await clearKeyStorageCache(resolvedHome);
+  keychainModule = null;
+  keychainModulePromise = null;
+
+  if (plaintextKey) {
+    try {
+      await storeSecretInSecureBackend(plaintextKey, resolvedHome);
+    } catch (error) {
+      await storeSecretInPlaintextFallback(plaintextKey, resolvedHome, error);
+      return { migrated: false, backend: await detectSecretBackend(resolvedHome) };
+    }
+
+    await finalizeSecureSecretWrite(resolvedHome, resolvedHome);
+    return { migrated: true, backend: await detectSecretBackend(resolvedHome) };
+  }
+
+  const backend = await detectSecretBackend(resolvedHome);
+  if (backend.backend === "keychain" || backend.backend === "file") {
+    await writeKeyStorageCache(resolvedHome, backend.backend);
+  }
+  return { migrated: false, backend };
+}

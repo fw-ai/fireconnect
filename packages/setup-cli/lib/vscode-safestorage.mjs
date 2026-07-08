@@ -39,9 +39,63 @@ const KEY_LEN = 16;
 const IV = Buffer.alloc(16, 0x20);
 const LINUX_BASIC_PASSWORD = "peanuts";
 
-/** @returns {boolean} whether the plaintext test seam is active. */
-function plaintextMode() {
-  return Boolean(process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT);
+/**
+ * @returns {boolean} whether the plaintext test seam is active.
+ * Strictly `=== "1"` so that `FIRECONNECT_VSCODE_SECRET_PLAINTEXT=0` (or any
+ * other value) does NOT enable plaintext — a common footgun with truthy-string
+ * env checks. Exported for unit tests.
+ */
+export function plaintextMode() {
+  return process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT === "1";
+}
+
+/**
+ * On Linux, Electron `safeStorage` (and thus VS Code/Cursor) only encrypts when
+ * a Secret Service implementation (libsecret/gnome-keyring/kwallet) is available
+ * to hold the master password. Without it, Chromium falls back to the
+ * hardcoded "peanuts" password — i.e. the stored secret is **obfuscated, not
+ * encrypted**. Detect that so we can warn the user.
+ *
+ * Returns false on macOS/Windows (real OS keychain always available) and when
+ * a Secret Service appears to be present on Linux.
+ * @returns {boolean}
+ */
+/** Memoized result of {@link linuxSafeStorageIsObfuscatedFallback} (process-constant). */
+let obfuscatedFallbackMemo;
+
+/**
+ * On Linux, Electron `safeStorage` (and thus VS Code/Cursor) only encrypts when
+ * a Secret Service implementation (libsecret/gnome-keyring/kwallet) is available
+ * to hold the master password. Without it, Chromium falls back to the
+ * hardcoded "peanuts" password — i.e. the stored secret is **obfuscated, not
+ * encrypted**. Detect that so we can warn the user.
+ *
+ * Returns false on macOS/Windows (real OS keychain always available) and when
+ * a Secret Service appears to be present on Linux. Memoized because platform
+ * and `secret-tool` availability do not change mid-process and this is called
+ * 2-4 times per on/status run.
+ * @returns {boolean}
+ */
+export function linuxSafeStorageIsObfuscatedFallback() {
+  if (obfuscatedFallbackMemo !== undefined) {
+    return obfuscatedFallbackMemo;
+  }
+  if (process.platform !== "linux") {
+    obfuscatedFallbackMemo = false;
+    return false;
+  }
+  // Heuristic: if `secret-tool` (libsecret-tools) isn't on PATH, there's almost
+  // certainly no Secret Service D-Bus endpoint to hold the master password.
+  // This is a best-effort check; safeStorage itself makes the same call at
+  // runtime, so a false negative here just means we don't warn.
+  try {
+    const res = spawnSync("secret-tool", ["--version"], { stdio: "ignore" });
+    obfuscatedFallbackMemo = Boolean(res.error || res.status !== 0);
+    return obfuscatedFallbackMemo;
+  } catch {
+    obfuscatedFallbackMemo = true;
+    return true;
+  }
 }
 
 /**

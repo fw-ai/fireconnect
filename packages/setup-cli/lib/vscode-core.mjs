@@ -1,10 +1,11 @@
+import { writeFileAtomic } from "./atomic-write.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
-  GLM_LATEST_ROUTER_ID,
+  GLM_FAST_LATEST_ROUTER_ID,
   detectApiKeyType,
   isFireworksShapedKey,
   normalizeModelId,
@@ -13,6 +14,7 @@ import {
 } from "./fireconnect-core.mjs";
 import { lookupVscodeModelMetadata } from "./fireworks-model-specs.mjs";
 import { FIREPASS_ROUTER_ID, prettyModelName } from "./fireworks-models.mjs";
+import { FIREROUTER_FIREWORKS_HEADER, isFirerouterBaseUrl } from "./firerouter-core.mjs";
 import { assertIdeStopped, isIdeRunning } from "./ide-running.mjs";
 import { detectVscodeInstall } from "./vscode-install.mjs";
 import {
@@ -156,7 +158,7 @@ export async function readChatLanguageModels(filePath) {
  */
 export async function writeChatLanguageModels(filePath, arr) {
   await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(arr, null, "\t")}\n`, "utf8");
+  await writeFileAtomic(filePath, `${JSON.stringify(arr, null, "\t")}\n`);
 }
 
 /** Read the raw file text for byte-for-byte snapshot/restore. */
@@ -332,17 +334,17 @@ export function resetProviderModels(arr, model) {
 
 /**
  * Default model id fireconnect registers for VS Code. Fire Pass keys are
- * restricted to the glm-latest router; regular keys also default to it.
+ * restricted to the glm-fast-latest router; regular keys also default to it.
  * @param {"fireworks" | "firepass"} keyType
  * @returns {string}
  */
 export function defaultModelIdFor(keyType) {
-  return keyType === "firepass" ? FIREPASS_ROUTER_ID : GLM_LATEST_ROUTER_ID;
+  return keyType === "firepass" ? FIREPASS_ROUTER_ID : GLM_FAST_LATEST_ROUTER_ID;
 }
 
 /**
  * Resolve a user-supplied model id (`--main`). Fire Pass keys are restricted
- * to the glm-latest router; otherwise the id is normalized.
+ * to the glm-fast-latest router; otherwise the id is normalized.
  * @param {string | undefined} modelId
  * @param {"fireworks" | "firepass"} keyType
  * @returns {string}
@@ -468,7 +470,7 @@ export async function removeVscodeBackup(dataDir, filePath) {
  * @param {string} [vscodePath] the resolved chatLanguageModels.json path, if known
  * @returns {"stable" | "insiders"}
  */
-function currentVariant(vscodePath) {
+export function currentVariant(vscodePath) {
   if (vscodePath && /Code - Insiders/i.test(vscodePath)) {
     return "insiders";
   }
@@ -544,6 +546,22 @@ export async function enableVscodeFireworks({
 }
 
 /**
+ * Whether a model entry is FireRouter (router-mode) shaped: it speaks the
+ * Anthropic Messages API, targets the FireRouter host, or carries the plaintext
+ * FireRouter fireworks-key header. Direct mode speaks chat-completions to the
+ * Fireworks inference url, so such entries must never carry into it.
+ * @param {object} model
+ * @returns {boolean}
+ */
+export function isRouterShapedModel(model) {
+  return (
+    model?.apiType === "messages"
+    || Boolean(model?.requestHeaders?.[FIREROUTER_FIREWORKS_HEADER])
+    || (typeof model?.url === "string" && isFirerouterBaseUrl(model.url))
+  );
+}
+
+/**
  * Compute the models list for the fireconnect provider on `on`.
  * @param {object | undefined} existing the current fireconnect provider, if any
  * @param {string | undefined} modelId the `--main` argument (raw)
@@ -551,7 +569,10 @@ export async function enableVscodeFireworks({
  * @returns {object[]}
  */
 function computeVscodeModels(existing, modelId, resolvedModel) {
-  const existingModels = existing?.models ?? [];
+  // Drop any router-shaped models (from a prior `on --router`): switching to
+  // direct mode must not inherit models pointing at FireRouter's /v1/messages
+  // endpoint or carrying the plaintext fireworks-key header.
+  const existingModels = (existing?.models ?? []).filter((m) => !isRouterShapedModel(m));
   if (modelId) {
     const entry = buildModelEntry(resolvedModel);
     return existingModels.some((m) => m.id === entry.id)
@@ -597,7 +618,7 @@ export async function disableVscodeFireworks({
     await deleteSecrets(dbPath, [...ids]);
     if (fileExisted) {
       await mkdir(path.dirname(vscodePath), { recursive: true });
-      await writeFile(vscodePath, fileRaw, "utf8");
+      await writeFileAtomic(vscodePath, fileRaw);
     } else {
       try {
         await unlink(vscodePath);
@@ -714,6 +735,39 @@ export async function readVscodeStoredKey(vscodePath, stateDbPath, arr) {
   }
   const key = decryptSecret(stored, { variant: currentVariant(vscodePath) });
   return isFireworksShapedKey(key) ? key.trim() : "";
+}
+
+/**
+ * Write an arbitrary secret (Electron `safeStorage`-encrypted) into `state.vscdb`
+ * under `secret://<secretId>`, ensuring the ItemTable exists. Used by direct mode
+ * (Fireworks key) and router mode (Anthropic key) alike — the caller decides what
+ * the `fw-` secret row holds.
+ * @param {{ vscodePath: string, stateDbPath?: string, secretId: string, secret: string }} opts
+ * @returns {Promise<{ stateDbPath: string }>}
+ */
+export async function writeVscodeSecret({ vscodePath, stateDbPath, secretId, secret }) {
+  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
+  await ensureItemTable(dbPath);
+  const encrypted = encryptSecret(secret, { variant: currentVariant(vscodePath) });
+  await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
+  return { stateDbPath: dbPath };
+}
+
+/**
+ * Read and decrypt the `secret://<secretId>` row from `state.vscdb`, returning it
+ * verbatim (no Fireworks-shape filter). Returns "" when the row is absent or
+ * cannot be decrypted. Unlike `readVscodeStoredKey`, this does NOT filter by key
+ * shape, so it returns an Anthropic key in router mode.
+ * @param {{ vscodePath: string, stateDbPath?: string, secretId: string }} opts
+ * @returns {Promise<string>}
+ */
+export async function readVscodeSecret({ vscodePath, stateDbPath, secretId }) {
+  if (!secretId) return "";
+  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
+  const stored = await readItemTableValue(dbPath, secretStorageKey(secretId));
+  if (!stored) return "";
+  const key = decryptSecret(stored, { variant: currentVariant(vscodePath) });
+  return typeof key === "string" ? key.trim() : "";
 }
 
 /* -------------------------------------------------------------------------- */

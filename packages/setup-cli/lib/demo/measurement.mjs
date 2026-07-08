@@ -1,0 +1,198 @@
+/**
+ * Measurement and cost math for `fireconnect demo` (§6 of the brief).
+ *
+ * Everything here is pure and deterministic so the math can be unit-tested and
+ * audited. Display rounding is applied only at format time; internal values and
+ * the JSON result keep full precision.
+ */
+
+/**
+ * Cost in USD for one provider run.
+ *   cost = (input_tokens / 1e6) * in_rate + (output_tokens / 1e6) * out_rate
+ * Rates are USD per 1M tokens.
+ *
+ * @param {{ inputTokens: number, outputTokens: number, inputPerMillion: number, outputPerMillion: number }} run
+ * @returns {number}
+ */
+export function runCost({ inputTokens, outputTokens, inputPerMillion, outputPerMillion }) {
+  return (
+    (num(inputTokens) / 1e6) * num(inputPerMillion)
+    + (num(outputTokens) / 1e6) * num(outputPerMillion)
+  );
+}
+
+/**
+ * Speed ratio: how many times faster the challenger (Fireworks) was than the
+ * incumbent. >1 means Fireworks was faster. Uses wall-clock seconds.
+ *
+ * @param {{ incumbentSeconds: number, fireworksSeconds: number }} args
+ * @returns {number}
+ */
+export function speedRatio({ incumbentSeconds, fireworksSeconds }) {
+  const inc = num(incumbentSeconds);
+  const fw = num(fireworksSeconds);
+  if (fw <= 0) {
+    return 0;
+  }
+  return inc / fw;
+}
+
+/**
+ * Fraction of cost saved by using Fireworks instead of the incumbent.
+ *   1 - (fireworks_cost / incumbent_cost)
+ * Returns a fraction (0.5 == 50% cheaper). >0 means Fireworks was cheaper.
+ *
+ * @param {{ incumbentCost: number, fireworksCost: number }} args
+ * @returns {number}
+ */
+export function costSavedFraction({ incumbentCost, fireworksCost }) {
+  const inc = num(incumbentCost);
+  const fw = num(fireworksCost);
+  if (inc <= 0) {
+    return 0;
+  }
+  return 1 - fw / inc;
+}
+
+/**
+ * Linear extrapolation: cost per N generations (default 1000). Clearly linear;
+ * the caller labels it as such.
+ *
+ * @param {{ cost: number, generations?: number }} args
+ * @returns {number}
+ */
+export function costPerGenerations({ cost, generations = 1000 }) {
+  return num(cost) * num(generations);
+}
+
+/**
+ * Compose a full result object from two measured provider runs. This is the
+ * single source of truth for what goes into result.json and --json.
+ *
+ * @param {{
+ *   incumbent: ProviderRun,
+ *   fireworks: ProviderRun,
+ *   prompt: { title: string, text: string, presetId?: string, source: string },
+ *   mode: "harness-swap",
+ * }} args
+ * @returns {DemoResult}
+ *
+ * @typedef {Object} ProviderRun
+ * @property {string} side "incumbent" | "fireworks"
+ * @property {string} provider e.g. "Anthropic", "Fireworks"
+ * @property {string} model e.g. "claude-sonnet-5", "glm-5p2-fast"
+ * @property {string} modelId fully-qualified id where applicable
+ * @property {"live"} callMode
+ * @property {number} inputTokens
+ * @property {number} outputTokens
+ * @property {number} seconds wall-clock request-sent -> stream-complete
+ * @property {number} cost USD
+ * @property {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion?: number, tier?: string, source: string }} rates
+ * @property {boolean} ok whether generation succeeded
+ * @property {string} [error] failure message when !ok
+ * @property {boolean} [appRunnable] whether the extracted HTML is parseable
+ *
+ * @typedef {Object} DemoResult
+ * @property {string} promptTitle
+ * @property {string} promptText
+ * @property {string} promptSource
+ * @property {string} [presetId]
+ * @property {"harness-swap"} mode
+ * @property {{ speedRatio: number, costSavedFraction: number, incumbentFaster: boolean, fireworksCheaper: boolean }} summary
+ * @property {ProviderRun} incumbent
+ * @property {ProviderRun} fireworks
+ * @property {string} createdAt ISO timestamp (set by caller; this module is pure)
+ */
+export function buildResult({ incumbent, fireworks, prompt, mode }) {
+  const ratio = speedRatio({
+    incumbentSeconds: incumbent.seconds,
+    fireworksSeconds: fireworks.seconds,
+  });
+  const saved = costSavedFraction({
+    incumbentCost: incumbent.cost,
+    fireworksCost: fireworks.cost,
+  });
+  return {
+    promptTitle: prompt.title,
+    promptText: prompt.text,
+    promptSource: prompt.source,
+    presetId: prompt.presetId,
+    mode,
+    summary: {
+      speedRatio: ratio,
+      costSavedFraction: saved,
+      incumbentFaster: ratio < 1,
+      fireworksCheaper: saved > 0,
+    },
+    incumbent,
+    fireworks,
+    createdAt: "",
+  };
+}
+
+// ── display formatting (display-only rounding) ──────────────────────────────
+
+/** @param {number} value @returns {string} e.g. "3.1×" */
+export function formatSpeedRatio(value) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "—";
+  }
+  return `${round1(value)}×`;
+}
+
+/** @param {number} fraction 0..1 @returns {string} e.g. "73% cheaper" or "12% more expensive" */
+export function formatCostDelta(fraction) {
+  if (!Number.isFinite(fraction)) {
+    return "—";
+  }
+  const pct = Math.round(fraction * 100);
+  if (pct === 0) {
+    return "same cost";
+  }
+  return pct > 0 ? `${pct}% cheaper` : `${Math.abs(pct)}% more expensive`;
+}
+
+/** @param {number} usd @returns {string} e.g. "$0.0061" */
+export function formatUsd(usd) {
+  if (!Number.isFinite(usd)) {
+    return "—";
+  }
+  if (usd === 0) {
+    return "$0";
+  }
+  // up to 4 decimal places, trailing zeros trimmed
+  let s = usd.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  if (s === "0") {
+    // Positive but rounds to $0 at 4 decimals — show a floor so the meter
+    // doesn't read "$0" while a side is actively generating.
+    return "<$0.0001";
+  }
+  if (!s.startsWith("$")) {
+    s = `$${s}`;
+  }
+  return s;
+}
+
+/** @param {number} seconds @returns {string} e.g. "3.1s" */
+export function formatSeconds(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "—";
+  }
+  return `${round1(seconds)}s`;
+}
+
+/** @param {number} tokens @returns {string} e.g. "2,210" */
+export function formatTokens(tokens) {
+  if (!Number.isFinite(tokens) || tokens < 0) {
+    return "—";
+  }
+  return Math.round(tokens).toLocaleString("en-US");
+}
+
+function round1(value) {
+  return Math.round(value * 10) / 10;
+}
+
+function num(value) {
+  return Number.isFinite(value) ? value : 0;
+}

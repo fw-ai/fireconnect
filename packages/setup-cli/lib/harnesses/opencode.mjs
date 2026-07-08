@@ -35,8 +35,8 @@ import {
   firerouterCurrentModel,
   firerouterDataDir,
   firerouterProviderStatus,
-  resolveFirerouterDefaultModel,
 } from "../opencode-firerouter-core.mjs";
+import { resolveFirerouterDefaultModel } from "../firerouter-catalog.mjs";
 import { opencodeHarnessAnthropicKeyRef } from "../anthropic-enterprise.mjs";
 import {
   AZURE_PROVIDER_LABEL,
@@ -57,6 +57,7 @@ import {
   ensureHomeForHarness,
   opencodePathsFor,
 } from "../harness-context.mjs";
+import { finishEnvHarnessOff, finishEnvHarnessOn } from "../harness-env-hook.mjs";
 import { HARNESS } from "../harness.mjs";
 
 function opencodeStoredApiKeyRef(config) {
@@ -86,7 +87,7 @@ async function opencodeResolveKey(ctx) {
  * Full resolution chain for OpenCode (flag > harness-local > global > env).
  * @param {import("../harness-types.mjs").HarnessContext} ctx
  */
-function opencodeApiKey(ctx) {
+async function opencodeApiKey(ctx) {
   return resolveFireworksApiKey({
     apiKey: ctx.apiKey,
     resolveKey: () => opencodeResolveKey(ctx),
@@ -151,7 +152,11 @@ async function _firerouterOn(ctx) {
   const globalConfig = ctx.home ? await readGlobalConfig(ctx.home) : null;
   const baseUrl = resolveFirerouterBaseUrl(ctx.baseUrl, globalConfig?.routerBaseUrl ?? "");
 
-  const { apiKey: storedFireworksKey, apiKeyFromFlag: fireworksKeyFromFlag } = await resolveHarnessOnApiKey({
+  const {
+    apiKey: storedFireworksKey,
+    apiKeyFromFlag: fireworksKeyFromFlag,
+    effectiveKey,
+  } = await resolveHarnessOnApiKey({
     apiKey: ctx.apiKey,
     home: ctx.home,
     harnessEnvRef: FIREWORKS_KEY_ENV_REF,
@@ -160,9 +165,16 @@ async function _firerouterOn(ctx) {
       return opencodeFirerouterStoredFireworksKeyRef(config) || opencodeStoredApiKeyRef(config);
     },
   });
-  const fireworksKey = effectiveOpencodeApiKey(storedFireworksKey);
+  // Use the already-resolved effective key (flag > harness-local > global > env
+  // > keychain fallback). resolveHarnessOnApiKey throws if no key is found, so
+  // effectiveKey is always set here — no need to re-resolve the env ref.
+  const fireworksKey = effectiveKey;
 
-  const { anthropicKey, anthropicKeyFromFlag, enterpriseAuth, runtimeAuth, source } = await resolveHarnessOnAnthropicKey({
+  // OpenCode never uses Claude Code's enterprise/keychain OAuth (that's a
+  // different app's login), so resolveHarnessOnAnthropicKey never returns
+  // enterpriseAuth here — only a flag/stored/env key, OpenCode's own auth.json
+  // runtime auth, or a prompted key.
+  const { anthropicKey, anthropicKeyFromFlag, runtimeAuth, source } = await resolveHarnessOnAnthropicKey({
     anthropicKey: ctx.anthropicKey,
     anthropicKeyFromFlag: ctx.anthropicKeyFromFlag,
     home: ctx.home,
@@ -200,24 +212,27 @@ async function _firerouterOn(ctx) {
   });
 
   await setHarnessEnabled(ctx.home, HARNESS.OPENCODE, true, { mode: "router" });
+  // Keep the shell env hook installed (other harnesses + `fireconnect` itself
+  // still use FIREWORKS_API_KEY); OpenCode no longer depends on it since the key
+  // is written into opencode.json directly.
+  await finishEnvHarnessOn(ctx.home, { harnessId: "opencode" });
   console.log("FireRouter enabled for OpenCode.");
   console.log(`  provider:      ${FIREROUTER_ANTHROPIC_PROVIDER_NAME}`);
   console.log(`  base URL:      ${result.baseUrl}`);
   console.log(`  active model:  ${result.model}`);
   console.log("Switch among anthropic/<model> in OpenCode without re-running fireconnect.");
-  if (result.fireworksKeyMode === "env-reference") {
-    console.log("Fireworks key written as {env:FIREWORKS_API_KEY} — keep FIREWORKS_API_KEY set in your shell.");
-  } else if (result.fireworksKeyMode === "literal") {
-    console.log("Fireworks key written into opencode.json (passed via --api-key).");
+  console.warn(
+    "Note: FireRouter mode writes your Fireworks API key in plaintext to opencode.json "
+      + "(in the provider headers), because OpenCode's @ai-sdk/anthropic provider reads "
+      + "credentials from the config file directly. The Anthropic key is also written "
+      + "literally when supplied. Both are stored at 0600. "
+      + "Prefer `fireconnect opencode on` (direct mode) to keep the Fireworks key in the OS keychain.",
+  );
+  console.log("Fireworks key written into opencode.json (0600) — no new shell needed.");
+  if (result.anthropicKeyMode === "literal") {
+    console.log("Anthropic key written into opencode.json (0600).");
   }
-  if (result.anthropicKeyMode === "env-reference") {
-    console.log("Anthropic key written as {env:ANTHROPIC_API_KEY} — keep ANTHROPIC_API_KEY set in your shell.");
-  } else if (result.anthropicKeyMode === "literal") {
-    console.log("Anthropic key written into opencode.json.");
-  }
-  if (enterpriseAuth) {
-    console.log("Using existing Anthropic enterprise credentials (no separate API key written).");
-  } else if (runtimeAuth) {
+  if (runtimeAuth) {
     console.log("Using OpenCode Anthropic auth (auth.json); no API key written to opencode.json.");
   }
   if (source === "prompt") {
@@ -248,7 +263,7 @@ export default defineHarness({
 
     const { configPath, dataDir } = opencodePathsFor(ctx);
 
-    const { apiKey, apiKeyFromFlag, reusedExistingKey } = await resolveHarnessOnApiKey({
+    const { apiKey, reusedExistingKey, effectiveKey } = await resolveHarnessOnApiKey({
       apiKey: ctx.apiKey,
       home: ctx.home,
       harnessEnvRef: OPENCODE_API_KEY_ENV_REF,
@@ -258,29 +273,21 @@ export default defineHarness({
       },
     });
 
-    const effectiveApiKey = apiKey === OPENCODE_API_KEY_ENV_REF
-      ? (process.env.FIREWORKS_API_KEY ?? "")
-      : apiKey;
-    const keyType = detectApiKeyType(effectiveApiKey);
+    const keyType = detectApiKeyType(effectiveKey);
     const result = await enableOpencodeFireworks({
       configPath,
       dataDir,
       apiKey,
-      apiKeyFromFlag,
+      effectiveApiKey: effectiveKey,
       modelId: ctx.main,
       keyType,
     });
     await setHarnessEnabled(ctx.home, HARNESS.OPENCODE, true, { mode: "direct" });
+    await finishEnvHarnessOn(ctx.home, { harnessId: "opencode" });
     console.log(`Fireworks provider enabled for OpenCode (model: ${result.model}).`);
-    if (reusedExistingKey) {
-      console.log("Reused the API key already configured in opencode.json.");
-    } else if (result.apiKeyMode === "env-reference") {
-      console.log("API key written as {env:FIREWORKS_API_KEY} — keep FIREWORKS_API_KEY set in your shell.");
-    } else {
-      console.log("API key written into opencode.json (passed via --api-key).");
-    }
+    console.log("API key written into opencode.json (0600).");
     if (result.keyType === "firepass") {
-      console.log("Fire Pass key detected: using glm-latest for all aliases.");
+      console.log("Fire Pass key detected: using glm-fast-latest for all aliases.");
     } else {
       console.log("Browse models: fireconnect opencode model list");
       console.log("Pick a model:  fireconnect opencode model select");
@@ -301,12 +308,17 @@ export default defineHarness({
       const frDataDir = firerouterDataDir(ctx.home, ctx.dataDir);
       await disableFirerouterOpencode({ configPath, dataDir: frDataDir, wasEnabled });
       await setHarnessEnabled(ctx.home, HARNESS.OPENCODE, false);
+      // Router mode installs the shell env hook on `on` (for the {env:…} ref);
+      // remove it on `off` so an OpenCode-only install doesn't leave the hook
+      // exporting FIREWORKS_API_KEY in every new shell.
+      await finishEnvHarnessOff(ctx.home);
       console.log("FireRouter disabled for OpenCode; original config restored.");
       return;
     }
 
     await disableOpencodeFireworks({ configPath, dataDir, wasEnabled });
     await setHarnessEnabled(ctx.home, HARNESS.OPENCODE, false);
+    await finishEnvHarnessOff(ctx.home);
     console.log("Fireworks provider disabled for OpenCode; original config restored.");
   },
 
@@ -327,7 +339,9 @@ export default defineHarness({
         mode: "router",
         baseUrl: options.baseURL ?? null,
         hasFireworksKey: Boolean(headers[FIREROUTER_FIREWORKS_HEADER] || process.env.FIREWORKS_API_KEY),
-        hasAnthropicKey: Boolean(headers["x-api-key"] || process.env.ANTHROPIC_API_KEY),
+        hasAnthropicKey: Boolean(
+          opencodeHarnessAnthropicKeyRef(config) || process.env.ANTHROPIC_API_KEY,
+        ),
         current: { main: firerouterCurrentModel(config) },
       };
 
@@ -409,16 +423,14 @@ export default defineHarness({
     }
 
     const existingKey = opencodeStoredApiKeyRef(config);
-    const effectiveKey = existingKey === OPENCODE_API_KEY_ENV_REF
-      ? (process.env.FIREWORKS_API_KEY ?? "")
-      : existingKey;
+    const effectiveKey = effectiveOpencodeApiKey(existingKey) || (await opencodeApiKey(ctx));
     const keyType = detectApiKeyType(effectiveKey);
 
     const result = await enableOpencodeFireworks({
       configPath,
       dataDir,
-      apiKey: existingKey,
-      apiKeyFromFlag: Boolean(existingKey),
+      apiKey: OPENCODE_API_KEY_ENV_REF,
+      effectiveApiKey: effectiveKey,
       modelId: defaultModelIds(keyType).main,
       keyType,
     });
