@@ -108,6 +108,21 @@ export function vscodeStateDbPath({ home = "", vscodePath = "" } = {}) {
   return path.join(path.dirname(jsonPath), "globalStorage", "state.vscdb");
 }
 
+/**
+ * Resolve the path to VS Code's `Local State` file — the Chromium user-data
+ * root that holds the OSCrypt `os_crypt.encrypted_key` (DPAPI-protected AES-256
+ * key) on Windows. This is the parent of the `User/` directory that contains
+ * `chatLanguageModels.json` and `globalStorage/state.vscdb`.
+ * @param {{ home?: string, vscodePath?: string }} opts
+ * @returns {string}
+ */
+export function vscodeLocalStatePath({ home = "", vscodePath = "" } = {}) {
+  const jsonPath = chatLanguageModelsPath({ home, vscodePath });
+  // jsonPath = <userData>/User/chatLanguageModels.json
+  // Local State = <userData>/Local State  (parent of User/)
+  return path.join(path.dirname(path.dirname(jsonPath)), "Local State");
+}
+
 /** @param {string} secretId @returns {string} the `secret://<id>` ItemTable key */
 function secretStorageKey(secretId) {
   return `${SECRET_STORAGE_PREFIX}${secretId}`;
@@ -499,7 +514,8 @@ export async function enableVscodeFireworks({
   }
 
   const variant = currentVariant(vscodePath);
-  if (!isSecretEncryptionAvailable({ variant })) {
+  const localStatePath = vscodeLocalStatePath({ vscodePath });
+  if (!isSecretEncryptionAvailable({ variant, localStatePath })) {
     throw new Error(secretEncryptionUnavailableMessage(variant));
   }
 
@@ -528,7 +544,7 @@ export async function enableVscodeFireworks({
   // Ensure the ItemTable exists so `on` works against a profile VS Code has
   // never launched (no state.vscdb yet). Idempotent + mkdirs the parent.
   await ensureItemTable(dbPath);
-  const encrypted = encryptSecret(apiKey, { variant });
+  const encrypted = encryptSecret(apiKey, { variant, localStatePath });
   await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
 
   // Preserve models added via `model add`/`model select` when re-running `on`
@@ -733,7 +749,7 @@ export async function readVscodeStoredKey(vscodePath, stateDbPath, arr) {
   if (!stored) {
     return "";
   }
-  const key = decryptSecret(stored, { variant: currentVariant(vscodePath) });
+  const key = decryptSecret(stored, { variant: currentVariant(vscodePath), localStatePath: vscodeLocalStatePath({ vscodePath }) });
   return isFireworksShapedKey(key) ? key.trim() : "";
 }
 
@@ -748,7 +764,7 @@ export async function readVscodeStoredKey(vscodePath, stateDbPath, arr) {
 export async function writeVscodeSecret({ vscodePath, stateDbPath, secretId, secret }) {
   const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
   await ensureItemTable(dbPath);
-  const encrypted = encryptSecret(secret, { variant: currentVariant(vscodePath) });
+  const encrypted = encryptSecret(secret, { variant: currentVariant(vscodePath), localStatePath: vscodeLocalStatePath({ vscodePath }) });
   await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
   return { stateDbPath: dbPath };
 }
@@ -766,7 +782,7 @@ export async function readVscodeSecret({ vscodePath, stateDbPath, secretId }) {
   const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
   const stored = await readItemTableValue(dbPath, secretStorageKey(secretId));
   if (!stored) return "";
-  const key = decryptSecret(stored, { variant: currentVariant(vscodePath) });
+  const key = decryptSecret(stored, { variant: currentVariant(vscodePath), localStatePath: vscodeLocalStatePath({ vscodePath }) });
   return typeof key === "string" ? key.trim() : "";
 }
 

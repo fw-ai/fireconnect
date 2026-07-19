@@ -19,6 +19,7 @@ import {
   readChatLanguageModels,
   readVscodeBackup,
   readVscodeSecret,
+  vscodeLocalStatePath,
   vscodeStateDbPath,
   writeChatLanguageModels,
   writeVscodeBackup,
@@ -239,7 +240,8 @@ export async function enableFirerouterVscode({
   }
 
   const variant = currentVariant(vscodePath);
-  if (!isSecretEncryptionAvailable({ variant })) {
+  const localStatePath = vscodeLocalStatePath({ vscodePath });
+  if (!isSecretEncryptionAvailable({ variant, localStatePath })) {
     throw new Error(secretEncryptionUnavailableMessage(variant));
   }
 
