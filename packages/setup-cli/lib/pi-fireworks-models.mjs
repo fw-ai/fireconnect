@@ -213,7 +213,7 @@ function piModelsToRegister(resolvedModel) {
     ...entry,
     reasoning: true,
   }))];
-  if (resolvedModel.startsWith("accounts/fireworks/")
+  if (resolvedModel.startsWith("accounts/")
     && !entries.some((entry) => entry.id === resolvedModel)
     && !PI_BUILTIN_FIREWORKS_MODEL_IDS.has(resolvedModel)) {
     entries.push({

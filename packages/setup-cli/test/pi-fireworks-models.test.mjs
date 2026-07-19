@@ -122,4 +122,26 @@ describe("resolvePiEffectiveFireworksModel", () => {
     assert.deepEqual(entry.input, ["text"]);
     assert.equal(entry.cost.output, 4.4);
   });
+
+  it("registers a custom deployment ID (accounts/<user>/deployments/<id>) in models", () => {
+    const deploymentId = "accounts/ahmadshahzad/deployments/ub9lvh50";
+    const merged = mergePiFireworksRouterModels({}, deploymentId);
+    const entry = merged.providers.fireworks.models.find((model) => model.id === deploymentId);
+
+    assert.ok(entry, "custom deployment should be registered in models[]");
+    assert.equal(entry.id, deploymentId);
+    // Graceful defaults from lookupFireworksModelLimits when the ID isn't in specs.
+    assert.equal(entry.contextWindow, 128_000);
+    assert.equal(entry.maxTokens, 16_384);
+    assert.equal(entry.cost, undefined);
+    // Not in modelOverrides (it's not a Pi built-in).
+    assert.equal(merged.providers.fireworks.modelOverrides?.[deploymentId], undefined);
+  });
+
+  it("resolvePiEffectiveFireworksModel resolves a custom deployment with defaults", () => {
+    const deploymentId = "accounts/ahmadshahzad/deployments/ub9lvh50";
+    const effective = effectiveAfterMerge(deploymentId, deploymentId);
+    assert.ok(effective);
+    assert.equal(effective.contextWindow, 128_000);
+  });
 });
