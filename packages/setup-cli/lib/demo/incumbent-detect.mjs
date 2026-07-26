@@ -22,23 +22,27 @@
 
 import process from "node:process";
 import path from "node:path";
-import { isFireworksShapedKey, providerStatusFromEnv, readJsonIfExists } from "../fireconnect-core.mjs";
-import { stripClaudeCodeContextSuffix } from "../claude-code-context.mjs";
-import { isHarnessEnabled, readGlobalConfig, resolveStoredAnthropicApiKey } from "../global-config.mjs";
-import { isAnthropicShapedKey } from "../firerouter-core.mjs";
-import { HARNESS } from "../harness.mjs";
-import { userSettingsPath } from "../fireconnect-core.mjs";
-import { opencodeConfigPath, opencodeCurrentModelId, opencodeProviderStatus, readRawIfExists } from "../opencode-core.mjs";
+import {
+  providerStatusFromEnv,
+  userSettingsPath,
+} from "../harnesses/claude/core.mjs";
+import { stripClaudeCodeContextSuffix } from "../harnesses/claude/code-context.mjs";
+import { isHarnessEnabled, readGlobalConfig, resolveStoredAnthropicApiKey } from "../config/global-config.mjs";
+import { isAnthropicShapedKey } from "../firerouter/core.mjs";
+import { HARNESS } from "../harness/id.mjs";
+import { readJsonIfExists } from "../io/json.mjs";
+import { isFireworksShapedKey } from "../keys/key-type.mjs";
+import { opencodeConfigPath, opencodeCurrentModelId, opencodeProviderStatus, readRawIfExists } from "../harnesses/opencode/core.mjs";
 import {
   codexConfigPath,
   codexProviderStatus,
   readCodexTomlIfExists,
-} from "../codex-core.mjs";
-import { chatLanguageModelsPath, readChatLanguageModels } from "../vscode-core.mjs";
-import { cursorStateDbPath } from "../cursor-core.mjs";
-import { piSettingsPath } from "../pi-core.mjs";
+} from "../harnesses/codex/core.mjs";
+import { chatLanguageModelsPath, readChatLanguageModels } from "../harnesses/vscode/core.mjs";
+import { cursorStateDbPath } from "../harnesses/cursor/core.mjs";
+import { piSettingsPath } from "../harnesses/pi/core.mjs";
 import { existsSync } from "node:fs";
-import { prettyModelName } from "../fireworks-models.mjs";
+import { prettyModelName } from "../fireworks/models.mjs";
 
 const PROBE_ORDER = [
   HARNESS.CLAUDE,

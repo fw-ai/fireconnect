@@ -7,7 +7,7 @@
  *
  * Each adapter owns two things:
  *   - `buildRaceSettings({ tmpRoot, incumbentKey, incumbentModel, fireworksKey,
- *       challengerModel, keyType, routerBaseUrl })` — build two isolated side
+ *       challengerModel, keyType })` — build two isolated side
  *       configs (incumbent → native backend, challenger → Fireworks) under
  *       `tmpRoot`. Returns `{ incumbentDir, challengerDir, cleanup }`.
  *   - `runSide({ configDir, cwd, prompt, model, signal, onDelta, onError,
@@ -23,7 +23,7 @@
  * dispatches via `getHeadlessRunner`, so no other wiring is needed.
  */
 
-import { HARNESS } from "../harness.mjs";
+import { HARNESS } from "../harness/id.mjs";
 import { prepareRouteSettings } from "./route-settings.mjs";
 import { runClaude } from "./claude-runner.mjs";
 

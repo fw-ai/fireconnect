@@ -1,12 +1,25 @@
 #!/usr/bin/env node
 
-import { parseCli } from "../lib/parse-args.mjs";
-import { runGlobalCommand } from "../lib/commands/global.mjs";
-import { runHarnessCommand } from "../lib/commands/harness.mjs";
-import { runDemoCommand } from "../lib/demo/command.mjs";
-import { checkForUpdates } from "../lib/update-notify.mjs";
+import process from "node:process";
+
+import {
+  cliDependenciesMissingMessage,
+  ensureCliDependencies,
+} from "../lib/system/ensure-cli-deps.mjs";
 
 async function run() {
+  if (!ensureCliDependencies()) {
+    process.stderr.write(`${cliDependenciesMissingMessage()}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const { parseCli } = await import("../lib/cli/parse-args.mjs");
+  const { runGlobalCommand } = await import("../lib/cli/commands/global.mjs");
+  const { runHarnessCommand } = await import("../lib/cli/commands/harness.mjs");
+  const { runDemoCommand } = await import("../lib/demo/command.mjs");
+  const { checkForUpdates } = await import("../lib/system/update-notify.mjs");
+
   const parsed = parseCli(process.argv.slice(2));
 
   if (parsed.kind === "global") {
@@ -29,8 +42,15 @@ async function run() {
   throw new Error("Internal error: unknown parse result");
 }
 
-run().catch((error) => {
-  console.error(`Error: ${error.message}`);
-  if (process.env.FC_DEBUG) console.error(error.stack);
+run().catch(async (err) => {
+  if (ensureCliDependencies()) {
+    const { error } = await import("../lib/ui/index.mjs");
+    error(err.message);
+  } else {
+    process.stderr.write(`${err.message}\n`);
+  }
+  if (process.env.FC_DEBUG) {
+    console.error(err.stack);
+  }
   process.exitCode = 1;
 });

@@ -23,8 +23,8 @@ import {
   BOLD, DIM, CYAN, RED, REVERSE, RESET, HIDE_CURSOR, SHOW_CURSOR,
   CLEAR_LINE,
 } from "./ansi.mjs";
-import { isAnthropicShapedKey } from "../firerouter-core.mjs";
-import { isFireworksKey } from "../fireworks-models.mjs";
+import { isAnthropicShapedKey } from "../firerouter/core.mjs";
+import { isFireworksKey } from "../keys/key-type.mjs";
 
 /**
  * Pure validator for an entered Anthropic API key.

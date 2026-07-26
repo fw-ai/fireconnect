@@ -1,0 +1,11 @@
+{ember}^     ^     ^     ^     ^     ^     ^     ^     ^{/ember}
+{spark}/^\   /^\   /^\   /^\   /^\   /^\   /^\   /^\   /^\{/spark}
+{trail}*     .     ★     .     ✦     .     ★     .     *{/trail}
+{burst}\\    \\    \\     |     |     |     |     |     |    //    //    //{/burst}
+{ember}░░▒▒▓▓{/ember}{burst}██████████████████████████████████████████████████████████{/burst}{ember}▓▓▒▒░░{/ember}
+{ember}██▓▓▒▒░░{/ember}  {core}***{/core}  {brand}FireConnect{/brand}  {core}***{/core}  {ember}░░▒▒▓▓██{/ember}
+{ember}░░▒▒▓▓{/ember}{burst}██████████████████████████████████████████████████████████{/burst}{ember}▓▓▒▒░░{/ember}
+{burst}//    //    //     |     |     |     |     |     |    \\    \\    \\{/burst}
+{spark}\v/   \v/   \v/   \v/   \v/   \v/   \v/   \v/   \v/{/spark}
+{ember}v     v     v     v     v     v     v     v     v{/ember}
+{fuse}Ignite your Harness{/fuse}

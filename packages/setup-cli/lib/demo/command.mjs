@@ -16,19 +16,20 @@ import path from "node:path";
 import { mkdtemp, rm, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 
-import { resolveFireworksApiKey, prettyModelName } from "../fireworks-models.mjs";
-import { HARNESS } from "../harness.mjs";
-import { lookupFireworksPricing, FIREWORKS_PRICING_DOCS_URL } from "../fireworks-pricing.mjs";
+import { prettyModelName } from "../fireworks/models.mjs";
+import { resolveFireworksApiKey } from "../keys/harness-api-key.mjs";
+import { HARNESS } from "../harness/id.mjs";
+import { lookupFireworksPricing, FIREWORKS_PRICING_DOCS_URL } from "../fireworks/pricing.mjs";
 import { CUSTOM_DEMO_PROMPT_ID, resolvePrompt } from "./presets.mjs";
 import { detectIncumbent, detectActiveFireworksHarness, incumbentPricing, resolveAnthropicKey, prettyClaudeLabel } from "./incumbent-detect.mjs";
-import { stripClaudeCodeContextSuffix } from "../claude-code-context.mjs";
+import { stripClaudeCodeContextSuffix } from "../harnesses/claude/code-context.mjs";
+import { userSettingsPath } from "../harnesses/claude/core.mjs";
 import {
-  readJsonIfExists,
-  userSettingsPath,
-  detectApiKeyType,
   FIREWORKS_BASE_URL,
   normalizeModelId,
-} from "../fireconnect-core.mjs";
+} from "../fireworks/model-id.mjs";
+import { readJsonIfExists } from "../io/json.mjs";
+import { detectApiKeyType } from "../keys/key-type.mjs";
 import { getHeadlessRunner, SUPPORTED_HARNESS_IDS } from "./harness-runners.mjs";
 import { extractHtml, looksRunnable } from "./html-extract.mjs";
 import {
@@ -43,7 +44,8 @@ import { runSetupForm } from "./setup-form.mjs";
 import {
   promptAnthropicKey, promptFireworksKey, confirmYesNo, pressAnyKeyToExit,
 } from "./key-prompt.mjs";
-import { persistGlobalAnthropicApiKey, persistGlobalApiKey, readGlobalConfig } from "../global-config.mjs";
+import { persistGlobalAnthropicApiKey } from "../config/global-config.mjs";
+import { persistApiKeyFromFlag } from "../keys/api-key.mjs";
 import { buildCompareHtml, serveStatic, openInBrowser } from "./browser.mjs";
 
 const DEFAULT_CHALLENGER = "glm-5p2-fast";
@@ -352,7 +354,7 @@ export async function runDemoCommand(ctx) {
   if (!fwRates) {
     throw new Error(
       `Could not resolve Fireworks pricing for --challenger ${options.challenger}. `
-      + `Pick a serverless model from \`fireconnect claude model list\`.`,
+      + `Pick a serverless model from \`fireconnect model list\`.`,
     );
   }
 
@@ -442,7 +444,6 @@ export async function runDemoCommand(ctx) {
       + `Supported: ${SUPPORTED_HARNESS_IDS.join(", ")}.`,
     );
   }
-  const globalConfig = await readGlobalConfig(ctx.home);
   const keyType = detectApiKeyType(fwKey);
   const { incumbentDir, challengerDir, cleanup: cleanupRoute } = await runner.buildRaceSettings({
     tmpRoot: await mkdtemp(path.join(os.tmpdir(), "fireconnect-demo-")),
@@ -451,7 +452,6 @@ export async function runDemoCommand(ctx) {
     fireworksKey: fwKey,
     challengerModel: options.challenger,
     keyType,
-    routerBaseUrl: globalConfig.routerBaseUrl || "",
   });
   cleanupFns.push(cleanupRoute);
   incCwd = await mkdtemp(path.join(os.tmpdir(), "fc-demo-inc-"));
@@ -612,8 +612,11 @@ export async function runDemoCommand(ctx) {
       stdin: process.stdin, stdout: process.stdout,
     });
     if (save) {
-      await persistGlobalApiKey(ctx.home, fwKey);
-      console.log(`  ${DIM("Saved to ~/.fireconnect/config.json — future runs will use it.")}`);
+      // Through the keychain path so baked-key sync runs here too — a demo
+      // save is a key store like any other, and this block runs after the
+      // TUI, so the sync notes print into plain console output.
+      await persistApiKeyFromFlag(ctx.home, fwKey);
+      console.log(`  ${DIM("Saved — future runs will use it.")}`);
     }
   }
 
@@ -836,7 +839,7 @@ async function ensureCallableFireworksKey({
       if (!isAuthFailure(pre)) {
         throw new Error(
           `Challenger ${model} is not callable on your account: ${pre.error} `
-          + `Pick another model with --challenger (see \`fireconnect claude model list\`).`,
+          + `Pick another model with --challenger (see \`fireconnect model list\`).`,
         );
       }
       throw new Error(

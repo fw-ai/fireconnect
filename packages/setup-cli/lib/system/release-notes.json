@@ -1,0 +1,21 @@
+{
+  "releases": [
+    {
+      "version": "0.9.0",
+      "highlights": [
+        "Find models in one place with `fireconnect model list`. The coding-focused catalog includes standard and fast options across model families.",
+        "FireRouter now works like any other model through `on --model firerouter`.",
+        "VS Code now uses the Fireworks Responses API. Vision-capable Kimi models accept image inputs, while GLM models remain text-only.",
+        "Web-search groundwork: FireConnect can configure the Fireworks-hosted WebSearch MCP for eligible accounts.",
+        "Claude usage reports now show session token usage and estimated Fireworks cost."
+      ],
+      "improvements": [
+        "Improved sign-in with custom enterprise SSO support, secure credential storage, and upgrades.",
+        "Better preservation of user settings, headers, model selections, and backups.",
+        "More reliable Azure endpoint handling, Windows installation, and error guidance.",
+        "Privacy-safe request attribution without replacing native user agents."
+      ],
+      "footer": "Your existing harness settings are not changed during upgrade."
+    }
+  ]
+}
