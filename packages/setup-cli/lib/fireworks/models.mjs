@@ -1,0 +1,712 @@
+import { FIREROUTER_ROUTER_ID } from "./model-id.mjs";
+import {
+  detectApiKeyType,
+  MISSING_FIREWORKS_API_KEY_MESSAGE,
+} from "../keys/key-type.mjs";
+import { FIREWORKS_PRICING_DOCS_URL, resolveRouterSpecAliasTarget, ROUTER_SPEC_ALIASES, routerIdsForTargetSlug } from "./model-specs.mjs";
+import { setServerlessCatalogSnapshot } from "./serverless-catalog-cache.mjs";
+
+export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
+export const PLATFORM_ACCOUNT_ID = "fireworks";
+export const KIND_SERVERLESS = "serverless";
+export const SERVERLESS_CODING_USE_CASE = "coding";
+export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/glm-fast-latest";
+export const FIREPASS_ROUTER_IDS = new Set([
+  FIREPASS_ROUTER_ID,
+  "accounts/fireworks/routers/glm-latest",
+  "accounts/fireworks/routers/glm-5p2-fast",
+  "accounts/fireworks/routers/kimi-fast-latest",
+  "accounts/fireworks/routers/kimi-k2p7-code-fast",
+]);
+
+/** Fire Pass keys cannot list the catalog; these routers stay available offline. */
+export const FIREPASS_FALLBACK_ROUTERS = [
+  {
+    id: "accounts/fireworks/routers/glm-latest",
+    shortId: "glm-latest",
+    displayName: "GLM Latest",
+    baseModelId: "accounts/fireworks/models/glm-5p2",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/glm-fast-latest",
+    shortId: "glm-fast-latest",
+    displayName: "GLM Fast Latest",
+    baseModelId: "accounts/fireworks/models/glm-5p2",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/glm-5p2-fast",
+    shortId: "glm-5p2-fast",
+    displayName: "GLM 5.2 Fast",
+    baseModelId: "accounts/fireworks/models/glm-5p2",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/kimi-fast-latest",
+    shortId: "kimi-fast-latest",
+    displayName: "Kimi Fast Latest",
+    baseModelId: "accounts/fireworks/models/kimi-k2p7-code",
+    kind: KIND_SERVERLESS,
+  },
+  {
+    id: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+    shortId: "kimi-k2p7-code-fast",
+    displayName: "Kimi K2.7 Code Fast",
+    baseModelId: "accounts/fireworks/models/kimi-k2p7-code",
+    kind: KIND_SERVERLESS,
+  },
+];
+
+/** @typedef {{ id: string, shortId: string, displayName: string, baseModelId?: string, kind: "serverless", serverlessMode?: string }} CatalogEntry */
+
+export function firerouterCatalogEntry() {
+  return {
+    id: FIREROUTER_ROUTER_ID,
+    shortId: "firerouter",
+    displayName: "FireRouter",
+    kind: KIND_SERVERLESS,
+  };
+}
+
+export function shortIdFromResourceName(name) {
+  if (typeof name !== "string" || !name) {
+    return "";
+  }
+  const segments = name.split("/");
+  return segments.at(-1) ?? name;
+}
+
+/**
+ * Turn a model id into a human-readable name for display, without any network
+ * call. e.g. `accounts/fireworks/models/glm-5p2` -> "GLM 5.2",
+ * `accounts/fireworks/routers/glm-latest` -> "GLM Latest",
+ * `kimi-k2p7-code-fast` -> "Kimi K2.7 Code Fast", `composer-2.5` -> "Composer 2.5".
+ * Falls back to the last path segment if prettification yields nothing better.
+ * @param {string} modelId
+ * @returns {string}
+ */
+export function prettyModelName(modelId) {
+  if (!modelId) {
+    return "(unset)";
+  }
+  if (modelId === "default") {
+    return "default";
+  }
+  const last = String(modelId).split("/").at(-1) ?? modelId;
+  const tokens = last.split(/[-_]/).filter(Boolean);
+  const pretty = tokens.map((tok) => {
+    if (/^[a-z]+$/i.test(tok)) {
+      // short all-letter tokens are acronyms (GLM); longer ones are names (Kimi, Qwen, Deepseek)
+      return tok.length <= 3 ? tok.toUpperCase() : tok.charAt(0).toUpperCase() + tok.slice(1);
+    }
+    let m = tok.match(/^([a-zA-Z])(\d+)p(\d+)$/); // k2p6 -> K2.6
+    if (m) {
+      return `${m[1].toUpperCase()}${m[2]}.${m[3]}`;
+    }
+    m = tok.match(/^(\d+)p(\d+)$/); // 5p2 -> 5.2
+    if (m) {
+      return `${m[1]}.${m[2]}`;
+    }
+    m = tok.match(/^v(\d+)$/i); // v4 -> V4
+    if (m) {
+      return `V${m[1]}`;
+    }
+    // mixed alphanumeric like "2.5" or "k25" — capitalise a leading letter
+    return tok.charAt(0).toUpperCase() + tok.slice(1);
+  });
+  return pretty.join(" ");
+}
+
+/** Strip catalog/router suffix from a display label. */
+export function stripViaFireworksSuffix(label) {
+  return String(label).replace(/ via Fireworks$/i, "");
+}
+
+async function fetchGatewayPage(path, apiKey) {
+  const response = await fetch(`${FIREWORKS_GATEWAY_URL}${path}`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    const detail = body ? `: ${body.slice(0, 200)}` : "";
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        `Fireworks API rejected the API key (${response.status}). `
+        + "Check FIREWORKS_API_KEY and ensure the key can access account model listings.",
+      );
+    }
+    throw new Error(`Fireworks API ${response.status} ${response.statusText}${detail}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * @param {{ units?: string | number, nanos?: number }} [money]
+ * @returns {number}
+ */
+export function moneyToUsd(money) {
+  if (!money) {
+    return 0;
+  }
+  const units = Number(money.units ?? 0);
+  const nanos = Number(money.nanos ?? 0);
+  return units + nanos / 1_000_000_000;
+}
+
+/**
+ * @param {Array<{ sku?: string, amount?: { units?: string | number, nanos?: number } }>} skuInfos
+ * @returns {{ input: number, cachedInput: number, output: number }}
+ */
+export function parseSkuPricing(skuInfos = []) {
+  let input = 0;
+  let cachedInput = 0;
+  let output = 0;
+  let legacyInput = 0;
+
+  for (const sku of skuInfos) {
+    const amount = moneyToUsd(sku.amount);
+    switch (sku.sku) {
+      case "LLM input tokens (uncached)":
+        input = amount;
+        break;
+      case "LLM input tokens":
+        legacyInput = amount;
+        break;
+      case "LLM input tokens (cached)":
+        cachedInput = amount;
+        break;
+      case "LLM output tokens":
+        output = amount;
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (!input && legacyInput) {
+    input = legacyInput;
+  }
+
+  return { input, cachedInput, output };
+}
+
+/**
+ * True when the API response carries an explicit modality signal. Distinguishes
+ * "the API says text-only" from "the API said nothing" so the cache never
+ * fabricates a text-only default that would override a curated static spec.
+ * @param {{ supportsImageInput?: boolean, supports_image_input?: boolean, inputModalities?: string[], input_modalities?: string[] }} model
+ * @returns {boolean}
+ */
+export function hasModalitySignal(model) {
+  const explicit = model.inputModalities ?? model.input_modalities;
+  if (Array.isArray(explicit) && explicit.length > 0) {
+    return true;
+  }
+  return (model.supportsImageInput ?? model.supports_image_input) !== undefined;
+}
+
+/**
+ * @param {{ supportsImageInput?: boolean, supports_image_input?: boolean, inputModalities?: string[], input_modalities?: string[] }} model
+ * @returns {string[]}
+ */
+export function inputModalitiesFromModel(model) {
+  const explicit = model.inputModalities ?? model.input_modalities;
+  if (Array.isArray(explicit) && explicit.length > 0) {
+    return explicit;
+  }
+  const mods = ["text"];
+  if (model.supportsImageInput ?? model.supports_image_input) {
+    mods.push("image");
+  }
+  return mods;
+}
+
+/**
+ * @param {{ name?: string }} mode
+ * @returns {string}
+ */
+export function serverlessModeId(mode) {
+  const name = mode?.name ?? "";
+  return name.split("/").at(-1) ?? "";
+}
+
+function findServerlessMode(model, preferredModeId) {
+  const modes = model.serverlessModes ?? model.serverless_modes ?? [];
+  const preferred = modes.find((mode) => serverlessModeId(mode) === preferredModeId);
+  if (preferred) {
+    return preferred;
+  }
+  return modes.find((mode) => serverlessModeId(mode) === "default") ?? modes[0] ?? null;
+}
+
+function pricingTierForMode(mode) {
+  const modeId = serverlessModeId(mode);
+  if (modeId === "fast") {
+    return "fast";
+  }
+  if (modeId === "priority") {
+    return "priority";
+  }
+  return "standard";
+}
+
+function hasUsableSkuPricing(rates) {
+  return rates.input > 0 || rates.output > 0;
+}
+
+function buildPricingRecord(id, label, rates, tier) {
+  if (!hasUsableSkuPricing(rates)) {
+    return null;
+  }
+  return {
+    slug: shortIdFromResourceName(id),
+    label: stripViaFireworksSuffix(label),
+    input: rates.input,
+    cachedInput: rates.cachedInput,
+    output: rates.output,
+    tier,
+    source: FIREWORKS_PRICING_DOCS_URL,
+  };
+}
+
+function normalizeModelEntry(model) {
+  const name = model.name ?? model.id ?? "";
+  if (!name.includes("/models/")) {
+    return null;
+  }
+
+  return {
+    id: name,
+    shortId: shortIdFromResourceName(name),
+    displayName: stripViaFireworksSuffix(
+      model.displayName ?? model.display_name ?? prettyModelName(name),
+    ),
+    kind: KIND_SERVERLESS,
+  };
+}
+
+function normalizeRouterEntry({ usageId, baseModel, mode }) {
+  const displayName = prettyModelName(usageId);
+  return {
+    id: usageId,
+    shortId: shortIdFromResourceName(usageId),
+    displayName,
+    baseModelId: baseModel.name ?? baseModel.id,
+    kind: KIND_SERVERLESS,
+    serverlessMode: serverlessModeId(mode),
+  };
+}
+
+// Alias synthesis keys off base-model *existence* in the catalog, not pricing:
+// an alias like `kimi-latest` should surface whenever its target model is
+// listed, even before pricing lands. Pricing is copied opportunistically below.
+function hasUsableCachedPricing(pricing) {
+  return pricing && (pricing.input > 0 || pricing.output > 0);
+}
+
+function resolveAliasRouterSources(snapshot, targetSlug, modelIds) {
+  const modelId = `accounts/fireworks/models/${targetSlug}`;
+  if (modelIds.has(modelId)) {
+    const pricing = snapshot.pricingById.get(modelId);
+    const pricingSourceId = hasUsableCachedPricing(pricing)
+      && (!targetSlug.endsWith("-fast") || pricing.tier === "fast")
+      ? modelId
+      : null;
+    return { baseModelId: modelId, pricingSourceId };
+  }
+
+  for (const routerId of routerIdsForTargetSlug(targetSlug)) {
+    const baseModelId = snapshot.routerBaseModelById.get(routerId);
+    if (baseModelId) {
+      return { baseModelId, pricingSourceId: routerId };
+    }
+  }
+
+  const baseSlug = targetSlug.replace(/-fast$/, "");
+  if (baseSlug !== targetSlug) {
+    const baseModelId = `accounts/fireworks/models/${baseSlug}`;
+    if (modelIds.has(baseModelId)) {
+      // Fast alias resolved to its non-fast base model: borrow metadata only.
+      // Its standard-tier pricing must not attach to a fast router — leave
+      // pricing to the static fast-tier spec.
+      return { baseModelId, pricingSourceId: null };
+    }
+  }
+
+  return null;
+}
+
+function addAliasRouterMetadata(snapshot) {
+  const entryIds = new Set(snapshot.entries.map((entry) => entry.id));
+
+  for (const alias of Object.keys(ROUTER_SPEC_ALIASES)) {
+    const routerId = `accounts/fireworks/routers/${alias}`;
+    if (entryIds.has(routerId)) {
+      continue;
+    }
+
+    const targetSlug = resolveRouterSpecAliasTarget(alias, entryIds);
+    if (!targetSlug) {
+      continue;
+    }
+    const sources = resolveAliasRouterSources(snapshot, targetSlug, entryIds);
+    if (!sources) {
+      continue;
+    }
+    const { baseModelId, pricingSourceId } = sources;
+
+    snapshot.entries.push({
+      id: routerId,
+      shortId: alias,
+      displayName: prettyModelName(routerId),
+      baseModelId,
+      kind: KIND_SERVERLESS,
+    });
+    entryIds.add(routerId);
+    snapshot.routerBaseModelById.set(routerId, baseModelId);
+
+    const pricing = pricingSourceId ? snapshot.pricingById.get(pricingSourceId) : null;
+    if (pricing) {
+      snapshot.pricingById.set(routerId, {
+        ...pricing,
+        slug: alias,
+        label: pricing.label,
+      });
+    }
+
+    const modalities = snapshot.inputModalitiesById.get(baseModelId);
+    if (modalities) {
+      snapshot.inputModalitiesById.set(routerId, modalities);
+    }
+    const contextLength = snapshot.contextLengthById.get(baseModelId);
+    if (contextLength) {
+      snapshot.contextLengthById.set(routerId, contextLength);
+    }
+    const supportsTools = snapshot.supportsToolsById.get(baseModelId);
+    if (supportsTools !== undefined) {
+      snapshot.supportsToolsById.set(routerId, supportsTools);
+    }
+  }
+
+  snapshot.entries = dedupeCatalog(snapshot.entries);
+}
+
+/**
+ * @param {object[]} apiModels
+ */
+export function buildServerlessCatalogSnapshot(apiModels) {
+  const entries = [];
+  const pricingById = new Map();
+  const inputModalitiesById = new Map();
+  const routerBaseModelById = new Map();
+  const contextLengthById = new Map();
+  const supportsToolsById = new Map();
+
+  for (const model of apiModels) {
+    const modelId = model.name ?? model.id ?? "";
+    const modelEntry = normalizeModelEntry(model);
+    if (!modelEntry) {
+      continue;
+    }
+
+    entries.push(modelEntry);
+
+    // The cache must hold only facts the API actually reports. Fabricating a
+    // default (tool support = true, modalities = text-only) and caching it lets
+    // the cache silently override curated static specs — e.g. flipping
+    // gpt-oss-20b's toolCalling:false to true, or a vision model to text-only.
+    // Absence means "unknown" so lookups fall back to the spec.
+    const modalities = hasModalitySignal(model) ? inputModalitiesFromModel(model) : null;
+    const contextLength = model.contextLength ?? model.context_length ?? 0;
+    const supportsTools = model.supportsTools ?? model.supports_tools ?? null;
+
+    if (modalities) {
+      inputModalitiesById.set(modelId, modalities);
+    }
+    if (contextLength) {
+      contextLengthById.set(modelId, contextLength);
+    }
+    if (supportsTools !== null) {
+      supportsToolsById.set(modelId, supportsTools);
+    }
+
+    const standardMode = findServerlessMode(model, "default");
+    if (standardMode) {
+      const rates = parseSkuPricing(standardMode.skuInfos ?? standardMode.sku_infos);
+      const pricing = buildPricingRecord(modelId, modelEntry.displayName, rates, pricingTierForMode(standardMode));
+      if (pricing) {
+        pricingById.set(modelId, pricing);
+      }
+    }
+
+    for (const mode of model.serverlessModes ?? model.serverless_modes ?? []) {
+      const usageId = mode.usageIdentifier ?? mode.usage_identifier ?? "";
+      if (!usageId.includes("/routers/")) {
+        continue;
+      }
+
+      const routerEntry = normalizeRouterEntry({ usageId, baseModel: model, mode });
+      entries.push(routerEntry);
+      routerBaseModelById.set(usageId, modelId);
+      if (modalities) {
+        inputModalitiesById.set(usageId, modalities);
+      }
+      if (contextLength) {
+        contextLengthById.set(usageId, contextLength);
+      }
+      if (supportsTools !== null) {
+        supportsToolsById.set(usageId, supportsTools);
+      }
+
+      const rates = parseSkuPricing(mode.skuInfos ?? mode.sku_infos);
+      const pricing = buildPricingRecord(usageId, routerEntry.displayName, rates, pricingTierForMode(mode));
+      if (pricing) {
+        pricingById.set(usageId, pricing);
+      }
+    }
+  }
+
+  const snapshot = {
+    entries: dedupeCatalog(entries),
+    pricingById,
+    inputModalitiesById,
+    routerBaseModelById,
+    contextLengthById,
+    supportsToolsById,
+  };
+  addAliasRouterMetadata(snapshot);
+  return snapshot;
+}
+
+function dedupeCatalog(entries) {
+  const byId = new Map();
+  for (const entry of entries) {
+    if (entry?.id) {
+      byId.set(entry.id, entry);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.shortId.localeCompare(b.shortId));
+}
+
+export async function fetchServerlessCatalog(apiKey) {
+  const models = await fetchServerlessCatalogRaw(apiKey);
+  const snapshot = buildServerlessCatalogSnapshot(models);
+  setServerlessCatalogSnapshot(snapshot);
+  return {
+    catalog: snapshot.entries,
+    routersUnavailable: false,
+  };
+}
+
+/**
+ * Populate pricing/modality cache from the serverless API. Swallows errors.
+ *
+ * Only genuine Fireworks inference keys (`fw_`) are sent to api.fireworks.ai.
+ * `detectApiKeyType` classifies every non-`fpk_` token as "fireworks", so a
+ * bare prefix check is required to avoid forwarding a foreign credential (e.g.
+ * an Anthropic key read from ANTHROPIC_API_KEY) to the Fireworks gateway.
+ */
+export async function warmServerlessPricingCache(apiKey, keyType = "") {
+  const trimmed = apiKey?.trim();
+  if (!trimmed || !trimmed.startsWith("fw_")) {
+    return;
+  }
+  const resolvedKeyType = keyType || detectApiKeyType(trimmed);
+  if (resolvedKeyType === "firepass") {
+    return;
+  }
+  try {
+    await fetchServerlessCatalog(trimmed);
+  } catch {
+    /* static spec fallbacks */
+  }
+}
+
+export function buildPickerCatalogFromApiModels(apiModels) {
+  const snapshot = buildServerlessCatalogSnapshot(apiModels);
+  setServerlessCatalogSnapshot(snapshot);
+  return snapshot.entries;
+}
+
+export async function fetchServerlessCatalogRaw(apiKey) {
+  const models = [];
+  let pageToken = "";
+
+  do {
+    const query = new URLSearchParams({
+      format: "nested",
+      use_cases: SERVERLESS_CODING_USE_CASE,
+    });
+    if (pageToken) {
+      query.set("pageToken", pageToken);
+    }
+    const page = await fetchGatewayPage(`/v1/serverless/models?${query}`, apiKey);
+    models.push(...(page.models ?? []));
+    pageToken = page.nextPageToken ?? page.next_page_token ?? "";
+  } while (pageToken);
+
+  return models;
+}
+
+export function filterCatalogForKeyType(catalog, keyType) {
+  if (keyType !== "firepass") {
+    return catalog;
+  }
+  return catalog.filter((entry) => FIREPASS_ROUTER_IDS.has(entry.id));
+}
+
+export function filterCatalogBySearch(catalog, search = "") {
+  const query = search.trim().toLowerCase();
+  if (!query) {
+    return catalog;
+  }
+
+  return catalog.filter((entry) => (
+    entry.shortId.toLowerCase().includes(query)
+    || entry.displayName.toLowerCase().includes(query)
+    || entry.id.toLowerCase().includes(query)
+  ));
+}
+
+function catalogFamilyVersion(shortId = "") {
+  if (shortId.endsWith("-fast-latest")) {
+    return { family: shortId.slice(0, -"-fast-latest".length), version: [], latest: true };
+  }
+  if (shortId.endsWith("-latest")) {
+    return { family: shortId.slice(0, -"-latest".length), version: [], latest: true };
+  }
+
+  let match = shortId.match(/^glm-(\d+)p(\d+)(?:-|$)/);
+  if (match) return { family: "glm", version: [Number(match[1]), Number(match[2])], latest: false };
+
+  match = shortId.match(/^kimi-k(\d+)p(\d+)(?:-|$)/);
+  if (match) return { family: "kimi", version: [Number(match[1]), Number(match[2])], latest: false };
+
+  match = shortId.match(/^minimax-m(\d+)(?:p(\d+))?(?:-|$)/);
+  if (match) return { family: "minimax", version: [Number(match[1]), Number(match[2] ?? 0)], latest: false };
+
+  match = shortId.match(/^qwen(\d+)p(\d+)-(.+)$/);
+  if (match) return { family: `qwen-${match[3]}`, version: [Number(match[1]), Number(match[2])], latest: false };
+
+  match = shortId.match(/^deepseek-v(\d+)(?:-|$)/);
+  if (match) return { family: "deepseek", version: [Number(match[1])], latest: false };
+
+  return { family: shortId, version: [], latest: false };
+}
+
+function compareVersions(a, b) {
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    const delta = (a[i] ?? 0) - (b[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+/**
+ * Keep the stable aliases users should pin in harness pickers. For each known
+ * versioned family:
+ *   1. keep `*-latest` and `*-fast-latest` aliases when present;
+ *   2. otherwise keep every variant of only the newest concrete version.
+ * Standalone/non-versioned models remain untouched.
+ * @param {import("./models.mjs").CatalogEntry[]} catalog
+ * @returns {import("./models.mjs").CatalogEntry[]}
+ */
+export function preferLatestAliases(catalog) {
+  const parsed = catalog.map((entry) => ({
+    entry,
+    ...catalogFamilyVersion(entry.shortId),
+  }));
+  const aliasedFamilies = new Set(
+    parsed.filter(({ latest }) => latest).map(({ family }) => family),
+  );
+  const newestByFamily = new Map();
+  for (const { family, version, latest } of parsed) {
+    if (latest || version.length === 0 || aliasedFamilies.has(family)) continue;
+    const current = newestByFamily.get(family);
+    if (!current || compareVersions(version, current) > 0) {
+      newestByFamily.set(family, version);
+    }
+  }
+
+  return parsed
+    .filter(({ family, version, latest }) => {
+      if (latest) return true;
+      if (aliasedFamilies.has(family)) return false;
+      const newest = newestByFamily.get(family);
+      return !newest || compareVersions(version, newest) === 0;
+    })
+    .map(({ entry }) => entry);
+}
+
+/**
+ * Preferred model ids for harness provider catalogs. FireRouter is included
+ * automatically only when eligible; explicit `on --model firerouter` remains
+ * independent.
+ * @param {{ apiKey: string, includeFirerouter?: boolean }} opts
+ * @returns {Promise<{ ids: string[], keyType: string }>}
+ */
+export function registerableModelIds(catalog, keyType, { includeFirerouter = false } = {}) {
+  return catalogWithAutomaticFirerouter(
+    preferLatestAliases(catalog),
+    keyType,
+    { includeFirerouter },
+  ).map((entry) => entry.id);
+}
+
+export function catalogWithAutomaticFirerouter(
+  catalog,
+  keyType,
+  { includeFirerouter = false } = {},
+) {
+  const withoutFirerouter = catalog.filter((entry) => entry.id !== FIREROUTER_ROUTER_ID);
+  if (!includeFirerouter || keyType === "firepass") {
+    return withoutFirerouter;
+  }
+  if (withoutFirerouter.length !== catalog.length) {
+    return catalog;
+  }
+  return [firerouterCatalogEntry(), ...withoutFirerouter];
+}
+
+export async function loadRegisterableModels({ apiKey, includeFirerouter = false }) {
+  const { catalog, keyType } = await loadServerlessCatalog({ apiKey });
+  const ids = registerableModelIds(catalog, keyType, { includeFirerouter });
+  return { ids, keyType };
+}
+
+export async function loadServerlessCatalog({ apiKey, keyType = "" }) {
+  const resolvedKey = apiKey;
+  if (!resolvedKey) {
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
+  }
+
+  const resolvedKeyType = keyType || detectApiKeyType(resolvedKey);
+
+  // Fire Pass keys cannot list the account catalog, so return the known
+  // Fire Pass router directly without hitting the API.
+  if (resolvedKeyType === "firepass") {
+    return {
+      apiKey: resolvedKey,
+      keyType: resolvedKeyType,
+      catalog: filterCatalogForKeyType(FIREPASS_FALLBACK_ROUTERS, "firepass"),
+      routersUnavailable: false,
+    };
+  }
+
+  const { catalog, routersUnavailable } = await fetchServerlessCatalog(resolvedKey);
+  const filteredCatalog = filterCatalogForKeyType(catalog, resolvedKeyType);
+
+  return {
+    apiKey: resolvedKey,
+    keyType: resolvedKeyType,
+    catalog: filteredCatalog,
+    routersUnavailable,
+  };
+}

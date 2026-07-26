@@ -23,8 +23,8 @@ import {
   HOME_CURSOR, CLEAR_SCREEN, moveTo, CLEAR_LINE, stripAnsi, visibleWidth, padRight,
 } from "./ansi.mjs";
 import { CUSTOM_DEMO_PROMPT_ID, DEMO_PRESETS } from "./presets.mjs";
-import { FIREWORKS_MODEL_SPECS } from "../fireworks-model-specs.mjs";
-import { lookupFireworksPricing } from "../fireworks-pricing.mjs";
+import { FIREWORKS_MODEL_SPECS } from "../fireworks/model-specs.mjs";
+import { lookupFireworksPricing } from "../fireworks/pricing.mjs";
 
 // Curated challenger list — only specs that carry pricing, so the demo's
 // `fireworksRates` never throws. Order = display order; default first.

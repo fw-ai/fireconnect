@@ -16,8 +16,8 @@ import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import readline from "node:readline";
 import { FIRST_TOKEN_TIMEOUT_MS, HARD_RUN_CAP_MS } from "./constants.mjs";
-import { FIREWORKS_ENV_KEYS } from "../fireconnect-core.mjs";
-import { CLAUDE_FIREROUTER_ENV_KEYS } from "../firerouter-core.mjs";
+import { FIREWORKS_ENV_KEYS } from "../harnesses/claude/core.mjs";
+import { CLAUDE_FIREROUTER_ENV_KEYS } from "../firerouter/core.mjs";
 
 // Env keys to strip from the child's inherited process env so the isolated
 // CLAUDE_CONFIG_DIR's settings.json is the sole source of routing/model/auth.

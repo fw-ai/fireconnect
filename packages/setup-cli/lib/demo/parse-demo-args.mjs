@@ -12,20 +12,20 @@
  * and `fireconnect demo` accepts the same global flags as every other command.
  */
 
-import { applyGlobalFlag } from "../parse-args.mjs";
+import { applyGlobalFlag } from "../cli/parse-args.mjs";
 
 const DEMO_PROMPT_PRESETS = new Set(["tetris", "tictactoe", "snake", "clock", "custom"]);
 
 function requireValue(flag, value) {
   if (!value || value.startsWith("--")) {
-    throw new Error(`${flag} requires a value`);
+    throw new Error(`${flag} requires a value. Run: fireconnect help`);
   }
   return value;
 }
 
 /**
  * @param {string[]} rest  argv with the `demo` command token removed
- * @param {import("../harness-types.mjs").HarnessContext} ctx  a fresh base context
+ * @param {import("../harness/types.mjs").HarnessContext} ctx  a fresh base context
  * @returns {{ kind: "demo", ctx: object }
  *   | { kind: "global", command: "help", ctx: object, helpTopic: string }}
  */
@@ -81,7 +81,17 @@ export function parseDemoArgs(rest, ctx) {
     }
 
     // Command-agnostic global flags (--json, --home, --api-key, --mode, …).
-    const consumed = applyGlobalFlag(ctx, arg, next);
+    let consumed;
+    try {
+      consumed = applyGlobalFlag(ctx, arg, next);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        message.includes("Run: fireconnect")
+          ? message
+          : `${message} Run: fireconnect help`,
+      );
+    }
     if (consumed === true) {
       i += 1; continue;
     }
@@ -91,12 +101,12 @@ export function parseDemoArgs(rest, ctx) {
 
     // Not a flag → the sole positional.
     if (arg.startsWith("-")) {
-      throw new Error(`Unknown argument: ${arg}`);
+      throw new Error(`Unknown argument: ${arg}. Run: fireconnect help`);
     }
     if (positional) {
       throw new Error(ctx.clean
-        ? "fireconnect demo clean takes no preset. Run: fireconnect help demo"
-        : "fireconnect demo takes an optional preset, not subcommands. Run: fireconnect help demo");
+        ? "fireconnect demo clean takes no preset. Run: fireconnect help"
+        : "fireconnect demo takes an optional preset, not subcommands. Run: fireconnect help");
     }
     if (arg === "clean") {
       ctx.clean = true;
@@ -113,7 +123,8 @@ export function parseDemoArgs(rest, ctx) {
   if (positional) {
     if (!DEMO_PROMPT_PRESETS.has(positional)) {
       throw new Error(
-        `Unknown demo preset: ${positional}. Choose one of: ${[...DEMO_PROMPT_PRESETS].join(", ")}`,
+        `Unknown demo preset: ${positional}. Choose one of: `
+          + `${[...DEMO_PROMPT_PRESETS].join(", ")}. Run: fireconnect help`,
       );
     }
     if (!ctx.prompt) {

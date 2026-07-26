@@ -14,7 +14,7 @@
 
 import { mkdir, writeFile, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { writeJson } from "../fireconnect-core.mjs";
+import { writeJson } from "../io/json.mjs";
 
 /**
  * @param {string} outDir

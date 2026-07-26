@@ -1,0 +1,86 @@
+import { HARNESS } from "../harness/id.mjs";
+import { readLocalVersion } from "../system/version.mjs";
+
+export const FIRECONNECT_TELEMETRY_HEADER_NAMES = Object.freeze([
+  "x-firerouter-harness",
+  "x-title",
+  "fireworks-use-case",
+  "http-referer",
+]);
+
+const MANAGED_NAMES = new Set(FIRECONNECT_TELEMETRY_HEADER_NAMES);
+const VERSION_PATTERN = /\bv?(\d+\.\d+\.\d+)\b/;
+const HARNESS_TITLES = Object.freeze({
+  [HARNESS.CLAUDE]: "Claude Code",
+  [HARNESS.OPENCODE]: "OpenCode",
+  [HARNESS.CODEX]: "Codex",
+  [HARNESS.PI]: "Pi",
+  [HARNESS.VSCODE]: "VS Code Chat",
+});
+
+function normalizedVersion(value) {
+  return String(value ?? "").match(VERSION_PATTERN)?.[1] ?? "";
+}
+
+export function buildFireconnectTelemetryHeaders(
+  harnessId,
+  { fireconnectVersion = readLocalVersion() } = {},
+) {
+  const harnessTitle = HARNESS_TITLES[harnessId];
+  if (!harnessTitle) {
+    throw new Error(`No request attribution title configured for harness: ${harnessId}`);
+  }
+  const safeFireconnectVersion = normalizedVersion(fireconnectVersion);
+  const versionLabel = safeFireconnectVersion ? `v${safeFireconnectVersion}` : "unknown";
+  return {
+    "X-Title": harnessTitle,
+    "HTTP-Referer": `fireconnect/${versionLabel}`,
+  };
+}
+
+function isLegacyFireconnectUserAgent(name, value) {
+  return name.toLowerCase() === "user-agent"
+    && /^fireconnect\/(?:unknown|\d+\.\d+\.\d+)$/i.test(String(value).trim());
+}
+
+export function stripFireconnectTelemetryHeaders(headers = {}) {
+  return Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name, value]) => !MANAGED_NAMES.has(name.toLowerCase())
+        && !isLegacyFireconnectUserAgent(name, value),
+    ),
+  );
+}
+
+export function mergeFireconnectTelemetryHeaders(existing = {}, telemetry = {}) {
+  return {
+    ...stripFireconnectTelemetryHeaders(existing),
+    ...telemetry,
+  };
+}
+
+export function stripFireconnectTelemetryHeaderLines(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value
+    .split("\n")
+    .filter((line) => {
+      const colon = line.indexOf(":");
+      const name = colon === -1 ? "" : line.slice(0, colon).trim().toLowerCase();
+      const headerValue = colon === -1 ? "" : line.slice(colon + 1).trim();
+      return line.trim()
+        && !MANAGED_NAMES.has(name)
+        && !isLegacyFireconnectUserAgent(name, headerValue);
+    })
+    .join("\n");
+}
+
+export function mergeFireconnectTelemetryHeaderLines(value, telemetry = {}) {
+  const managed = Object.entries(telemetry)
+    .map(([name, headerValue]) => `${name}: ${headerValue}`)
+    .join("\n");
+  return [managed, stripFireconnectTelemetryHeaderLines(value)]
+    .filter(Boolean)
+    .join("\n");
+}

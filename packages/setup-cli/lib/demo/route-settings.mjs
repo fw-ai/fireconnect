@@ -24,8 +24,8 @@ import path from "node:path";
 import {
   buildFireworksSettings,
   resolveModelMapping,
-  writeJson,
-} from "../fireconnect-core.mjs";
+} from "../harnesses/claude/core.mjs";
+import { writeJson } from "../io/json.mjs";
 
 export const ANTHROPIC_DIRECT_BASE_URL = "https://api.anthropic.com";
 
@@ -53,21 +53,19 @@ export function buildIncumbentSettings({ anthropicKey }) {
  * to what `fireconnect claude on` (direct mode) would produce — just with no
  * user settings inherited. Pure — does not touch disk.
  *
- * @param {{ fireworksKey: string, challengerModel: string, keyType?: "fireworks" | "firepass", routerBaseUrl?: string }} opts
+ * @param {{ fireworksKey: string, challengerModel: string, keyType?: "fireworks" | "firepass" }} opts
  * @returns {Promise<{ settings: Record<string, unknown>, token: string }>}
  */
 export async function buildChallengerSettings({
   fireworksKey,
   challengerModel,
   keyType = "fireworks",
-  routerBaseUrl = "",
 }) {
   const mapping = resolveModelMapping({ main: challengerModel }, keyType);
   const { settings, token } = buildFireworksSettings({ env: {} }, {
     apiKey: fireworksKey,
     mapping,
     keyType,
-    routerBaseUrl,
   });
   // Carry the resolved Fireworks key inline so the tmp settings file is
   // self-contained (no apiKeyHelper / keychain).
@@ -93,7 +91,6 @@ export async function buildChallengerSettings({
  *   fireworksKey: string,
  *   challengerModel: string,
  *   keyType?: "fireworks" | "firepass",
- *   routerBaseUrl?: string,
  * }} args
  * @returns {Promise<{ incumbentDir: string, challengerDir: string, tmpDir: string, cleanup: () => Promise<void> }>}
  */
@@ -103,7 +100,6 @@ export async function prepareRouteSettings({
   fireworksKey,
   challengerModel,
   keyType,
-  routerBaseUrl,
 }) {
   const incumbentDir = path.join(tmpRoot, "incumbent");
   const challengerDir = path.join(tmpRoot, "challenger");
@@ -115,7 +111,6 @@ export async function prepareRouteSettings({
     fireworksKey,
     challengerModel,
     keyType,
-    routerBaseUrl,
   });
 
   await writeJson(path.join(incumbentDir, "settings.json"), incumbent);

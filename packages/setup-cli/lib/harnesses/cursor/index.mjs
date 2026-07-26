@@ -1,0 +1,267 @@
+import {
+  printHarnessConnected,
+  printNote,
+  printRestartHint,
+} from "../../cli/messages.mjs";
+import {
+  printStructuredHarnessStatus,
+} from "../../harness/status-display.mjs";
+import { isFirerouterModel } from "../../fireworks/model-id.mjs";
+import {
+  loadRegisterableModels,
+} from "../../fireworks/models.mjs";
+import {
+  detectApiKeyType,
+  isFireworksKey,
+} from "../../keys/key-type.mjs";
+import {
+  CURSOR_FIREWORKS_BASE_URL,
+  CURSOR_DEFAULT_MODE,
+  CURSOR_FIREWORKS_ONLY_NOTE,
+  ensureCursorStopped,
+  cursorCurrentModelId,
+  cursorProviderStatus,
+  disableCursorFireworks,
+  enableCursorAzure,
+  enableCursorFireworks,
+  fireconnectRegisteredModels,
+  readCursorState,
+} from "./core.mjs";
+import { DEFAULT_AZURE_MODEL } from "../../fireworks/azure-core.mjs";
+import { defineHarnessProfile } from "../../harness/engine.mjs";
+import {
+  cursorPathsFor,
+  ensureHomeForHarness,
+} from "../../harness/context.mjs";
+import { HARNESS } from "../../harness/id.mjs";
+import { isHarnessEnabled, readProviderSettings } from "../../config/global-config.mjs";
+import { harnessStatusKeySource } from "../../keys/api-key.mjs";
+import { harnessFullKey } from "../../keys/harness-api-key.mjs";
+import {
+  FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE,
+  resolveWorkspaceByokStatus,
+} from "../../firerouter/flag.mjs";
+import {
+  linuxSafeStorageIsObfuscatedFallback,
+  linuxSafeStorageObfuscatedKeyNote,
+  secretEncryptionUnavailableMessage,
+} from "../vscode/safestorage.mjs";
+
+const CURSOR_FIREROUTER_AZURE_UNSUPPORTED =
+  "FireRouter is not supported in Cursor Azure mode.";
+
+function rejectCursorFirerouterWorkspaceByok() {
+  throw new Error(FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE);
+}
+
+function rejectCursorFirerouterAzure() {
+  throw new Error(CURSOR_FIREROUTER_AZURE_UNSUPPORTED);
+}
+
+async function ensureCursorFirerouterAllowed(apiKey) {
+  const key = apiKey?.trim() ?? "";
+  if (!key) {
+    return;
+  }
+  const lookup = await resolveWorkspaceByokStatus(key);
+  if (lookup.unavailable) {
+    return;
+  }
+  if (!lookup.enabled) {
+    rejectCursorFirerouterWorkspaceByok();
+  }
+}
+
+/**
+ * Harness-local Fireworks key for Cursor: the OpenAI key cell in state.vscdb.
+ * Returns "" when none is present.
+ * @param {import("../../harness/types.mjs").HarnessContext} ctx
+ */
+async function cursorResolveKey(ctx) {
+  const { dbPath } = cursorPathsFor(ctx);
+  const { openAIKey } = await readCursorState(dbPath);
+  return isFireworksKey(openAIKey) ? openAIKey.trim() : "";
+}
+
+async function isCursorAzureOnRequest(ctx) {
+  if (ctx.azure === true || ctx.provider === "azure") {
+    return true;
+  }
+  const home = ctx.home?.trim() ?? "";
+  if (!home) {
+    return false;
+  }
+  const { provider } = await readProviderSettings(home);
+  return provider === "azure";
+}
+
+async function cursorResolveOnContext(ctx) {
+  if (!isFirerouterModel(ctx.main)) {
+    return ctx;
+  }
+  if (await isCursorAzureOnRequest(ctx)) {
+    rejectCursorFirerouterAzure();
+  }
+  const apiKey = await harnessFullKey(ctx, cursorResolveKey);
+  await ensureCursorFirerouterAllowed(apiKey);
+  return ctx;
+}
+
+export default defineHarnessProfile({
+  id: HARNESS.CURSOR,
+  label: "Cursor",
+  resolveKey: cursorResolveKey,
+  resolveOnContext: cursorResolveOnContext,
+  keyEnvRef: "${FIREWORKS_API_KEY}",
+  getExistingHarnessKey: cursorResolveKey,
+  paths: (ctx) => cursorPathsFor(ctx),
+  // FireRouter works in Cursor only when workspace BYOK provisions provider keys
+  // server-side; local BYOK headers are not attachable in Cursor's override UI.
+  firerouter: {
+    byok: "none",
+    autoCatalog: true,
+  },
+  azure: {
+    read: async (_ctx, { dbPath }) => {
+      const { blob, openAIKey } = await readCursorState(dbPath);
+      return {
+        active: cursorProviderStatus(blob, openAIKey) === "azure",
+        storedKey: openAIKey,
+        storedBaseUrl: typeof blob.openAIBaseUrl === "string" ? blob.openAIBaseUrl : "",
+        model: cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE) || DEFAULT_AZURE_MODEL,
+      };
+    },
+    enable: async ({ ctx, paths, apiKey, baseUrl }) => {
+      if (isFirerouterModel(ctx.main)) {
+        rejectCursorFirerouterAzure();
+      }
+      await ensureCursorStopped({ force: ctx.force });
+      return enableCursorAzure({
+        dbPath: paths.dbPath,
+        dataDir: paths.dataDir,
+        apiKey,
+        baseUrl,
+        modelId: ctx.main,
+      });
+    },
+    restart: () => printRestartHint("Quit & reopen Cursor for the change to take effect."),
+  },
+  enable: async ({ ctx, paths, effectiveKey, keyType, modelId, includeFirerouter = false }) => {
+    // Register the preferred catalog; firerouter is workspace-BYOK-gated.
+    let extraModels = [];
+    try {
+      ({ ids: extraModels } = await loadRegisterableModels({
+        apiKey: effectiveKey,
+        includeFirerouter,
+      }));
+    } catch { /* offline / catalog unavailable — register just the active model */ }
+    await ensureCursorStopped({ force: ctx.force });
+    return enableCursorFireworks({
+      dbPath: paths.dbPath,
+      dataDir: paths.dataDir,
+      apiKey: effectiveKey,
+      modelId,
+      keyType,
+      extraModels,
+    });
+  },
+  printConnected: ({ result }) => {
+    printHarnessConnected("Cursor", { model: result.model });
+    printNote(CURSOR_FIREWORKS_ONLY_NOTE);
+    if (linuxSafeStorageIsObfuscatedFallback()) {
+      printNote(
+        "Note: no Secret Service (libsecret) was detected for Cursor's Electron safeStorage on this Linux host, "
+          + "so Cursor will obfuscate (not encrypt) the stored key. Install gnome-keyring + secret-service for real encryption. "
+          + "(FireConnect's own API key storage shown in `fireconnect status` is separate.)",
+      );
+    } else if (result.obfuscatedKey) {
+      printNote(linuxSafeStorageObfuscatedKeyNote("cursor"));
+    }
+    if (result.encrypted === false) {
+      // The encrypted `secret://` key cell couldn't be written (Cursor's Safe
+      // Storage key isn't in the OS keychain yet — usually means Cursor hasn't
+      // been launched). Only the legacy plaintext cell was written, which older
+      // Cursor reads but modern Cursor ignores, so the key won't take effect on
+      // a modern build until Cursor has created its Safe Storage key.
+      printNote(`Warning: ${secretEncryptionUnavailableMessage("cursor")}`);
+    }
+  },
+  restartHint: () => printRestartHint("Quit & reopen Cursor for the change to take effect."),
+
+  // Cursor stores its key in a SQLite secret (no shell env hook), and must be
+  // stopped before writing.
+  envHookOff: false,
+  prepareOff: (ctx) => ensureCursorStopped({ force: ctx.force }),
+  disable: ({ paths, wasEnabled }) => disableCursorFireworks({
+    dbPath: paths.dbPath,
+    dataDir: paths.dataDir,
+    wasEnabled,
+  }),
+  restartHintOff: () => printRestartHint("Quit & reopen Cursor for full effect."),
+  async status(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CURSOR);
+    const { dbPath } = cursorPathsFor(ctx);
+    const enabled = await isHarnessEnabled(ctx.home, HARNESS.CURSOR);
+    const { blob, openAIKey } = await readCursorState(dbPath);
+    const provider = cursorProviderStatus(blob, openAIKey);
+    const baseUrl = blob.openAIBaseUrl ?? null;
+
+    if (provider === "azure") {
+      const deployment = cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE)
+        || (fireconnectRegisteredModels(blob)[0] ?? null);
+      const payload = {
+        harness: HARNESS.CURSOR,
+        enabled,
+        provider: "azure",
+        baseUrl,
+        modelProvider: "fireworks-azure",
+        hasKey: Boolean(openAIKey),
+        defaults: { main: DEFAULT_AZURE_MODEL },
+        current: { main: deployment },
+      };
+      if (ctx.json) {
+        console.log(JSON.stringify(payload, null, 2));
+        return;
+      }
+      printStructuredHarnessStatus(HARNESS.CURSOR, {
+        provider: payload.provider,
+        keyConfigured: payload.hasKey,
+        authMode: "literal",
+        model: payload.current.main,
+        endpoint: payload.baseUrl,
+      });
+      return;
+    }
+
+    const keyType = provider === "none" ? "none" : detectApiKeyType(openAIKey);
+    const registered = fireconnectRegisteredModels(blob);
+
+    const payload = {
+      harness: HARNESS.CURSOR,
+      enabled,
+      provider,
+      baseUrl,
+      useOpenAIKey: Boolean(blob.useOpenAIKey),
+      hasKey: Boolean(openAIKey),
+      keyType,
+      registeredModels: registered,
+      current: {
+        main: cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE) || null,
+      },
+    };
+
+    if (ctx.json) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+
+    printStructuredHarnessStatus(HARNESS.CURSOR, {
+      provider: payload.provider,
+      keyConfigured: payload.hasKey,
+      authMode: "literal",
+      model: payload.current.main === "default" ? null : payload.current.main,
+      registeredModels: registered,
+      keySource: harnessStatusKeySource(HARNESS.CURSOR, provider, { whenFireworks: false }),
+    });
+  },
+});

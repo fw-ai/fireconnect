@@ -4,9 +4,9 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { USER_SETTINGS_RELATIVE_PATH } from "../lib/fireconnect-core.mjs";
-import { OPENCODE_CONFIG_RELATIVE_PATH } from "../lib/opencode-core.mjs";
-import { CODEX_CONFIG_RELATIVE_PATH } from "../lib/codex-core.mjs";
+import { USER_SETTINGS_RELATIVE_PATH } from "../lib/harnesses/claude/core.mjs";
+import { OPENCODE_CONFIG_RELATIVE_PATH } from "../lib/harnesses/opencode/core.mjs";
+import { CODEX_CONFIG_RELATIVE_PATH } from "../lib/harnesses/codex/core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
@@ -17,7 +17,7 @@ process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN ??= "";
 // Tests pass a temp HOME and expect it to isolate Claude credentials. But
 // claudeCredentialsPath() honors CLAUDE_CONFIG_DIR over home, so a dev
 // machine running Claude Code under a custom config dir leaks real OAuth
-// creds into the tests (e.g. "claude on --router" succeeds when it should
+// creds into the tests (e.g. "claude on --opus firerouter" succeeds when it should
 // fail for lack of an Anthropic key). claudeCredentialsPath is the only
 // reader of CLAUDE_CONFIG_DIR, so dropping it here is safe and makes the
 // temp home authoritative.
@@ -59,6 +59,39 @@ export const FIREPASS_ROUTER = "accounts/fireworks/routers/glm-fast-latest";
 export const FIREPASS_ROUTER_1M = `${FIREPASS_ROUTER}[1m]`;
 // Default model for Fire Pass keys (and the main/opus slot for fw_ keys).
 export const FIREPASS_DEFAULT_ROUTER = FIREPASS_ROUTER;
+
+export function mockServerlessModel(overrides = {}) {
+  const name = overrides.name ?? "accounts/fireworks/models/glm-5p2";
+  const short = name.split("/").at(-1);
+  return {
+    name,
+    displayName: overrides.displayName ?? "GLM 5.2",
+    contextLength: 1_048_576,
+    supportsTools: true,
+    supportsImageInput: false,
+    kind: "HF_BASE_MODEL",
+    serverlessModes: [
+      {
+        name: `accounts/fireworks/models/${short}/serverlessModes/default`,
+        skuInfos: [
+          { sku: "LLM input tokens (uncached)", amount: { units: "1", nanos: 400_000_000 } },
+          { sku: "LLM input tokens (cached)", amount: { nanos: 140_000_000 } },
+          { sku: "LLM output tokens", amount: { units: "4", nanos: 400_000_000 } },
+        ],
+      },
+      {
+        name: `accounts/fireworks/models/${short}/serverlessModes/fast`,
+        usageIdentifier: `accounts/fireworks/routers/${short}-fast`,
+        skuInfos: [
+          { sku: "LLM input tokens (uncached)", amount: { units: "2", nanos: 100_000_000 } },
+          { sku: "LLM input tokens (cached)", amount: { nanos: 210_000_000 } },
+          { sku: "LLM output tokens", amount: { units: "6", nanos: 600_000_000 } },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
 export const FIREPASS_DEFAULT_ROUTER_1M = `${FIREPASS_DEFAULT_ROUTER}[1m]`;
 export const FIREWORKS_INFERENCE_URL = "https://api.fireworks.ai/inference";
 
@@ -75,7 +108,27 @@ export async function withTempHome(prefix, fn) {
   try {
     return await fn(home);
   } finally {
-    await rm(home, { recursive: true, force: true });
+    await removeTempDir(home);
+  }
+}
+
+/**
+ * Remove a temp dir, tolerating a transient ENOTEMPTY/EBUSY from a just-exited
+ * subprocess still flushing files. Cleanup must never fail a test whose
+ * assertions already passed — the OS reaps leftover temp dirs regardless.
+ * @param {string} dir
+ */
+async function removeTempDir(dir) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOTEMPTY" && error?.code !== "EBUSY") {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
+    }
   }
 }
 
@@ -88,7 +141,7 @@ export function runFireconnect(args, env = {}) {
         ...env,
         FIRECONNECT_SECRET_STORE: "memory",
         FIRECONNECT_TEST: "1",
-        FIREWORKS_API_KEY: env.FIREWORKS_API_KEY ?? process.env.FIREWORKS_API_KEY ?? "",
+        FIREWORKS_API_KEY: env.FIREWORKS_API_KEY ?? "",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -112,9 +165,9 @@ export async function seedKeychainConfig(home, apiKey) {
     // The in-memory secret store keeps module-global backend state; reset it so
     // this seed initializes for THIS home (otherwise a prior seed's home stays
     // pinned in-process and this key lands in the wrong sandbox's store).
-    const { resetSecretStoreForTests } = await import("../lib/secret-store.mjs");
+    const { resetSecretStoreForTests } = await import("../lib/keys/secret-store.mjs");
     resetSecretStoreForTests();
-    const { persistApiKeyToKeychain } = await import("../lib/api-key.mjs");
+    const { persistApiKeyToKeychain } = await import("../lib/keys/api-key.mjs");
     await persistApiKeyToKeychain(home, apiKey);
   } finally {
     if (prevHome === undefined) {
