@@ -352,6 +352,37 @@ FireConnect cannot override Claude Code’s price column. Use `fireconnect claud
 [current serverless pricing](https://docs.fireworks.ai/serverless/pricing), and use the
 [Fireworks billing dashboard](https://app.fireworks.ai/account/billing) for actual spend.
 
+#### Status line: live Fireworks spend vs. Anthropic
+
+`bin/cc-fireworks-savings.mjs` is a Claude Code status-line command that shows real
+savings as you work. On each render Claude Code pipes the session transcript to the
+script, which parses actual per-request token usage, computes the **real Fireworks
+spend** (from the same serverless rates `fireconnect model list` uses), and compares it
+to what the **same token mix would cost on the Anthropic-equivalent tier** (Opus for
+GLM, Sonnet for Kimi, Haiku for DeepSeek, Fable for FireRouter):
+
+```text
+🔥 Fireworks · $0.28 spent (25 req) vs Anthropic $1.14 saved $0.86 75% · glm-5p2 · fireworks
+```
+
+Wire it into `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node /path/to/fireconnect/cli/packages/setup-cli/bin/cc-fireworks-savings.mjs",
+    "padding": 0
+  }
+}
+```
+
+The comparison uses Anthropic **list prices** (including cache-read/write rates), so the
+savings figure reflects what routing through Fireworks saves versus paying Anthropic
+directly for the equivalent tier — not the inflated in-UI estimate. `firerouter` rows are
+priced against the concrete serverless model the transcript recorded, when available.
+Set `CC_STATUSLINE_NOCOLOR=1` to disable ANSI colors (e.g. for non-TTY captures).
+
 After `fireconnect claude on`, `settings.json` is updated immediately. To use
 the new model, exit Claude Code and then resume the conversation with
 `claude --resume <id>`, or start a new session.
