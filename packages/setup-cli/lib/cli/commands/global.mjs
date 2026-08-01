@@ -32,14 +32,17 @@ import { runGlobalModelListCommand } from "./model.mjs";
 import { printReleaseNotesAfterUpgrade } from "../../system/release-notes.mjs";
 import { readLocalVersion } from "../../system/version.mjs";
 import { removeShellEnvHook } from "../../io/shell-env-hook.mjs";
-import { ensureCliDependencies, resolveSetupCliDir } from "../../system/ensure-cli-deps.mjs";
 import { runClaudeUpgradePreflight } from "../../system/upgrade.mjs";
-import { rebakeEnabledHarnessKeysOnUpgrade } from "../../keys/sync.mjs";
-import { deleteSecret, reprobeKeyStorage } from "../../keys/secret-store.mjs";
+import { finalizeInstallOrUpgrade } from "../../system/finalize-install.mjs";
+import { deleteSecret } from "../../keys/secret-store.mjs";
 import { demoHelpText } from "../../demo/help.mjs";
 import { info, printBanner, success } from "../../ui/index.mjs";
 import { colorizeHelp } from "../../ui.mjs";
 import { ROUTING_PREFERENCE_LEVEL_NAMES } from "../../firerouter/core.mjs";
+import {
+  supportsAnthropicApiKeyFlag,
+  supportsRoutingPreference,
+} from "../../firerouter/flag.mjs";
 import { CURSOR_FIREWORKS_ONLY_NOTE } from "../../harnesses/cursor/core.mjs";
 
 const CLI_NAME = "fireconnect";
@@ -63,7 +66,12 @@ function optBlock(title, entries) {
 const OPT_HOME = ["--home <path>", "Override HOME for config resolution."];
 const OPT_DATA_DIR = ["--data-dir <path>", "Override backup/state directory."];
 
-function standardOnOpts({ azure = true, firerouter = false, modelNote = "" } = {}) {
+/**
+ * Options for `<harness> on`. FireRouter flags are derived from the harness's
+ * own firerouter profile using the same predicates `harness.mjs` validates
+ * with, so help can never advertise a flag the runtime rejects.
+ */
+function standardOnOpts({ azure = true, firerouter = null, modelNote = "" } = {}) {
   const opts = [
     ["--api-key <key>", "Fireworks API key (on also saves config when set)."],
   ];
@@ -74,11 +82,11 @@ function standardOnOpts({ azure = true, firerouter = false, modelNote = "" } = {
     );
   }
   opts.push(["--model <id>", `Model to use${modelNote ? ` (${modelNote})` : ""}.`]);
-  if (firerouter) {
-    opts.push(
-      ["--routing-preference <p>", `FireRouter tradeoff: ${ROUTING_PREF}.`],
-      ["--anthropic-api-key <key>", "Anthropic BYOK key for firerouter."],
-    );
+  if (supportsRoutingPreference(firerouter)) {
+    opts.push(["--routing-preference <p>", `FireRouter tradeoff: ${ROUTING_PREF}.`]);
+  }
+  if (supportsAnthropicApiKeyFlag(firerouter)) {
+    opts.push(["--anthropic-api-key <key>", "Anthropic BYOK key for firerouter."]);
   }
   return opts;
 }
@@ -106,6 +114,8 @@ function claudeHelp() {
       ["--haiku <id>", "Model for the haiku alias."],
       ["--fable <id>", "Model for the fable alias."],
       ["--subagent <id>", "Model for subagents."],
+      ["--interactive", "Open the model mapping wizard, including after setup."],
+      ["--non-interactive", "Skip first-run model onboarding; use saved preferences or defaults."],
       ["--routing-preference <p>", `FireRouter tradeoff (${ROUTING_PREF}); needs a firerouter slot.`],
       ["--anthropic-api-key <key>", "Anthropic BYOK key for firerouter slots."],
     ]),
@@ -129,9 +139,9 @@ function claudeHelp() {
   );
 }
 
-function configHarnessHelp(id, label, { firerouter = false, configPath, configPathNote = "", codexNote = "" } = {}) {
+function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "" } = {}) {
   const onOpts = standardOnOpts({
-    firerouter,
+    firerouter: getHarness(id).firerouter,
     modelNote: id === "deepagents" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
   });
   const allOpts = [
@@ -163,8 +173,8 @@ function configHarnessHelp(id, label, { firerouter = false, configPath, configPa
   );
 }
 
-function ideHarnessHelp(id, label, { firerouter = false, pathFlag, pathDesc, note }) {
-  const onOpts = standardOnOpts({ firerouter });
+function ideHarnessHelp(id, label, { pathFlag, pathDesc, note }) {
+  const onOpts = standardOnOpts({ firerouter: getHarness(id).firerouter });
   onOpts.push(["--force", `Write while ${label} is running (not recommended).`]);
 
   return helpLines(
@@ -238,12 +248,10 @@ export function printHelp(topic = "") {
   const harnessHelp = {
     claude: claudeHelp(),
     opencode: configHarnessHelp("opencode", "OpenCode", {
-      firerouter: true,
       configPath: "--config-path <path>",
       configPathNote: "Explicit opencode.json path.",
     }),
     codex: configHarnessHelp("codex", "Codex CLI", {
-      firerouter: true,
       configPath: "--config-path <path>",
       configPathNote: "Explicit ~/.codex/config.toml path.",
       codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY from your shell. "
@@ -251,7 +259,6 @@ export function printHelp(topic = "") {
     }),
     pi: helpLines(
       configHarnessHelp("pi", "Pi", {
-        firerouter: true,
         configPath: "--settings-path <path>",
         configPathNote: "Explicit Pi settings.json path.",
       }),
@@ -265,7 +272,6 @@ export function printHelp(topic = "") {
         + `${CURSOR_FIREWORKS_ONLY_NOTE}`,
     }),
     vscode: ideHarnessHelp("vscode", "VS Code Chat", {
-      firerouter: true,
       pathFlag: "--vscode-path <path>",
       pathDesc: "Explicit chatLanguageModels.json path.",
       note: "If VS Code is running, on/off wait for you to quit and press Enter. Restart after. status is read-only.",
@@ -410,35 +416,14 @@ export function runVersionCommand(ctx) {
 }
 
 /**
- * Reinstall CLI deps when possible and re-probe secret storage (clears
- * ~/.fireconnect/key-storage.json, retries keychain/file, migrates off
- * plaintext fallback when secure storage works again).
+ * Shared post-bootstrap finalize used by `fireconnect upgrade` and
+ * `install.sh` (via hidden `finalize-install`). See finalize-install.mjs.
  *
  * @param {string} home
  * @param {string} installDir
  */
 async function finalizeUpgradeKeyStorage(home, installDir) {
-  const durableSetup = path.join(installDir, "packages/setup-cli");
-  const setupDir = existsSync(path.join(durableSetup, "package.json"))
-    ? durableSetup
-    : resolveSetupCliDir();
-  if (existsSync(path.join(setupDir, "package.json"))) {
-    ensureCliDependencies(setupDir);
-  }
-
-  const { migrated, backend } = await reprobeKeyStorage(home);
-  if (migrated) {
-    console.log("Moved Fireworks API key from plaintext fallback to secure storage.");
-  } else if (backend.backend === "plaintext") {
-    console.log(
-      "API key is still in the plaintext fallback (~/.fireconnect/.api-key); "
-      + "secure storage is still unavailable on this host.",
-    );
-  }
-
-  for (const note of await rebakeEnabledHarnessKeysOnUpgrade(home)) {
-    console.log(note);
-  }
+  await finalizeInstallOrUpgrade({ home, installDir });
 }
 
 /**
@@ -447,6 +432,18 @@ async function finalizeUpgradeKeyStorage(home, installDir) {
  */
 export function runBannerCommand() {
   printBanner({ version: readLocalVersion() || undefined });
+}
+
+/**
+ * Hidden install.sh entry point — not listed in help. Same body as upgrade
+ * finalize (deps, key-storage probe, harness + websearch MCP rebake).
+ *
+ * @param {{ home?: string }} [ctx]
+ */
+export async function runFinalizeInstallCommand(ctx = {}) {
+  const home = ctx.home || process.env.HOME || "";
+  const installDir = home ? path.join(home, ".fireconnect/cli") : "";
+  await finalizeInstallOrUpgrade({ home, installDir });
 }
 
 /**
@@ -540,11 +537,13 @@ export async function runUpgradeCommand({
 
   // The registry was loaded from the currently running revision. Capture that
   // adapter before reset so restoration cannot switch to newly fetched code.
+  // Claude-off preflight only applies when upgrading from FireConnect < 0.9.0.
   const oldClaudeAdapter = getClaudeAdapter();
   const claudePreflight = await preflight({
     home,
     adapter: oldClaudeAdapter,
     input,
+    installedVersion: before,
   });
   if (!claudePreflight.proceed) {
     infoFn("Upgrade cancelled.");
@@ -780,6 +779,11 @@ export async function runGlobalCommand(parsed) {
 
   if (command === "banner") {
     runBannerCommand();
+    return;
+  }
+
+  if (command === "finalize-install") {
+    await runFinalizeInstallCommand(ctx);
     return;
   }
 

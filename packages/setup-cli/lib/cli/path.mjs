@@ -49,16 +49,6 @@ function fireconnectExportCommand(home, { anthropic }) {
   return `${shellQuote(cliPath)}${homeFlag} key export${storedFlag}${anthropicFlag}`;
 }
 
-/**
- * Shell command that runs the Claude Desktop SessionStart guard hook.
- * Resolves next to the `fireconnect` CLI entrypoint (same install), not the
- * npm-global launcher, since the guard is a plain Node script, not a bin.
- */
-export function fireconnectDesktopGuardCommand() {
-  const guardPath = fileURLToPath(new URL("../../bin/fireconnect-desktop-guard.mjs", import.meta.url));
-  return `${process.execPath} ${shellQuote(guardPath)}`;
-}
-
 /** @param {string} p */
 function realpath(p) {
   try {

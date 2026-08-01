@@ -1,4 +1,4 @@
-import { accent, dim, muted, ok } from "../ui.mjs";
+import { accent, bold, dim, muted, ok } from "../ui.mjs";
 import { AZURE_PROVIDER_LABEL } from "../fireworks/azure-core.mjs";
 import {
   FIREROUTER_TAGLINE,
@@ -81,6 +81,20 @@ export function printModelsAdded(models = [], { primaryModel } = {}) {
     }
   }
   printNote(`Also in your model list: ${shown.join(", ")}`);
+}
+
+export function printClaudeModelManagementHints() {
+  const rows = [
+    ["Browse", "fireconnect model list"],
+    ["Configure", "fireconnect claude on --interactive"],
+    ["Set one", "fireconnect claude on --opus <model>"],
+    ["Other slots", "--model --sonnet --haiku --fable --subagent"],
+  ];
+  console.log("");
+  console.log(bold("Manage models"));
+  for (const [label, command] of rows) {
+    console.log(`  ${muted(label.padEnd(12))}${accent(command)}`);
+  }
 }
 
 function printSpacer() {

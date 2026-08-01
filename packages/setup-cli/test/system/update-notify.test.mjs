@@ -7,6 +7,11 @@ import {
   shouldSpawnChecker,
   hasActiveUpdateLock,
   tryAcquireUpdateLock,
+  shouldPromptUpgrade,
+  isUpgradePromptSnoozed,
+  promptAndMaybeUpgrade,
+  checkForUpdates,
+  UPGRADE_PROMPT_SNOOZE_MS,
 } from "../../lib/system/update-notify.mjs";
 
 const HOUR = 60 * 60 * 1000;
@@ -107,5 +112,316 @@ describe("tryAcquireUpdateLock", () => {
 
     assert.equal(hasActiveUpdateLock(home), false);
     assert.equal(tryAcquireUpdateLock(home), true);
+  });
+});
+
+describe("shouldPromptUpgrade / snooze", () => {
+  const now = 1_700_000_000_000;
+
+  it("prompts only for TTY git installs that are not snoozed", () => {
+    assert.equal(
+      shouldPromptUpgrade({
+        isTTY: true,
+        isGitInstall: true,
+        latestVersion: "0.9.2",
+        cache: { latestVersion: "0.9.2" },
+        now,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldPromptUpgrade({
+        isTTY: false,
+        isGitInstall: true,
+        latestVersion: "0.9.2",
+        now,
+      }),
+      false,
+    );
+    assert.equal(
+      shouldPromptUpgrade({
+        isTTY: true,
+        isGitInstall: false,
+        latestVersion: "0.9.2",
+        now,
+      }),
+      false,
+    );
+  });
+
+  it("honors FIRECONNECT_NO_UPDATE_PROMPT=1", () => {
+    assert.equal(
+      shouldPromptUpgrade({
+        isTTY: true,
+        isGitInstall: true,
+        latestVersion: "0.9.2",
+        environment: { FIRECONNECT_NO_UPDATE_PROMPT: "1" },
+        now,
+      }),
+      false,
+    );
+  });
+
+  it("snoozes for 24h on the same latest version, then asks again for a newer one", () => {
+    const cache = {
+      latestVersion: "0.9.2",
+      promptSnoozedUntil: now + UPGRADE_PROMPT_SNOOZE_MS,
+      promptSnoozedVersion: "0.9.2",
+    };
+    assert.equal(isUpgradePromptSnoozed(cache, "0.9.2", now), true);
+    assert.equal(
+      shouldPromptUpgrade({
+        isTTY: true,
+        isGitInstall: true,
+        latestVersion: "0.9.2",
+        cache,
+        now,
+      }),
+      false,
+    );
+    assert.equal(isUpgradePromptSnoozed(cache, "0.9.3", now), false);
+    assert.equal(
+      shouldPromptUpgrade({
+        isTTY: true,
+        isGitInstall: true,
+        latestVersion: "0.9.3",
+        cache,
+        now,
+      }),
+      true,
+    );
+  });
+});
+
+describe("promptAndMaybeUpgrade", () => {
+  it("runs upgrade when the user accepts", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-upgrade-prompt-yes-"));
+    let upgraded = false;
+    const result = await promptAndMaybeUpgrade({
+      home,
+      localVersion: "0.9.1",
+      latestVersion: "0.9.2",
+      prompt: async () => true,
+      runUpgrade: async () => {
+        upgraded = true;
+      },
+    });
+    assert.deepEqual(result, { upgraded: true, snoozed: false });
+    assert.equal(upgraded, true);
+  });
+
+  it("snoozes for 24h when the user declines", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-upgrade-prompt-no-"));
+    await mkdir(path.join(home, ".fireconnect"), { recursive: true });
+    const before = Date.now();
+    const result = await promptAndMaybeUpgrade({
+      home,
+      localVersion: "0.9.1",
+      latestVersion: "0.9.2",
+      prompt: async () => false,
+      runUpgrade: async () => {
+        throw new Error("must not upgrade");
+      },
+    });
+    assert.deepEqual(result, { upgraded: false, snoozed: true });
+    const saved = JSON.parse(
+      await readFile(path.join(home, ".fireconnect/update-check.json"), "utf8"),
+    );
+    assert.equal(saved.latestVersion, "0.9.2");
+    assert.equal(saved.promptSnoozedVersion, "0.9.2");
+    assert.ok(saved.promptSnoozedUntil >= before + UPGRADE_PROMPT_SNOOZE_MS - 1000);
+  });
+});
+
+describe("checkForUpdates prompt path", () => {
+  it("prompts on TTY git installs and skips the tip while snoozed", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-check-updates-"));
+    await mkdir(path.join(home, ".fireconnect/cli/.git"), { recursive: true });
+    await writeFile(
+      path.join(home, ".fireconnect/update-check.json"),
+      JSON.stringify({
+        checkedAt: Date.now(),
+        // Newer than package.json (0.9.1) so the tip/prompt path triggers.
+        latestVersion: "9.9.9",
+      }),
+    );
+
+    let prompted = false;
+    await checkForUpdates("help", home, {
+      environment: { HOME: home },
+      input: { isTTY: true },
+      output: { isTTY: true },
+      stdout: { isTTY: true },
+      prompt: async () => {
+        prompted = true;
+        return false;
+      },
+      runUpgrade: async () => {
+        throw new Error("must not upgrade");
+      },
+    });
+    assert.equal(prompted, true);
+
+    prompted = false;
+    const stderrChunks = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    };
+    try {
+      await checkForUpdates("help", home, {
+        environment: { HOME: home },
+        input: { isTTY: true },
+        output: { isTTY: true },
+        stdout: { isTTY: true },
+        prompt: async () => {
+          prompted = true;
+          return false;
+        },
+      });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.equal(prompted, false);
+    assert.doesNotMatch(stderrChunks.join(""), /update available/);
+  });
+
+  it("does not prompt when stdout is piped even if stderr is a TTY", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-check-updates-pipe-"));
+    await mkdir(path.join(home, ".fireconnect/cli/.git"), { recursive: true });
+    await writeFile(
+      path.join(home, ".fireconnect/update-check.json"),
+      JSON.stringify({ checkedAt: Date.now(), latestVersion: "9.9.9" }),
+    );
+
+    let prompted = false;
+    const stderrChunks = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    };
+    try {
+      await checkForUpdates("help", home, {
+        environment: { HOME: home },
+        input: { isTTY: true },
+        output: { isTTY: true },
+        stdout: { isTTY: false },
+        prompt: async () => {
+          prompted = true;
+          return true;
+        },
+      });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.equal(prompted, false);
+    assert.match(stderrChunks.join(""), /update available/);
+    assert.match(stderrChunks.join(""), /Run: fireconnect upgrade/);
+  });
+
+  it("rethrows upgrade failures after the user accepts", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-check-updates-fail-"));
+    await mkdir(path.join(home, ".fireconnect/cli/.git"), { recursive: true });
+    await writeFile(
+      path.join(home, ".fireconnect/update-check.json"),
+      JSON.stringify({ checkedAt: Date.now(), latestVersion: "9.9.9" }),
+    );
+
+    await assert.rejects(
+      () => checkForUpdates("help", home, {
+        environment: { HOME: home },
+        input: { isTTY: true },
+        output: { isTTY: true },
+        stdout: { isTTY: true },
+        prompt: async () => true,
+        runUpgrade: async () => {
+          throw new Error("Upgrade failed: network");
+        },
+      }),
+      /Upgrade failed: network/,
+    );
+  });
+});
+
+describe("mergeUpdateCache", () => {
+  it("preserves an active prompt snooze across checker refreshes", async () => {
+    const { mergeUpdateCache } = await import("../../lib/system/update-cache.mjs");
+    const until = Date.now() + UPGRADE_PROMPT_SNOOZE_MS;
+    const merged = mergeUpdateCache(
+      {
+        checkedAt: 1,
+        latestVersion: "0.9.2",
+        promptSnoozedUntil: until,
+        promptSnoozedVersion: "0.9.2",
+      },
+      { checkedAt: Date.now(), latestVersion: "0.9.2" },
+    );
+    assert.equal(merged.latestVersion, "0.9.2");
+    assert.equal(merged.promptSnoozedUntil, until);
+    assert.equal(merged.promptSnoozedVersion, "0.9.2");
+  });
+
+  it("does not roll latestVersion backward when writers race", async () => {
+    const { mergeUpdateCache } = await import("../../lib/system/update-cache.mjs");
+    const merged = mergeUpdateCache(
+      { checkedAt: 1, latestVersion: "0.9.3" },
+      {
+        checkedAt: Date.now(),
+        latestVersion: "0.9.2",
+        promptSnoozedUntil: Date.now() + UPGRADE_PROMPT_SNOOZE_MS,
+        promptSnoozedVersion: "0.9.2",
+      },
+    );
+    assert.equal(merged.latestVersion, "0.9.3");
+    assert.equal(merged.promptSnoozedVersion, "0.9.2");
+  });
+
+  it("clears a sticky fetchFailed flag on a successful refresh", async () => {
+    const { mergeUpdateCache } = await import("../../lib/system/update-cache.mjs");
+    const merged = mergeUpdateCache(
+      {
+        checkedAt: 1,
+        latestVersion: null,
+        fetchFailed: true,
+      },
+      {
+        checkedAt: Date.now(),
+        latestVersion: "0.9.2",
+        fetchFailed: false,
+      },
+    );
+    assert.equal(merged.latestVersion, "0.9.2");
+    assert.equal(merged.fetchFailed, false);
+  });
+
+  it("keeps a decline snooze when the checker re-reads before writing", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-update-race-"));
+    await mkdir(path.join(home, ".fireconnect"), { recursive: true });
+    const {
+      patchUpdateCache,
+      readUpdateCache,
+      writeUpdateCache,
+    } = await import("../../lib/system/update-cache.mjs");
+
+    // Simulate checker start snapshot (no snooze yet).
+    await writeUpdateCache(home, { checkedAt: 1, latestVersion: "0.9.2" });
+
+    // Decline lands while checker is still fetching.
+    const until = Date.now() + UPGRADE_PROMPT_SNOOZE_MS;
+    await patchUpdateCache(home, {
+      checkedAt: Date.now(),
+      latestVersion: "0.9.2",
+      promptSnoozedUntil: until,
+      promptSnoozedVersion: "0.9.2",
+    });
+
+    // Checker finishes: re-read + merge (patchUpdateCache), must keep snooze.
+    await patchUpdateCache(home, { checkedAt: Date.now(), latestVersion: "0.9.3" });
+    const saved = readUpdateCache(home);
+    assert.equal(saved.latestVersion, "0.9.3");
+    assert.equal(saved.promptSnoozedVersion, "0.9.2");
+    assert.equal(saved.promptSnoozedUntil, until);
   });
 });

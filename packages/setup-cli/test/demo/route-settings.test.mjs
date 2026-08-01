@@ -51,12 +51,9 @@ test("buildChallengerSettings: routes to Fireworks direct with the challenger mo
   assert.equal(settings.env.ANTHROPIC_BASE_URL, FIREWORKS_BASE_URL);
   assert.equal(settings.env.ANTHROPIC_API_KEY, "fw_testkey");
   assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "fw_testkey");
-  // Model mapping pins ANTHROPIC_MODEL to the challenger slug. The [1m] beta
-  // tag matches real `fireconnect claude on` storage.
-  assert.equal(
-    settings.env.ANTHROPIC_MODEL,
-    "glm-5p2-fast[1m]",
-  );
+  // Main default is stored in top-level `model`; env no longer carries ANTHROPIC_MODEL.
+  assert.equal(settings.env.ANTHROPIC_MODEL, undefined);
+  assert.equal(settings.model, "glm-5p2-fast[1m]");
 });
 
 test("buildChallengerSettings: top-level model is the challenger (direct mode)", async () => {

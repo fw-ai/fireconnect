@@ -305,9 +305,9 @@ describe("cursor harness integration", () => {
       const blob = readBlob(dbPath);
       assert.equal(blob.openAIBaseUrl, CURSOR_FIREWORKS_BASE_URL);
       assert.equal(blob.useOpenAIKey, true);
-      assert.ok(blob.aiSettings.userAddedModels.includes("glm-fast-latest"));
-      assert.ok(blob.aiSettings.fireconnectAddedModels.includes("glm-fast-latest"));
-      assert.equal(cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE), "glm-fast-latest");
+      assert.ok(blob.aiSettings.userAddedModels.includes("kimi-fast-latest"));
+      assert.ok(blob.aiSettings.fireconnectAddedModels.includes("kimi-fast-latest"));
+      assert.equal(cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE), "kimi-fast-latest");
       assert.equal(readKey(dbPath), "fw_test_key_12345");
     });
   });
@@ -348,13 +348,13 @@ describe("cursor harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const blob = readBlob(dbPath);
-      // The active default (glm-fast-latest) plus the rest of the Fire Pass
+      // The active default (kimi-fast-latest) plus the rest of the Fire Pass
       // catalog with latest aliases preferred (pinned glm-5p2-fast /
       // kimi-k2p7-code-fast dropped in favor of glm-fast-latest / kimi-fast-latest).
       assert.deepEqual(blob.aiSettings.userAddedModels, [
-        "glm-fast-latest",
-        "glm-latest",
         "kimi-fast-latest",
+        "glm-latest",
+        "glm-fast-latest",
       ]);
     });
   });
@@ -374,9 +374,9 @@ describe("cursor harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const after = readBlob(dbPath);
-      assert.equal(after.aiSettings.modelConfig.composer.modelName, "glm-fast-latest");
-      assert.equal(after.aiSettings.modelConfig["cmd-k"].modelName, "glm-fast-latest");
-      assert.equal(after.aiSettings.modelConfig["background-composer"].modelName, "glm-fast-latest");
+      assert.equal(after.aiSettings.modelConfig.composer.modelName, "kimi-fast-latest");
+      assert.equal(after.aiSettings.modelConfig["cmd-k"].modelName, "kimi-fast-latest");
+      assert.equal(after.aiSettings.modelConfig["background-composer"].modelName, "kimi-fast-latest");
       // no new modes created beyond the three that existed
       assert.deepEqual(Object.keys(after.aiSettings.modelConfig).sort(), ["background-composer", "cmd-k", "composer"]);
     });
@@ -433,7 +433,7 @@ describe("cursor harness integration", () => {
       assert.equal(r.json.provider, "fireworks");
       assert.equal(r.json.baseUrl, CURSOR_FIREWORKS_BASE_URL);
       assert.equal(r.json.hasKey, true);
-      assert.equal(r.json.current.main, "glm-fast-latest");
+      assert.equal(r.json.current.main, "kimi-fast-latest");
       assert.equal(r.json.defaultMode, undefined);
       assert.equal(r.json.modes, undefined);
     });
@@ -539,7 +539,7 @@ describe("cursor harness integration", () => {
       assert.equal(standard.code, 0, standard.stderr);
       assert.equal(
         readBlob(dbPath).aiSettings.modelConfig.composer.modelName,
-        "glm-fast-latest",
+        "kimi-fast-latest",
       );
     });
   });
@@ -809,7 +809,7 @@ describe("cursor harness integration", () => {
       assert.equal(result.code, 0, result.stderr);
       assert.equal(
         cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE),
-        "glm-fast-latest",
+        "kimi-fast-latest",
       );
     });
   });

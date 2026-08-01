@@ -9,7 +9,7 @@ import { codexBackupPath, codexConfigPath, codexDataDir } from "../../../lib/har
 import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 import { writeJson } from "../../../lib/io/json.mjs";
 import { parseToml } from "../../../lib/harnesses/codex/toml.mjs";
-import { FPK_KEY, FW_CODEX_KEY, runFireconnect, seedKeychainConfig, withoutEnvFireworksKey, writeCodexConfig } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, FPK_KEY, FW_CODEX_KEY, runFireconnect, seedKeychainConfig, withoutEnvFireworksKey, writeCodexConfig } from "../../helpers.mjs";
 
 describe("codex harness integration", () => {
   it("firerouter can be selected explicitly without local Anthropic credentials", async () => {
@@ -125,7 +125,7 @@ describe("codex harness integration", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       const config = await readFile(codexConfigPath(home), "utf8");
-      assert.match(config, /model = "glm-fast-latest"/);
+      assert.match(config, /model = "kimi-fast-latest"/);
       assert.doesNotMatch(config, /env_http_headers = \{ "x-anthropic-api-key"/);
     } finally {
       gateway.server.close();
@@ -183,7 +183,7 @@ describe("codex harness integration", () => {
 
     const enabled = await readFile(configPath, "utf8");
     assert.match(enabled, /model_provider = "fireworks-ai"/);
-    assert.match(enabled, /model = "glm-fast-latest"/);
+    assert.match(enabled, /model = "kimi-fast-latest"/);
     assert.match(enabled, /\[model_providers\.fireworks-ai\]/);
     assert.doesNotMatch(enabled, /profile = "fireconnect"/);
     assert.doesNotMatch(enabled, /\[profiles\.fireconnect\]/);
@@ -221,7 +221,7 @@ describe("codex harness integration", () => {
     assert.equal(table.http_headers["X-Title"], "Codex");
     assert.equal(
       table.http_headers["HTTP-Referer"],
-      "fireconnect/v0.9.0",
+      FIRECONNECT_REFERER,
     );
     assert.equal(table.http_headers["X-FireRouter-Harness"], undefined);
     assert.equal(table.http_headers["Fireworks-Use-Case"], undefined);
@@ -247,7 +247,7 @@ describe("codex harness integration", () => {
     assert.equal(table.http_headers["X-Title"], "Codex");
     assert.equal(
       table.http_headers["HTTP-Referer"],
-      "fireconnect/v0.9.0",
+      FIRECONNECT_REFERER,
     );
     assert.equal(table.http_headers["X-FireRouter-Harness"], undefined);
     assert.equal(table.http_headers["Fireworks-Use-Case"], undefined);
@@ -270,7 +270,7 @@ describe("codex harness integration", () => {
 
       const onResult = await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(onResult.code, 0, onResult.stderr);
-      assert.match(onResult.stdout, /Codex → Fireworks · glm-fast-latest/);
+      assert.match(onResult.stdout, /Codex → Fireworks · kimi-fast-latest/);
 
       const configPath = codexConfigPath(home);
       const enabled = await readFile(configPath, "utf8");
@@ -308,7 +308,7 @@ describe("codex harness integration", () => {
       const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
       const onResult = await runFireconnect(["codex", "on"], env);
       assert.equal(onResult.code, 0);
-      assert.match(onResult.stdout, /Codex → Fireworks · glm-fast-latest/);
+      assert.match(onResult.stdout, /Codex → Fireworks · kimi-fast-latest/);
 
       const config = await readFile(codexConfigPath(home), "utf8");
       assert.match(config, /experimental_bearer_token = "fw_test_key_12345"/);
@@ -350,13 +350,13 @@ describe("codex harness integration", () => {
     await unlink(backupPath);
 
     const legacyCanonical = (await readFile(configPath, "utf8")).replace(
-      'model = "glm-fast-latest"',
-      'model = "accounts/fireworks/routers/glm-fast-latest"',
+      'model = "kimi-fast-latest"',
+      'model = "accounts/fireworks/routers/kimi-fast-latest"',
     );
     await writeFile(configPath, legacyCanonical);
     assert.equal((await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env)).code, 0);
     await assert.rejects(access(backupPath));
-    assert.match(await readFile(configPath, "utf8"), /model = "glm-fast-latest"/);
+    assert.match(await readFile(configPath, "utf8"), /model = "kimi-fast-latest"/);
 
     let offResult = await runFireconnect(["codex", "off"], { HOME: home });
     assert.equal(offResult.code, 0);

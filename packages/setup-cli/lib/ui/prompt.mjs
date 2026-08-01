@@ -297,13 +297,23 @@ function summaryLine(output, message, answer) {
  *   message: string,
  *   choices: Array<{ name: string, value: T, short?: string }>,
  *   pageSize?: number,
+ *   initialIndex?: number,
+ *   summary?: boolean,
  *   input?: NodeJS.ReadStream,
  *   output?: NodeJS.WriteStream,
  * }} args
  * @returns {Promise<T | null>} the chosen value, or null on Esc/q.
  */
-export async function promptSelect({ message, choices, pageSize = 10, input, output = process.stdout }) {
-  let index = 0;
+export async function promptSelect({
+  message,
+  choices,
+  pageSize = 10,
+  initialIndex = 0,
+  summary = true,
+  input,
+  output = process.stdout,
+}) {
+  let index = Math.min(Math.max(0, initialIndex), Math.max(0, choices.length - 1));
 
   const value = await runPrompt({
     input,
@@ -343,7 +353,9 @@ export async function promptSelect({ message, choices, pageSize = 10, input, out
   if (value === null) {
     return null;
   }
-  summaryLine(output, message, value.short ?? stripAnsi(value.name));
+  if (summary) {
+    summaryLine(output, message, value.short ?? stripAnsi(value.name));
+  }
   return value.value;
 }
 
@@ -356,6 +368,7 @@ export async function promptSelect({ message, choices, pageSize = 10, input, out
  *   choices: Array<{ name: string, value: T, short?: string, checked?: boolean }>,
  *   validate?: (picked: T[]) => true | string,
  *   pageSize?: number,
+ *   summary?: boolean,
  *   input?: NodeJS.ReadStream,
  *   output?: NodeJS.WriteStream,
  * }} args
@@ -433,7 +446,16 @@ export async function promptCheckbox({ message, choices, validate, pageSize = 10
  * }} args
  * @returns {Promise<T | null>} the picked item, or null on Esc.
  */
-export async function promptSearch({ message, items, filter, toChoice, pageSize = 10, input, output = process.stdout }) {
+export async function promptSearch({
+  message,
+  items,
+  filter,
+  toChoice,
+  pageSize = 10,
+  summary = true,
+  input,
+  output = process.stdout,
+}) {
   let term = "";
   let index = 0;
   let matches = items;
@@ -498,6 +520,8 @@ export async function promptSearch({ message, items, filter, toChoice, pageSize 
     return null;
   }
   const choice = toChoice(value.item);
-  summaryLine(output, message, choice.short ?? stripAnsi(choice.name));
+  if (summary) {
+    summaryLine(output, message, choice.short ?? stripAnsi(choice.name));
+  }
   return value.item;
 }

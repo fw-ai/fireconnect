@@ -28,6 +28,7 @@ import { HARNESSES } from "./id.mjs";
  * @property {string} [lastN]   // claude usage: latest N parent sessions
  * @property {boolean} [verbose]
  * @property {boolean} [plain]   // claude usage: force plain summary instead of interactive TUI
+ * @property {"auto"|"prompt"|"skip"} [onboardingMode] // claude on model onboarding policy
  * @property {boolean} json
  * @property {string} [dbPath]   // cursor: explicit state.vscdb path
  * @property {boolean} [force]   // cursor/vscode: write even if the IDE is running
@@ -39,7 +40,7 @@ import { HARNESSES } from "./id.mjs";
  * @typedef {Object} HarnessAdapter
  * @property {HarnessId} id
  * @property {string} label
- * @property {(ctx: HarnessContext) => Promise<void>} on
+ * @property {(ctx: HarnessContext) => Promise<void|{ cancelled?: boolean }>} on
  * @property {(ctx: HarnessContext) => Promise<void>} off
  * @property {(ctx: HarnessContext) => Promise<void>} status
  * @property {(ctx: HarnessContext) => Promise<void>} [usage]
@@ -79,14 +80,14 @@ export function defineHarness(adapter) {
  * @param {HarnessAdapter} adapter
  * @param {{ verb: string, noun?: string }} route
  * @param {HarnessContext} ctx
+ * @returns {Promise<void|{ cancelled?: boolean }>}
  */
 export async function dispatchHarnessCommand(adapter, route, ctx) {
   const { verb } = route;
 
   switch (verb) {
     case "on":
-      await adapter.on(ctx);
-      return;
+      return adapter.on(ctx);
     case "off":
       await adapter.off(ctx);
       return;

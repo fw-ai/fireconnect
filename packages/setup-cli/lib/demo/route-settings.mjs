@@ -23,8 +23,8 @@ import path from "node:path";
 
 import {
   buildFireworksSettings,
-  resolveModelMapping,
 } from "../harnesses/claude/core.mjs";
+import { resolveClaudeModelMapping } from "../harnesses/claude/model-profile.mjs";
 import { writeJson } from "../io/json.mjs";
 
 export const ANTHROPIC_DIRECT_BASE_URL = "https://api.anthropic.com";
@@ -61,7 +61,7 @@ export async function buildChallengerSettings({
   challengerModel,
   keyType = "fireworks",
 }) {
-  const mapping = resolveModelMapping({ main: challengerModel }, keyType);
+  const mapping = resolveClaudeModelMapping({ main: challengerModel }, keyType);
   const { settings, token } = buildFireworksSettings({ env: {} }, {
     apiKey: fireworksKey,
     mapping,

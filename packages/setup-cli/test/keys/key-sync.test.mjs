@@ -205,6 +205,30 @@ describe("syncBakedKeysAfterStore", () => {
     });
   });
 
+  it("rebakes legacy websearch MCP Bearer env-ref when the managed server is present", async () => {
+    await withTempHome("key-sync-websearch-mcp-", async (home) => {
+      const { WEBSEARCH_MCP_SERVER_NAME, claudeJsonPath, websearchMcpServerEntry } =
+        await import("../../lib/system/websearch-mcp.mjs");
+      await writeJsonFile(claudeJsonPath(home), {
+        mcpServers: {
+          [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry(),
+        },
+      });
+
+      const notes = await syncBakedKeysAfterStore(home, NEW_KEY);
+      assert.equal(notes.length, 1, notes.join("\n"));
+      assert.match(notes[0], /websearch MCP/);
+
+      const claudeJson = await readJson(claudeJsonPath(home));
+      assert.equal(
+        claudeJson.mcpServers[WEBSEARCH_MCP_SERVER_NAME].headers.Authorization,
+        `Bearer ${NEW_KEY}`,
+      );
+
+      assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+    });
+  });
+
   it("does nothing on a machine with no router configs", async () => {
     await withTempHome("key-sync-empty-", async (home) => {
       assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);

@@ -26,6 +26,7 @@ import {
   MISSING_AZURE_API_KEY_MESSAGE,
   MISSING_AZURE_BASE_URL_MESSAGE,
   normalizeAzureBaseUrl,
+  resolveAzureFoundryModelSlug,
 } from "../../fireworks/azure-core.mjs";
 import {
   ANTHROPIC_BYOK_BODY_FIELD,
@@ -346,11 +347,13 @@ export function buildModelEntry(modelId) {
  * @returns {object}
  */
 export function buildAzureModelEntry(modelId, baseUrl) {
+  const slug = resolveAzureFoundryModelSlug(modelId);
+  const metadataRef = slug ? `accounts/fireworks/models/${slug}` : modelId;
   return {
     id: modelId,
     name: modelId,
     url: baseUrl,
-    ...lookupVscodeModelMetadata(modelId),
+    ...lookupVscodeModelMetadata(metadataRef),
   };
 }
 
@@ -437,10 +440,11 @@ function resolveVscodeModelId(modelId, keyType) {
 /* -------------------------------------------------------------------------- */
 
 const VSCODE_PROCESS_SPEC = {
-  // Match Stable and Insiders. `pgrep -f` matches the full command line, so
-  // no `$` anchor (VS Code's cmdline has trailing args like --no-sandbox).
+  // Match Stable and Insiders. `pgrep -f` matches the full command line; anchor
+  // on the executable basename so paths like `/usr/share/code/` don't match
+  // unrelated helpers (e.g. Chrome crashpad) whose cmdline merely contains "code".
   darwinPattern: "Visual Studio Code( - Insiders)?.app/Contents/MacOS/Electron",
-  linuxPattern: "[/]code(-insiders)?",
+  linuxPattern: "[/]code(-insiders)?([[:space:]]|$)",
   windowsImage: "Code( - Insiders)?\\.exe",
 };
 

@@ -180,10 +180,9 @@ function printStorage(summary, source) {
   if (summary.backend === "file" && summary.keychainPresent) {
     console.log("");
     console.log(muted(
-      "Sandbox/CI tip: the shell hook exports FIREWORKS_API_KEY for Claude websearch MCP. "
-        + "Baked-literal harnesses read the key from their config files. In non-interactive "
-        + "shells where `fireconnect` isn't on PATH, export FIREWORKS_API_KEY directly "
-        + "(the key is in the encrypted file above).",
+      "Sandbox/CI tip: Claude websearch MCP and file-config harnesses bake the API key "
+        + "into their config files. In non-interactive shells you can still export "
+        + "FIREWORKS_API_KEY directly (the key is in the encrypted file above).",
     ));
   }
 }

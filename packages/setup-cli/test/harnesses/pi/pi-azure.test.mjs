@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { PI_AZURE_PROVIDER, piSettingsPath, piModelsPath } from "../../../lib/harnesses/pi/core.mjs";
+import { lookupAzureFoundryModelLimits } from "../../../lib/fireworks/azure-core.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "fireconnect.mjs");
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
@@ -84,7 +85,12 @@ describe("pi azure harness", () => {
       assert.equal(provider.baseUrl, AZURE_BASE_URL);
       assert.equal(provider.authHeader, true);
       assert.equal(provider.apiKey, AZURE_KEY);
-      assert.deepEqual(provider.models, [{ id: "FW-MiniMax-M2.5" }]);
+      assert.deepEqual(provider.models, [{
+        id: "FW-MiniMax-M2.5",
+        input: ["text"],
+        contextWindow: 196_608,
+        maxTokens: 24_576,
+      }]);
 
       // A literal key is stored in models.json, so it must be owner-only (0600):
       // no group/other access bits.
@@ -258,6 +264,33 @@ describe("pi azure harness", () => {
       // off must restore the genuine pre-FireConnect config, not the Azure state.
       assert.equal(await readFile(settingsPath, "utf8"), origSettings);
       assert.equal(await readFile(modelsPath, "utf8"), origModels);
+    });
+  });
+
+  it("sets contextWindow from Fireworks specs for Foundry GLM deployments", async () => {
+    await withHome(async (home) => {
+      const result = await runFireconnect(
+        ["pi", "on", "--azure", "--base-url", AZURE_ENDPOINT, "--api-key", AZURE_KEY, "--model", "FW-GLM-5.2"],
+        { HOME: home },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
+      const limits = lookupAzureFoundryModelLimits("FW-GLM-5.2");
+      assert.equal(models.providers[PI_AZURE_PROVIDER].models[0].contextWindow, limits.contextWindow);
+      assert.equal(models.providers[PI_AZURE_PROVIDER].models[0].maxTokens, limits.maxTokens);
+      assert.deepEqual(models.providers[PI_AZURE_PROVIDER].models[0].input, ["text"]);
+    });
+  });
+
+  it("sets image input for vision-capable Foundry deployments", async () => {
+    await withHome(async (home) => {
+      const result = await runFireconnect(
+        ["pi", "on", "--azure", "--base-url", AZURE_ENDPOINT, "--api-key", AZURE_KEY, "--model", "FW-Kimi-K2.7-Code"],
+        { HOME: home },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
+      assert.deepEqual(models.providers[PI_AZURE_PROVIDER].models[0].input, ["text", "image"]);
     });
   });
 

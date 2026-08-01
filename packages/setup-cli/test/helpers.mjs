@@ -1,7 +1,10 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { USER_SETTINGS_RELATIVE_PATH } from "../lib/harnesses/claude/core.mjs";
@@ -22,6 +25,12 @@ process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN ??= "";
 // reader of CLAUDE_CONFIG_DIR, so dropping it here is safe and makes the
 // temp home authoritative.
 delete process.env.CLAUDE_CONFIG_DIR;
+
+// Attribution header value for the version under test. Read from package.json so
+// a release bump can't strand these assertions on a stale literal.
+export const FIRECONNECT_REFERER = `fireconnect/v${
+  JSON.parse(readFileSync(path.join(__dirname, "../package.json"), "utf8")).version
+}`;
 
 export const FPK_KEY = "fpk_test_firepass_key_000000000000";
 export const FW_CLAUDE_KEY = "fw_test_claude_key_00000000000000";
@@ -55,9 +64,8 @@ export const GLM_FAST_LATEST = "glm-fast-latest";
 export const GLM_5P2_FAST = "glm-5p2-fast";
 export const KIMI_FAST_LATEST = "kimi-fast-latest";
 export const K2P7_FAST = "kimi-k2p7-code-fast";
-export const FIREPASS_ROUTER = "accounts/fireworks/routers/glm-fast-latest";
-export const FIREPASS_ROUTER_1M = `${FIREPASS_ROUTER}[1m]`;
-// Default model for Fire Pass keys (and the main/opus slot for fw_ keys).
+export const FIREPASS_ROUTER = "accounts/fireworks/routers/kimi-fast-latest";
+// Default model for Fire Pass keys.
 export const FIREPASS_DEFAULT_ROUTER = FIREPASS_ROUTER;
 
 export function mockServerlessModel(overrides = {}) {
@@ -92,8 +100,20 @@ export function mockServerlessModel(overrides = {}) {
     ...overrides,
   };
 }
-export const FIREPASS_DEFAULT_ROUTER_1M = `${FIREPASS_DEFAULT_ROUTER}[1m]`;
 export const FIREWORKS_INFERENCE_URL = "https://api.fireworks.ai/inference";
+
+export const HAS_SQLITE = spawnSync("sqlite3", ["-version"], { encoding: "utf8" }).status === 0;
+export const HAS_NPM = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], { encoding: "utf8" }).status === 0;
+export const itIfSqlite = HAS_SQLITE ? it : it.skip;
+export const itIfNpm = HAS_NPM ? it : it.skip;
+
+/** Expected OpenCode provider.models entry for a latest router alias. */
+export function expectedOpencodeLatestRouterEntry(label, context = 1_048_575, output = 131_072) {
+  return {
+    name: label,
+    limit: { context, output },
+  };
+}
 
 
 export function claudePaths(home) {
@@ -101,6 +121,13 @@ export function claudePaths(home) {
     settingsPath: path.join(home, USER_SETTINGS_RELATIVE_PATH),
     dataDir: path.join(home, ".fireconnect/claude"),
   };
+}
+
+/** Assert Claude Code main default lives in top-level `model`, not env. */
+export function assertClaudeMainModel(settings, expected, message = "") {
+  const prefix = message ? `${message}: ` : "";
+  assert.equal(settings.model, expected, `${prefix}top-level model`);
+  assert.equal(settings.env?.ANTHROPIC_MODEL, undefined, `${prefix}ANTHROPIC_MODEL should be unset`);
 }
 
 export async function withTempHome(prefix, fn) {

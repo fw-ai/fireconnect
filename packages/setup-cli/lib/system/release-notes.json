@@ -1,6 +1,19 @@
 {
   "releases": [
     {
+      "version": "0.9.1",
+      "highlights": [
+        "Keep Claude Code connected when you reinstall or upgrade. On FireConnect 0.9.0 and newer, FireConnect no longer asks you to disconnect first — your harness settings stay put.",
+        "When a newer FireConnect is available, interactive terminals can upgrade in place — answer Yes to run `fireconnect upgrade`, or No to snooze for a day.",
+        "Claude model preferences now persist across sessions, with interactive onboarding and a fast-model profile toggle."
+      ],
+      "improvements": [
+        "More reliable harness setup: baked API keys, Claude websearch MCP auth, and fewer Cursor / OpenCode / VS Code edge-case failures.",
+        "Clearer Claude model defaults and catalog labels, including Kimi K3 naming and pricing."
+      ],
+      "footer": "If you are upgrading from before 0.9.0 with Claude connected, FireConnect will still offer to restore your original settings first."
+    },
+    {
       "version": "0.9.0",
       "highlights": [
         "Find models in one place with `fireconnect model list`. The coding-focused catalog includes standard and fast options across model families.",

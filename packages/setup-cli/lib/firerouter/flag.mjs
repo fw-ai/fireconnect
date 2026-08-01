@@ -114,6 +114,7 @@ export function assertFirerouterWorkspaceByok({
  *   },
  *   ctx?: { anthropicKey?: string, anthropicKeyFromFlag?: boolean, home?: string },
  *   settingsEnv?: Record<string, string>,
+ *   allowPromptSkip?: boolean,
  * }} input
  */
 export async function resolveExplicitFirerouterCredential({
@@ -121,6 +122,7 @@ export async function resolveExplicitFirerouterCredential({
   availability = { include: false },
   ctx = {},
   settingsEnv = {},
+  allowPromptSkip = true,
 } = {}) {
   if (!firerouter) {
     return { anthropicKey: "" };
@@ -135,6 +137,7 @@ export async function resolveExplicitFirerouterCredential({
     settingsEnv,
     home: ctx.home,
     explicit: true,
+    allowPromptSkip,
     resolveWorkspaceByok: () => Promise.resolve(workspaceByokLookup),
   });
 }

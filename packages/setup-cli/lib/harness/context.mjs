@@ -102,20 +102,6 @@ export function deepagentsPathsFor(ctx) {
   };
 }
 
-/**
- * @param {HarnessContext} ctx
- */
-export function modelOverridesFrom(ctx) {
-  return {
-    main: ctx.main,
-    opus: ctx.opus,
-    sonnet: ctx.sonnet,
-    haiku: ctx.haiku,
-    fable: ctx.fable,
-    subagent: ctx.subagent,
-  };
-}
-
 /** Per-harness path-override fields + the flag to suggest in the error message. */
 const HOME_VALIDATION = {
   claude: { fields: ["settingsPath"], flag: "--settings-path" },

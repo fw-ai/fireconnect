@@ -13,7 +13,7 @@ import {
   opencodeDataDir,
 } from "../../../lib/harnesses/opencode/core.mjs";
 import { readJsonIfExists } from "../../../lib/io/json.mjs";
-import { GLM_FAST_LATEST } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, GLM_FAST_LATEST } from "../../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "fireconnect.mjs");
 
@@ -116,7 +116,7 @@ describe("opencode harness integration", () => {
     assert.equal(headers["X-Title"], "OpenCode");
     assert.equal(
       headers["HTTP-Referer"],
-      "fireconnect/v0.9.0",
+      FIRECONNECT_REFERER,
     );
     assert.equal(headers["X-FireRouter-Harness"], undefined);
     assert.equal(headers["Fireworks-Use-Case"], undefined);
@@ -141,7 +141,7 @@ describe("opencode harness integration", () => {
     assert.equal(headers["X-Title"], "OpenCode");
     assert.equal(
       headers["HTTP-Referer"],
-      "fireconnect/v0.9.0",
+      FIRECONNECT_REFERER,
     );
     assert.equal(headers["X-FireRouter-Harness"], undefined);
     assert.equal(headers["Fireworks-Use-Case"], undefined);
@@ -182,7 +182,7 @@ describe("opencode harness integration", () => {
     assert.equal(models["glm-fast-latest"].modalities, undefined);
     assert.ok(!ids.includes("glm-5p2-fast"));
     assert.ok(!ids.includes("kimi-k2p7-code-fast"));
-    assert.equal(enabled.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/glm-fast-latest`);
+    assert.equal(enabled.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/kimi-fast-latest`);
 
     const offResult = await runFireconnect(["opencode", "off"], { HOME: home });
     assert.equal(offResult.code, 0);

@@ -11,7 +11,7 @@ import {
  * @property {import("../harness/id.mjs").HarnessId} harnessId
  * @property {(home: string) => string} configPath
  * @property {boolean} needsShellFireworksExport
- * @property {() => object} buildEntry
+ * @property {(apiKey?: string) => object} buildEntry
  * @property {(config: unknown) => boolean} hasManaged
  * @property {(config: unknown, entry: object) => object} applyEnable
  * @property {(config: unknown) => object} applyDisable
@@ -19,20 +19,34 @@ import {
  * @property {() => string} restartHint
  */
 
+/**
+ * @param {string} [apiKey]
+ */
+export function buildWebsearchMcpEntry(apiKey = "") {
+  const token = apiKey.trim();
+  return {
+    type: "http",
+    url: WEBSEARCH_MCP_URL,
+    headers: {
+      // Bake the key (same shape as `claude mcp add --header`). Claude expands
+      // `${FIREWORKS_API_KEY}` from the process env; a literal avoids the shell
+      // hook and auth-miss retries when the env var is unset.
+      Authorization: token
+        ? `Bearer ${token}`
+        : "Bearer ${FIREWORKS_API_KEY}",
+    },
+  };
+}
+
 /** @type {Record<import("../harness/id.mjs").HarnessId, WebsearchMcpAdapter>} */
 export const WEBSEARCH_MCP_ADAPTERS = {
   [HARNESS.CLAUDE]: {
     harnessId: HARNESS.CLAUDE,
     configPath: (home) => path.join(home, ".claude.json"),
-    needsShellFireworksExport: true,
+    // Auth is a baked Bearer token; no FIREWORKS_API_KEY shell export needed.
+    needsShellFireworksExport: false,
     jsonWriteOptions: { mode: 0o600 },
-    buildEntry: () => ({
-      type: "http",
-      url: WEBSEARCH_MCP_URL,
-      headers: {
-        Authorization: "Bearer ${FIREWORKS_API_KEY}",
-      },
-    }),
+    buildEntry: (apiKey = "") => buildWebsearchMcpEntry(apiKey),
     hasManaged: (config) => Boolean(config?.mcpServers?.[WEBSEARCH_MCP_SERVER_NAME]),
     applyEnable: (config, entry) => ({
       ...(config ?? {}),

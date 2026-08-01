@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -18,7 +18,6 @@ import {
   readKeyStorageCache,
   REPROBE_KEY_STORAGE_ENV,
 } from "../../lib/keys/storage-cache.mjs";
-import { fileDataRoot } from "../../lib/keys/builtin-file-secret-store.mjs";
 import { plaintextSecretPath, readPlaintextSecret, writePlaintextSecret } from "../../lib/keys/plaintext-secret-store.mjs";
 import { globalConfigPath } from "../../lib/config/global-config.mjs";
 
@@ -319,7 +318,7 @@ describe("plaintext secret fallback", () => {
     process.env.XDG_CONFIG_HOME = path.join(home, "cfg");
     await setSecret("fw_secure_original", home);
 
-    await chmod(fileDataRoot(), 0o555);
+    await blockSecureKeyStorage(home);
     const cacheBlocker = path.join(home, ".fireconnect", "key-storage.json");
     await rm(cacheBlocker, { force: true });
     await mkdir(cacheBlocker, { recursive: true });
@@ -327,11 +326,11 @@ describe("plaintext secret fallback", () => {
     try {
       await assert.rejects(() => setSecret("fw_plaintext_never_committed", home));
       await rm(cacheBlocker, { recursive: true, force: true });
+      process.env.XDG_DATA_HOME = path.join(home, "data");
       resetSecretStoreForTests();
       assert.equal(await getSecret(home), "fw_secure_original");
       assert.notEqual(await readPlaintextSecret(home), "fw_plaintext_never_committed");
     } finally {
-      await chmod(fileDataRoot(), 0o755);
       await rm(cacheBlocker, { recursive: true, force: true });
     }
   });

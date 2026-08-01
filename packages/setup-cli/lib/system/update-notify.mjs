@@ -1,6 +1,4 @@
 import {
-  readFileSync,
-  existsSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -8,41 +6,38 @@ import {
   statSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
+import { promptYesNo } from "../auth/login/prompts.mjs";
 import { readLocalVersion } from "./version.mjs";
+import {
+  isGitInstall,
+  isUpgradePromptSnoozed,
+  patchUpdateCache,
+  readUpdateCache,
+  updateLockPath,
+  versionIsNewer,
+  waitForUpdateLock,
+} from "./update-cache.mjs";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FAILURE_RETRY_MS = 60 * 60 * 1000;
 const PENDING_TTL_MS = 5 * 60 * 1000;
+/** How long to suppress the interactive upgrade prompt after the user declines. */
+export const UPGRADE_PROMPT_SNOOZE_MS = 24 * 60 * 60 * 1000;
 
-function cacheFilePath(home) {
-  return path.join(home, ".fireconnect", "update-check.json");
-}
+const UPGRADE_PROMPT = "Upgrade now?";
 
-function lockFilePath(home) {
-  return path.join(home, ".fireconnect", "update-check.lock");
-}
+const SKIP_UPDATE_CHECK_COMMANDS = new Set([
+  "upgrade",
+  "uninstall",
+  "version",
+  "banner",
+  "finalize-install",
+]);
 
-function readCache(home) {
-  try {
-    const raw = readFileSync(cacheFilePath(home), "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function semverGt(a, b) {
-  const pa = String(a).split(".").map(Number);
-  const pb = String(b).split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
-    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
-  }
-  return false;
-}
+export { isUpgradePromptSnoozed } from "./update-cache.mjs";
 
 export function shouldSpawnChecker(cache, now = Date.now()) {
   if (!cache) return true;
@@ -51,23 +46,60 @@ export function shouldSpawnChecker(cache, now = Date.now()) {
   if (cache.pending) {
     return age >= PENDING_TTL_MS;
   }
-
-  // Distinguish a failed fetch (short retry) from a successful one (full TTL).
   if (cache.fetchFailed) {
     return age >= FAILURE_RETRY_MS;
   }
-
   if (cache.latestVersion) {
     return age >= CACHE_TTL_MS;
   }
-
   return age >= FAILURE_RETRY_MS;
+}
+
+/**
+ * Prompt UI needs a fully interactive terminal: answers on stdin, and both
+ * stdout and stderr as TTYs so piping (`fireconnect … | jq`) stays non-blocking.
+ *
+ * @param {{ isTTY?: boolean } | null | undefined} input
+ * @param {{ isTTY?: boolean } | null | undefined} stdout
+ * @param {{ isTTY?: boolean } | null | undefined} output
+ */
+export function isFullyInteractiveTerminal(input, stdout, output) {
+  return Boolean(input?.isTTY && stdout?.isTTY && output?.isTTY);
+}
+
+/**
+ * Whether to ask "Upgrade now?" instead of only printing the tip.
+ * Git installs only; requires a fully interactive terminal.
+ *
+ * @param {{
+ *   isTTY?: boolean,
+ *   isGitInstall?: boolean,
+ *   cache?: Record<string, unknown> | null,
+ *   latestVersion?: string,
+ *   environment?: Record<string, string | undefined>,
+ *   now?: number,
+ * }} options
+ */
+export function shouldPromptUpgrade({
+  isTTY = false,
+  isGitInstall: gitInstall = false,
+  cache = null,
+  latestVersion = "",
+  environment = process.env,
+  now = Date.now(),
+} = {}) {
+  if (!isTTY || !gitInstall || !latestVersion) {
+    return false;
+  }
+  if (environment.FIRECONNECT_NO_UPDATE_PROMPT === "1") {
+    return false;
+  }
+  return !isUpgradePromptSnoozed(cache, latestVersion, now);
 }
 
 function lockAgeMs(home, now = Date.now()) {
   try {
-    const stat = statSync(lockFilePath(home));
-    return now - stat.mtimeMs;
+    return now - statSync(updateLockPath(home)).mtimeMs;
   } catch {
     return Number.POSITIVE_INFINITY;
   }
@@ -78,7 +110,7 @@ export function hasActiveUpdateLock(home, now = Date.now()) {
 }
 
 export function tryAcquireUpdateLock(home, now = Date.now()) {
-  const lockPath = lockFilePath(home);
+  const lockPath = updateLockPath(home);
   try {
     mkdirSync(path.dirname(lockPath), { recursive: true });
     if (hasActiveUpdateLock(home, now)) {
@@ -115,31 +147,153 @@ function spawnChecker(home) {
   }
 }
 
-export function checkForUpdates(command, homeOverride) {
-  // Never run the background update check under test: it spawns a detached child
-  // that writes into HOME/.fireconnect after the CLI exits (racing temp-dir
-  // cleanup with ENOTEMPTY) and would make real network calls.
-  if (process.env.FIRECONNECT_TEST === "1" || process.env.NODE_ENV === "test") return;
-  if (command === "upgrade" || command === "uninstall" || command === "version" || command === "banner") return;
+function printUpdateTip(localVersion, latestVersion, gitInstall) {
+  const upgradeInstruction = gitInstall
+    ? "Run: fireconnect upgrade"
+    : "Run: curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash";
+  process.stderr.write(
+    `\nFireConnect update available: v${localVersion} → v${latestVersion}\n`
+      + `${upgradeInstruction}\n\n`,
+  );
+}
 
-  const home = homeOverride || process.env.HOME || "";
+/**
+ * @param {{
+ *   home: string,
+ *   localVersion: string,
+ *   latestVersion: string,
+ *   prompt?: typeof promptYesNo,
+ *   runUpgrade?: () => Promise<void>,
+ *   input?: { isTTY?: boolean },
+ *   output?: { isTTY?: boolean },
+ * }} options
+ */
+export async function promptAndMaybeUpgrade({
+  home,
+  localVersion,
+  latestVersion,
+  prompt = promptYesNo,
+  runUpgrade,
+  input = process.stdin,
+  output = process.stderr,
+}) {
+  process.stderr.write(
+    `\nFireConnect update available: v${localVersion} → v${latestVersion}\n`,
+  );
+
+  let accepted;
+  try {
+    accepted = await prompt(UPGRADE_PROMPT, {
+      stdin: input,
+      stdout: output,
+      defaultYes: true,
+    });
+  } catch (error) {
+    const wrapped = new Error(error?.message || "Upgrade prompt failed");
+    wrapped.code = "ERR_UPGRADE_PROMPT";
+    wrapped.cause = error;
+    throw wrapped;
+  }
+
+  if (!accepted) {
+    try {
+      // Wait out an in-flight checker so its write cannot race past this
+      // patch and drop snooze. patchUpdateCache re-reads on disk so we also
+      // keep any newer latestVersion the checker already committed.
+      await waitForUpdateLock(home);
+      await patchUpdateCache(home, {
+        checkedAt: Date.now(),
+        latestVersion,
+        promptSnoozedUntil: Date.now() + UPGRADE_PROMPT_SNOOZE_MS,
+        promptSnoozedVersion: latestVersion,
+      });
+    } catch {
+      // Best-effort snooze — never fail the CLI over cache I/O.
+    }
+    process.stderr.write("Skipped.\n\n");
+    return { upgraded: false, snoozed: true };
+  }
+
+  const upgrade = runUpgrade ?? (async () => {
+    const { runUpgradeCommand } = await import("../cli/commands/global.mjs");
+    await runUpgradeCommand({ home });
+  });
+  // Upgrade failures must propagate — do not swallow into a tip.
+  await upgrade();
+  return { upgraded: true, snoozed: false };
+}
+
+/**
+ * Notify about available updates (tip or interactive prompt) and refresh the
+ * background version cache when stale.
+ *
+ * @param {string} command
+ * @param {string} [homeOverride]
+ * @param {{
+ *   prompt?: typeof promptYesNo,
+ *   runUpgrade?: () => Promise<void>,
+ *   input?: { isTTY?: boolean },
+ *   output?: { isTTY?: boolean },
+ *   stdout?: { isTTY?: boolean },
+ *   environment?: Record<string, string | undefined>,
+ *   now?: number,
+ * }} [options]
+ */
+export async function checkForUpdates(command, homeOverride, options = {}) {
+  // Never run under test: detached child races temp-dir cleanup and hits network.
+  const environment = options.environment ?? process.env;
+  if (environment.FIRECONNECT_TEST === "1" || environment.NODE_ENV === "test") return;
+  if (SKIP_UPDATE_CHECK_COMMANDS.has(command)) return;
+
+  const home = homeOverride || environment.HOME || "";
   if (!home) return;
 
   const localVersion = readLocalVersion();
-  const cache = readCache(home);
+  const cache = readUpdateCache(home);
+  const latestVersion = typeof cache?.latestVersion === "string" ? cache.latestVersion : "";
+  const gitInstall = isGitInstall(home);
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stderr;
+  const stdout = options.stdout ?? process.stdout;
+  const now = options.now ?? Date.now();
 
-  if (localVersion && cache?.latestVersion && semverGt(cache.latestVersion, localVersion)) {
-    const isGitInstall = existsSync(path.join(home, ".fireconnect", "cli", ".git"));
-    const upgradeInstruction = isGitInstall
-      ? "Run: fireconnect upgrade"
-      : "Run: curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash";
-    process.stderr.write(
-      `\nFireConnect update available: v${localVersion} → v${cache.latestVersion}\n` +
-        `${upgradeInstruction}\n\n`,
-    );
+  if (localVersion && latestVersion && versionIsNewer(latestVersion, localVersion)) {
+    const canPrompt = shouldPromptUpgrade({
+      isTTY: isFullyInteractiveTerminal(input, stdout, output),
+      isGitInstall: gitInstall,
+      cache,
+      latestVersion,
+      environment,
+      now,
+    });
+
+    if (canPrompt) {
+      try {
+        await promptAndMaybeUpgrade({
+          home,
+          localVersion,
+          latestVersion,
+          prompt: options.prompt,
+          runUpgrade: options.runUpgrade,
+          input,
+          output,
+        });
+      } catch (error) {
+        // Only fall back to the tip when the Yes/No prompt itself fails.
+        if (error?.code === "ERR_UPGRADE_PROMPT") {
+          printUpdateTip(localVersion, latestVersion, gitInstall);
+        } else {
+          throw error;
+        }
+      }
+    } else if (!isUpgradePromptSnoozed(cache, latestVersion, now)) {
+      printUpdateTip(localVersion, latestVersion, gitInstall);
+    }
   }
 
-  if (shouldSpawnChecker(cache) && tryAcquireUpdateLock(home)) {
+  // Re-read cache: decline may have refreshed checkedAt + snooze fields.
+  const cacheForSpawn = readUpdateCache(home) ?? cache;
+  if (shouldSpawnChecker(cacheForSpawn, now) && tryAcquireUpdateLock(home, now)) {
     spawnChecker(home);
   }
 }

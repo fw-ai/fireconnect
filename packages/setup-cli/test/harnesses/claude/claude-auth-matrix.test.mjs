@@ -9,11 +9,13 @@ import {
   USER_SETTINGS_RELATIVE_PATH,
 } from "../../../lib/harnesses/claude/core.mjs";
 import { FIREWORKS_BASE_URL } from "../../../lib/fireworks/model-id.mjs";
-import { runFireconnect, withTempHome } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, runFireconnect, withTempHome, assertClaudeMainModel } from "../../helpers.mjs";
 
 const FIREWORKS_KEY = "fw_claude_matrix_key_000000000000";
 const ANTHROPIC_KEY = "sk-ant-claude-matrix-byok";
-const DIRECT_MODEL = "glm-fast-latest[1m]";
+const DIRECT_MAIN_MODEL = "kimi-fast-latest";
+const DIRECT_ALIAS_MODEL = "glm-fast-latest[1m]";
+const KIMI_FABLE_MODEL = "kimi-fast-latest";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const SUBSCRIPTION_SETTINGS = `${JSON.stringify({
   model: "sonnet",
@@ -26,9 +28,14 @@ const SUBSCRIPTION_CREDENTIALS = `${JSON.stringify({
   },
 }, null, 2)}\n`;
 
-async function startWorkspaceByokGateway() {
+async function startWorkspaceByokGateway({ unavailable = false } = {}) {
   const server = createServer((request, response) => {
     if (request.url === "/verifyApiKey") {
+      if (unavailable) {
+        response.writeHead(503);
+        response.end("temporarily unavailable");
+        return;
+      }
       response.writeHead(200, {
         "x-fireworks-account-id": "acct-workspace-byok",
       });
@@ -105,12 +112,9 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         const enabled = await runFireconnect(args, env);
         const hasNativeAuth = scenario.subscription || scenario.byok;
         if (scenario.firerouter && !hasNativeAuth) {
-          assert.equal(enabled.code, 0, enabled.stderr);
-          const settings = JSON.parse(await readFile(settingsPath, "utf8"));
-          assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
-          assert.equal(settings.env.ANTHROPIC_MODEL, DIRECT_MODEL);
-          assert.match(enabled.stdout, /FireRouter is on/);
-          assert.doesNotMatch(enabled.stdout, /FireRouter wasn't enabled/);
+          assert.notEqual(enabled.code, 0);
+          assert.match(enabled.stderr, /FireRouter requires Claude sign-in/);
+          assert.equal(await pathExists(settingsPath), false);
           return;
         }
         assert.equal(enabled.code, 0, enabled.stderr);
@@ -128,25 +132,23 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         );
         const expectedMain = !scenario.firerouter && hasNativeAuth
           ? FIREROUTER_MODEL
-          : DIRECT_MODEL;
-        const expectedFable = !scenario.firerouter && hasNativeAuth
-          ? FIREROUTER_MODEL
-          : DIRECT_MODEL;
-        assert.equal(settings.env.ANTHROPIC_MODEL, expectedMain);
+          : DIRECT_MAIN_MODEL;
+        const expectedFable = KIMI_FABLE_MODEL;
+        assertClaudeMainModel(settings, expectedMain);
         assert.equal(
           settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL,
-          scenario.firerouter ? FIREROUTER_MODEL : DIRECT_MODEL,
+          scenario.firerouter ? FIREROUTER_MODEL : DIRECT_ALIAS_MODEL,
         );
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, DIRECT_ALIAS_MODEL);
         assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, expectedFable);
         assert.equal(settings.apiKeyHelper, undefined);
         assert.match(headers, new RegExp(`X-Fireworks-Api-Key: ${FIREWORKS_KEY}`));
         assert.match(headers, /X-Title: Claude Code/);
-        assert.match(headers, /HTTP-Referer: fireconnect\/v0\.9\.0/);
+        assert.ok(headers.includes(`HTTP-Referer: ${FIRECONNECT_REFERER}`), headers);
         assert.doesNotMatch(headers, /x-anthropic-api-key:/i);
-        assert.equal(settings.model, expectedMain);
         if (!hasNativeAuth) {
-          assert.match(enabled.stdout, /FireRouter wasn't enabled/);
-          assert.match(enabled.stdout, /\/login/);
+          assert.match(enabled.stdout, /FireRouter off/);
+          assert.match(enabled.stdout, /Sign in to Claude/);
           assert.match(enabled.stdout, /--anthropic-api-key/);
         }
 
@@ -189,12 +191,42 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         const settings = JSON.parse(
           await readFile(path.join(home, USER_SETTINGS_RELATIVE_PATH), "utf8"),
         );
-        assert.equal(settings.env.ANTHROPIC_MODEL, FIREROUTER_MODEL);
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_MODEL);
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREROUTER_MODEL);
+        assertClaudeMainModel(settings, FIREROUTER_MODEL);
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_ALIAS_MODEL);
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, DIRECT_ALIAS_MODEL);
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FABLE_MODEL);
         assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
         assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, FIREWORKS_KEY);
         assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
+      });
+    } finally {
+      gateway.server.close();
+    }
+  });
+
+  it("keeps explicit FireRouter usable when workspace BYOK verification is unavailable", async () => {
+    const gateway = await startWorkspaceByokGateway({ unavailable: true });
+    try {
+      await withTempHome("claude-workspace-byok-unavailable-", async (home) => {
+        const result = await runFireconnect(
+          ["claude", "on", "--non-interactive", "--opus", "firerouter"],
+          {
+            HOME: home,
+            FIREWORKS_API_KEY: FIREWORKS_KEY,
+            ANTHROPIC_API_KEY: "",
+            ANTHROPIC_AUTH_TOKEN: "",
+            FIRECONNECT_GATEWAY_URL: gateway.url,
+            FIRECONNECT_GATEWAY_GRPC_WEB_URL: `${gateway.url}/grpc`,
+          },
+        );
+        assert.equal(result.code, 0, result.stderr);
+
+        const settings = JSON.parse(
+          await readFile(path.join(home, USER_SETTINGS_RELATIVE_PATH), "utf8"),
+        );
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
+        assert.match(result.stdout, /FireRouter is on/);
+        assert.match(result.stdout, /Couldn't verify workspace BYOK/);
       });
     } finally {
       gateway.server.close();

@@ -1,5 +1,6 @@
 import {
   appendLatestRouterSuffix,
+  fireworksInputModalities,
   lookupFireworksModelCost,
   lookupFireworksModelLimits,
   lookupModelSpec,
@@ -208,7 +209,7 @@ export function buildPiCustomFireworksModelEntry(modelId, name, reasoning = true
     id: shortFireworksModelRef(modelId),
     name,
     reasoning,
-    input: limits.vision ? ["text", "image"] : ["text"],
+    input: fireworksInputModalities(limits),
     contextWindow: limits.contextWindow,
     maxTokens: limits.maxTokens,
   };

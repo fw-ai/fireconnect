@@ -8,6 +8,7 @@ import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
 import { supportsAnthropicApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
 import {
   assertFireworksKeyUsable,
+  assertFireworksKeyShape,
   assertNoFireworksEnvForStorage,
   canPersistApiKeyToKeychain,
   persistApiKeyFromFlag,
@@ -26,6 +27,7 @@ const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE]);
 function validateHarnessOptions(route, ctx) {
   const { harnessId, verb, noun = "" } = route;
   const isOn = verb === "on" && !noun;
+  const onboardingMode = ctx.onboardingMode ?? "auto";
   const claudeAliases = [ctx.opus, ctx.sonnet, ctx.haiku, ctx.fable, ctx.subagent];
   const claudeModels = [ctx.main, ...claudeAliases];
   const firerouterRequested = harnessId === HARNESS.CLAUDE
@@ -46,6 +48,10 @@ function validateHarnessOptions(route, ctx) {
   }
   if (ctx.force && !IDE_HARNESSES.has(harnessId)) {
     throw new Error("--force is only supported for Cursor and VS Code.");
+  }
+  if (onboardingMode !== "auto" && !(harnessId === HARNESS.CLAUDE && isOn)) {
+    const flag = onboardingMode === "prompt" ? "--interactive" : "--non-interactive";
+    throw new Error(`${flag} applies only to \`fireconnect claude on\`.`);
   }
   if (claudeAliases.some(Boolean) && !(harnessId === HARNESS.CLAUDE && isOn)) {
     throw new Error("--opus/--sonnet/--haiku/--fable/--subagent apply only to `fireconnect claude on`.");
@@ -83,7 +89,7 @@ function validateHarnessOptions(route, ctx) {
   }
 
   if (ctx.routingPreference !== null) {
-    if (!isOn || !firerouterRequested) {
+    if (!isOn || (harnessId !== HARNESS.CLAUDE && !firerouterRequested)) {
       throw new Error(
         harnessId === HARNESS.CLAUDE
           ? "--routing-preference requires a Claude slot set to firerouter."
@@ -122,6 +128,22 @@ function persistAnthropicKeyFromFlag(ctx, home, harnessId) {
   return persistGlobalAnthropicApiKey(home, ctx.anthropicKey);
 }
 
+export async function finalizeClaudeOnOutcome(
+  outcome,
+  {
+    persistFireworksKey,
+    persistAnthropicKey,
+  } = {},
+) {
+  if (outcome?.cancelled) {
+    process.exitCode = 1;
+    return false;
+  }
+  await persistFireworksKey?.();
+  await persistAnthropicKey?.();
+  return true;
+}
+
 /**
  * @param {{ harnessId: string, verb: string, noun?: string }} route
  * @param {import("../../harness/types.mjs").HarnessContext} ctx
@@ -142,6 +164,7 @@ export async function runHarnessCommand(route, ctx) {
     );
   }
   const home = ctx.home || process.env.HOME || "";
+  let deferredClaudeApiKey = "";
   if (route.verb === "on" && home) {
     const azureMode = ctx.azure === true || ctx.provider === "azure";
     if (!azureMode && ctx.apiKeyFromFlag && ctx.apiKey?.trim()) {
@@ -155,10 +178,13 @@ export async function runHarnessCommand(route, ctx) {
       // place (inside persistApiKeyToKeychain). Adapters that persist the
       // flag again (claude direct, cursor) hit the idempotent no-op path —
       // no duplicate stores, no duplicate notes.
-      await persistApiKeyFromFlag(home, ctx.apiKey);
+      if (route.harnessId === HARNESS.CLAUDE) {
+        deferredClaudeApiKey = ctx.apiKey;
+      } else {
+        await persistApiKeyFromFlag(home, ctx.apiKey);
+      }
     } else if (!azureMode && process.env.FIREWORKS_API_KEY?.trim()) {
-      const envKey = process.env.FIREWORKS_API_KEY.trim();
-      await assertFireworksKeyUsable(envKey);
+      const envKey = assertFireworksKeyShape(process.env.FIREWORKS_API_KEY);
       if (FILE_CONFIG_HARNESS_SET.has(route.harnessId) && await canPersistApiKeyToKeychain(home)) {
         await persistApiKeyToKeychain(home, envKey);
       }
@@ -168,8 +194,17 @@ export async function runHarnessCommand(route, ctx) {
     }
   }
 
-  await dispatchHarnessCommand(adapter, route, ctx);
-  if (route.verb === "on" && route.harnessId === HARNESS.CLAUDE && home) {
-    await persistAnthropicKeyFromFlag(ctx, home, route.harnessId);
+  const outcome = await dispatchHarnessCommand(adapter, route, ctx);
+  if (
+    route.verb === "on"
+    && route.harnessId === HARNESS.CLAUDE
+    && home
+  ) {
+    await finalizeClaudeOnOutcome(outcome, {
+      persistFireworksKey: deferredClaudeApiKey
+        ? () => persistApiKeyFromFlag(home, deferredClaudeApiKey)
+        : undefined,
+      persistAnthropicKey: () => persistAnthropicKeyFromFlag(ctx, home, route.harnessId),
+    });
   }
 }

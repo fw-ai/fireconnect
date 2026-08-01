@@ -1,7 +1,7 @@
 import {
   FIREROUTER_TAGLINE,
 } from "../../firerouter/core.mjs";
-import { MODEL_API_OVERRIDES as MODEL_OVERRIDES, lookupModelSpec } from "../../fireworks/model-specs.mjs";
+import { MODEL_API_OVERRIDES as MODEL_OVERRIDES, lookupModelSpec, resolveFireworksModelLabel } from "../../fireworks/model-specs.mjs";
 import { buildServerlessCatalogSnapshot, prettyModelName } from "../../fireworks/models.mjs";
 import {
   FIREROUTER_ROUTER_ID,
@@ -121,7 +121,7 @@ export function codexModelExclusionReason(modelRef) {
 }
 
 function routerDisplayName(routerId) {
-  return prettyModelName(routerId);
+  return resolveFireworksModelLabel(routerId) ?? prettyModelName(routerId);
 }
 
 function effectiveModelFields(model) {

@@ -476,6 +476,7 @@ export async function resolveAnthropicKey({
  *   home?: string,
  *   resolveWorkspaceByok?: () => Promise<boolean>,
  *   explicit?: boolean,
+ *   allowPromptSkip?: boolean,
  * }} input
  * @returns {Promise<{
  *   anthropicKey: string,
@@ -488,6 +489,7 @@ export async function resolveFirerouterByokKeys({
   home = "",
   resolveWorkspaceByok,
   explicit = false,
+  allowPromptSkip = true,
 } = {}) {
   let anthropicKey = await resolveAnthropicKey({ apiKey: anthropicFlag, settingsEnv, home });
   let workspaceByokLookup = null;
@@ -497,7 +499,11 @@ export async function resolveFirerouterByokKeys({
       ? { enabled: rawLookup, unavailable: false, reason: "" }
       : rawLookup;
     if (!workspaceByokLookup.enabled) {
-      anthropicKey = await promptOptionalAnthropicKey({ home, explicit });
+      anthropicKey = await promptOptionalAnthropicKey({
+        home,
+        explicit,
+        allowSkip: allowPromptSkip,
+      });
     }
   }
   return { anthropicKey, workspaceByokLookup };
@@ -508,33 +514,68 @@ export async function resolveFirerouterByokKeys({
  * Returns "" (never throws) on a non-TTY, an empty/declined entry, or a
  * malformed key — FireRouter still routes Fireworks models without it. A valid
  * key is persisted to global config so future runs pick it up.
- * @param {{ home?: string, explicit?: boolean }} args
+ * @param {{ home?: string, explicit?: boolean, allowSkip?: boolean }} args
  * @returns {Promise<string>}
  */
-export async function promptOptionalAnthropicKey({ home = "", explicit = false } = {}) {
+export function anthropicKeyPromptCopy({ explicit = false, allowSkip = true } = {}) {
+  if (!allowSkip) {
+    return {
+      intro: "FireRouter requires an Anthropic API key when Claude isn't signed in.",
+      prompt: "Anthropic API key (required, sk-ant-...): ",
+      invalid: "That doesn't look like an Anthropic API key (should start with sk-ant-).",
+    };
+  }
+  return {
+    intro: explicit
+      ? "FireRouter routes hard requests to Anthropic models. Paste your Anthropic API key to enable that."
+      : "Optional: add your Anthropic API key so FireRouter can route hard requests to Anthropic models.",
+    prompt: explicit
+      ? "Anthropic API key (sk-ant-..., Enter to skip): "
+      : "Anthropic API key (sk-ant-..., or press Enter to skip): ",
+    invalid: "That doesn't look like an Anthropic API key (should start with sk-ant-). Skipping.",
+  };
+}
+
+export function evaluateAnthropicKeyPrompt(value, { allowSkip = true } = {}) {
+  const key = String(value ?? "").trim();
+  if (isAnthropicShapedKey(key)) {
+    return { key, retry: false };
+  }
+  return {
+    key: "",
+    retry: !allowSkip,
+  };
+}
+
+export async function promptOptionalAnthropicKey({
+  home = "",
+  explicit = false,
+  allowSkip = true,
+} = {}) {
   if (!input.isTTY) {
     return "";
   }
-  console.log(
-    explicit
-      ? "FireRouter routes hard requests to Anthropic models. Paste your Anthropic API key to enable that."
-      : "Optional: add your Anthropic API key so FireRouter can route hard requests to Anthropic models.",
-  );
-  const prompted = await readSecret(
-    explicit
-      ? "Anthropic API key (sk-ant-..., Enter to skip): "
-      : "Anthropic API key (sk-ant-..., or press Enter to skip): ",
-    { allowEmpty: true },
-  );
-  if (!prompted) {
-    return "";
+  const copy = anthropicKeyPromptCopy({ explicit, allowSkip });
+  console.log(copy.intro);
+  while (true) {
+    const prompted = await readSecret(
+      copy.prompt,
+      { allowEmpty: true },
+    );
+    const result = evaluateAnthropicKeyPrompt(prompted, { allowSkip });
+    if (result.key) {
+      if (home) {
+        await persistGlobalAnthropicApiKey(home, result.key);
+      }
+      return result.key;
+    }
+    if (!prompted && !allowSkip) {
+      console.log("Anthropic API key is required. Press Ctrl-C to cancel.");
+    } else if (prompted) {
+      console.log(copy.invalid);
+    }
+    if (!result.retry) {
+      return "";
+    }
   }
-  if (!isAnthropicShapedKey(prompted)) {
-    console.log("That doesn't look like an Anthropic API key (should start with sk-ant-). Skipping.");
-    return "";
-  }
-  if (home) {
-    await persistGlobalAnthropicApiKey(home, prompted);
-  }
-  return prompted;
 }

@@ -308,11 +308,29 @@ export function aesDecrypt(blob, masterPassword, iterations = MAC_ITERATIONS) {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Per-process cache of macOS Safe Storage master passwords. Each lookup runs
+ * `security find-generic-password`, which can show a Keychain prompt; macOS
+ * "Allow" is one-shot, so cursor/vscode `on` (decrypt + encrypt + availability
+ * checks) used to re-prompt until the user chose "Always Allow".
+ * @type {Map<string, string>}
+ */
+const macMasterPasswordCache = new Map();
+
+/** Test seam: clear cached macOS Safe Storage master passwords. */
+export function resetMacMasterPasswordCacheForTests() {
+  macMasterPasswordCache.clear();
+}
+
+/**
  * Read the Safe Storage master password from the macOS login keychain.
- * @param {"stable" | "insiders"} [variant]
+ * @param {"stable" | "insiders" | "cursor"} [variant]
  * @returns {string} the password, or "" if not found.
  */
 function macReadMasterPassword(variant) {
+  const cacheKey = variant ?? "stable";
+  if (macMasterPasswordCache.has(cacheKey)) {
+    return macMasterPasswordCache.get(cacheKey) ?? "";
+  }
   const service = `${appNameFor(variant)} Safe Storage`;
   const r = spawnSync("security", ["find-generic-password", "-s", service, "-w"], {
     encoding: "utf8",
@@ -320,7 +338,9 @@ function macReadMasterPassword(variant) {
   if (r.status !== 0) {
     return "";
   }
-  return (r.stdout || "").replace(/\n$/, "");
+  const password = (r.stdout || "").replace(/\n$/, "");
+  macMasterPasswordCache.set(cacheKey, password);
+  return password;
 }
 
 /* -------------------------------------------------------------------------- */

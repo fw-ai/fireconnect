@@ -29,9 +29,10 @@ export function hasManagedWebsearchMcpForHarness(config, harnessId) {
 
 /**
  * @param {import("../harness/id.mjs").HarnessId} harnessId
+ * @param {string} [apiKey]
  */
-export function websearchMcpEntryForHarness(harnessId) {
-  return websearchMcpAdapter(harnessId).buildEntry();
+export function websearchMcpEntryForHarness(harnessId, apiKey = "") {
+  return websearchMcpAdapter(harnessId).buildEntry(apiKey);
 }
 
 /**
@@ -47,13 +48,14 @@ export async function readWebsearchMcpConfig(home, harnessId) {
 /**
  * @param {string} home
  * @param {import("../harness/id.mjs").HarnessId} harnessId
+ * @param {{ apiKey?: string }} [options]
  */
-export async function enableWebsearchMcpForHarness(home, harnessId) {
+export async function enableWebsearchMcpForHarness(home, harnessId, { apiKey = "" } = {}) {
   const adapter = websearchMcpAdapter(harnessId);
   const { filePath, config } = await readWebsearchMcpConfig(home, harnessId);
   const current = config ?? {};
   const alreadyPresent = adapter.hasManaged(current);
-  const entry = adapter.buildEntry();
+  const entry = adapter.buildEntry(apiKey);
   const next = adapter.applyEnable(current, entry);
   if (!alreadyPresent || JSON.stringify(current) !== JSON.stringify(next)) {
     await writeJson(filePath, next, adapter.jsonWriteOptions);
@@ -107,7 +109,8 @@ export async function managedWebsearchMcpEnabled(home) {
 }
 
 /**
- * Claude uses ${FIREWORKS_API_KEY} in MCP headers and needs the shell export.
+ * Whether Claude has the managed websearch MCP entry (for status / diagnostics).
+ * Auth is a baked Bearer token; the shell hook is no longer required.
  * @param {string} home
  */
 export async function claudeWebsearchMcpEnabled(home) {

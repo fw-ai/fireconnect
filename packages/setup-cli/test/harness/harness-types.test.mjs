@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { defineHarnessProfile } from "../../lib/harness/engine.mjs";
-import { defineHarness } from "../../lib/harness/types.mjs";
+import { defineHarness, dispatchHarnessCommand } from "../../lib/harness/types.mjs";
 import { HARNESS } from "../../lib/harness/id.mjs";
 
 describe("defineHarness", () => {
@@ -39,6 +39,23 @@ describe("defineHarness", () => {
         resolveKey: async () => "",
       }),
       /Harness adapter id must be one of/,
+    );
+  });
+});
+
+describe("dispatchHarnessCommand", () => {
+  it("propagates an on cancellation outcome", async () => {
+    const adapter = defineHarness({
+      id: HARNESS.CLAUDE,
+      label: "Test",
+      on: async () => ({ cancelled: true }),
+      off: async () => {},
+      status: async () => {},
+      resolveKey: async () => "",
+    });
+    assert.deepEqual(
+      await dispatchHarnessCommand(adapter, { verb: "on" }, {}),
+      { cancelled: true },
     );
   });
 });

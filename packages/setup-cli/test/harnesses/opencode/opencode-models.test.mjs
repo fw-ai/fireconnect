@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildOpencodeModelEntry, opencodeConfigModelRef } from "../../../lib/harnesses/opencode/core.mjs";
+import {
+  buildOpencodeModelEntry,
+  opencodeConfigModelRef,
+} from "../../../lib/harnesses/opencode/core.mjs";
+import { lookupFireworksModelLimits } from "../../../lib/fireworks/model-specs.mjs";
 import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 
 describe("opencode model entries", () => {
@@ -24,6 +28,23 @@ describe("opencode model entries", () => {
     const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-fast-latest");
     assert.equal(entry.modalities, undefined);
     assert.equal(entry.name, "GLM 5.2 Fast (Latest)");
+  });
+
+  it("sets OpenCode limit.context/output for latest router aliases absent from models.dev", () => {
+    for (const modelId of [
+      "glm-fast-latest",
+      "glm-latest",
+      "accounts/fireworks/routers/glm-fast-latest",
+      "accounts/fireworks/routers/glm-latest",
+    ]) {
+      const limits = lookupFireworksModelLimits(modelId);
+      const entry = buildOpencodeModelEntry(modelId);
+      assert.deepEqual(entry.limit, {
+        context: limits.contextWindow,
+        output: limits.maxTokens,
+      }, modelId);
+      assert.ok(entry.limit.context >= 1_000_000, modelId);
+    }
   });
 
   it("uses models.dev-compatible full ids for catalog models", () => {

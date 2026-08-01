@@ -5,8 +5,9 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { fireconnectSecretId, findFireconnectProvider } from "../../../lib/harnesses/vscode/core.mjs";
-import { runCli, runCliJson, withTempHome } from "../../helpers.mjs";
+import { fireconnectSecretId, findFireconnectProvider, buildAzureModelEntry } from "../../../lib/harnesses/vscode/core.mjs";
+import { lookupAzureFoundryModelLimits } from "../../../lib/fireworks/azure-core.mjs";
+import { runCli, runCliJson, withTempHome, itIfSqlite } from "../../helpers.mjs";
 
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
 const AZURE_BASE_URL = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1";
@@ -31,9 +32,6 @@ function readStateSecret(vscodePath, secretId) {
   const raw = (r.stdout ?? "").replace(/\n$/, "");
   return raw || undefined;
 }
-
-const HAS_SQLITE = spawnSync("sqlite3", ["-version"], { encoding: "utf8" }).status === 0;
-const itIfSqlite = HAS_SQLITE ? it : it.skip;
 
 // Plaintext secret mode: the stored secret equals the raw key (no OS crypto),
 // and encryption is always "available" so `on` works headless.
@@ -64,6 +62,9 @@ describe("vscode azure harness", () => {
       assert.equal(provider.apiType, "chat-completions");
       assert.deepEqual(provider.models.map((m) => m.id), ["FW-MiniMax-M2.5"]);
       assert.equal(provider.models[0].url, AZURE_BASE_URL);
+      const limits = lookupAzureFoundryModelLimits("FW-MiniMax-M2.5");
+      assert.equal(provider.models[0].maxInputTokens, limits.contextWindow);
+      assert.equal(provider.models[0].maxOutputTokens, limits.maxTokens);
       assert.equal(readStateSecret(vscodePath, await azureSecretId(vscodePath)), AZURE_KEY);
     });
   });

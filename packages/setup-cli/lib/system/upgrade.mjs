@@ -11,6 +11,7 @@ import {
 } from "../harnesses/claude/core.mjs";
 import { readJsonIfExists } from "../io/json.mjs";
 import { promptYesNo } from "../auth/login/prompts.mjs";
+import { compareVersions } from "./release-notes.mjs";
 
 export const CLAUDE_UPGRADE_PROMPT = "Claude Code is currently connected through FireConnect.\n\n"
   + "FireConnect must temporarily restore your original Claude settings before upgrading.\n\n"
@@ -19,6 +20,25 @@ export const CLAUDE_UPGRADE_PROMPT = "Claude Code is currently connected through
 const NONINTERACTIVE_CLAUDE_UPGRADE_MESSAGE = "Claude Code is currently connected through FireConnect. "
   + "Run `fireconnect claude off`, then retry `fireconnect upgrade`, or set "
   + "`FIRECONNECT_AUTO_OFF_CLAUDE=1` to restore automatically.";
+
+/**
+ * Pre-v0.9 installs needed a Claude restore before git reset. From 0.9.0 on,
+ * harness settings are preserved across upgrade/reinstall — skip the prompt.
+ */
+export const CLAUDE_OFF_UPGRADE_BEFORE_VERSION = "0.9.0";
+
+/**
+ * @param {string} [installedVersion] FireConnect version currently on disk
+ * @returns {boolean}
+ */
+export function needsClaudeOffBeforeUpgrade(installedVersion = "") {
+  const version = String(installedVersion ?? "").trim().replace(/^v/i, "");
+  if (!version) {
+    // Unknown / ancient installs: keep the restore path (fail closed).
+    return true;
+  }
+  return compareVersions(version, CLAUDE_OFF_UPGRADE_BEFORE_VERSION) < 0;
+}
 
 /**
  * Combine the remembered enabled flag with evidence in Claude's managed files.
@@ -79,6 +99,9 @@ export async function inspectClaudeUpgradeState(home, {
  * Restore Claude before an update. Returns whether reset/install may proceed
  * and whether Claude was restored for the upgrade.
  *
+ * Only needed when upgrading from FireConnect &lt; 0.9.0. From 0.9.0 on, harness
+ * settings are left alone — this is a no-op that always proceeds.
+ *
  * @param {{
  *   home: string,
  *   adapter: { off: (ctx: object) => Promise<void> },
@@ -86,6 +109,7 @@ export async function inspectClaudeUpgradeState(home, {
  *   environment?: Record<string, string | undefined>,
  *   inspect?: typeof inspectClaudeUpgradeState,
  *   prompt?: typeof promptYesNo,
+ *   installedVersion?: string,
  * }} options
  */
 export async function runClaudeUpgradePreflight({
@@ -95,7 +119,12 @@ export async function runClaudeUpgradePreflight({
   environment = process.env,
   inspect = inspectClaudeUpgradeState,
   prompt = promptYesNo,
+  installedVersion = "",
 }) {
+  if (!needsClaudeOffBeforeUpgrade(installedVersion)) {
+    return { proceed: true, restored: false };
+  }
+
   const before = await inspect(home);
   if (!before.enabled) {
     return { proceed: true, restored: false };

@@ -28,6 +28,12 @@ describe("parseCli", () => {
     assert.equal(parsed.command, "upgrade");
   });
 
+  it("parses hidden finalize-install (install.sh / upgrade shared path)", () => {
+    const parsed = parseCli(["finalize-install"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "finalize-install");
+  });
+
   it("parses --version flag", () => {
     const parsed = parseCli(["--version"]);
     assert.equal(parsed.kind, "global");
@@ -118,6 +124,37 @@ describe("parseCli", () => {
     assert.equal(parsed.route.harnessId, "claude");
     assert.equal(parsed.ctx.main, "firerouter");
     assert.equal(parsed.ctx.anthropicKey, "sk-ant-test");
+  });
+
+  it("parses Claude's non-interactive onboarding opt-out", () => {
+    const parsed = parseCli(["claude", "on", "--non-interactive"]);
+    assert.equal(parsed.ctx.onboardingMode, "skip");
+  });
+
+  it("parses Claude's reusable interactive model wizard", () => {
+    const parsed = parseCli(["claude", "on", "--interactive"]);
+    assert.equal(parsed.ctx.onboardingMode, "prompt");
+  });
+
+  it("rejects contradictory onboarding modes while parsing", () => {
+    assert.throws(
+      () => parseCli(["claude", "on", "--interactive", "--non-interactive"]),
+      /cannot be used together/,
+    );
+  });
+
+  it("rejects --non-interactive on global commands", () => {
+    assert.throws(
+      () => parseCli(["status", "--non-interactive"]),
+      /applies only to `fireconnect claude on`/,
+    );
+  });
+
+  it("rejects --interactive on global commands", () => {
+    assert.throws(
+      () => parseCli(["status", "--interactive"]),
+      /applies only to `fireconnect claude on`/,
+    );
   });
 
   it("rejects retired flags and points at the current spelling", () => {

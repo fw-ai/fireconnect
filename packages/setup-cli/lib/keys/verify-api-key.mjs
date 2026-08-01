@@ -33,7 +33,19 @@ export async function verifyFireworksApiKey(apiKey, { gatewayUrl = "" } = {}) {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
   } catch (error) {
-    return { ok: false, reason: "network", email: "", accountId: "", status: 0, detail: error?.message ?? "fetch failed" };
+    const cause = error?.cause;
+    const causeDetail = [
+      cause?.code,
+      cause?.message,
+    ].filter(Boolean).join(": ");
+    return {
+      ok: false,
+      reason: "network",
+      email: "",
+      accountId: "",
+      status: 0,
+      detail: causeDetail || error?.message || "network request failed",
+    };
   }
 
   const email = response.headers.get("x-fireworks-developer-email") ?? "";

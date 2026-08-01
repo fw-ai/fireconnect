@@ -44,6 +44,7 @@ export const FIREWORKS_MODEL_SPECS = {
   },
   "kimi-k3": {
     label: "Kimi K3",
+    pricing: { input: 3.00, cachedInput: 0.30, output: 15.00 },
     vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
   },
   "kimi-k3-fast": {
@@ -116,6 +117,13 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 0.07, cachedInput: 0.035, output: 0.30 },
     vscode: { maxInputTokens: 131_072, maxOutputTokens: 32_768, vision: false, toolCalling: false },
   },
+  inkling: {
+    label: "Inkling",
+    pricing: { input: 1.00, cachedInput: 0.17, output: 4.05 },
+    vscode: { maxInputTokens: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+    api: { contextLength: 1_048_576, supportsImageInput: true },
+    modelsDev: false,
+  },
   "nemotron-3-ultra-nvfp4": {
     label: "NVIDIA Nemotron 3 Ultra NVFP4",
     vscode: { maxInputTokens: 262_144, maxOutputTokens: 32_768, vision: false, toolCalling: true },
@@ -141,6 +149,17 @@ export const ROUTER_SPEC_ALIASES = {
 };
 
 const KIMI_LATEST_BASE_CANDIDATES = ["kimi-k3", "kimi-k2p8-code", "kimi-k2p7-code"];
+const MINIMAX_LATEST_BASE_CANDIDATES = ["minimax-m3", "minimax-m2p7", "minimax-m2p5"];
+const QWEN_PLUS_LATEST_BASE_CANDIDATES = ["qwen3p7-plus", "qwen3p6-plus"];
+
+function resolveFirstCatalogCandidate(catalogCheck, candidates) {
+  for (const slug of candidates) {
+    if (catalogCheck(slug)) {
+      return slug;
+    }
+  }
+  return null;
+}
 
 function makeCatalogModelChecker(entryIds = null) {
   if (entryIds) {
@@ -150,18 +169,7 @@ function makeCatalogModelChecker(entryIds = null) {
 }
 
 function resolveKimiLatestBaseSlug(catalogCheck) {
-  for (const slug of KIMI_LATEST_BASE_CANDIDATES) {
-    if (catalogCheck(slug)) {
-      return slug;
-    }
-  }
-  return null;
-}
-
-/** True when Kimi K3 is listed in the warmed serverless catalog. */
-export function isKimiK3ServerlessAvailable() {
-  const catalogCheck = makeCatalogModelChecker();
-  return catalogCheck("kimi-k3") || catalogCheck("kimi-k3-fast");
+  return resolveFirstCatalogCandidate(catalogCheck, KIMI_LATEST_BASE_CANDIDATES);
 }
 
 /**
@@ -185,6 +193,16 @@ export function resolveRouterSpecAliasTarget(alias, entryIds = null) {
       return fastSpecSlugForBase(base, alias);
     }
     return ROUTER_SPEC_ALIASES[alias] ?? null;
+  }
+  if (alias === "minimax-latest") {
+    return resolveFirstCatalogCandidate(catalogCheck, MINIMAX_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
+  }
+  if (alias === "qwen-plus-latest") {
+    return resolveFirstCatalogCandidate(catalogCheck, QWEN_PLUS_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
   }
   return ROUTER_SPEC_ALIASES[alias] ?? null;
 }
@@ -261,6 +279,27 @@ export function appendLatestRouterSuffix(modelRef, label) {
   return / \(Latest\)$/i.test(trimmed) ? trimmed : `${trimmed} (Latest)`;
 }
 
+/**
+ * Human-readable label for a router entry from its resolved base model name.
+ * Used while building the catalog before the serverless cache is active.
+ * @param {string} routerId
+ * @param {string} baseDisplayName
+ * @param {{ pricingTier?: string }} [options]
+ * @returns {string}
+ */
+export function resolveRouterEntryDisplayName(routerId, baseDisplayName, { pricingTier } = {}) {
+  const shortId = specShortIdFromModelRef(routerId);
+  const label = stripViaFireworksSuffix(baseDisplayName);
+  if (shortId.endsWith("-turbo")) {
+    return appendLatestRouterSuffix(routerId, label);
+  }
+  const needsFastTier = shortId.endsWith("-fast-latest")
+    || shortId.endsWith("-fast")
+    || pricingTier === "fast";
+  const withTier = needsFastTier ? appendFastTierLabel(label) : label;
+  return appendLatestRouterSuffix(routerId, withTier);
+}
+
 function fastSpecSlugForBase(baseSlug, routerShortId) {
   if (FIREWORKS_MODEL_SPECS[routerShortId]) {
     return routerShortId;
@@ -311,15 +350,30 @@ export function isFireworksRoutedModelRef(modelRef) {
  */
 export function resolveFireworksModelLabel(modelRef) {
   const shortId = specShortIdFromModelRef(modelRef);
+  const routerSpec = FIREWORKS_MODEL_SPECS[shortId];
+  if (shortId.endsWith("-turbo") && routerSpec?.label) {
+    return routerSpec.label;
+  }
   const baseModelId = resolveLiveRouterBaseModelId(modelRef);
   if (!baseModelId) {
-    return null;
+    const aliasTarget = resolveRouterSpecAliasTarget(shortId);
+    if (!aliasTarget) {
+      return null;
+    }
+    const aliasSpec = FIREWORKS_MODEL_SPECS[aliasTarget];
+    if (!aliasSpec?.label) {
+      return null;
+    }
+    return resolveRouterEntryDisplayName(
+      routerCatalogIdCandidates(modelRef)[0] ?? `accounts/fireworks/routers/${shortId}`,
+      aliasSpec.label,
+    );
   }
 
   const baseEntry = lookupCatalogEntryById(baseModelId);
-  let label = baseEntry?.displayName
-    ? stripViaFireworksSuffix(baseEntry.displayName)
-    : FIREWORKS_MODEL_SPECS[specShortIdFromModelRef(baseModelId)]?.label ?? null;
+  const label = baseEntry?.displayName
+    ?? FIREWORKS_MODEL_SPECS[specShortIdFromModelRef(baseModelId)]?.label
+    ?? null;
   if (!label) {
     return null;
   }
@@ -327,11 +381,11 @@ export function resolveFireworksModelLabel(modelRef) {
   const routerPricing = routerCatalogIdCandidates(modelRef)
     .map((routerId) => lookupCachedServerlessPricing(routerId))
     .find(Boolean);
-  const needsFastTier = shortId.endsWith("-fast-latest")
-    || shortId.endsWith("-fast")
-    || routerPricing?.tier === "fast";
-  const withTier = needsFastTier ? appendFastTierLabel(label) : label;
-  return appendLatestRouterSuffix(modelRef, withTier);
+  return resolveRouterEntryDisplayName(
+    routerCatalogIdCandidates(modelRef)[0] ?? `accounts/fireworks/routers/${shortId}`,
+    label,
+    { pricingTier: routerPricing?.tier },
+  );
 }
 
 export function lookupModelSpec(modelRef) {
@@ -386,15 +440,25 @@ export function requiresFastTierPricing(modelRef) {
     || shortId.endsWith("-turbo");
 }
 
-/** Usable live cache pricing for a ref; fast routers reject standard-tier rates. */
+/** True when cached pricing tier matches what a model/router ref expects. */
+export function pricingMatchesModelRefTier(modelRef, pricing) {
+  if (!pricing) {
+    return false;
+  }
+  // Priority is opt-in at request time; never surface it in catalog or picker pricing.
+  if (pricing.tier === "priority") {
+    return false;
+  }
+  const wantsFast = requiresFastTierPricing(modelRef);
+  return wantsFast ? pricing.tier === "fast" : pricing.tier !== "fast";
+}
+
+/** Usable live cache pricing for a ref; tier must match the ref's expectations. */
 export function isUsableCachedServerlessPricing(modelRef, pricing) {
   if (!pricing || (pricing.input <= 0 && pricing.output <= 0)) {
     return false;
   }
-  if (requiresFastTierPricing(modelRef) && pricing.tier !== "fast") {
-    return false;
-  }
-  return true;
+  return pricingMatchesModelRefTier(modelRef, pricing);
 }
 
 /** Canonical cache keys for a model/router ref (short slug, full id, resolved spec). */
@@ -485,6 +549,39 @@ export const DEFAULT_FIREWORKS_MODEL_LIMITS = {
   maxTokens: 16_384,
   vision: false,
 };
+
+/** @param {{ vision?: boolean }} limits */
+export function fireworksInputModalities(limits) {
+  return limits?.vision ? ["text", "image"] : ["text"];
+}
+
+/** OpenCode provider.models modalities field, omitted when text-only. */
+export function opencodeModalitiesField(limits) {
+  if (!limits?.vision) {
+    return undefined;
+  }
+  return { input: fireworksInputModalities(limits) };
+}
+
+/** @param {{ contextWindow?: number, maxTokens?: number, vision?: boolean }} limits */
+export function hasRichFireworksLimits(limits) {
+  return limits.contextWindow !== DEFAULT_FIREWORKS_MODEL_LIMITS.contextWindow
+    || limits.maxTokens !== DEFAULT_FIREWORKS_MODEL_LIMITS.maxTokens
+    || limits.vision !== DEFAULT_FIREWORKS_MODEL_LIMITS.vision;
+}
+
+/**
+ * When models.dev is unavailable, static-spec catalog models are assumed listed
+ * there unless explicitly marked `modelsDev: false` (e.g. inkling).
+ * @param {string} modelRef
+ */
+export function assumedModelsDevListed(modelRef) {
+  const spec = lookupModelSpec(modelRef);
+  if (spec?.modelsDev === false) {
+    return false;
+  }
+  return Boolean(spec?.vscode);
+}
 
 /** Harness-neutral context and modality limits for a Fireworks model or router. */
 export function lookupFireworksModelLimits(modelRef) {

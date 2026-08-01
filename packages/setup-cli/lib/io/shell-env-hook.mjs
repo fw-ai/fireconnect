@@ -136,8 +136,8 @@ export async function removeShellEnvHook(home) {
  */
 export async function reconcileShellEnvHook(home) {
   const config = await readGlobalConfig(home);
-  // Baked literals no longer need the shell export; keep it for Claude websearch
-  // MCP (${FIREWORKS_API_KEY}) only — upgrade rebakes legacy env-ref configs.
+  // Claude websearch MCP and harness configs bake literals; no current consumer
+  // needs FIREWORKS_API_KEY in the shell. Codex may still need ANTHROPIC export.
   const includeFireworks = await needsFireworksShellExport(
     home,
     config.harnesses,

@@ -148,8 +148,10 @@ describe("configure to harness on propagation", () => {
     assert.notEqual(onResult.code, 0);
     assert.match(onResult.stderr, /sk-ant-/);
 
-    const globalConfig = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
-    assert.equal(globalConfig.anthropicApiKey ?? "", "");
+    await assert.rejects(
+      readFile(globalConfigPath(home), "utf8"),
+      { code: "ENOENT" },
+    );
   });
 
   it("on without --api-key does not overwrite global config", async () => {

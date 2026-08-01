@@ -5,7 +5,10 @@ import { HARNESSES } from "../harness/id.mjs";
 import { parseDemoArgs } from "../demo/parse-demo-args.mjs";
 import { withSuggestion } from "../ui.mjs";
 
-const GLOBAL_COMMANDS = new Set(["login", "logout", "status", "model", "configure", "uninstall", "upgrade", "help", "key", "banner"]);
+const GLOBAL_COMMANDS = new Set([
+  "login", "logout", "status", "model", "configure", "uninstall", "upgrade",
+  "help", "key", "banner", "finalize-install",
+]);
 // `key export` is internal plumbing (apiKeyHelper + shell hooks), not a
 // user-facing command; the `key` namespace is intentionally undocumented.
 const KEY_SUBCOMMANDS = new Set(["export"]);
@@ -37,6 +40,7 @@ const KNOWN_FLAGS = [
   "--db-path", "--vscode-path", "--force", "--stored-only",
   "--last-n", "--plain", "--verbose", "--routing-preference", "--session",
   "--account", "--anthropic", "--paste", "--revoke", "--with-token",
+  "--interactive", "--non-interactive",
 ];
 
 function helpHint(harnessId = "") {
@@ -96,6 +100,7 @@ export function createBaseContext() {
     revoke: false,
     paste: false,
     account: "",
+    onboardingMode: "auto",
   };
 }
 
@@ -143,6 +148,18 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--account": ctx.account = requireValue(arg, next); return true;
     case "--revoke": ctx.revoke = true; return false;
     case "--anthropic": ctx.anthropic = true; return false;
+    case "--interactive":
+      if (ctx.onboardingMode === "skip") {
+        throw new Error("--interactive and --non-interactive cannot be used together");
+      }
+      ctx.onboardingMode = "prompt";
+      return false;
+    case "--non-interactive":
+      if (ctx.onboardingMode === "prompt") {
+        throw new Error("--interactive and --non-interactive cannot be used together");
+      }
+      ctx.onboardingMode = "skip";
+      return false;
     case "--home": ctx.home = requireValue(arg, next); return true;
     case "--settings-path": ctx.settingsPath = requireValue(arg, next); return true;
     case "--config-path": ctx.configPath = requireValue(arg, next); return true;
@@ -318,6 +335,10 @@ export function parseCli(argv) {
   // Bare `fireconnect` opens the interactive launcher (which falls back to
   // help when not attached to a TTY). Help stays reachable via `help`/`--help`.
   if (positional.length === 0) {
+    if (ctx.onboardingMode !== "auto") {
+      const flag = ctx.onboardingMode === "prompt" ? "--interactive" : "--non-interactive";
+      throw new Error(`${flag} applies only to \`fireconnect claude on\`. Run: fireconnect help`);
+    }
     return { kind: "global", command: "launcher", ctx };
   }
 
@@ -339,6 +360,10 @@ export function parseCli(argv) {
   }
 
   if (GLOBAL_COMMANDS.has(first)) {
+    if (ctx.onboardingMode !== "auto") {
+      const flag = ctx.onboardingMode === "prompt" ? "--interactive" : "--non-interactive";
+      throw new Error(`${flag} applies only to \`fireconnect claude on\`. Run: fireconnect help`);
+    }
     if (first === "key") {
       const subcommand = rest[0];
       if (!subcommand || !KEY_SUBCOMMANDS.has(subcommand)) {

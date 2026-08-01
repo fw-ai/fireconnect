@@ -1,66 +1,50 @@
-import { writeFileAtomic } from "../io/atomic-write.mjs";
-import { readFile, mkdir, unlink } from "node:fs/promises";
-import path from "node:path";
+import process from "node:process";
+
+import {
+  patchUpdateCache,
+  readUpdateCache,
+  releaseUpdateLock,
+} from "./update-cache.mjs";
 
 const REMOTE_URL =
   "https://raw.githubusercontent.com/fw-ai/fireconnect/main/packages/setup-cli/package.json";
-
-function cachePath(home) {
-  return path.join(home, ".fireconnect", "update-check.json");
-}
-
-function lockPath(home) {
-  return path.join(home, ".fireconnect", "update-check.lock");
-}
-
-async function readExistingCache(home) {
-  try {
-    const raw = await readFile(cachePath(home), "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function writeCache(home, payload) {
-  const filePath = cachePath(home);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFileAtomic(filePath, JSON.stringify(payload));
-}
-
-async function releaseLock(home) {
-  try {
-    await unlink(lockPath(home));
-  } catch {
-    // Lock may already be gone.
-  }
-}
 
 async function main() {
   const home = process.env.HOME ?? "";
   if (!home) return;
 
-  const existing = await readExistingCache(home);
+  // Snapshot only for the "already know a version" failure short-circuit.
+  // Successful writes always re-read via patchUpdateCache so a concurrent
+  // decline's snooze fields are not dropped.
+  const hadLatestAtStart = Boolean(readUpdateCache(home)?.latestVersion);
   const checkedAt = Date.now();
-  const latestVersion = existing?.latestVersion ?? null;
 
   try {
     const res = await fetch(REMOTE_URL, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error("fetch failed");
     const { version } = await res.json();
     if (!version) throw new Error("missing version");
-    await writeCache(home, { checkedAt, latestVersion: version });
+    await patchUpdateCache(home, {
+      checkedAt,
+      latestVersion: version,
+      // Clear sticky failure so the next spawn uses the 24h TTL again.
+      fetchFailed: false,
+    });
   } catch {
-    if (!latestVersion) {
+    if (!hadLatestAtStart && !readUpdateCache(home)?.latestVersion) {
       try {
-        await writeCache(home, { checkedAt, latestVersion: null, fetchFailed: true });
+        await patchUpdateCache(home, {
+          checkedAt,
+          latestVersion: null,
+          fetchFailed: true,
+        });
       } catch {
         // Silent — main CLI must never be affected.
       }
     }
     // Keep existing cache when we already know a version but fetch failed.
   } finally {
-    await releaseLock(home);
+    releaseUpdateLock(home);
   }
 }
 

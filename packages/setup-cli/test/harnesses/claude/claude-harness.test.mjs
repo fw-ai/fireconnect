@@ -15,7 +15,7 @@ import {
 } from "../../../lib/harnesses/claude/core.mjs";
 import { resolveClaudeAuthState } from "../../../lib/harnesses/claude/index.mjs";
 import { readGlobalConfig } from "../../../lib/config/global-config.mjs";
-import { runFireconnect, writeClaudeSettings } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, runFireconnect, writeClaudeSettings, assertClaudeMainModel } from "../../helpers.mjs";
 import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 
 describe("claude harness integration", () => {
@@ -70,15 +70,15 @@ describe("claude harness integration", () => {
     assert.match(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /X-Fireworks-Api-Key: fw_test_key_12345/);
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /User-Agent:/);
     assert.match(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /X-Title: Claude Code/);
-    assert.match(
+    assert.ok(
+      enabled.env.ANTHROPIC_CUSTOM_HEADERS.includes(`HTTP-Referer: ${FIRECONNECT_REFERER}`),
       enabled.env.ANTHROPIC_CUSTOM_HEADERS,
-      /HTTP-Referer: fireconnect\/v0\.9\.0/,
     );
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /X-FireRouter-Harness|Fireworks-Use-Case/);
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
     assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-original");
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
-    assert.equal(enabled.env.ANTHROPIC_MODEL, "firerouter[1m]");
+    assertClaudeMainModel(enabled, "firerouter[1m]");
     assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "glm-fast-latest[1m]");
     assert.equal(enabled.env.DISABLE_TELEMETRY, "1");
     assert.equal(enabled.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
@@ -139,7 +139,7 @@ describe("claude harness integration", () => {
     assert.equal(enabled.apiKeyHelper, "/usr/local/bin/user-anthropic-key-helper");
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, "sk-ant-native-auth-token");
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
-    assert.equal(enabled.env.ANTHROPIC_MODEL, "firerouter[1m]");
+    assertClaudeMainModel(enabled, "firerouter[1m]");
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
   });
 
@@ -164,7 +164,7 @@ describe("claude harness integration", () => {
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(enabled.apiKeyHelper, "/usr/local/bin/user-anthropic-key-helper");
-    assert.equal(enabled.env.ANTHROPIC_MODEL, "firerouter[1m]");
+    assertClaudeMainModel(enabled, "firerouter[1m]");
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
   });
@@ -188,7 +188,7 @@ describe("claude harness integration", () => {
 
     const enabled = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-native-flag");
-    assert.equal(enabled.env.ANTHROPIC_MODEL, "firerouter[1m]");
+    assertClaudeMainModel(enabled, "firerouter[1m]");
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
   });
 
@@ -440,7 +440,7 @@ describe("claude harness integration", () => {
     assert.equal(afterSecondOff.env.ANTHROPIC_BASE_URL, "https://api.anthropic.com");
   });
 
-  it("warns when configured mapping includes text-only models", async () => {
+  it("prints one compact warning for text-only models", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-vision-warn-"));
     const result = await runFireconnect(
       [
@@ -456,8 +456,11 @@ describe("claude harness integration", () => {
       },
     );
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /deepseek-v4-flash and glm-fast-latest are text-only/);
-    assert.match(result.stdout, /\/rewind/);
+    assert.match(
+      result.stdout,
+      /Text-only: deepseek-v4-flash, glm-fast-latest · Avoid images; recover with \/rewind\./,
+    );
+    assert.doesNotMatch(result.stdout, /Claude Code cannot mark models as text-only/);
   });
 
   it("status labels model slots with vision capability", async () => {
@@ -559,16 +562,16 @@ describe("fireworksModelPickerName", () => {
     const mapping = {
       main: "firerouter",
       opus: "glm-fast-latest",
-      sonnet: "kimi-fast-latest",
+      sonnet: "glm-fast-latest",
       haiku: "deepseek-v4-flash",
-      fable: "glm-fast-latest",
+      fable: "kimi-fast-latest",
       subagent: "deepseek-v4-flash",
     };
     const env = syncFireworksModelDisplay({}, mapping);
     assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "Kimi K2.7 Code Fast (Latest)");
+    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.2 Fast (Latest)");
     assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash");
-    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "GLM 5.2 Fast (Latest)");
+    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K2.7 Code Fast (Latest)");
     assert.equal(env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
     assert.match(env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION, /GLM 5\.2 Fast/);
   });

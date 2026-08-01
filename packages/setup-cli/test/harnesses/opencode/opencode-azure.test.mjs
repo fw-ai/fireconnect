@@ -61,7 +61,10 @@ describe("opencode azure harness", () => {
       assert.equal(provider.options.baseURL, AZURE_BASE_URL);
       assert.equal(provider.options.apiKey, AZURE_KEY);
       assert.equal(config.model, `${OPENCODE_AZURE_PROVIDER_ID}/FW-GLM-5.2`);
-      assert.ok(provider.models["FW-GLM-5.2"]);
+      assert.deepEqual(provider.models["FW-GLM-5.2"].limit, {
+        context: 1_048_575,
+        output: 131_072,
+      });
       assert.equal(config.provider[OPENCODE_FIREWORKS_PROVIDER_ID], undefined);
 
       // A literal key is stored in opencode.json, so it must be owner-only (0600):
@@ -91,6 +94,7 @@ describe("opencode azure harness", () => {
       const provider = config.provider[OPENCODE_AZURE_PROVIDER_ID];
       assert.equal(provider.options.baseURL, "https://r.services.ai.azure.com/openai/v1");
       assert.equal(config.model, `${OPENCODE_AZURE_PROVIDER_ID}/FW-MiniMax-M2.5`);
+      assert.equal(provider.models["FW-MiniMax-M2.5"].limit.context, 196_608);
     });
   });
 
