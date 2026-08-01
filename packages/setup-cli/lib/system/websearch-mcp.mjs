@@ -13,6 +13,7 @@ import { printWebsearchOnStep } from "./websearch-install-guide.mjs";
 import {
   disableWebsearchMcpForHarness,
   enableWebsearchMcpForHarness,
+  harnessWebsearchMcpEnabled,
   websearchMcpEntryForHarness,
 } from "./websearch-harness.mjs";
 
@@ -33,10 +34,40 @@ export const WEBSEARCH_FEATURE_FLAG_ID = "allow-search-gateway";
 
 /**
  * FireConnect-managed MCP entry for Claude (~/.claude.json).
+ * Prefer passing `apiKey` so the Authorization header is a baked Bearer token
+ * (same as `claude mcp add --header`).
+ * @param {string} [apiKey]
  * @returns {{ type: string, url: string, headers: Record<string, string> }}
  */
-export function websearchMcpServerEntry() {
-  return websearchMcpEntryForHarness(HARNESS.CLAUDE);
+export function websearchMcpServerEntry(apiKey = "") {
+  return websearchMcpEntryForHarness(HARNESS.CLAUDE, apiKey);
+}
+
+/**
+ * Rebake an existing managed websearch MCP entry to a literal Bearer token.
+ * No-op when the managed server is absent (does not install / feature-flag check).
+ * Also reconciles the shell hook so a legacy FIREWORKS export is removed.
+ *
+ * @param {string} home
+ * @param {string} apiKey
+ * @param {import("../harness/id.mjs").HarnessId} [harnessId]
+ * @returns {Promise<boolean>} true when the MCP entry changed
+ */
+export async function refreshWebsearchMcpAuth(home, apiKey, harnessId = HARNESS.CLAUDE) {
+  const token = apiKey?.trim() ?? "";
+  if (!home || !token) {
+    return false;
+  }
+  if (!await harnessWebsearchMcpEnabled(home, harnessId)) {
+    return false;
+  }
+  const result = await enableWebsearchMcpForHarness(home, harnessId, { apiKey: token });
+  try {
+    await reconcileShellEnvHook(home);
+  } catch {
+    // Best-effort.
+  }
+  return result.changed;
 }
 
 /**
@@ -44,8 +75,18 @@ export function websearchMcpServerEntry() {
  * @param {import("../harness/id.mjs").HarnessId} [harnessId]
  * @param {{ apiKey?: string }} [options]
  */
-export async function enableWebsearchMcp(home, harnessId = HARNESS.CLAUDE) {
-  const result = await enableWebsearchMcpForHarness(home, harnessId);
+export async function enableWebsearchMcp(home, harnessId = HARNESS.CLAUDE, options = {}) {
+  let apiKey = options.apiKey?.trim() ?? "";
+  if (!apiKey) {
+    try {
+      apiKey = await exportFireworksApiKey(home, { storedOnly: false });
+    } catch {
+      apiKey = "";
+    }
+  }
+  const result = await enableWebsearchMcpForHarness(home, harnessId, { apiKey });
+  // Reconcile may remove a legacy FIREWORKS_API_KEY shell hook that older
+  // installs needed for `${FIREWORKS_API_KEY}` MCP header substitution.
   await reconcileShellEnvHook(home);
   return result;
 }
@@ -120,7 +161,7 @@ export async function syncWebsearchMcp(home, {
     return leaveWebsearchMcp(home, harnessId, { installed: false, reason: "flag-disabled" });
   }
 
-  const result = await enableWebsearchMcp(home, harnessId);
+  const result = await enableWebsearchMcp(home, harnessId, { apiKey: resolvedKey });
   const syncResult = { installed: true, reason: "", filePath: result.filePath, changed: result.changed };
   if (!quiet) {
     await printWebsearchOnStep(syncResult, home);

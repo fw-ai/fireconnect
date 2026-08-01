@@ -151,6 +151,52 @@ existing_fireconnect_cli() {
   fi
 }
 
+# Print the durable-install FireConnect version (empty when unknown).
+# Keep the threshold in sync with CLAUDE_OFF_UPGRADE_BEFORE_VERSION in
+# packages/setup-cli/lib/system/upgrade.mjs.
+installed_fireconnect_version() {
+  local pkg="${HOME}/.fireconnect/cli/packages/setup-cli/package.json"
+  if [[ ! -f "${pkg}" ]]; then
+    return 0
+  fi
+  # Use `node -` (argv[2]=path) like the other helpers in this file — not
+  # `node -p`/`-e`, whose argv layout differs across Node versions.
+  node - "${pkg}" <<'NODE'
+const fs = require("node:fs");
+const pkgPath = process.argv[2];
+try {
+  const version = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version || "";
+  process.stdout.write(String(version));
+} catch {
+  // Leave stdout empty on parse/IO failure.
+}
+NODE
+}
+
+# Exit 0 when Claude-off preflight is still required (installed < 0.9.0 or unknown).
+# From FireConnect 0.9.0 on, harness settings are preserved across upgrade.
+needs_claude_off_before_upgrade() {
+  local version="${1:-}"
+  node - "${version}" "0.9.0" <<'NODE'
+const raw = (value) => String(value ?? "").trim().replace(/^v/i, "");
+const parts = (value) => raw(value).split(".").slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+const left = raw(process.argv[2]);
+const right = raw(process.argv[3]);
+if (!left) {
+  process.exit(0);
+}
+const leftParts = parts(left);
+const rightParts = parts(right);
+for (let index = 0; index < 3; index += 1) {
+  const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+  if (difference !== 0) {
+    process.exit(difference < 0 ? 0 : 1);
+  }
+}
+process.exit(1);
+NODE
+}
+
 # Exit 0 when Claude is still FireConnect-managed, 1 when it is not, and 2
 # when the state cannot be inspected safely.
 claude_is_fireconnect_enabled() {
@@ -286,6 +332,14 @@ preflight_existing_install() {
   local installed_cli
   installed_cli="$(existing_fireconnect_cli)"
   if [[ -z "${installed_cli}" ]]; then
+    return
+  fi
+
+  # FireConnect >= 0.9.0 preserves harness settings across reinstall/upgrade —
+  # never prompt to disable Claude (or any other harness).
+  local installed_version
+  installed_version="$(installed_fireconnect_version)"
+  if ! needs_claude_off_before_upgrade "${installed_version}"; then
     return
   fi
 
@@ -496,6 +550,14 @@ main() {
 
   install_progress "Installing CLI..."
   install_cli_launcher
+
+  # Shared with `fireconnect upgrade`: deps repair, key-storage probe, rebake
+  # enabled harness keys + websearch MCP Bearer, shell-hook reconcile.
+  # Best-effort — never abort after the launcher is already on disk.
+  install_progress "Finalizing install..."
+  if ! node "${CLI}" finalize-install; then
+    install_note "Post-install finalize skipped (non-fatal). Run: fireconnect upgrade"
+  fi
 
   local banner_script
   banner_script="$(dirname "${CLI}")/fireconnect-banner.mjs"

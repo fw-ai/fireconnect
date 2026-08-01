@@ -138,8 +138,8 @@ describe("deepagents harness integration", () => {
     assert.equal(onResult.code, 0);
 
     const enabled = await readFile(configPath, "utf8");
-    assert.match(enabled, /default = "fireworks:glm-fast-latest"/);
-    assert.match(enabled, /models = \["glm-fast-latest"\]/);
+    assert.match(enabled, /default = "fireworks:kimi-fast-latest"/);
+    assert.match(enabled, /models = \["kimi-fast-latest"\]/);
     assert.match(enabled, /\[models\.providers\.fireworks\]/);
     assert.match(enabled, /base_url = "https:\/\/api\.fireworks\.ai\/inference"/);
     assert.match(enabled, /api_key = "fw_test_key_12345"/);
@@ -171,7 +171,7 @@ describe("deepagents harness integration", () => {
 
       const onResult = await runFireconnect(["deepagents", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(onResult.code, 0);
-      assert.match(onResult.stdout, /Deep Agents → Fireworks · glm-fast-latest/);
+      assert.match(onResult.stdout, /Deep Agents → Fireworks · kimi-fast-latest/);
 
       const config = await readFile(deepagentsConfigPath(home), "utf8");
       assert.match(config, /api_key = "fw_test_key_12345"/);
@@ -186,7 +186,7 @@ describe("deepagents harness integration", () => {
       const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
       const onResult = await runFireconnect(["deepagents", "on"], env);
       assert.equal(onResult.code, 0);
-      assert.match(onResult.stdout, /Deep Agents → Fireworks · glm-fast-latest/);
+      assert.match(onResult.stdout, /Deep Agents → Fireworks · kimi-fast-latest/);
 
       const config = await readFile(deepagentsConfigPath(home), "utf8");
       assert.match(config, /api_key = "fw_test_key_12345"/);
@@ -258,7 +258,7 @@ describe("deepagents harness integration", () => {
 
     const enabled = await readFile(configPath, "utf8");
     assert.equal((enabled.match(/^\[models\]$/gm) || []).length, 1);
-    assert.match(enabled, /default = "fireworks:glm-fast-latest"/);
+    assert.match(enabled, /default = "fireworks:kimi-fast-latest"/);
 
     const offResult = await runFireconnect(["deepagents", "off"], { HOME: home });
     assert.equal(offResult.code, 0);
@@ -320,7 +320,7 @@ describe("deepagents harness integration", () => {
     assert.equal(payload.harness, "deepagents");
     assert.equal(payload.provider, "fireworks");
     assert.equal(payload.apiKeyMode, "literal");
-    assert.equal(payload.current.main, "glm-fast-latest");
+    assert.equal(payload.current.main, "kimi-fast-latest");
 
     const off = await runFireconnect(["deepagents", "off"], {
       HOME: home,

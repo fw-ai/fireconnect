@@ -8,7 +8,9 @@ import {
   normalizeModelId,
 } from "../../lib/fireworks/model-id.mjs";
 import {
+  anthropicKeyPromptCopy,
   buildClaudeCustomHeaders,
+  evaluateAnthropicKeyPrompt,
   firerouterByokHeaders,
   firerouterStatusFromEnv,
   resolveFirerouterByokKeys,
@@ -172,6 +174,35 @@ describe("firerouter routing plan", () => {
     assert.match(
       firerouterCredentialsRequiredMessage({ byok: "none" }),
       /Ask the Fireworks team to enable FireRouter/,
+    );
+  });
+
+  it("distinguishes required Claude auth copy from optional BYOK copy", () => {
+    const required = anthropicKeyPromptCopy({ explicit: true, allowSkip: false });
+    assert.match(required.intro, /requires an Anthropic API key/);
+    assert.match(required.prompt, /required/);
+    assert.doesNotMatch(`${required.intro} ${required.prompt} ${required.invalid}`, /skip/i);
+
+    const optional = anthropicKeyPromptCopy({ explicit: true, allowSkip: true });
+    assert.match(optional.prompt, /Enter to skip/);
+  });
+
+  it("retries empty and malformed required Anthropic keys", () => {
+    assert.deepEqual(
+      evaluateAnthropicKeyPrompt("", { allowSkip: false }),
+      { key: "", retry: true },
+    );
+    assert.deepEqual(
+      evaluateAnthropicKeyPrompt("not-a-key", { allowSkip: false }),
+      { key: "", retry: true },
+    );
+    assert.deepEqual(
+      evaluateAnthropicKeyPrompt("", { allowSkip: true }),
+      { key: "", retry: false },
+    );
+    assert.deepEqual(
+      evaluateAnthropicKeyPrompt("sk-ant-valid", { allowSkip: false }),
+      { key: "sk-ant-valid", retry: false },
     );
   });
 

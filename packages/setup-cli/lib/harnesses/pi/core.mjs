@@ -20,10 +20,12 @@ import {
   AZURE_API_KEY_ENV,
   AZURE_PROVIDER_LABEL,
   DEFAULT_AZURE_MODEL,
+  lookupAzureFoundryModelLimits,
   MISSING_AZURE_API_KEY_MESSAGE,
   MISSING_AZURE_BASE_URL_MESSAGE,
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
+import { fireworksInputModalities } from "../../fireworks/model-specs.mjs";
 import { warmServerlessPricingCache } from "../../fireworks/models.mjs";
 import {
   managedPiFireworksModelIds,
@@ -300,6 +302,22 @@ export function piAzureCurrentModelId(settings) {
   return null;
 }
 
+/**
+ * Build a Pi models.json entry for a Microsoft Foundry deployment.
+ * Foundry deployment names are absent from Pi's built-in catalog, so
+ * contextWindow/maxTokens must come from the mapped Fireworks model specs.
+ * @param {string} deploymentName
+ */
+export function buildPiAzureModelEntry(deploymentName) {
+  const limits = lookupAzureFoundryModelLimits(deploymentName);
+  return {
+    id: deploymentName,
+    input: fireworksInputModalities(limits),
+    contextWindow: limits.contextWindow,
+    maxTokens: limits.maxTokens,
+  };
+}
+
 function mergePiAzureProvider(config, { baseUrl, apiKey, modelId }) {
   const next = config && typeof config === "object"
     ? structuredClone(config)
@@ -311,7 +329,7 @@ function mergePiAzureProvider(config, { baseUrl, apiKey, modelId }) {
     api: "openai-completions",
     authHeader: true,
     apiKey,
-    models: [{ id: modelId }],
+    models: [buildPiAzureModelEntry(modelId)],
   };
   return next;
 }

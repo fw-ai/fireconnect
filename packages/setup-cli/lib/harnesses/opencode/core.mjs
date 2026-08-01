@@ -9,11 +9,13 @@ import {
   AZURE_PROVIDER_LABEL,
   DEFAULT_AZURE_MODEL,
   effectiveAzureApiKey,
+  lookupAzureFoundryModelLimits,
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
 import {
   DEFAULT_FIREPASS_MAIN_MODEL,
   defaultMainModel,
+  fireworksModelSlug,
   fullFireworksResourceId,
   isFirerouterModel,
   normalizeModelId,
@@ -21,12 +23,20 @@ import {
 } from "../../fireworks/model-id.mjs";
 import {
   appendLatestRouterSuffix,
+  assumedModelsDevListed,
+  hasRichFireworksLimits,
   lookupFireworksModelLimits,
   lookupModelSpec,
+  opencodeModalitiesField,
   resolveFireworksModelLabel,
   ROUTER_SPEC_ALIASES,
 } from "../../fireworks/model-specs.mjs";
 import { prettyModelName } from "../../fireworks/models.mjs";
+import {
+  modelsDevRegistryStatus,
+  refreshModelsDevFireworksRegistry,
+} from "../../fireworks/models-dev-registry.mjs";
+import { lookupCachedContextLength } from "../../fireworks/serverless-catalog-cache.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import {
   detectApiKeyType,
@@ -75,9 +85,9 @@ export const OPENCODE_AZURE_PROVIDER_ID = "fireworks-azure";
 
 /**
  * Whether FireConnect should write a provider.models entry for this model.
- * FireRouter and ROUTER_SPEC_ALIASES "latest" routers are absent from models.dev
- * and need provider overrides for display names and modalities. Standard catalog
- * entries only need config.model.
+ * FireRouter, ROUTER_SPEC_ALIASES "latest" routers, and catalog models absent
+ * from models.dev need provider overrides (display name, modalities, limits).
+ * Standard catalog entries on models.dev only need config.model.
  * @param {string} modelId
  */
 export function opencodeNeedsProviderModelOverride(modelId) {
@@ -87,8 +97,31 @@ export function opencodeNeedsProviderModelOverride(modelId) {
   if (isFirerouterModel(modelId)) {
     return true;
   }
-  const stored = shortFireworksModelRef(normalizeModelId(modelId));
-  return Object.hasOwn(ROUTER_SPEC_ALIASES, stored);
+  const slug = fireworksModelSlug(normalizeModelId(modelId));
+  if (Object.hasOwn(ROUTER_SPEC_ALIASES, slug)) {
+    return true;
+  }
+
+  const canonical = fullFireworksResourceId(modelId);
+  if (!canonical.startsWith("accounts/fireworks/")) {
+    return false;
+  }
+
+  const limits = lookupFireworksModelLimits(modelId);
+  if (!hasRichFireworksLimits(limits)) {
+    return false;
+  }
+
+  const registryStatus = modelsDevRegistryStatus(canonical);
+  if (registryStatus === "present") {
+    return false;
+  }
+  if (registryStatus === "absent") {
+    return true;
+  }
+
+  // Registry unavailable: override serverless-catalog models not assumed on models.dev.
+  return Boolean(lookupCachedContextLength(canonical)) && !assumedModelsDevListed(modelId);
 }
 
 /**
@@ -220,17 +253,54 @@ export function opencodeAuthKeyMode(storedRef) {
  * Build an OpenCode `provider.models` entry for a Fireworks model id.
  * Vision-capable models (including latest router aliases and FireRouter)
  * get image input modalities from the shared Fireworks model specs.
+ * Latest router aliases are absent from models.dev, so limit.context/output
+ * must be set explicitly or OpenCode falls back to ~128k.
  * @param {string} modelId
- * @returns {{ name: string, modalities?: { input: string[] } }}
+ * @returns {{ name: string, limit: { context: number, output: number }, modalities?: { input: string[] } }}
  */
 export function buildOpencodeModelEntry(modelId) {
   const normalized = normalizeModelId(modelId);
   const limits = lookupFireworksModelLimits(normalized);
-  const entry = { name: opencodeFireworksDisplayName(normalized) };
-  if (limits.vision) {
-    entry.modalities = { input: ["text", "image"] };
+  const entry = {
+    name: opencodeFireworksDisplayName(normalized),
+    limit: {
+      context: limits.contextWindow,
+      output: limits.maxTokens,
+    },
+  };
+  const modalities = opencodeModalitiesField(limits);
+  if (modalities) {
+    entry.modalities = modalities;
   }
   return entry;
+}
+
+/**
+ * Build an OpenCode `provider.models` entry for a Microsoft Foundry deployment.
+ * Foundry deployment names (FW-GLM-5.2, etc.) are absent from models.dev, so
+ * limit.context/output must be set from the mapped Fireworks model specs.
+ * @param {string} deploymentName
+ * @returns {{ name: string, limit: { context: number, output: number }, modalities?: { input: string[] } }}
+ */
+export function buildOpencodeAzureModelEntry(deploymentName) {
+  const limits = lookupAzureFoundryModelLimits(deploymentName);
+  const entry = {
+    name: deploymentName,
+    limit: {
+      context: limits.contextWindow,
+      output: limits.maxTokens,
+    },
+  };
+  const modalities = opencodeModalitiesField(limits);
+  if (modalities) {
+    entry.modalities = modalities;
+  }
+  return entry;
+}
+
+/** Canonical `provider.models` key — collapses full resource ids and legacy prefixed refs. */
+export function opencodeProviderModelKey(modelId) {
+  return fireworksModelSlug(normalizeModelId(modelId));
 }
 
 function homeFromDataDir(dataDir) {
@@ -255,6 +325,8 @@ export async function enableOpencodeFireworks({
   if (!apiKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
+
+  await refreshModelsDevFireworksRegistry();
 
   const snapshot = await readRawIfExists(configPath);
   let config = {};
@@ -354,7 +426,7 @@ export async function enableOpencodeFireworks({
         continue;
       }
       const normalized = normalizeModelId(id);
-      const stored = shortFireworksModelRef(normalized);
+      const stored = opencodeProviderModelKey(normalized);
       if (stored) {
         out[stored] = buildOpencodeModelEntry(normalized);
       }
@@ -373,11 +445,12 @@ export async function enableOpencodeFireworks({
         continue;
       }
       const normalized = normalizeModelId(id);
-      const stored = shortFireworksModelRef(normalized);
+      const stored = opencodeProviderModelKey(id);
       models[stored] = buildOpencodeModelEntry(normalized);
     }
-    if (storedModel && opencodeNeedsProviderModelOverride(storedModel) && !models[storedModel]) {
-      models[storedModel] = buildOpencodeModelEntry(storedModel);
+    const activeModelKey = opencodeProviderModelKey(storedModel);
+    if (storedModel && opencodeNeedsProviderModelOverride(storedModel) && !models[activeModelKey]) {
+      models[activeModelKey] = buildOpencodeModelEntry(storedModel);
     }
   }
   provider[OPENCODE_FIREWORKS_PROVIDER_ID] = {
@@ -470,7 +543,7 @@ export async function enableOpencodeAzure({
     },
     models: {
       ...(existing.models ?? {}),
-      [resolvedModel]: { name: resolvedModel },
+      [resolvedModel]: buildOpencodeAzureModelEntry(resolvedModel),
     },
   };
 

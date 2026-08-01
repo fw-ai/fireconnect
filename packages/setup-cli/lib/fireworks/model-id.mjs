@@ -1,6 +1,5 @@
 import {
   FIREWORKS_MODEL_SPECS,
-  isKimiK3ServerlessAvailable,
   ROUTER_SPEC_ALIASES,
 } from "./model-specs.mjs";
 
@@ -12,14 +11,13 @@ export const GLM_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/glm-latest";
 export const GLM_FAST_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/glm-fast-latest";
-export const DEFAULT_FIREPASS_MAIN_MODEL = "glm-fast-latest";
-export const DEFAULT_MAIN_MODEL = "glm-fast-latest";
-export const KIMI_FAST_LATEST_MAIN_MODEL = "kimi-fast-latest";
+export const KIMI_FAST_LATEST_ROUTER_ID =
+  "accounts/fireworks/routers/kimi-fast-latest";
+export const DEFAULT_MAIN_MODEL = "kimi-fast-latest";
+export const DEFAULT_FIREPASS_MAIN_MODEL = DEFAULT_MAIN_MODEL;
 
 export function resolveDefaultMainModel() {
-  return isKimiK3ServerlessAvailable()
-    ? KIMI_FAST_LATEST_MAIN_MODEL
-    : DEFAULT_MAIN_MODEL;
+  return DEFAULT_MAIN_MODEL;
 }
 
 const FIREWORKS_ROUTER_SHORT_IDS = new Set([

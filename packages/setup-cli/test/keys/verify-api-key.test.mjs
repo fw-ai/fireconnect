@@ -87,6 +87,7 @@ describe("verifyFireworksApiKey", () => {
     assert.equal(r.reason, "network");
     assert.equal(r.status, 0);
     assert.ok(r.detail, "network failures must carry a detail message");
+    assert.notEqual(r.detail, "fetch failed", "surface the underlying network cause");
   });
 });
 

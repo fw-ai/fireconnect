@@ -48,7 +48,7 @@ describe("shell-env-hook", () => {
     assert.doesNotMatch(stripped, /fireconnect/);
   });
 
-  it("reconcileShellEnvHook installs when websearch MCP is enabled", async () => {
+  it("reconcileShellEnvHook does not install FIREWORKS export for websearch MCP", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-sync-on-"));
     process.env.HOME = home;
     process.env.SHELL = "/bin/zsh";
@@ -59,16 +59,22 @@ describe("shell-env-hook", () => {
       const { WEBSEARCH_MCP_SERVER_NAME } = await import("../../lib/system/websearch-state.mjs");
       await writeFile(
         claudeJsonPath(home),
-        `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: { command: "echo" } } }, null, 2)}\n`,
+        `${JSON.stringify({
+          mcpServers: {
+            [WEBSEARCH_MCP_SERVER_NAME]: {
+              type: "http",
+              url: "https://mcp.fireworks.ai/work/mcp",
+              headers: { Authorization: "Bearer fw_test_key_12345" },
+            },
+          },
+        }, null, 2)}\n`,
       );
       await writeGlobalConfig(home, {
         apiKey: "{keychain:fireworks-api-key}",
-        harnesses: { codex: { enabled: true } },
+        harnesses: { claude: { enabled: true } },
       });
 
-      const shellPath = await reconcileShellEnvHook(home);
-      assert.ok(shellPath?.endsWith(".zshrc"));
-      assert.match(await readFile(shellPath, "utf8"), /key export/);
+      assert.equal(await reconcileShellEnvHook(home), null);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -128,7 +134,7 @@ describe("shell-env-hook", () => {
     }
   });
 
-  it("reconcileShellEnvHook installs when websearch MCP is enabled with legacy global env-ref", async () => {
+  it("reconcileShellEnvHook skips FIREWORKS export for websearch MCP with legacy global env-ref", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-websearch-envref-"));
     process.env.HOME = home;
     process.env.SHELL = "/bin/zsh";
@@ -138,16 +144,22 @@ describe("shell-env-hook", () => {
       const { claudeJsonPath, WEBSEARCH_MCP_SERVER_NAME } = await import("../../lib/system/websearch-state.mjs");
       await writeFile(
         claudeJsonPath(home),
-        `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: { command: "echo" } } }, null, 2)}\n`,
+        `${JSON.stringify({
+          mcpServers: {
+            [WEBSEARCH_MCP_SERVER_NAME]: {
+              type: "http",
+              url: "https://mcp.fireworks.ai/work/mcp",
+              headers: { Authorization: "Bearer fw_test_key_12345" },
+            },
+          },
+        }, null, 2)}\n`,
       );
       await writeGlobalConfig(home, {
         apiKey: "{env:FIREWORKS_API_KEY}",
         harnesses: { claude: { enabled: true } },
       });
 
-      const shellPath = await reconcileShellEnvHook(home);
-      assert.ok(shellPath?.endsWith(".zshrc"));
-      assert.match(await readFile(shellPath, "utf8"), /export FIREWORKS_API_KEY=/);
+      assert.equal(await reconcileShellEnvHook(home), null);
     } finally {
       await rm(home, { recursive: true, force: true });
     }

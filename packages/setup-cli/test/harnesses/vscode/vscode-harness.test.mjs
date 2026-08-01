@@ -10,6 +10,7 @@ import {
   FIRECONNECT_PROVIDER_NAME,
   addFireworksProvider,
   buildModelEntry,
+  buildAzureModelEntry,
   fireconnectRegisteredModels,
   fireconnectSecretId,
   fireconnectSecretIds,
@@ -19,7 +20,7 @@ import {
   prettyModelName,
   removeFireconnectProvider,
 } from "../../../lib/harnesses/vscode/core.mjs";
-import { runCli, runCliJson, withTempHome } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, runCli, runCliJson, withTempHome, itIfSqlite } from "../../helpers.mjs";
 
 /** A non-fireconnect provider (user-managed) to prove ownership scoping. */
 function userProvider(name = "MyOther") {
@@ -93,6 +94,14 @@ describe("vscode-core pure transforms", () => {
     assert.equal(m.maxOutputTokens, 131_072);
   });
 
+  it("buildAzureModelEntry sets maxInputTokens from the mapped Fireworks spec", () => {
+    const m = buildAzureModelEntry("FW-GLM-5.2", "https://example.services.ai.azure.com/openai/v1");
+    assert.equal(m.id, "FW-GLM-5.2");
+    assert.equal(m.maxInputTokens, 1_048_575);
+    assert.equal(m.maxOutputTokens, 131_072);
+    assert.equal(m.vision, false);
+  });
+
   it("addFireworksProvider appends a fireconnect-owned provider", () => {
     const secretId = makeFireconnectSecretId();
     const a = addFireworksProvider([], { secretId, models: [buildModelEntry("accounts/fireworks/routers/glm-latest")] });
@@ -160,7 +169,7 @@ describe("vscode-core pure transforms", () => {
 describe("vscode harness integration", () => {
   const secretEnv = () => ({ FIRECONNECT_VSCODE_SECRET_PLAINTEXT: "1" });
 
-  it("on writes the provider, the ${input:...} reference, and stores the key", async () => {
+  itIfSqlite("on writes the provider, the ${input:...} reference, and stores the key", async () => {
     await withTempHome("vscode-on-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       const r = await runCli(
@@ -177,12 +186,12 @@ describe("vscode harness integration", () => {
       // Direct Fireworks gateway uses the OpenAI Responses API in VS Code Chat.
       assert.equal(provider.apiType, "responses");
       assert.match(provider.apiKey, /^\$\{input:chat\.lm\.secret\.fw-[0-9a-f]+\}$/);
-      assert.equal(provider.models[0].id, "glm-fast-latest");
+      assert.equal(provider.models[0].id, "kimi-fast-latest");
       assert.equal(provider.models[0].requestHeaders["User-Agent"], undefined);
       assert.equal(provider.models[0].requestHeaders["X-Title"], "VS Code Chat");
       assert.equal(
         provider.models[0].requestHeaders["HTTP-Referer"],
-        "fireconnect/v0.9.0",
+        FIRECONNECT_REFERER,
       );
       assert.equal(provider.models[0].requestHeaders["X-FireRouter-Harness"], undefined);
       assert.equal(provider.models[0].requestHeaders["Fireworks-Use-Case"], undefined);
@@ -195,7 +204,7 @@ describe("vscode harness integration", () => {
     });
   });
 
-  it("on preserves a user-managed provider and off restores the original file + deletes the secret", async () => {
+  itIfSqlite("on preserves a user-managed provider and off restores the original file + deletes the secret", async () => {
     await withTempHome("vscode-off-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       await mkdir(path.dirname(vscodePath), { recursive: true });
@@ -261,7 +270,7 @@ describe("vscode harness integration", () => {
       assert.equal(headers["X-Title"], "VS Code Chat");
       assert.equal(
         headers["HTTP-Referer"],
-        "fireconnect/v0.9.0",
+        FIRECONNECT_REFERER,
       );
       assert.equal(headers["X-FireRouter-Harness"], undefined);
       assert.equal(headers["Fireworks-Use-Case"], undefined);
@@ -357,7 +366,7 @@ describe("vscode harness integration", () => {
     });
   });
 
-  it("off with no backup strips fireconnect-managed provider only", async () => {
+  itIfSqlite("off with no backup strips fireconnect-managed provider only", async () => {
     await withTempHome("vscode-strip-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
@@ -382,7 +391,7 @@ describe("vscode harness integration", () => {
     });
   });
 
-  it("re-running on preserves models added via on --model", async () => {
+  itIfSqlite("re-running on preserves models added via on --model", async () => {
     await withTempHome("vscode-reon-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
@@ -393,7 +402,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       const ids = arr.find(isFireconnectProvider).models.map((m) => m.id);
-      assert.deepEqual(ids, ["glm-fast-latest", "deepseek-v4-flash"]);
+      assert.deepEqual(ids, ["kimi-fast-latest", "deepseek-v4-flash"]);
       // Key was rotated in place under the same secretId.
       const secretId = fireconnectSecretIds(arr)[0];
       assert.equal(readStateSecret(vscodePath, secretId), "fw_test_key_99999");
@@ -410,7 +419,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       assert.ok(Array.isArray(arr));
-      assert.equal(arr.find(isFireconnectProvider).models[0].id, "glm-fast-latest");
+      assert.equal(arr.find(isFireconnectProvider).models[0].id, "kimi-fast-latest");
     });
   });
 

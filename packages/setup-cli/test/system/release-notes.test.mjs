@@ -44,6 +44,19 @@ describe("release notes", () => {
     assert.doesNotMatch(formatted, /FirePass|BYOK|Legacy --router|all harnesses/i);
   });
 
+  it("formats the v0.9.1 user-facing summary", async () => {
+    const releases = await readReleaseNotes();
+    const release = releases.find((candidate) => candidate.version === "0.9.1");
+    assert.ok(release);
+
+    const formatted = formatReleaseNotes(release);
+    assert.match(formatted, /Keep Claude Code connected/);
+    assert.match(formatted, /upgrade in place/);
+    assert.match(formatted, /Claude model preferences/);
+    assert.match(formatted, /baked API keys/);
+    assert.doesNotMatch(formatted, /Bugbot|argv|fetchFailed|patchUpdateCache|fireconnect status|libsecret/i);
+  });
+
   it("selects releases newer than the installed version", () => {
     const releases = [
       { version: "0.8.0", highlights: [] },

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { describe, it, beforeEach, afterEach } from "node:test";
+import { itIfNpm } from "../helpers.mjs";
 
 import {
   cliDependenciesMissingMessage,
@@ -47,14 +48,14 @@ describe("dep-less checkout configure", () => {
     await rm(setupDir, { recursive: true, force: true });
   });
 
-  it("ensureCliDependencies installs runtime deps from a dep-less checkout copy", () => {
+  itIfNpm("ensureCliDependencies installs runtime deps from a dep-less checkout copy", () => {
     assert.equal(runtimeDepsInstalled(setupDir), false);
     assert.equal(ensureCliDependencies(setupDir), true);
     assert.equal(crossKeychainInstalled(setupDir), true);
     assert.equal(dependencyInstalled("ansis", setupDir), true);
   });
 
-  it("ensureCliDependencies repairs a partial install missing ansis", async () => {
+  itIfNpm("ensureCliDependencies repairs a partial install missing ansis", async () => {
     assert.equal(ensureCliDependencies(setupDir), true);
     await rm(path.join(setupDir, "node_modules", "ansis"), { recursive: true, force: true });
     assert.equal(dependencyInstalled("ansis", setupDir), false);
@@ -63,7 +64,7 @@ describe("dep-less checkout configure", () => {
     assert.equal(dependencyInstalled("ansis", setupDir), true);
   });
 
-  it("harness on succeeds from a dep-less checkout (auto npm install)", () => {
+  itIfNpm("harness on succeeds from a dep-less checkout (auto npm install)", () => {
     const env = {
       ...process.env,
       HOME: home,
@@ -109,7 +110,7 @@ describe("dep-less checkout configure", () => {
     assert.match(res.stderr, new RegExp(cliDependenciesMissingMessage().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
-  it("harness on falls back to builtin encrypted file when cross-keychain is missing", async () => {
+  itIfNpm("harness on falls back to builtin encrypted file when cross-keychain is missing", async () => {
     assert.equal(ensureCliDependencies(setupDir), true);
     // Keep package.json so the startup dependency guard does not auto-repair
     // the package. Removing the ESM entry point makes the runtime import fail,

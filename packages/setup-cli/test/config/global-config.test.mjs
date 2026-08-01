@@ -9,6 +9,7 @@ import {
   resolveStoredApiKey,
   discoverHarnessesForUninstall,
   setHarnessEnabled,
+  setHarnessState,
   listRegisteredHarnesses,
   listEnabledHarnesses,
   FIREWORKS_API_KEY_ENV_REF,
@@ -104,5 +105,34 @@ describe("global-config", () => {
         process.env.HOME = prevHome;
       }
     }
+  });
+
+  it("atomically stores and preserves key-scoped profiles across toggles", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-model-preferences-"));
+    const profiles = {
+      fireworks: {
+        version: 1,
+        models: {
+          main: "glm-latest",
+          opus: "glm-fast-latest",
+          sonnet: "glm-fast-latest",
+          haiku: "deepseek-v4-flash",
+          fable: "kimi-fast-latest",
+          subagent: "deepseek-v4-flash",
+        },
+      },
+    };
+
+    await setHarnessState(home, "claude", {
+      enabled: true,
+      provider: "fireworks",
+      profiles,
+    });
+    await setHarnessEnabled(home, "claude", false);
+
+    const config = await readGlobalConfig(home);
+    assert.deepEqual(config.harnesses.claude.profiles, profiles);
+    assert.equal(config.harnesses.claude.enabled, false);
+    assert.equal(config.harnesses.claude.provider, "fireworks");
   });
 });

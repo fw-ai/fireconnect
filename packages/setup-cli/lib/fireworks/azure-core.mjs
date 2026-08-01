@@ -1,5 +1,10 @@
 import process from "node:process";
 import { isFireworksShapedKey } from "../keys/key-type.mjs";
+import {
+  DEFAULT_FIREWORKS_MODEL_LIMITS,
+  lookupFireworksModelLimits,
+  lookupModelSpec,
+} from "./model-specs.mjs";
 
 // Fireworks AI models are available as first-party models inside Microsoft
 // Foundry (formerly Azure AI Foundry). Foundry exposes an OpenAI-compatible
@@ -8,11 +13,61 @@ import { isFireworksShapedKey } from "../keys/key-type.mjs";
 // gateway. See: https://docs.fireworks.ai/ecosystem/integrations/azure-foundry
 
 // Default Foundry deployment name for the GLM model published by Fireworks.
-// Foundry model ids are the *deployment* name chosen at deploy time, which
-// defaults to the catalog model name without the `fireworks-ai/` publisher
-// prefix (e.g. `FW-GLM-5.2`, `FW-MiniMax-M2.5`). Override with --model to match
-// whatever you named your deployment.
+// Foundry model ids are the catalog Model ID chosen at deploy time (e.g.
+// `FW-GLM-5.2`, `FW-MiniMax-M2.5`). Override with --model to match your
+// deployment name. Catalog: https://ai.azure.com/catalog/models?source=fireworks
 export const DEFAULT_AZURE_MODEL = "FW-GLM-5.2";
+
+/**
+ * Foundry catalog Model IDs with a matching Fireworks serverless spec for
+ * context/pricing metadata. Omit Foundry-only models and serverless-only slugs.
+ * @see https://learn.microsoft.com/en-us/azure/foundry/how-to/fireworks/enable-fireworks-models#available-catalog-models
+ */
+export const AZURE_FOUNDRY_SUPPORTED_MODELS = {
+  "FW-GLM-5.2": "glm-5p2",
+  "FW-GLM-5.1": "glm-5p1",
+  "FW-DeepSeek-V4-Flash": "deepseek-v4-flash",
+  "FW-DeepSeek-V4-Pro": "deepseek-v4-pro",
+  "FW-MiniMax-M2.5": "minimax-m2p5",
+  "FW-Kimi-K2.5": "kimi-k2p5",
+  "FW-Kimi-K2.6": "kimi-k2p6",
+  "FW-Kimi-K2.7-Code": "kimi-k2p7-code",
+  "FW-GPT-OSS-120B": "gpt-oss-120b",
+};
+
+/**
+ * Map a Foundry catalog Model ID to a Fireworks serverless spec slug when known.
+ * @param {string} deploymentName
+ * @returns {string | null}
+ */
+export function azureFoundryDeploymentToSlug(deploymentName) {
+  if (!deploymentName || typeof deploymentName !== "string") {
+    return null;
+  }
+  return AZURE_FOUNDRY_SUPPORTED_MODELS[deploymentName.trim()] ?? null;
+}
+
+/**
+ * Resolve a Foundry deployment to a Fireworks model spec slug when known.
+ * @param {string} deploymentName
+ * @returns {string | null}
+ */
+export function resolveAzureFoundryModelSlug(deploymentName) {
+  const slug = azureFoundryDeploymentToSlug(deploymentName);
+  if (!slug || !lookupModelSpec(slug)) {
+    return null;
+  }
+  return slug;
+}
+
+/** Context/modality limits for a Foundry deployment from the shared Fireworks specs. */
+export function lookupAzureFoundryModelLimits(deploymentName) {
+  const slug = resolveAzureFoundryModelSlug(deploymentName);
+  if (!slug) {
+    return DEFAULT_FIREWORKS_MODEL_LIMITS;
+  }
+  return lookupFireworksModelLimits(slug);
+}
 
 // npm adapter OpenCode loads for any OpenAI-compatible provider.
 export const AZURE_OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible";

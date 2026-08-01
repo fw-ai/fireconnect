@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { piSettingsPath, piAuthPath, piModelsPath, PI_API_KEY_ENV_REF, PI_DATA_RELATIVE_DIR, PI_AZURE_PROVIDER } from "../../../lib/harnesses/pi/core.mjs";
 import { resolvePiEffectiveFireworksModel } from "../../../lib/harnesses/pi/fireworks-models.mjs";
-import { runFireconnect } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, runFireconnect } from "../../helpers.mjs";
 
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
 const AZURE_KEY = "azure-test-key-1234567890";
@@ -143,7 +143,7 @@ describe("pi harness integration", () => {
 
     const enabledSettings = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(enabledSettings.defaultProvider, "fireworks");
-    assert.equal(enabledSettings.defaultModel, "glm-fast-latest");
+    assert.equal(enabledSettings.defaultModel, "kimi-fast-latest");
 
     const enabledModels = JSON.parse(await readFile(modelsPath, "utf8"));
     const fireworksModels = enabledModels.providers.fireworks.models;
@@ -185,7 +185,7 @@ describe("pi harness integration", () => {
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
     );
     assert.equal(onResult.code, 0);
-    assert.match(onResult.stdout, /Pi → Fireworks · glm-fast-latest/);
+    assert.match(onResult.stdout, /Pi → Fireworks · kimi-fast-latest/);
 
     const auth = JSON.parse(await readFile(authPath, "utf8"));
     assert.equal(auth.fireworks.key, "fw_test_key_12345");
@@ -227,7 +227,7 @@ describe("pi harness integration", () => {
     assert.equal(headers["X-Title"], "Pi");
     assert.equal(
       headers["HTTP-Referer"],
-      "fireconnect/v0.9.0",
+      FIRECONNECT_REFERER,
     );
     assert.equal(headers["X-FireRouter-Harness"], undefined);
     assert.equal(headers["Fireworks-Use-Case"], undefined);
@@ -251,7 +251,7 @@ describe("pi harness integration", () => {
     assert.equal(headers["X-Title"], "Pi");
     assert.equal(
       headers["HTTP-Referer"],
-      "fireconnect/v0.9.0",
+      FIRECONNECT_REFERER,
     );
     assert.equal(headers["X-FireRouter-Harness"], undefined);
     assert.equal(headers["Fireworks-Use-Case"], undefined);

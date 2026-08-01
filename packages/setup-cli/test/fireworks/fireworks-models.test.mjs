@@ -120,6 +120,165 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       "accounts/fireworks/models/kimi-k3",
     );
     assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest"), undefined);
+    const kimiLatest = snapshot.entries.find((entry) => entry.shortId === "kimi-latest");
+    const kimiFastLatest = snapshot.entries.find((entry) => entry.shortId === "kimi-fast-latest");
+    assert.equal(kimiLatest?.displayName, "Kimi K3 (Latest)");
+    assert.equal(kimiFastLatest?.displayName, "Kimi K3 Fast (Latest)");
+  });
+
+  test("preserves turbo router display names after catalog refresh", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k2p6",
+        displayName: "Kimi K2.6",
+        serverlessModes: [
+          {
+            name: "accounts/fireworks/models/kimi-k2p6/serverlessModes/default",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "0", nanos: 950_000_000 } },
+              { sku: "LLM input tokens (cached)", amount: { nanos: 160_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "4" } },
+            ],
+          },
+          {
+            name: "accounts/fireworks/models/kimi-k2p6/serverlessModes/fast",
+            usageIdentifier: "accounts/fireworks/routers/kimi-k2p6-turbo",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "2" } },
+              { sku: "LLM input tokens (cached)", amount: { nanos: 300_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "8" } },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    const turbo = snapshot.entries.find((entry) => entry.shortId === "kimi-k2p6-turbo");
+    assert.equal(turbo?.displayName, "Kimi K2.6 Turbo");
+    assert.equal(turbo?.baseModelId, "accounts/fireworks/models/kimi-k2p6");
+  });
+
+  test("kimi-k3 ignores priority mode for base model and -latest alias pricing", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
+        serverlessModes: [
+          {
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
+            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "3" } },
+              { sku: "LLM input tokens (cached)", amount: { nanos: 300_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "15" } },
+            ],
+          },
+          {
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/priority",
+            serviceTier: "priority",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "3", nanos: 750_000_000 } },
+              { sku: "LLM input tokens (cached)", amount: { nanos: 375_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "18", nanos: 750_000_000 } },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    assert.equal(snapshot.pricingById.get("accounts/fireworks/models/kimi-k3"), undefined);
+
+    const fastRouterPricing = snapshot.pricingById.get("accounts/fireworks/routers/kimi-k3-fast");
+    assert.equal(fastRouterPricing?.tier, "fast");
+    assert.equal(fastRouterPricing?.input, 3);
+    assert.equal(fastRouterPricing?.output, 15);
+
+    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-latest"), undefined);
+
+    const fastLatestPricing = snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest");
+    assert.equal(fastLatestPricing?.tier, "fast");
+    assert.equal(fastLatestPricing?.input, 3);
+  });
+
+  test("does not pick fast or priority mode for base model pricing when default is absent", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
+        serverlessModes: [
+          {
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
+            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "3" } },
+              { sku: "LLM output tokens", amount: { units: "15" } },
+            ],
+          },
+          {
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/priority",
+            serviceTier: "priority",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "3", nanos: 750_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "18", nanos: 750_000_000 } },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    const modelPricing = snapshot.pricingById.get("accounts/fireworks/models/kimi-k3");
+    assert.equal(modelPricing, undefined);
+  });
+
+  test("prefers default mode over priority for base model pricing", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
+        serverlessModes: [
+          {
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/default",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "4" } },
+            ],
+          },
+          {
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/priority",
+            serviceTier: "priority",
+            skuInfos: [
+              { sku: "LLM input tokens (uncached)", amount: { units: "3", nanos: 750_000_000 } },
+              { sku: "LLM output tokens", amount: { units: "18", nanos: 750_000_000 } },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    const modelPricing = snapshot.pricingById.get("accounts/fireworks/models/kimi-k3");
+    assert.equal(modelPricing?.tier, "standard");
+    assert.equal(modelPricing?.input, 0.95);
+    assert.equal(modelPricing?.output, 4);
+  });
+
+  test("leaves base model unpriced when only fast mode exists", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
+        serverlessModes: [{
+          name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
+          usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
+          skuInfos: [
+            { sku: "LLM input tokens (uncached)", amount: { units: "3" } },
+            { sku: "LLM output tokens", amount: { units: "15" } },
+          ],
+        }],
+      }),
+    ]);
+
+    assert.equal(snapshot.pricingById.get("accounts/fireworks/models/kimi-k3"), undefined);
+    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-k3-fast")?.tier, "fast");
   });
 
   test("does not attach standard-tier model pricing to synthesized fast-latest routers", () => {
@@ -173,8 +332,16 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
   test("synthesizes minimax-latest and qwen-plus-latest", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
+        name: "accounts/fireworks/models/minimax-m2p7",
+        displayName: "MiniMax 2.7",
+      }),
+      mockServerlessModel({
         name: "accounts/fireworks/models/minimax-m3",
         displayName: "MiniMax M3",
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/qwen3p6-plus",
+        displayName: "Qwen 3.6 Plus",
       }),
       mockServerlessModel({
         name: "accounts/fireworks/models/qwen3p7-plus",

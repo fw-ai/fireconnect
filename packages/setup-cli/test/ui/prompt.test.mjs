@@ -73,6 +73,19 @@ describe("promptSelect", () => {
     assert.equal(value, "two");
   });
 
+  it("starts from an explicit initial index", async () => {
+    const { value } = await drive(
+      (streams) => promptSelect({
+        message: "Pick",
+        choices,
+        initialIndex: 2,
+        ...streams,
+      }),
+      [ENTER],
+    );
+    assert.equal(value, "three");
+  });
+
   it("wraps around the top", async () => {
     const { value } = await drive(
       (streams) => promptSelect({ message: "Pick", choices, ...streams }),
@@ -112,6 +125,19 @@ describe("promptSelect", () => {
     );
     assert.ok(output.text().includes("Pick"));
     assert.ok(output.text().includes("first"));
+  });
+
+  it("can suppress the completion summary for nested flows", async () => {
+    const { output } = await drive(
+      (streams) => promptSelect({
+        message: "Pick",
+        choices,
+        summary: false,
+        ...streams,
+      }),
+      [ENTER],
+    );
+    assert.ok(!output.text().includes("Pick first"));
   });
 });
 

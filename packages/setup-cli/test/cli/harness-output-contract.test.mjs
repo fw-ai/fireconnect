@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { runCli, withTempHome } from "../helpers.mjs";
 import {
+  printClaudeModelManagementHints,
   printClaudeModelActivationHint,
   printCodexRestartHint,
   printDeepagentsRestartHint,
@@ -18,6 +19,24 @@ function nonemptyLines(output) {
 }
 
 describe("compact harness command output", () => {
+  it("prints concise Claude model management commands", () => {
+    const lines = [];
+    const original = console.log;
+    console.log = (line = "") => lines.push(String(line));
+    try {
+      printClaudeModelManagementHints();
+    } finally {
+      console.log = original;
+    }
+    const output = lines.join("\n");
+    assert.match(output, /Manage models/);
+    assert.match(output, /fireconnect model list/);
+    assert.match(output, /fireconnect claude on --interactive/);
+    assert.match(output, /fireconnect claude on --opus <model>/);
+    assert.match(output, /--model --sonnet --haiku --fable --subagent/);
+    assert.doesNotMatch(output, /Also in your model list/);
+  });
+
   it("prints the two FireRouter model-list cases", () => {
     const lines = [];
     const original = console.log;
@@ -103,7 +122,7 @@ describe("compact harness command output", () => {
         },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /OpenCode → Fireworks · glm-fast-latest/);
+      assert.match(result.stdout, /OpenCode → Fireworks · kimi-fast-latest/);
       assert.match(result.stdout, /FireRouter is available/);
       assert.doesNotMatch(result.stdout, /FireRouter is on/);
       assert.doesNotMatch(result.stdout, /Change routing:/);
@@ -173,7 +192,12 @@ describe("compact harness command output", () => {
         },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /Claude Code → Fireworks · firerouter/);
+      const lines = nonemptyLines(result.stdout);
+      assert.equal(lines[0], "✓ Claude Code → Fireworks");
+      assert.doesNotMatch(result.stdout, /Claude Code → Fireworks ·/);
+      assert.match(result.stdout, /Model mapping/);
+      assert.match(result.stdout, /Main\s+→ firerouter/);
+      assert.match(result.stdout, /Opus\s+→ glm-fast-latest/);
       assert.match(result.stdout, /FireRouter is on\. Picks a model for each request/);
       assert.doesNotMatch(result.stdout, /no Anthropic key found/);
       assert.match(result.stdout, /Change routing: fireconnect claude on --opus firerouter --routing-preference balanced/);
@@ -201,7 +225,10 @@ describe("compact harness command output", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      assert.match(lines[0], /Claude Code → Fireworks ·/);
+      assert.equal(lines[0], "✓ Claude Code → Fireworks");
+      assert.doesNotMatch(result.stdout, /Claude Code → Fireworks ·/);
+      assert.match(result.stdout, /Model mapping/);
+      assert.match(result.stdout, /Opus\s+→ firerouter/);
       assert.match(result.stdout, /FireRouter is on\. Picks a model for each request/);
       assert.match(
         lines.find((line) => line.startsWith("Change routing:")),

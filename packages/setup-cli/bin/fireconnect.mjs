@@ -24,13 +24,13 @@ async function run() {
 
   if (parsed.kind === "global") {
     await runGlobalCommand(parsed);
-    checkForUpdates(parsed.command, parsed.ctx.home);
+    await checkForUpdates(parsed.command, parsed.ctx.home);
     return;
   }
 
   if (parsed.kind === "harness") {
     await runHarnessCommand(parsed.route, parsed.ctx);
-    checkForUpdates("harness", parsed.ctx.home);
+    await checkForUpdates("harness", parsed.ctx.home);
     return;
   }
 

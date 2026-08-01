@@ -14,38 +14,25 @@ describe("fireworks-vision", () => {
     assert.equal(modelSupportsVision("accounts/fireworks/routers/firerouter"), true);
   });
 
-  it("collects unique non-vision models from a mapping", () => {
-    assert.deepEqual(
-      uniqueNonVisionModelShortIds([
-        "accounts/fireworks/routers/glm-fast-latest[1m]",
-        "accounts/fireworks/routers/glm-fast-latest",
-        "accounts/fireworks/routers/kimi-fast-latest",
-        "accounts/fireworks/models/deepseek-v4-flash",
-        "accounts/fireworks/routers/firerouter",
-      ]),
-      ["deepseek-v4-flash", "glm-fast-latest"],
-    );
-  });
-
-  it("formats a warning for one or more text-only models", () => {
-    assert.match(
-      formatNonVisionModelsWarning(["glm-fast-latest"]),
-      /glm-fast-latest is text-only/,
-    );
-    assert.match(
-      formatNonVisionModelsWarning(["deepseek-v4-flash", "glm-fast-latest"]),
-      /deepseek-v4-flash and glm-fast-latest are text-only/,
-    );
-    assert.match(
-      formatNonVisionModelsWarning(["glm-fast-latest"]),
-      /\/rewind/,
-    );
-    assert.equal(formatNonVisionModelsWarning([]), "");
-  });
-
   it("exposes compact vision labels for status output", () => {
     assert.equal(visionCapabilityLabel("accounts/fireworks/routers/kimi-latest"), "vision");
     assert.equal(visionCapabilityLabel("accounts/fireworks/routers/glm-5p2-fast"), "text-only");
     assert.equal(visionCapabilityLabel("accounts/fireworks/routers/firerouter"), "");
+  });
+
+  it("formats one compact warning for unique text-only models", () => {
+    const shortIds = uniqueNonVisionModelShortIds([
+      "glm-fast-latest[1m]",
+      "accounts/fireworks/routers/deepseek-v4-flash",
+      "glm-fast-latest",
+      "kimi-latest",
+      "firerouter",
+    ]);
+    assert.deepEqual(shortIds, ["deepseek-v4-flash", "glm-fast-latest"]);
+    assert.equal(
+      formatNonVisionModelsWarning(shortIds),
+      "Text-only: deepseek-v4-flash, glm-fast-latest · Avoid images; recover with /rewind.",
+    );
+    assert.equal(formatNonVisionModelsWarning([]), "");
   });
 });

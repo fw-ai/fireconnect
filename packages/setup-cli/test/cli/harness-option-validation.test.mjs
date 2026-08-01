@@ -11,7 +11,11 @@ describe("harness option validation", () => {
   const rejects = async (home, args, pattern) => {
     const result = await runCli(args, {
       home,
-      env: { FIREWORKS_API_KEY: "" },
+      env: {
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      },
     });
     assert.notEqual(result.code, 0, `${args.join(" ")} should fail`);
     assert.match(result.stderr, pattern);
@@ -33,7 +37,11 @@ describe("harness option validation", () => {
     await withTempHome("option-firerouter-", async (home) => {
       await rejects(
         home,
-        ["claude", "on", "--routing-preference", "balanced"],
+        [
+          "claude", "on",
+          "--api-key", "fw_test_key_12345",
+          "--routing-preference", "balanced",
+        ],
         /--routing-preference requires a Claude slot set to firerouter/,
       );
       await rejects(
@@ -119,6 +127,23 @@ describe("harness option validation", () => {
       await rejects(home, ["cursor", "on", "--mode", "composer"], /Unknown argument: --mode/);
       await rejects(home, ["cursor", "on", "--slot", "main"], /Unknown argument: --slot/);
       await rejects(home, ["pi", "on", "--opus", "glm-latest"], /apply only to .*claude on/);
+      await rejects(home, ["opencode", "on", "--non-interactive"], /applies only to .*claude on/);
+      await rejects(home, ["opencode", "on", "--interactive"], /applies only to .*claude on/);
+      await rejects(
+        home,
+        ["claude", "on", "--interactive", "--non-interactive"],
+        /cannot be used together/,
+      );
+      await rejects(
+        home,
+        ["claude", "on", "--interactive", "--opus", "glm-latest"],
+        /cannot be combined with model flags/,
+      );
+      await rejects(
+        home,
+        ["claude", "on", "--interactive"],
+        /requires a terminal/,
+      );
     });
   });
 

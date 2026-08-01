@@ -17,6 +17,7 @@ import { HARNESS } from "../harness/id.mjs";
 import { reconcileShellEnvHook } from "../io/shell-env-hook.mjs";
 import { resolveFireworksApiKeyValue, tryReadKeychainSecret } from "./api-key.mjs";
 import { isEnvConfigRef, migrateLegacyGlobalApiKey } from "./config-ref.mjs";
+import { refreshWebsearchMcpAuth } from "../system/websearch-mcp.mjs";
 
 /**
  * @param {import("../config/global-config.mjs").HarnessConfigMap} harnesses
@@ -96,6 +97,15 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       notes.push(`Couldn't update ${label}'s Fireworks settings — re-run ${hint} to use this key there.`);
     }
   }
+  try {
+    if (await refreshWebsearchMcpAuth(home, fireworksKey)) {
+      notes.push(
+        "Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up.",
+      );
+    }
+  } catch {
+    notes.push("Couldn't update Claude websearch MCP auth — re-run fireconnect claude on.");
+  }
   return notes;
 }
 
@@ -103,7 +113,8 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
  * After `fireconnect upgrade`, rebake every enabled Fireworks harness config to
  * plaintext literals (including legacy env-reference auth), repair a stale
  * global `{env:FIREWORKS_API_KEY}` ref when keychain holds the secret, and
- * reconcile the shell hook so only websearch MCP keeps FIREWORKS export.
+ * reconcile the shell hook (Anthropic export for Codex BYOK; no FIREWORKS
+ * export — websearch MCP bakes its Bearer token).
  * Never throws.
  * @param {string} home
  * @returns {Promise<string[]>}

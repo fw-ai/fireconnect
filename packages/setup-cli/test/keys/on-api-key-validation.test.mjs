@@ -60,31 +60,46 @@ describe("<harness> on --api-key validation", () => {
     });
   });
 
-  it("verifies and stores an env-only key in harness configs without a shell hook", async () => {
-    const { server, url } = await startMockGateway();
-    try {
-      await withTempHome("on-validate-env-only-", async (home) => {
-        const result = await runFireconnect(
-          ["codex", "on"],
-          { HOME: home, FIREWORKS_API_KEY: VALID_KEY, FIRECONNECT_GATEWAY_URL: url },
-        );
-        assert.equal(result.code, 0, result.stderr);
-        assert.equal(await fileExists(path.join(home, ".fireconnect", ".secret-memory")), true);
+  it("uses and stores an env-only key without requiring live verification", async () => {
+    await withTempHome("on-validate-env-only-", async (home) => {
+      const result = await runFireconnect(
+        ["codex", "on"],
+        {
+          HOME: home,
+          FIREWORKS_API_KEY: VALID_KEY,
+          FIRECONNECT_GATEWAY_URL: "http://127.0.0.1:1",
+        },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(await fileExists(path.join(home, ".fireconnect", ".secret-memory")), true);
 
-        const config = JSON.parse(await readFile(path.join(home, ".fireconnect", "config.json"), "utf8"));
-        assert.equal(config.apiKey, "{keychain:fireworks-api-key}");
-        const codexConfig = await readFile(path.join(home, ".codex", "config.toml"), "utf8");
-        assert.match(codexConfig, new RegExp(`experimental_bearer_token = "${VALID_KEY}"`));
-        for (const shellConfig of [".bashrc", ".bash_profile", ".zshrc"]) {
-          const filePath = path.join(home, shellConfig);
-          if (await fileExists(filePath)) {
-            assert.doesNotMatch(await readFile(filePath, "utf8"), /# >>> fireconnect >>>/);
-          }
+      const config = JSON.parse(await readFile(path.join(home, ".fireconnect", "config.json"), "utf8"));
+      assert.equal(config.apiKey, "{keychain:fireworks-api-key}");
+      const codexConfig = await readFile(path.join(home, ".codex", "config.toml"), "utf8");
+      assert.match(codexConfig, new RegExp(`experimental_bearer_token = "${VALID_KEY}"`));
+      for (const shellConfig of [".bashrc", ".bash_profile", ".zshrc"]) {
+        const filePath = path.join(home, shellConfig);
+        if (await fileExists(filePath)) {
+          assert.doesNotMatch(await readFile(filePath, "utf8"), /# >>> fireconnect >>>/);
         }
-      });
-    } finally {
-      server.close();
-    }
+      }
+    });
+  });
+
+  it("rejects a malformed env-only key without a network request", async () => {
+    await withTempHome("on-validate-env-shape-", async (home) => {
+      const result = await runFireconnect(
+        ["claude", "on", "--non-interactive"],
+        {
+          HOME: home,
+          FIREWORKS_API_KEY: "not-a-fireworks-key",
+          FIRECONNECT_GATEWAY_URL: "http://127.0.0.1:1",
+        },
+      );
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /doesn't look like a Fireworks key/i);
+      assert.equal(await fileExists(path.join(home, USER_SETTINGS_RELATIVE_PATH)), false);
+    });
   });
 
   it("rejects a malformed key on shape before any network call", async () => {

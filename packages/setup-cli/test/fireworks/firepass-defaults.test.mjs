@@ -18,7 +18,6 @@ import {
   claudeCodeModelId,
   applyClaudeCodeContextPolicy,
 } from "../../lib/harnesses/claude/code-context.mjs";
-import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
 import {
   fetchServerlessCatalog,
   filterCatalogForKeyType,
@@ -35,13 +34,12 @@ import {
 } from "../helpers.mjs";
 
 describe("Fire Pass defaults", () => {
-  test("FIREPASS_ROUTER_ID is glm-fast-latest", () => {
+  test("FIREPASS_ROUTER_ID is kimi-fast-latest", () => {
     assert.equal(FIREPASS_ROUTER_ID, FIREPASS_ROUTER);
   });
 
-  test("DEFAULT_FIREPASS_PRESET routes all aliases to glm-fast-latest", () => {
+  test("DEFAULT_FIREPASS_PRESET routes alias slots to kimi-fast-latest", () => {
     const aliasKeys = [
-      "ANTHROPIC_MODEL",
       "ANTHROPIC_DEFAULT_OPUS_MODEL",
       "ANTHROPIC_DEFAULT_SONNET_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -71,26 +69,9 @@ describe("Fire Pass defaults", () => {
     }
   });
 
-  test("resolveDefaultMainModel prefers kimi-fast-latest when Kimi K3 is serverless", () => {
-    setServerlessCatalogSnapshot({
-      entries: [{
-        id: "accounts/fireworks/models/kimi-k3",
-        shortId: "kimi-k3",
-        displayName: "Kimi K3",
-        kind: "serverless",
-      }],
-      pricingById: new Map(),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      assert.equal(resolveDefaultMainModel(), "kimi-fast-latest");
-      assert.equal(defaultMainModel(), "kimi-fast-latest");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
+  test("resolveDefaultMainModel always uses kimi-fast-latest", () => {
+    assert.equal(resolveDefaultMainModel(), KIMI_FAST_LATEST);
+    assert.equal(defaultMainModel(), KIMI_FAST_LATEST);
   });
 
   test("latest router short IDs stay as gateway slugs", () => {

@@ -25,8 +25,20 @@ import {
   websearchMcpServerEntry,
 } from "../../lib/system/websearch-mcp.mjs";
 
+const TEST_KEY = "fw_test_key_12345";
+
 describe("websearch-mcp", () => {
-  it("builds the Fireworks search MCP entry", () => {
+  it("builds a baked Bearer token MCP entry (same as claude mcp add --header)", () => {
+    assert.deepEqual(websearchMcpServerEntry(TEST_KEY), {
+      type: "http",
+      url: WEBSEARCH_MCP_URL,
+      headers: {
+        Authorization: `Bearer ${TEST_KEY}`,
+      },
+    });
+  });
+
+  it("falls back to ${FIREWORKS_API_KEY} only when no key is provided", () => {
     assert.deepEqual(websearchMcpServerEntry(), {
       type: "http",
       url: WEBSEARCH_MCP_URL,
@@ -38,6 +50,7 @@ describe("websearch-mcp", () => {
 
   it("enables and disables the managed server in ~/.claude.json", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-mcp-"));
+    await seedKeychainConfig(home, TEST_KEY);
     await writeFile(
       claudeJsonPath(home),
       `${JSON.stringify({
@@ -48,12 +61,16 @@ describe("websearch-mcp", () => {
       "utf8",
     );
 
-    const enabled = await enableWebsearchMcp(home);
+    const enabled = await enableWebsearchMcp(home, HARNESS.CLAUDE, { apiKey: TEST_KEY });
     assert.equal(enabled.changed, true);
     const afterEnable = JSON.parse(await readFile(claudeJsonPath(home), "utf8"));
     assert.equal(hasManagedWebsearchMcp(afterEnable), true);
     assert.equal(afterEnable.mcpServers["user-server"].command, "echo");
     assert.equal(afterEnable.mcpServers[WEBSEARCH_MCP_SERVER_NAME].url, WEBSEARCH_MCP_URL);
+    assert.equal(
+      afterEnable.mcpServers[WEBSEARCH_MCP_SERVER_NAME].headers.Authorization,
+      `Bearer ${TEST_KEY}`,
+    );
 
     const disabled = await disableWebsearchMcp(home);
     assert.equal(disabled.changed, true);
@@ -66,7 +83,7 @@ describe("websearch-mcp", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-only-"));
     await writeFile(
       claudeJsonPath(home),
-      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry() } }, null, 2)}\n`,
+      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry(TEST_KEY) } }, null, 2)}\n`,
       "utf8",
     );
 
@@ -75,47 +92,77 @@ describe("websearch-mcp", () => {
     assert.equal(Object.hasOwn(afterDisable, "mcpServers"), false);
   });
 
-  it("is idempotent when the managed server is already present", async () => {
+  it("is idempotent when the same baked entry is already present", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-idem-"));
     process.env.HOME = home;
     process.env.SHELL = "/bin/zsh";
-    await seedKeychainConfig(home, "fw_test_key_12345");
+    await seedKeychainConfig(home, TEST_KEY);
+    await writeFile(
+      claudeJsonPath(home),
+      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry(TEST_KEY) } }, null, 2)}\n`,
+      "utf8",
+    );
+    const result = await enableWebsearchMcp(home, HARNESS.CLAUDE, { apiKey: TEST_KEY });
+    assert.equal(result.changed, false);
+    // Baked auth: no FIREWORKS_API_KEY shell hook.
+    const shellPath = resolveShellConfigPath(home);
+    try {
+      const shell = await readFile(shellPath, "utf8");
+      assert.doesNotMatch(shell, /export FIREWORKS_API_KEY=/);
+    } catch (error) {
+      assert.equal(error.code, "ENOENT");
+    }
+  });
+
+  it("rebakes a legacy ${FIREWORKS_API_KEY} entry to a literal Bearer token", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-rebake-"));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    await seedKeychainConfig(home, TEST_KEY);
     await writeFile(
       claudeJsonPath(home),
       `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry() } }, null, 2)}\n`,
       "utf8",
     );
-    const result = await enableWebsearchMcp(home);
-    assert.equal(result.changed, false);
-    const shell = await readFile(resolveShellConfigPath(home), "utf8");
-    assert.match(shell, /export FIREWORKS_API_KEY=/);
+    const result = await enableWebsearchMcp(home, HARNESS.CLAUDE, { apiKey: TEST_KEY });
+    assert.equal(result.changed, true);
+    const after = JSON.parse(await readFile(claudeJsonPath(home), "utf8"));
+    assert.equal(
+      after.mcpServers[WEBSEARCH_MCP_SERVER_NAME].headers.Authorization,
+      `Bearer ${TEST_KEY}`,
+    );
   });
 
-  it("reconciles websearch and Codex exports without either consumer clobbering the other", async () => {
+  it("does not install a FIREWORKS shell hook for websearch; Codex Anthropic export is independent", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-codex-hook-"));
     process.env.HOME = home;
     process.env.SHELL = "/bin/zsh";
-    await seedKeychainConfig(home, "fw_test_key_12345");
+    await seedKeychainConfig(home, TEST_KEY);
     await writeGlobalConfig(home, {
       anthropicApiKey: "sk-ant-stored",
       harnesses: { codex: { enabled: true } },
     });
 
-    await enableWebsearchMcp(home);
+    await enableWebsearchMcp(home, HARNESS.CLAUDE, { apiKey: TEST_KEY });
     let shell = await readFile(resolveShellConfigPath(home), "utf8");
-    assert.match(shell, /export FIREWORKS_API_KEY=/);
+    assert.doesNotMatch(shell, /export FIREWORKS_API_KEY=/);
     assert.match(shell, /export ANTHROPIC_API_KEY=/);
 
     await writeGlobalConfig(home, {
       harnesses: { codex: { enabled: false } },
     });
     await reconcileShellEnvHook(home);
-    shell = await readFile(resolveShellConfigPath(home), "utf8");
-    assert.match(shell, /export FIREWORKS_API_KEY=/);
-    assert.doesNotMatch(shell, /export ANTHROPIC_API_KEY=/);
+    try {
+      shell = await readFile(resolveShellConfigPath(home), "utf8");
+      assert.doesNotMatch(shell, /export FIREWORKS_API_KEY=/);
+      assert.doesNotMatch(shell, /export ANTHROPIC_API_KEY=/);
+    } catch (error) {
+      assert.equal(error.code, "ENOENT");
+    }
 
     await writeGlobalConfig(home, {
       harnesses: { codex: { enabled: true } },
+      anthropicApiKey: "sk-ant-stored",
     });
     await disableWebsearchMcp(home);
     shell = await readFile(resolveShellConfigPath(home), "utf8");
@@ -134,29 +181,29 @@ describe("websearch-mcp", () => {
     assert.doesNotMatch(shell, new RegExp(SHELL_HOOK_BEGIN));
   });
 
-  it("removes the shell hook on disable when no env-shell harnesses remain", async () => {
+  it("removes a leftover FIREWORKS shell hook on enable/disable after baking", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-shell-"));
     process.env.HOME = home;
     process.env.SHELL = "/bin/zsh";
-    await seedKeychainConfig(home, "fw_test_key_12345");
-    await writeFile(
-      claudeJsonPath(home),
-      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry() } }, null, 2)}\n`,
-      "utf8",
-    );
-    await enableWebsearchMcp(home);
+    await seedKeychainConfig(home, TEST_KEY);
+    await installShellEnvHook(home, { includeFireworks: true });
+    assert.match(await readFile(resolveShellConfigPath(home), "utf8"), /export FIREWORKS_API_KEY=/);
 
-    await disableWebsearchMcp(home);
-    const shell = await readFile(resolveShellConfigPath(home), "utf8");
+    await enableWebsearchMcp(home, HARNESS.CLAUDE, { apiKey: TEST_KEY });
+    let shell = await readFile(resolveShellConfigPath(home), "utf8");
     assert.equal(shell.includes(SHELL_HOOK_BEGIN), false);
     assert.equal(shell.includes(SHELL_HOOK_END), false);
+
+    await disableWebsearchMcp(home);
+    shell = await readFile(resolveShellConfigPath(home), "utf8");
+    assert.equal(shell.includes(SHELL_HOOK_BEGIN), false);
   });
 
   it("fail-closed sync removes a stale managed server when flag lookup is unavailable", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-sync-"));
     await writeFile(
       claudeJsonPath(home),
-      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry() } }, null, 2)}\n`,
+      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry(TEST_KEY) } }, null, 2)}\n`,
       "utf8",
     );
 
@@ -182,5 +229,31 @@ describe("websearch-mcp", () => {
         process.env.FIRECONNECT_GATEWAY_GRPC_WEB_URL = originalGrpcUrl;
       }
     }
+  });
+
+  it("refreshWebsearchMcpAuth rebakes legacy env-ref without requiring feature-flag sync", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-refresh-"));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    await writeFile(
+      claudeJsonPath(home),
+      `${JSON.stringify({ mcpServers: { [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry() } }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const { refreshWebsearchMcpAuth } = await import("../../lib/system/websearch-mcp.mjs");
+    assert.equal(await refreshWebsearchMcpAuth(home, TEST_KEY), true);
+    const after = JSON.parse(await readFile(claudeJsonPath(home), "utf8"));
+    assert.equal(
+      after.mcpServers[WEBSEARCH_MCP_SERVER_NAME].headers.Authorization,
+      `Bearer ${TEST_KEY}`,
+    );
+    assert.equal(await refreshWebsearchMcpAuth(home, TEST_KEY), false);
+  });
+
+  it("refreshWebsearchMcpAuth is a no-op when managed MCP is absent", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-websearch-refresh-absent-"));
+    const { refreshWebsearchMcpAuth } = await import("../../lib/system/websearch-mcp.mjs");
+    assert.equal(await refreshWebsearchMcpAuth(home, TEST_KEY), false);
   });
 });

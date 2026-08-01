@@ -69,6 +69,16 @@ export function verifyFailureLine(result, { interactive = false } = {}) {
   return `The Fireworks API returned an unexpected response (${result.status}). Try again in a moment.`;
 }
 
+export function assertFireworksKeyShape(key) {
+  const trimmed = key?.trim() ?? "";
+  if (!isFireworksShapedKey(trimmed)) {
+    throw new Error(
+      `That doesn't look like a Fireworks key (expected it to start with fw_ or fpk_). Get one at ${FIREWORKS_KEYS_URL}`,
+    );
+  }
+  return trimmed;
+}
+
 /**
  * Shape-check then strict-verify a Fireworks key before it is stored or baked
  * into a harness config, throwing a friendly one-line error on failure. Shared
@@ -80,12 +90,7 @@ export function verifyFailureLine(result, { interactive = false } = {}) {
  * @returns {Promise<import("./verify-api-key.mjs").VerifyResult>}
  */
 export async function assertFireworksKeyUsable(key) {
-  const trimmed = key?.trim() ?? "";
-  if (!isFireworksShapedKey(trimmed)) {
-    throw new Error(
-      `That doesn't look like a Fireworks key (expected it to start with fw_ or fpk_). Get one at ${FIREWORKS_KEYS_URL}`,
-    );
-  }
+  const trimmed = assertFireworksKeyShape(key);
   const result = await verifyFireworksApiKey(trimmed);
   if (!result.ok) {
     throw new Error(verifyFailureLine(result));

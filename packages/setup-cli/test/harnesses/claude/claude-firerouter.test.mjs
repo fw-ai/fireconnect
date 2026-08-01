@@ -11,13 +11,15 @@ import {
 import { refreshFirerouterClaudeKey } from "../../../lib/harnesses/claude/firerouter.mjs";
 import { FIREWORKS_BASE_URL } from "../../../lib/fireworks/model-id.mjs";
 import { readJsonIfExists, writeJson } from "../../../lib/io/json.mjs";
-import { runFireconnect } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, runFireconnect, assertClaudeMainModel } from "../../helpers.mjs";
 
 const FIREWORKS_KEY = "fw_test_key_12345";
 const ANTHROPIC_KEY = "sk-ant-test-12345";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const LEGACY_FIREROUTER_MODEL = "accounts/fireworks/routers/firerouter[1m]";
-const DIRECT_MAIN_MODEL = "glm-fast-latest[1m]";
+const DIRECT_MAIN_MODEL = "kimi-fast-latest";
+const DIRECT_ALIAS_MODEL = "glm-fast-latest[1m]";
+const KIMI_FABLE_MODEL = "kimi-fast-latest";
 const LEGACY_FIREROUTER_BASE_URL = "https://router.fireworks.ai";
 const LEGACY_DESKTOP_GUARD_COMMAND = "node /old/fireconnect-desktop-guard.mjs";
 const USER_HOOK = {
@@ -57,8 +59,7 @@ function legacyRouterSettings() {
 }
 
 function assertLegacyRouterIntentPreserved(settings) {
-  assert.equal(settings.model, FIREROUTER_MODEL);
-  assert.equal(settings.env.ANTHROPIC_MODEL, FIREROUTER_MODEL);
+  assertClaudeMainModel(settings, FIREROUTER_MODEL);
   assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
   assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, FIREROUTER_MODEL);
   assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FIREROUTER_MODEL);
@@ -94,12 +95,11 @@ describe("Claude slot-level FireRouter", () => {
     assert.equal(result.code, 0, result.stderr);
 
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assert.equal(settings.model, DIRECT_MAIN_MODEL);
-    assert.equal(settings.env.ANTHROPIC_MODEL, DIRECT_MAIN_MODEL);
+    assertClaudeMainModel(settings, DIRECT_MAIN_MODEL);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
     assert.equal(
       settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL,
-      "kimi-fast-latest",
+      "glm-fast-latest[1m]",
     );
     assert.equal(
       settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
@@ -113,11 +113,14 @@ describe("Claude slot-level FireRouter", () => {
     assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
     assert.equal(settings.env.ANTHROPIC_API_KEY, ANTHROPIC_KEY);
     assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /X-Title: Claude Code/);
-    assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /HTTP-Referer: fireconnect\/v0\.9\.0/);
+    assert.ok(
+      settings.env.ANTHROPIC_CUSTOM_HEADERS.includes(`HTTP-Referer: ${FIRECONNECT_REFERER}`),
+      settings.env.ANTHROPIC_CUSTOM_HEADERS,
+    );
     assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, undefined);
   });
 
-  it("enables an explicit FireRouter slot without native auth on non-TTY (prompt skipped)", async () => {
+  it("rejects an explicit FireRouter slot without native auth on non-TTY", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-auth-required-"));
     const settingsPath = userSettingsPath(home);
     const dataDir = path.join(home, ".fireconnect/claude");
@@ -130,13 +133,10 @@ describe("Claude slot-level FireRouter", () => {
       cliEnv(home),
     );
 
-    assert.equal(result.code, 0, result.stderr);
-    const settings = JSON.parse(await readFile(settingsPath, "utf8"));
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
-    assert.notEqual(await readFile(settingsPath, "utf8"), original);
-    assert.ok(await readJsonIfExists(providerBackupPath(dataDir)));
-    assert.doesNotMatch(result.stdout, /FireRouter wasn't enabled/);
-    assert.match(result.stdout, /FireRouter is on/);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /FireRouter requires Claude sign-in/);
+    assert.equal(await readFile(settingsPath, "utf8"), original);
+    assert.deepEqual(await readJsonIfExists(providerBackupPath(dataDir)), {});
   });
 
   it("explicit firerouter with --anthropic-api-key does not use Fireworks token auth fallback", async () => {
@@ -154,7 +154,7 @@ describe("Claude slot-level FireRouter", () => {
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(settings.env.ANTHROPIC_API_KEY, ANTHROPIC_KEY);
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
-    assert.doesNotMatch(result.stdout, /FireRouter wasn't enabled/);
+    assert.doesNotMatch(result.stdout, /FireRouter off/);
   });
 
   it("supports independent FireRouter slots", async () => {
@@ -171,11 +171,11 @@ describe("Claude slot-level FireRouter", () => {
       cliEnv(home),
     );
     assert.equal(result.code, 0, result.stderr);
-    const env = JSON.parse(await readFile(userSettingsPath(home), "utf8")).env;
-    assert.equal(env.ANTHROPIC_MODEL, DIRECT_MAIN_MODEL);
-    assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
-    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREROUTER_MODEL);
-    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, "glm-latest[1m]");
+    const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
+    assertClaudeMainModel(settings, DIRECT_MAIN_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREROUTER_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "glm-latest[1m]");
   });
 
   it("plain re-on preserves slot mappings and accepts router-only options", async () => {
@@ -198,7 +198,7 @@ describe("Claude slot-level FireRouter", () => {
     );
     assert.equal(preference.code, 0, preference.stderr);
     let settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assert.equal(settings.env.ANTHROPIC_MODEL, DIRECT_MAIN_MODEL);
+    assertClaudeMainModel(settings, DIRECT_MAIN_MODEL);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
     assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-routing-preference: 5/);
 
@@ -249,16 +249,17 @@ describe("Claude slot-level FireRouter", () => {
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
         CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
         ANTHROPIC_API_KEY: "fireconnect",
+        ANTHROPIC_AUTH_TOKEN: ANTHROPIC_KEY,
         ANTHROPIC_CUSTOM_HEADERS: `X-Fireworks-Api-Key: ${FIREWORKS_KEY}`,
       },
     });
 
     const reon = await runFireconnect(["claude", "on"], cliEnv(home));
     assert.equal(reon.code, 0, reon.stderr);
-    const env = JSON.parse(await readFile(settingsPath, "utf8")).env;
-    assert.equal(env.ANTHROPIC_MODEL, FIREROUTER_MODEL);
-    assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
-    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREROUTER_MODEL);
+    const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+    assertClaudeMainModel(settings, FIREROUTER_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREROUTER_MODEL);
   });
 
   it("upgrades a v0.8 router values backup through a clean v0.9 snapshot", async () => {
@@ -295,14 +296,13 @@ describe("Claude slot-level FireRouter", () => {
       deny: ["Bash(rm:*)", "WebSearch", "WebFetch"],
     });
     assert.deepEqual(enabled.unrelated, { keep: true });
-    assert.equal(enabled.hooks.SessionStart.length, 2);
+    assert.deepEqual(enabled.hooks.SessionStart, [USER_HOOK]);
     assert.equal(
       enabled.hooks.SessionStart.filter(
         (entry) => entry.hooks[0].command.includes("fireconnect-desktop-guard.mjs"),
       ).length,
-      1,
+      0,
     );
-    assert.ok(enabled.hooks.SessionStart.some((entry) => entry.hooks[0].command === "echo user-hook"));
 
     const upgradedBackup = await readJsonIfExists(backupPath);
     assert.equal(upgradedBackup.values, undefined);
@@ -387,7 +387,7 @@ describe("Claude slot-level FireRouter", () => {
     assert.equal(upgrade.code, 0, upgrade.stderr);
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
-    assert.equal(enabled.env.ANTHROPIC_MODEL, migratedMapping.main);
+    assertClaudeMainModel(enabled, migratedMapping.main);
     assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, migratedMapping.opus);
     assert.equal(enabled.env.ANTHROPIC_DEFAULT_SONNET_MODEL, migratedMapping.sonnet);
     assert.equal(enabled.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, migratedMapping.haiku);
@@ -469,14 +469,14 @@ describe("Claude slot-level FireRouter", () => {
     );
     assert.equal(model.code, 0, model.stderr);
     let settings = JSON.parse(await readFile(userSettingsPath(modelHome), "utf8"));
-    assert.equal(settings.env.ANTHROPIC_MODEL, FIREROUTER_MODEL);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_MAIN_MODEL);
+    assertClaudeMainModel(settings, FIREROUTER_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_ALIAS_MODEL);
 
     const reon = await runFireconnect(["claude", "on"], cliEnv(modelHome));
     assert.equal(reon.code, 0, reon.stderr);
     settings = JSON.parse(await readFile(userSettingsPath(modelHome), "utf8"));
-    assert.equal(settings.env.ANTHROPIC_MODEL, FIREROUTER_MODEL);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_MAIN_MODEL);
+    assertClaudeMainModel(settings, FIREROUTER_MODEL);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_ALIAS_MODEL);
   });
 
   it("rejects Fire Pass in primary or alias FireRouter slots", async () => {

@@ -28,7 +28,11 @@ export function isEnabledFireworksHarness(harnesses, harnessId) {
   return entry?.enabled === true && entry?.provider !== "azure";
 }
 
-/** @typedef {{ enabled: boolean, provider?: "fireworks"|"azure" }} HarnessConfigEntry */
+/** @typedef {{
+ *   enabled: boolean,
+ *   provider?: "fireworks"|"azure",
+ *   profiles?: Record<string, unknown>,
+ * }} HarnessConfigEntry */
 /** @typedef {Record<string, HarnessConfigEntry>} HarnessConfigMap */
 
 export function globalConfigPath(home) {
@@ -103,9 +107,14 @@ function normalizeHarnessEntry(entry) {
     const provider = entry.provider === "azure" || entry.provider === "fireworks"
       ? entry.provider
       : undefined;
+    const profiles = entry.profiles && typeof entry.profiles === "object"
+      && !Array.isArray(entry.profiles)
+      ? entry.profiles
+      : undefined;
     return {
       enabled: entry.enabled === true,
       ...(provider ? { provider } : {}),
+      ...(profiles ? { profiles } : {}),
     };
   }
   return { enabled: false };
@@ -248,14 +257,14 @@ export async function writeGlobalConfig(home, config) {
   const harnesses = config.harnesses !== undefined
     ? config.harnesses
     : normalizeHarnessMap(existing.harnesses);
-const payload = {
+  const payload = {
     apiKey,
     anthropicApiKey,
     ssoAccountId,
     provider,
     azure,
     harnesses,
- };
+  };
   const hasLiteralKey = (payload.apiKey && payload.apiKey !== FIREWORKS_API_KEY_ENV_REF && payload.apiKey !== FIREWORKS_API_KEY_KEYCHAIN_REF)
     || (payload.anthropicApiKey && payload.anthropicApiKey !== ANTHROPIC_API_KEY_ENV_REF)
     || (payload.azure.apiKey && !isAzureApiKeyEnvRef(payload.azure.apiKey));
@@ -270,22 +279,29 @@ const payload = {
  * @param {"fireworks"|"azure"|""} [provider]
  */
 export async function setHarnessEnabled(home, harnessId, enabled, provider = "") {
+  const patch = {
+    enabled,
+    ...(provider === "fireworks" || provider === "azure" ? { provider } : {}),
+  };
+  await setHarnessState(home, harnessId, patch);
+}
+
+/**
+ * @param {string} home
+ * @param {string} harnessId
+ * @param {Partial<HarnessConfigEntry>} patch
+ */
+export async function setHarnessState(home, harnessId, patch) {
   const config = await readGlobalConfig(home);
   const existing = config.harnesses[harnessId] ?? { enabled: false };
-  const nextProvider = provider === "fireworks" || provider === "azure"
-    ? provider
-    : existing.provider;
   const harnesses = {
     ...config.harnesses,
-    [harnessId]: {
+    [harnessId]: normalizeHarnessEntry({
       ...existing,
-      enabled,
-      ...(nextProvider ? { provider: nextProvider } : {}),
-    },
+      ...patch,
+    }),
   };
-  await writeGlobalConfig(home, {
-    harnesses,
-  });
+  await writeGlobalConfig(home, { harnesses });
 }
 
 /**

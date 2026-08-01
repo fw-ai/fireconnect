@@ -3,11 +3,16 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_VSCODE_MODEL_METADATA,
   FIREWORKS_MODEL_SPECS,
+  assumedModelsDevListed,
+  isUsableCachedServerlessPricing,
   lookupFireworksModelCost,
   lookupFireworksModelLimits,
   lookupModelSpec,
   lookupVscodeModelMetadata,
+  pricingMatchesModelRefTier,
+  requiresFastTierPricing,
   resolveFireworksModelLabel,
+  resolveRouterEntryDisplayName,
   resolveRouterSpecAliasTarget,
   resolveSpecSlug,
   isFireworksRoutedModelRef,
@@ -41,6 +46,39 @@ describe("fireworks-model-specs", () => {
     assert.equal(limits.contextWindow, 1_048_575);
   });
 
+  it("does not append Fast to turbo router display names", () => {
+    assert.equal(
+      resolveRouterEntryDisplayName(
+        "accounts/fireworks/routers/kimi-k2p6-turbo",
+        "Kimi K2.6 Turbo",
+      ),
+      "Kimi K2.6 Turbo",
+    );
+    assert.equal(
+      resolveRouterEntryDisplayName(
+        "accounts/fireworks/routers/kimi-k2p6-turbo",
+        "Kimi K2.6 Turbo",
+        { pricingTier: "fast" },
+      ),
+      "Kimi K2.6 Turbo",
+    );
+    assert.equal(
+      resolveRouterEntryDisplayName(
+        "accounts/fireworks/routers/kimi-k2p6-turbo",
+        "Kimi K2.6",
+        { pricingTier: "fast" },
+      ),
+      "Kimi K2.6",
+    );
+    assert.equal(
+      resolveRouterEntryDisplayName(
+        "accounts/fireworks/routers/kimi-fast-latest",
+        "Kimi K3 Fast",
+      ),
+      "Kimi K3 Fast (Latest)",
+    );
+  });
+
   it("prefers kimi-k3 over static kimi-latest aliases when catalog lists Kimi K3", () => {
     setServerlessCatalogSnapshot({
       entries: [{
@@ -60,6 +98,7 @@ describe("fireworks-model-specs", () => {
       assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k3-fast");
       assert.equal(resolveRouterSpecAliasTarget("kimi-latest"), "kimi-k3");
       assert.equal(resolveRouterSpecAliasTarget("kimi-fast-latest"), "kimi-k3-fast");
+      assert.equal(resolveFireworksModelLabel("kimi-latest"), "Kimi K3 (Latest)");
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -130,6 +169,54 @@ describe("fireworks-model-specs", () => {
     }
   });
 
+  it("prefers catalog-listed minimax and qwen-plus models for -latest aliases", () => {
+    setServerlessCatalogSnapshot({
+      entries: [
+        {
+          id: "accounts/fireworks/models/minimax-m2p7",
+          shortId: "minimax-m2p7",
+          displayName: "MiniMax 2.7",
+          kind: "serverless",
+        },
+        {
+          id: "accounts/fireworks/models/minimax-m3",
+          shortId: "minimax-m3",
+          displayName: "MiniMax M3",
+          kind: "serverless",
+        },
+        {
+          id: "accounts/fireworks/models/qwen3p6-plus",
+          shortId: "qwen3p6-plus",
+          displayName: "Qwen 3.6 Plus",
+          kind: "serverless",
+        },
+        {
+          id: "accounts/fireworks/models/qwen3p7-plus",
+          shortId: "qwen3p7-plus",
+          displayName: "Qwen 3.7 Plus",
+          kind: "serverless",
+        },
+      ],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map(),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveRouterSpecAliasTarget("minimax-latest"), "minimax-m3");
+      assert.equal(resolveRouterSpecAliasTarget("qwen-plus-latest"), "qwen3p7-plus");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+  });
+
+  it("falls back to static minimax-latest and qwen-plus-latest targets without catalog context", () => {
+    setServerlessCatalogSnapshot(null);
+    assert.equal(resolveRouterSpecAliasTarget("minimax-latest"), "minimax-m3");
+    assert.equal(resolveRouterSpecAliasTarget("qwen-plus-latest"), "qwen3p7-plus");
+  });
+
   it("ignores standard-tier cache on resolved fast slugs for fast-latest routers", () => {
     setServerlessCatalogSnapshot({
       entries: [
@@ -167,6 +254,71 @@ describe("fireworks-model-specs", () => {
     } finally {
       setServerlessCatalogSnapshot(null);
     }
+  });
+
+  it("rejects priority-tier cache for -latest router aliases at lookup", () => {
+    setServerlessCatalogSnapshot({
+      entries: [{
+        id: "accounts/fireworks/routers/kimi-latest",
+        shortId: "kimi-latest",
+        displayName: "Kimi Latest",
+        baseModelId: "accounts/fireworks/models/kimi-k3",
+        kind: "serverless",
+      }],
+      pricingById: new Map([
+        ["accounts/fireworks/routers/kimi-latest", {
+          slug: "kimi-latest",
+          label: "Kimi K3",
+          input: 3.75,
+          cachedInput: 0.375,
+          output: 18.75,
+          tier: "priority",
+          source: "https://docs.fireworks.ai/serverless/pricing",
+        }],
+        ["accounts/fireworks/models/kimi-k3", {
+          slug: "kimi-k3",
+          label: "Kimi K3",
+          input: 3.75,
+          cachedInput: 0.375,
+          output: 18.75,
+          tier: "priority",
+          source: "https://docs.fireworks.ai/serverless/pricing",
+        }],
+      ]),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/kimi-latest", "accounts/fireworks/models/kimi-k3"],
+      ]),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      const pricing = lookupFireworksPricing("kimi-latest");
+      assert.equal(pricing?.tier, "standard");
+      assert.equal(pricing?.input, 3);
+      assert.equal(pricing?.output, 15);
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+  });
+
+  it("pricingMatchesModelRefTier enforces bidirectional tier expectations", () => {
+    const fastPricing = { input: 3, cachedInput: 0.3, output: 15, tier: "fast" };
+    const standardPricing = { input: 0.95, cachedInput: 0.19, output: 4, tier: "standard" };
+    const priorityPricing = { input: 3.75, cachedInput: 0.375, output: 18.75, tier: "priority" };
+
+    assert.equal(requiresFastTierPricing("kimi-fast-latest"), true);
+    assert.equal(requiresFastTierPricing("kimi-k2p6-turbo"), true);
+    assert.equal(requiresFastTierPricing("kimi-latest"), false);
+
+    assert.equal(pricingMatchesModelRefTier("kimi-fast-latest", fastPricing), true);
+    assert.equal(pricingMatchesModelRefTier("kimi-fast-latest", standardPricing), false);
+    assert.equal(pricingMatchesModelRefTier("kimi-latest", fastPricing), false);
+    assert.equal(pricingMatchesModelRefTier("kimi-latest", standardPricing), true);
+    assert.equal(pricingMatchesModelRefTier("kimi-latest", priorityPricing), false);
+    assert.equal(isUsableCachedServerlessPricing("kimi-latest", fastPricing), false);
+    assert.equal(isUsableCachedServerlessPricing("kimi-latest", standardPricing), true);
+    assert.equal(isUsableCachedServerlessPricing("kimi-latest", priorityPricing), false);
   });
 
   it("prefers live router base models over static alias slugs when catalog cache is warm", () => {
@@ -261,6 +413,25 @@ describe("fireworks-model-specs", () => {
       assert.equal(limits.contextWindow, 1_048_575, modelRef);
       assert.equal(limits.maxTokens, 131_072, modelRef);
     }
+  });
+
+  it("resolves inkling limits, pricing, and vision from the static spec", () => {
+    const limits = lookupFireworksModelLimits("accounts/fireworks/models/inkling");
+    const vscode = lookupVscodeModelMetadata("accounts/fireworks/models/inkling");
+    const cost = lookupFireworksModelCost("inkling");
+    assert.equal(limits.contextWindow, 1_048_576);
+    assert.equal(limits.maxTokens, 131_072);
+    assert.equal(limits.vision, true);
+    assert.equal(vscode.maxInputTokens, 1_048_576);
+    assert.equal(vscode.maxOutputTokens, 131_072);
+    assert.equal(vscode.vision, true);
+    assert.equal(vscode.toolCalling, true);
+    assert.equal(cost.input, 1.00);
+    assert.equal(cost.output, 4.05);
+    assert.equal(lookupModelSpec("inkling")?.label, "Inkling");
+    assert.equal(lookupModelSpec("inkling")?.modelsDev, false);
+    assert.equal(assumedModelsDevListed("inkling"), false);
+    assert.equal(assumedModelsDevListed("glm-5p2"), true);
   });
 
   it("marks gpt-oss-20b as non-tool-calling", () => {

@@ -7,8 +7,10 @@ import { runUpgradeCommand } from "../../lib/cli/commands/global.mjs";
 import { FIREWORKS_BASE_URL } from "../../lib/fireworks/model-id.mjs";
 import { userSettingsPath } from "../../lib/harnesses/claude/core.mjs";
 import {
+  CLAUDE_OFF_UPGRADE_BEFORE_VERSION,
   CLAUDE_UPGRADE_PROMPT,
   claudeUpgradeState,
+  needsClaudeOffBeforeUpgrade,
   runClaudeUpgradePreflight,
 } from "../../lib/system/upgrade.mjs";
 import { runCli, withTempHome } from "../helpers.mjs";
@@ -47,7 +49,8 @@ function upgradeDependencies(overrides = {}) {
   return {
     home: "/tmp/fireconnect-upgrade-test",
     exists: () => true,
-    readVersion: async () => "0.9.0",
+    // Pre-0.9 so Claude-off preflight still applies unless a test overrides.
+    readVersion: async () => "0.8.0",
     finalize: async () => {},
     printNotes: async () => {},
     getClaudeAdapter: () => ({ id: "claude", off: async () => {} }),
@@ -58,6 +61,17 @@ function upgradeDependencies(overrides = {}) {
     ...overrides,
   };
 }
+
+describe("needsClaudeOffBeforeUpgrade", () => {
+  it(`requires Claude-off only for FireConnect before ${CLAUDE_OFF_UPGRADE_BEFORE_VERSION}`, () => {
+    assert.equal(needsClaudeOffBeforeUpgrade(""), true);
+    assert.equal(needsClaudeOffBeforeUpgrade("0.8.9"), true);
+    assert.equal(needsClaudeOffBeforeUpgrade("v0.8.0"), true);
+    assert.equal(needsClaudeOffBeforeUpgrade("0.9.0"), false);
+    assert.equal(needsClaudeOffBeforeUpgrade("v0.9.0"), false);
+    assert.equal(needsClaudeOffBeforeUpgrade("1.0.0"), false);
+  });
+});
 
 describe("Claude upgrade state", () => {
   it("detects either the global flag or managed settings evidence", () => {
@@ -86,6 +100,28 @@ describe("Claude upgrade state", () => {
 });
 
 describe("Claude upgrade preflight", () => {
+  it("skips Claude-off entirely for FireConnect 0.9.0+", async () => {
+    let offCalled = false;
+    let inspected = false;
+    const result = await runClaudeUpgradePreflight({
+      home: "/tmp/home",
+      installedVersion: "0.9.0",
+      adapter: { off: async () => { offCalled = true; } },
+      input: { isTTY: false },
+      environment: {},
+      inspect: async () => {
+        inspected = true;
+        return { enabled: true, globalEnabled: true, managedSettings: true };
+      },
+      prompt: async () => {
+        throw new Error("must not prompt on 0.9.0+");
+      },
+    });
+    assert.deepEqual(result, { proceed: true, restored: false });
+    assert.equal(offCalled, false);
+    assert.equal(inspected, false);
+  });
+
   it("fails closed without a TTY and tells the user how to restore", async () => {
     let offCalled = false;
     await assert.rejects(
@@ -285,11 +321,12 @@ describe("upgrade fetch, compare, and reset ordering", () => {
       execFile: fakeGit({ events }),
       readVersion: async () => {
         versionRead += 1;
-        return versionRead === 1 ? "0.9.0" : "1.0.0";
+        return versionRead === 1 ? "0.8.0" : "1.0.0";
       },
       getClaudeAdapter: () => oldAdapter,
-      preflight: async ({ adapter }) => {
+      preflight: async ({ adapter, installedVersion }) => {
         assert.equal(adapter, oldAdapter);
+        assert.equal(installedVersion, "0.8.0");
         events.push("preflight");
         return { proceed: true, restored: true };
       },
@@ -311,5 +348,21 @@ describe("upgrade fetch, compare, and reset ordering", () => {
       "Upgrade complete. Your original Claude Code settings were restored.",
       "To reconnect with FireConnect v1.0.0:\n  fireconnect claude on",
     ]);
+  });
+
+  it("passes the installed FireConnect version into Claude preflight", async () => {
+    const events = [];
+    await runUpgradeCommand(upgradeDependencies({
+      execFile: fakeGit({ events }),
+      readVersion: async () => "0.9.1",
+      preflight: async ({ installedVersion }) => {
+        assert.equal(installedVersion, "0.9.1");
+        events.push("preflight");
+        return { proceed: true, restored: false };
+      },
+    }));
+
+    assert.ok(events.includes("preflight"));
+    assert.ok(events.includes("reset --hard new"));
   });
 });

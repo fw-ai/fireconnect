@@ -138,6 +138,53 @@ async function readIfExists(filePath) {
 }
 
 describe("install.sh Claude upgrade preflight", () => {
+  it("skips Claude-off when the installed FireConnect is 0.9.0+", async () => {
+    await withFixture("skip-modern", async (fixture) => {
+      await writeJson(path.join(fixture.home, ".fireconnect/config.json"), {
+        harnesses: { claude: { enabled: true, provider: "fireworks" } },
+      });
+      await writeJson(
+        path.join(fixture.home, ".fireconnect/cli/packages/setup-cli/package.json"),
+        { name: "fireconnect", version: "0.9.0" },
+      );
+
+      const result = runPreflight(fixture, {
+        // Would force off if detection ran — assert it never reaches the CLI.
+        FIRECONNECT_AUTO_OFF_CLAUDE: "1",
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(await readIfExists(fixture.logPath), "");
+      assert.match(result.stdout, /restored=0/);
+    });
+  });
+
+  it("still restores Claude when upgrading from FireConnect before 0.9.0", async () => {
+    await withFixture("legacy-version", async (fixture) => {
+      const configPath = path.join(fixture.home, ".fireconnect/config.json");
+      const afterConfig = path.join(fixture.root, "config-after.json");
+      await writeJson(configPath, {
+        harnesses: { claude: { enabled: true, provider: "fireworks" } },
+      });
+      await writeJson(afterConfig, {
+        harnesses: { claude: { enabled: false, provider: "fireworks" } },
+      });
+      await writeJson(
+        path.join(fixture.home, ".fireconnect/cli/packages/setup-cli/package.json"),
+        { name: "fireconnect", version: "0.8.9" },
+      );
+
+      const result = runPreflight(fixture, {
+        FIRECONNECT_AUTO_OFF_CLAUDE: "1",
+        FIRECONNECT_AFTER_CONFIG: afterConfig,
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(await readFile(fixture.logPath, "utf8"), "claude off\n");
+      assert.match(result.stdout, /restored=1/);
+    });
+  });
+
   it("uses the existing CLI to disable a globally enabled Claude harness", async () => {
     await withFixture("global", async (fixture) => {
       const configPath = path.join(fixture.home, ".fireconnect/config.json");
@@ -399,5 +446,13 @@ echo notes-ok
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("install.sh shared finalize", () => {
+  it("invokes fireconnect finalize-install after installing the launcher", async () => {
+    const source = await readFile(INSTALL_PATH, "utf8");
+    assert.match(source, /node "\$\{CLI\}" finalize-install/);
+    assert.match(source, /Finalizing install/);
   });
 });

@@ -1,21 +1,34 @@
-import { FIREROUTER_ROUTER_ID } from "./model-id.mjs";
+import {
+  FIREROUTER_ROUTER_ID,
+  KIMI_FAST_LATEST_ROUTER_ID,
+} from "./model-id.mjs";
 import {
   detectApiKeyType,
   MISSING_FIREWORKS_API_KEY_MESSAGE,
 } from "../keys/key-type.mjs";
-import { FIREWORKS_PRICING_DOCS_URL, resolveRouterSpecAliasTarget, ROUTER_SPEC_ALIASES, routerIdsForTargetSlug } from "./model-specs.mjs";
-import { setServerlessCatalogSnapshot } from "./serverless-catalog-cache.mjs";
+import {
+  FIREWORKS_PRICING_DOCS_URL,
+  pricingMatchesModelRefTier,
+  resolveFireworksModelLabel,
+  resolveRouterSpecAliasTarget,
+  ROUTER_SPEC_ALIASES,
+  routerIdsForTargetSlug,
+} from "./model-specs.mjs";
+import {
+  getServerlessCatalogSnapshot,
+  setServerlessCatalogSnapshot,
+} from "./serverless-catalog-cache.mjs";
 
 export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
 export const PLATFORM_ACCOUNT_ID = "fireworks";
 export const KIND_SERVERLESS = "serverless";
 export const SERVERLESS_CODING_USE_CASE = "coding";
-export const FIREPASS_ROUTER_ID = "accounts/fireworks/routers/glm-fast-latest";
+export const FIREPASS_ROUTER_ID = KIMI_FAST_LATEST_ROUTER_ID;
 export const FIREPASS_ROUTER_IDS = new Set([
   FIREPASS_ROUTER_ID,
   "accounts/fireworks/routers/glm-latest",
   "accounts/fireworks/routers/glm-5p2-fast",
-  "accounts/fireworks/routers/kimi-fast-latest",
+  "accounts/fireworks/routers/glm-fast-latest",
   "accounts/fireworks/routers/kimi-k2p7-code-fast",
 ]);
 
@@ -238,11 +251,14 @@ export function serverlessModeId(mode) {
 
 function findServerlessMode(model, preferredModeId) {
   const modes = model.serverlessModes ?? model.serverless_modes ?? [];
-  const preferred = modes.find((mode) => serverlessModeId(mode) === preferredModeId);
-  if (preferred) {
-    return preferred;
-  }
-  return modes.find((mode) => serverlessModeId(mode) === "default") ?? modes[0] ?? null;
+  return modes.find((mode) => serverlessModeId(mode) === preferredModeId) ?? null;
+}
+
+/**
+ * Serverless mode whose SKU prices the base model id (standard/default tier only).
+ */
+function selectBaseModelPricingMode(model) {
+  return findServerlessMode(model, "default");
 }
 
 function pricingTierForMode(mode) {
@@ -310,12 +326,11 @@ function hasUsableCachedPricing(pricing) {
   return pricing && (pricing.input > 0 || pricing.output > 0);
 }
 
-function resolveAliasRouterSources(snapshot, targetSlug, modelIds) {
+function resolveAliasRouterSources(snapshot, targetSlug, modelIds, alias) {
   const modelId = `accounts/fireworks/models/${targetSlug}`;
   if (modelIds.has(modelId)) {
     const pricing = snapshot.pricingById.get(modelId);
-    const pricingSourceId = hasUsableCachedPricing(pricing)
-      && (!targetSlug.endsWith("-fast") || pricing.tier === "fast")
+    const pricingSourceId = hasUsableCachedPricing(pricing) && pricingMatchesModelRefTier(alias, pricing)
       ? modelId
       : null;
     return { baseModelId: modelId, pricingSourceId };
@@ -324,7 +339,11 @@ function resolveAliasRouterSources(snapshot, targetSlug, modelIds) {
   for (const routerId of routerIdsForTargetSlug(targetSlug)) {
     const baseModelId = snapshot.routerBaseModelById.get(routerId);
     if (baseModelId) {
-      return { baseModelId, pricingSourceId: routerId };
+      const routerPricing = snapshot.pricingById.get(routerId);
+      const pricingSourceId = hasUsableCachedPricing(routerPricing) && pricingMatchesModelRefTier(alias, routerPricing)
+        ? routerId
+        : null;
+      return { baseModelId, pricingSourceId };
     }
   }
 
@@ -355,7 +374,7 @@ function addAliasRouterMetadata(snapshot) {
     if (!targetSlug) {
       continue;
     }
-    const sources = resolveAliasRouterSources(snapshot, targetSlug, entryIds);
+    const sources = resolveAliasRouterSources(snapshot, targetSlug, entryIds, alias);
     if (!sources) {
       continue;
     }
@@ -397,6 +416,21 @@ function addAliasRouterMetadata(snapshot) {
   snapshot.entries = dedupeCatalog(snapshot.entries);
 }
 
+function refreshRouterDisplayNames(snapshot) {
+  const priorSnapshot = getServerlessCatalogSnapshot();
+  setServerlessCatalogSnapshot(snapshot);
+  try {
+    for (const entry of snapshot.entries) {
+      if (!entry.baseModelId) {
+        continue;
+      }
+      entry.displayName = resolveFireworksModelLabel(entry.id) ?? entry.displayName;
+    }
+  } finally {
+    setServerlessCatalogSnapshot(priorSnapshot);
+  }
+}
+
 /**
  * @param {object[]} apiModels
  */
@@ -436,10 +470,10 @@ export function buildServerlessCatalogSnapshot(apiModels) {
       supportsToolsById.set(modelId, supportsTools);
     }
 
-    const standardMode = findServerlessMode(model, "default");
-    if (standardMode) {
-      const rates = parseSkuPricing(standardMode.skuInfos ?? standardMode.sku_infos);
-      const pricing = buildPricingRecord(modelId, modelEntry.displayName, rates, pricingTierForMode(standardMode));
+    const basePricingMode = selectBaseModelPricingMode(model);
+    if (basePricingMode) {
+      const rates = parseSkuPricing(basePricingMode.skuInfos ?? basePricingMode.sku_infos);
+      const pricing = buildPricingRecord(modelId, modelEntry.displayName, rates, pricingTierForMode(basePricingMode));
       if (pricing) {
         pricingById.set(modelId, pricing);
       }
@@ -465,7 +499,11 @@ export function buildServerlessCatalogSnapshot(apiModels) {
       }
 
       const rates = parseSkuPricing(mode.skuInfos ?? mode.sku_infos);
-      const pricing = buildPricingRecord(usageId, routerEntry.displayName, rates, pricingTierForMode(mode));
+      const tier = pricingTierForMode(mode);
+      if (tier === "priority") {
+        continue;
+      }
+      const pricing = buildPricingRecord(usageId, routerEntry.displayName, rates, tier);
       if (pricing) {
         pricingById.set(usageId, pricing);
       }
@@ -481,6 +519,7 @@ export function buildServerlessCatalogSnapshot(apiModels) {
     supportsToolsById,
   };
   addAliasRouterMetadata(snapshot);
+  refreshRouterDisplayNames(snapshot);
   return snapshot;
 }
 
