@@ -20,7 +20,7 @@ One CLI points your existing AI coding tools at Fireworks. `on` rewrites the too
 **1. Install**
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash
 ```
 
 **2. Sign in**
@@ -73,7 +73,7 @@ Run `fireconnect help` or `fireconnect <harness> help` for every option.
 
 ### Install notes
 
-- Requires **Node.js 18+**. Missing or too old: installed via Homebrew on macOS, otherwise the
+- Requires **bash** and **Node.js 18+**. Missing or too old Node: installed via Homebrew on macOS, otherwise the
   installer prints nvm / nodejs.org / NodeSource instructions.
 - Clones the CLI to `~/.fireconnect/cli`, installs the launcher into `~/.local/bin`, and adds it
   to your shell `PATH`.
@@ -81,12 +81,8 @@ Run `fireconnect help` or `fireconnect <harness> help` for every option.
   keys and the Claude websearch MCP Bearer token).
 - Does **not** sign you in or touch harness settings — that's steps 2 and 3.
 
-**Windows:** run from Git Bash. Piping `curl | bash` in PowerShell corrupts line endings
-(`set: pipefail\r: invalid option name`); keep the pipe inside bash:
-
-```bash
-bash -c "curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash"
-```
+**Windows:** run from Git Bash with the same command above. Piping through PowerShell corrupts line endings
+(`set: pipefail\r: invalid option name`).
 
 **From an SSH checkout:**
 
