@@ -5,6 +5,10 @@ import {
   deepagentsConfigPath,
   refreshDeepagentsGatewayKey,
 } from "../harnesses/deepagents/core.mjs";
+import {
+  kimiConfigPath,
+  refreshKimiGatewayKey,
+} from "../harnesses/kimi/core.mjs";
 import { opencodeConfigPath, refreshOpencodeGatewayKey } from "../harnesses/opencode/core.mjs";
 import { piAuthPath, refreshPiGatewayKey } from "../harnesses/pi/core.mjs";
 import { migrateVscodeResponsesApiType } from "../harnesses/vscode/core.mjs";
@@ -53,6 +57,7 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
   const opencodeConfig = opencodeConfigPath(home, "");
   const codexConfig = codexConfigPath(home, "");
   const deepagentsConfig = deepagentsConfigPath(home, "");
+  const kimiConfig = kimiConfigPath(home, "");
   const targets = [
     {
       id: HARNESS.CLAUDE,
@@ -83,6 +88,12 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       label: "Deep Agents",
       hint: "fireconnect deepagents on",
       refresh: () => refreshDeepagentsGatewayKey({ configPath: deepagentsConfig, fireworksKey }),
+    },
+    {
+      id: HARNESS.KIMI,
+      label: "Kimi Code",
+      hint: "fireconnect kimi on",
+      refresh: () => refreshKimiGatewayKey({ configPath: kimiConfig, fireworksKey }),
     },
   ];
   const notes = [];

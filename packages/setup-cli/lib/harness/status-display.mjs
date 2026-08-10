@@ -9,6 +9,7 @@ const HARNESS_LABELS = {
   cursor: "Cursor",
   vscode: "VS Code",
   deepagents: "Deep Agents",
+  kimi: "Kimi Code",
 };
 
 const AUTH_MODE_LABELS = {

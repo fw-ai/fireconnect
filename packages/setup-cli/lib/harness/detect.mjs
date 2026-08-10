@@ -31,6 +31,7 @@ export function detectInstalledHarnesses(home) {
     // itself only appears once the user touches custom models.
     [HARNESS.VSCODE]: [path.dirname(chatLanguageModelsPath({ home }))],
     [HARNESS.DEEPAGENTS]: [path.join(home, ".deepagents")],
+    [HARNESS.KIMI]: [path.join(home, ".kimi-code")],
   };
 
   return Object.entries(probes)

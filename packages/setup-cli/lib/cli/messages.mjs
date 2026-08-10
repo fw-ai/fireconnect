@@ -14,6 +14,7 @@ export const FIREROUTER_DOCS_URL =
 const FIREROUTER_HARNESS_LABELS = {
   cursor: "Cursor",
   deepagents: "Deep Agents",
+  kimi: "Kimi Code",
 };
 
 function displayModel(model) {
@@ -330,6 +331,10 @@ export function printPiRestartHint() {
 
 export function printDeepagentsRestartHint() {
   printSessionRestartHint("Deep Agents");
+}
+
+export function printKimiRestartHint() {
+  printSessionRestartHint("Kimi Code");
 }
 
 export function printOpenCodeRestartHint() {

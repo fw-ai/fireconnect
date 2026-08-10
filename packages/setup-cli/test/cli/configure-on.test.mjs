@@ -12,7 +12,7 @@ import { runFireconnect, seedKeychainConfig } from "../helpers.mjs";
 
 describe("configure to harness on propagation", () => {
   it("gives every direct harness the same login and custom SSO guidance when no key exists", async () => {
-    for (const harness of ["claude", "opencode", "codex", "pi", "cursor", "vscode", "deepagents"]) {
+    for (const harness of ["claude", "opencode", "codex", "pi", "cursor", "vscode", "deepagents", "kimi"]) {
       const home = await mkdtemp(path.join(os.tmpdir(), `fc-missing-${harness}-`));
       const result = await runFireconnect(
         [harness, "on"],

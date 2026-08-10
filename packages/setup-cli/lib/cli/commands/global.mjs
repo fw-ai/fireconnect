@@ -144,7 +144,7 @@ function claudeHelp() {
 function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "" } = {}) {
   const onOpts = standardOnOpts({
     firerouter: getHarness(id).firerouter,
-    modelNote: id === "deepagents" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
+    modelNote: ["deepagents", "codex", "kimi"].includes(id) ? "use firerouter for FireRouter" : "",
   });
   const allOpts = [
     OPT_HOME,
@@ -223,6 +223,7 @@ export function mainCommandsHelp() {
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
       ["deepagents", "Deep Agents (dcode)"],
+      ["kimi", "Kimi Code"],
     ]),
     "",
     cmdBlock("Per harness", [
@@ -281,6 +282,10 @@ export function printHelp(topic = "") {
     deepagents: configHarnessHelp("deepagents", "Deep Agents (dcode)", {
       configPath: "--config-path <path>",
       configPathNote: "Explicit ~/.deepagents/config.toml path.",
+    }),
+    kimi: configHarnessHelp("kimi", "Kimi Code", {
+      configPath: "--config-path <path>",
+      configPathNote: "Explicit ~/.kimi-code/config.toml path.",
     }),
     login: helpLines(
       `Usage: ${CLI_NAME} login [options]`,
@@ -359,6 +364,7 @@ export function printHelp(topic = "") {
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
       ["deepagents", "Deep Agents (dcode)"],
+      ["kimi", "Kimi Code"],
     ]),
     "",
     cmdBlock("Harness commands", [
@@ -716,7 +722,7 @@ export async function runUninstallCommand(ctx) {
 
   const hasErrors = offErrors.length > 0 || removalFailures.length > 0;
   if (!hasErrors) {
-    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents) to fully apply.");
+    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents, Kimi Code) to fully apply.");
   } else {
     if (removalFailures.length > 0) {
       console.error("FireConnect uninstall completed with file removal errors:");

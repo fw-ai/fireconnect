@@ -12,6 +12,10 @@ import {
   deepagentsDataDir,
 } from "../harnesses/deepagents/core.mjs";
 import {
+  kimiConfigPath,
+  kimiDataDir,
+} from "../harnesses/kimi/core.mjs";
+import {
   opencodeConfigPath,
   opencodeDataDir,
 } from "../harnesses/opencode/core.mjs";
@@ -102,6 +106,16 @@ export function deepagentsPathsFor(ctx) {
   };
 }
 
+/**
+ * @param {HarnessContext} ctx
+ */
+export function kimiPathsFor(ctx) {
+  return {
+    configPath: kimiConfigPath(ctx.home, ctx.configPath),
+    dataDir: kimiDataDir(ctx.home, ctx.dataDir),
+  };
+}
+
 /** Per-harness path-override fields + the flag to suggest in the error message. */
 const HOME_VALIDATION = {
   claude: { fields: ["settingsPath"], flag: "--settings-path" },
@@ -111,11 +125,12 @@ const HOME_VALIDATION = {
   cursor: { fields: ["dbPath"], flag: "--db-path" },
   vscode: { fields: ["vscodePath"], flag: "--vscode-path" },
   deepagents: { fields: ["configPath"], flag: "--config-path" },
+  kimi: { fields: ["configPath"], flag: "--config-path" },
 };
 
 /**
  * @param {HarnessContext} ctx
- * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepagents"} harnessId
+ * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepagents" | "kimi"} harnessId
  */
 export function ensureHomeForHarness(ctx, harnessId) {
   const req = HOME_VALIDATION[harnessId] ?? HOME_VALIDATION.claude;
