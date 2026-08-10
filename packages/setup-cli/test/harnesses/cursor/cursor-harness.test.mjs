@@ -12,8 +12,11 @@ import {
   addUserModel,
   cursorCurrentModelId,
   cursorProviderStatus,
+  disableUnservableModels,
   existingModes,
   prettyModelName,
+  pruneUnservableAddedModels,
+  reenableFireconnectDisabledModels,
   removeFireconnectModels,
   resetFireconnectModelConfig,
   setAllExistingModes,
@@ -21,6 +24,7 @@ import {
   setOpenAiBaseUrl,
   setUseOpenAiKey,
 } from "../../../lib/harnesses/cursor/core.mjs";
+import { isFireworksModelId } from "../../../lib/fireworks/model-id.mjs";
 import {
   runCli,
   runCliJson,
@@ -238,6 +242,76 @@ describe("cursor-core pure transforms", () => {
     // no new modes created
     assert.deepEqual(existingModes(next), ["composer", "cmd-k"]);
     assert.deepEqual(next.aiSettings.fireconnectTouchedModes, ["composer", "cmd-k"]);
+  });
+
+  const servableOnly = (...ids) => {
+    const set = new Set(ids);
+    return (id) => set.has(id) || isFireworksModelId(id);
+  };
+
+  it("pruneUnservableAddedModels drops only unservable fireconnect-tracked ids", () => {
+    let b = baseBlob();
+    b.aiSettings.userAddedModels = ["auto-smart", "kimi-fast-latest", "user-own-model"];
+    b.aiSettings.modelOverrideEnabled = ["auto-smart", "kimi-fast-latest", "user-own-model"];
+    b.aiSettings.fireconnectAddedModels = ["auto-smart", "kimi-fast-latest"];
+    const next = pruneUnservableAddedModels(b, { servable: servableOnly() });
+    assert.deepEqual(next.aiSettings.userAddedModels, ["kimi-fast-latest", "user-own-model"]);
+    assert.deepEqual(next.aiSettings.modelOverrideEnabled, ["kimi-fast-latest", "user-own-model"]);
+    assert.deepEqual(next.aiSettings.fireconnectAddedModels, ["kimi-fast-latest"]);
+  });
+
+  it("disableUnservableModels hides built-ins but keeps servable and user-owned models", () => {
+    const b = baseBlob({
+      availableDefaultModels2: [
+        { name: "auto-smart" },
+        { name: "claude-sonnet-4-6" },
+        { name: "kimi-k3" }, // also a Fireworks model — stays
+      ],
+    });
+    b.aiSettings.modelOverrideEnabled = ["gpt-5.5", "glm-5p2"];
+    b.aiSettings.userAddedModels = ["user-own-model"];
+    b.aiSettings.modelOverrideDisabled = [];
+    const next = disableUnservableModels(b, { servable: servableOnly() });
+    assert.deepEqual(next.aiSettings.modelOverrideDisabled, ["auto-smart", "claude-sonnet-4-6", "gpt-5.5"]);
+    assert.deepEqual(next.aiSettings.fireconnectDisabledModels, ["auto-smart", "claude-sonnet-4-6", "gpt-5.5"]);
+    // enabled overrides disabled in Cursor's picker — hidden models must leave
+    // the enabled list too (tracked for restore); servable ones stay
+    assert.deepEqual(next.aiSettings.modelOverrideEnabled, ["glm-5p2"]);
+    assert.deepEqual(next.aiSettings.fireconnectToggledOffModels, ["gpt-5.5"]);
+  });
+
+  it("disableUnservableModels strips already-disabled ids from the enabled list", () => {
+    const b = baseBlob();
+    b.aiSettings.modelOverrideEnabled = ["gpt-5.5"];
+    b.aiSettings.modelOverrideDisabled = ["gpt-5.5"]; // hidden by an earlier run
+    b.aiSettings.fireconnectDisabledModels = ["gpt-5.5"];
+    const next = disableUnservableModels(b, { servable: servableOnly() });
+    assert.deepEqual(next.aiSettings.modelOverrideEnabled, []);
+    assert.deepEqual(next.aiSettings.fireconnectToggledOffModels, ["gpt-5.5"]);
+    assert.deepEqual(next.aiSettings.modelOverrideDisabled, ["gpt-5.5"]);
+  });
+
+  it("disableUnservableModels re-enables tracked ids that became servable", () => {
+    const b = baseBlob();
+    b.aiSettings.modelOverrideDisabled = ["kimi-fast-latest", "auto-smart"];
+    b.aiSettings.fireconnectDisabledModels = ["kimi-fast-latest", "auto-smart"];
+    const next = disableUnservableModels(b, { servable: servableOnly() });
+    assert.deepEqual(next.aiSettings.modelOverrideDisabled, ["auto-smart"]);
+    assert.deepEqual(next.aiSettings.fireconnectDisabledModels, ["auto-smart"]);
+  });
+
+  it("reenableFireconnectDisabledModels un-hides only fireconnect-tracked ids and restores toggles", () => {
+    const b = baseBlob();
+    b.aiSettings.modelOverrideDisabled = ["auto-smart", "user-hid-this"];
+    b.aiSettings.fireconnectDisabledModels = ["auto-smart"];
+    b.aiSettings.modelOverrideEnabled = ["kimi-fast-latest"];
+    b.aiSettings.fireconnectToggledOffModels = ["gpt-5.5"];
+    const next = reenableFireconnectDisabledModels(b);
+    assert.deepEqual(next.aiSettings.modelOverrideDisabled, ["user-hid-this"]);
+    assert.deepEqual(next.aiSettings.fireconnectDisabledModels, []);
+    // enabled entries we stripped come back; the user's own are untouched
+    assert.deepEqual(next.aiSettings.modelOverrideEnabled, ["kimi-fast-latest", "gpt-5.5"]);
+    assert.deepEqual(next.aiSettings.fireconnectToggledOffModels, []);
   });
 });
 
@@ -544,6 +618,151 @@ describe("cursor harness integration", () => {
     });
   });
 
+  itIfSqlite("re-on replaces a Cursor-native selection (auto-smart) instead of preserving it", async () => {
+    await withTempHome("cursor-reon-native-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+
+      // "cataloged" key → mock gateway serves a catalog, exercising the online
+      // path where pruning (not the offline trust set) applies.
+      const first = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_cataloged_key_12345", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(first.code, 0, first.stderr);
+
+      // Simulate the old buggy state: Cursor's native Auto id preserved and
+      // registered as if it were a Fireworks model.
+      const blob = readBlob(dbPath);
+      blob.aiSettings.modelConfig.composer.modelName = "auto-smart";
+      blob.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "auto-smart", parameters: [] }];
+      blob.aiSettings.userAddedModels.push("auto-smart");
+      blob.aiSettings.modelOverrideEnabled.push("auto-smart");
+      blob.aiSettings.fireconnectAddedModels.push("auto-smart");
+      writeCursorDb(dbPath, blob);
+
+      const second = await runCli(
+        ["cursor", "on", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(second.code, 0, second.stderr);
+      assert.match(second.stdout, /Cursor → Fireworks · kimi-fast-latest/);
+      assert.match(second.stdout, /Built-in "auto-smart" isn't on Fireworks/);
+
+      const after = readBlob(dbPath);
+      assert.equal(after.aiSettings.modelConfig.composer.modelName, "kimi-fast-latest");
+      // the stale native registration is pruned, not re-preserved
+      assert.ok(!after.aiSettings.fireconnectAddedModels.includes("auto-smart"));
+      assert.ok(!after.aiSettings.userAddedModels.includes("auto-smart"));
+      // and hidden from the picker
+      assert.ok(after.aiSettings.modelOverrideDisabled.includes("auto-smart"));
+    });
+  });
+
+  itIfSqlite("offline re-on keeps models a previous online run registered", async () => {
+    await withTempHome("cursor-reon-offline-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+
+      // Plain key → mock gateway 404s the catalog → offline path.
+      const first = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(first.code, 0, first.stderr);
+
+      // Pretend a past ONLINE run registered a catalog id the static spec
+      // list doesn't know, and the user picked it — plus the legacy poison: a
+      // Cursor-native id (in Cursor's own availableDefaultModels2) that an old
+      // version registered by mistake.
+      const blob = readBlob(dbPath);
+      blob.availableDefaultModels2 = [{ name: "auto-smart" }, { name: "composer-2.5" }];
+      blob.aiSettings.fireconnectAddedModels.push("future-fw-model", "auto-smart");
+      blob.aiSettings.userAddedModels.push("future-fw-model", "auto-smart");
+      blob.aiSettings.modelOverrideEnabled.push("future-fw-model");
+      blob.aiSettings.modelConfig.composer.modelName = "future-fw-model";
+      blob.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "future-fw-model", parameters: [] }];
+      writeCursorDb(dbPath, blob);
+
+      const second = await runCli(
+        ["cursor", "on", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(second.code, 0, second.stderr);
+      assert.match(second.stdout, /Cursor → Fireworks · future-fw-model/);
+      assert.doesNotMatch(second.stdout, /isn't on Fireworks/);
+
+      const after = readBlob(dbPath);
+      assert.equal(after.aiSettings.modelConfig.composer.modelName, "future-fw-model");
+      // trusted, not pruned or hidden
+      assert.ok(after.aiSettings.fireconnectAddedModels.includes("future-fw-model"));
+      assert.ok(after.aiSettings.userAddedModels.includes("future-fw-model"));
+      assert.ok(!(after.aiSettings.modelOverrideDisabled ?? []).includes("future-fw-model"));
+      // ...but the stale Cursor-native registration still self-heals offline
+      assert.ok(!after.aiSettings.fireconnectAddedModels.includes("auto-smart"));
+      assert.ok(!after.aiSettings.userAddedModels.includes("auto-smart"));
+      assert.ok(after.aiSettings.modelOverrideDisabled.includes("auto-smart"));
+    });
+  });
+
+  itIfSqlite("explicit --model switching away from a servable pick prints no native-model note", async () => {
+    await withTempHome("cursor-reon-switch-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+
+      const first = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(first.code, 0, first.stderr);
+
+      // User picks a servable Fireworks model in the IDE.
+      const blob = readBlob(dbPath);
+      blob.aiSettings.modelConfig.composer.modelName = "glm-5p2";
+      blob.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "glm-5p2", parameters: [] }];
+      writeCursorDb(dbPath, blob);
+
+      const second = await runCli(
+        ["cursor", "on", "--model", "deepseek-v4-flash", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(second.code, 0, second.stderr);
+      assert.match(second.stdout, /Cursor → Fireworks · deepseek-v4-flash/);
+      // glm-5p2 IS on Fireworks — the native-model note must not appear
+      assert.doesNotMatch(second.stdout, /isn't on Fireworks/);
+      assert.equal(readBlob(dbPath).aiSettings.modelConfig.composer.modelName, "deepseek-v4-flash");
+    });
+  });
+
+  itIfSqlite("on hides built-in models from the picker and off restores them", async () => {
+    await withTempHome("cursor-hide-builtins-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      const blob = baseBlob({
+        availableDefaultModels2: [{ name: "auto-smart" }, { name: "composer-2.5" }],
+      });
+      writeCursorDb(dbPath, blob);
+
+      const on = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(on.code, 0, on.stderr);
+
+      const after = readBlob(dbPath);
+      assert.ok(after.aiSettings.modelOverrideDisabled.includes("auto-smart"));
+      assert.ok(after.aiSettings.modelOverrideDisabled.includes("composer-2.5"));
+
+      const off = await runCli(
+        ["cursor", "off", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(off.code, 0, off.stderr);
+      const restored = readBlob(dbPath);
+      // snapshot restore brings back the exact pre-on picker state
+      assert.equal(restored.aiSettings.modelOverrideDisabled, undefined);
+    });
+  });
+
   itIfSqlite("env key wins over a stale harness-local key without being stored", async () => {
     await withTempHome("cursor-env-precedence-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
@@ -674,7 +893,8 @@ describe("cursor harness integration", () => {
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /Ask the Fireworks team to enable it for your account/);
+      assert.match(result.stdout, /FireRouter support for Cursor is still under development/);
+      assert.match(result.stdout, /Reach out to the Fireworks team if you're interested/);
       assert.doesNotMatch(result.stdout, /ANTHROPIC_API_KEY/);
     });
   });

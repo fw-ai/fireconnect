@@ -212,6 +212,23 @@ describe("resolvePiEffectiveFireworksModel", () => {
     assert.equal(entry.maxTokens, 131_072);
   });
 
+  it("buildPiCustomFireworksModelEntry shares firerouter limits for firerouter* ids", () => {
+    const entry = buildPiCustomFireworksModelEntry("firerouter/x", "X");
+    assert.equal(entry.id, "firerouter/x");
+    assert.deepEqual(entry.input, ["text", "image"]);
+    assert.equal(entry.contextWindow, 1_048_575);
+    assert.equal(entry.maxTokens, 131_072);
+  });
+
+  it("registers only the selected firerouter* model", () => {
+    const merged = mergePiFireworksRouterModels({}, "firerouter/x", {}, [
+      "accounts/fireworks/routers/glm-latest",
+    ]);
+    const ids = merged.providers.fireworks.models.map((model) => model.id);
+    assert.deepEqual(ids, ["firerouter/x"]);
+    assert.equal(merged.providers.fireworks.models[0].contextWindow, 1_048_575);
+  });
+
   it("registers a custom deployment ID (accounts/<user>/deployments/<id>) in models", () => {
     const deploymentId = "accounts/ahmadshahzad/deployments/ub9lvh50";
     const merged = mergePiFireworksRouterModels({}, deploymentId);

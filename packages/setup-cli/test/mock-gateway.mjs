@@ -20,6 +20,19 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ featureFlags: [] }));
     return;
   }
+  // Serverless catalog — only for keys marked "cataloged", so specs can choose
+  // between the online path (catalog registers) and the default offline path
+  // (404 below → catalogUnavailable) per test key.
+  if (req.url?.startsWith("/v1/serverless/models") && req.headers.authorization?.includes("cataloged")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      models: [
+        { name: "accounts/fireworks/models/deepseek-v4-flash" },
+        { name: "accounts/fireworks/models/kimi-k3" },
+      ],
+    }));
+    return;
+  }
   res.writeHead(404);
   res.end();
 });

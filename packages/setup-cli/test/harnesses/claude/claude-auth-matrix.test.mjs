@@ -13,9 +13,9 @@ import { FIRECONNECT_REFERER, runFireconnect, withTempHome, assertClaudeMainMode
 
 const FIREWORKS_KEY = "fw_claude_matrix_key_000000000000";
 const ANTHROPIC_KEY = "sk-ant-claude-matrix-byok";
-const DIRECT_MAIN_MODEL = "kimi-fast-latest";
+const DIRECT_MAIN_MODEL = "kimi-fast-latest[1m]";
 const DIRECT_ALIAS_MODEL = "glm-fast-latest[1m]";
-const KIMI_FABLE_MODEL = "kimi-fast-latest";
+const KIMI_FABLE_MODEL = "kimi-fast-latest[1m]";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const SUBSCRIPTION_SETTINGS = `${JSON.stringify({
   model: "sonnet",

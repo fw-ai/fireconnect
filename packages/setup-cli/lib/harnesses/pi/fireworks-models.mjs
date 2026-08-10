@@ -7,6 +7,7 @@ import {
   resolveFireworksModelLabel,
 } from "../../fireworks/model-specs.mjs";
 import {
+  isFirerouterGatewayPattern,
   isFirerouterModel,
   normalizeModelId,
   shortFireworksModelRef,
@@ -236,8 +237,8 @@ function buildPiStoredFireworksModelEntry(modelId, name, reasoning = true) {
 }
 
 function piModelsToRegister(resolvedModel, catalogModelIds = []) {
-  // FireRouter routes server-side, so register only the firerouter model.
-  if (isFirerouterModel(resolvedModel)) {
+  // FireRouter routes server-side, so register only the selected firerouter* model.
+  if (isFirerouterGatewayPattern(resolvedModel)) {
     return [{ id: resolvedModel, name: piFireworksDisplayName(resolvedModel), reasoning: true }];
   }
   // The caller already reduced the catalog to latest aliases or the newest
@@ -318,7 +319,7 @@ export function mergePiFireworksRouterModels(config, resolvedModel, managedHeade
   // catalog exactly — no accumulation. User-added entries are left untouched.
   // Offline (empty catalog, direct mode) we skip this and merge, so a transient
   // catalog fetch failure doesn't wipe the picker.
-  const rebuilding = isFirerouterModel(resolvedModel)
+  const rebuilding = isFirerouterGatewayPattern(resolvedModel)
     || catalogModelIds.some((id) => typeof id === "string" && id.startsWith("accounts/"));
   if (rebuilding && previousManagedIds.length) {
     const prior = new Set(previousManagedIds.map(shortFireworksModelRef));

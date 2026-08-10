@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { rebakeEnabledHarnessKeysOnUpgrade } from "../keys/sync.mjs";
+import { reconcileHarnessConfigOnUpgrade } from "../keys/sync.mjs";
 import { reprobeKeyStorage } from "../keys/secret-store.mjs";
 import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs";
 
@@ -13,11 +13,11 @@ import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs
  * after the CLI bits are on disk goes through this path:
  *   1. ensure runtime npm deps
  *   2. re-probe secret storage / migrate plaintext → secure
- *   3. rebake enabled harness keys + websearch MCP Bearer + shell hook reconcile
+ *   3. reconcile harness configs (rebake keys, VS Code apiType, shell hook)
  *
- * Never throws for rebake/shell failures (best-effort). Dep install and
+ * Never throws for reconcile/shell failures (best-effort). Dep install and
  * key-storage probe may throw only if callers choose to surface them — this
- * wrapper keeps probe/rebake non-fatal for install.sh.
+ * wrapper keeps probe/reconcile non-fatal for install.sh.
  *
  * @param {{
  *   home?: string,
@@ -26,7 +26,7 @@ import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs
  *   log?: (...args: unknown[]) => void,
  *   ensureDeps?: typeof ensureCliDependencies,
  *   reprobe?: typeof reprobeKeyStorage,
- *   rebake?: typeof rebakeEnabledHarnessKeysOnUpgrade,
+ *   reconcile?: typeof reconcileHarnessConfigOnUpgrade,
  * }} [options]
  * @returns {Promise<{ notes: string[], migrated: boolean, setupDir: string }>}
  */
@@ -37,7 +37,7 @@ export async function finalizeInstallOrUpgrade({
   log = console.log,
   ensureDeps = ensureCliDependencies,
   reprobe = reprobeKeyStorage,
-  rebake = rebakeEnabledHarnessKeysOnUpgrade,
+  reconcile = reconcileHarnessConfigOnUpgrade,
 } = {}) {
   const notes = [];
   const durableSetup = installDir
@@ -70,13 +70,13 @@ export async function finalizeInstallOrUpgrade({
     }
 
     try {
-      const rebakeNotes = await rebake(home);
-      for (const note of rebakeNotes) {
+      const reconcileNotes = await reconcile(home);
+      for (const note of reconcileNotes) {
         log(note);
         notes.push(note);
       }
     } catch {
-      // Best-effort rebake.
+      // Best-effort reconcile.
     }
   }
 

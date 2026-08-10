@@ -29,6 +29,7 @@ import {
   buildCodexCatalogFromSnapshot,
   codexCatalogContainsModel,
   codexModelExclusionReason,
+  ensureCodexFirerouterPatternEntry,
 } from "./catalog.mjs";
 import {
   buildServerlessCatalogSnapshot,
@@ -452,8 +453,9 @@ export async function enableCodexFireworks({
   let effectiveCatalogPath = "";
   let catalogWritten = false;
   if (catalog && catalogPath) {
-    await writeCodexCatalogFile(catalogPath, catalog);
-    if (codexCatalogContainsModel(catalog, storedModel)) {
+    const catalogToWrite = ensureCodexFirerouterPatternEntry(catalog, storedModel);
+    await writeCodexCatalogFile(catalogPath, catalogToWrite);
+    if (codexCatalogContainsModel(catalogToWrite, storedModel)) {
       effectiveCatalogPath = CODEX_CATALOG_TOML_REF;
       catalogWritten = true;
     }
@@ -463,7 +465,11 @@ export async function enableCodexFireworks({
     && snapshotReferencesFireworksCatalog(snapshot.raw)
   ) {
     const existingCatalog = await readCodexCatalogIfValid(catalogPath);
-    if (existingCatalog && codexCatalogContainsModel(existingCatalog, storedModel)) {
+    const catalogToWrite = ensureCodexFirerouterPatternEntry(existingCatalog, storedModel);
+    if (catalogToWrite !== existingCatalog && catalogToWrite) {
+      await writeCodexCatalogFile(catalogPath, catalogToWrite);
+    }
+    if (catalogToWrite && codexCatalogContainsModel(catalogToWrite, storedModel)) {
       effectiveCatalogPath = CODEX_CATALOG_TOML_REF;
     }
   }

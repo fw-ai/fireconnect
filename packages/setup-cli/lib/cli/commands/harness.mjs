@@ -62,9 +62,19 @@ function validateHarnessOptions(route, ctx) {
   if (ctx.search) {
     throw new Error("--search applies only to `fireconnect model list`.");
   }
-  const hasUsageOption = Boolean(ctx.session || ctx.lastN || ctx.verbose || ctx.plain);
+  // `--session` is shared by `claude usage` (report) and `claude live` (resume +
+  // meter that session in the split); the report-only flags stay usage-only.
+  const sessionAllowed = harnessId === HARNESS.CLAUDE && !noun
+    && (verb === "usage" || verb === "live");
+  if (ctx.session && !sessionAllowed) {
+    throw new Error("--session applies only to `fireconnect claude usage` or `fireconnect claude live`.");
+  }
+  const hasUsageOption = Boolean(ctx.days || ctx.lastN || ctx.verbose || ctx.plain);
   if (hasUsageOption && !(harnessId === HARNESS.CLAUDE && verb === "usage" && !noun)) {
-    throw new Error("--session/--last-n/--verbose/--plain apply only to `fireconnect claude usage`.");
+    throw new Error("--days/--last-n/--verbose/--plain apply only to `fireconnect claude usage`.");
+  }
+  if (verb === "live" && harnessId !== HARNESS.CLAUDE) {
+    throw new Error("`fireconnect <harness> live` is supported only for Claude Code.");
   }
   const jsonSupported = verb === "status"
     || verb === "usage";

@@ -131,7 +131,10 @@ Override anytime with flags or the [wizard](#model-mapping).
 fireconnect claude on                    # wizard on first setup; flags work anytime
 fireconnect claude on --interactive      # reopen the model mapping wizard
 fireconnect claude status                # mapping, auth, and per-slot rates
-fireconnect claude usage                 # estimate cost from a session log
+fireconnect claude usage                 # pick session → live meter (Tab agents, Esc sessions, q quit)
+fireconnect claude usage --days 7        # widen the session list's lookback (default 3)
+fireconnect claude usage --session <id>  # start on one session; Esc still opens the list
+fireconnect claude usage --plain         # one-shot snapshot, no interactive picker
 fireconnect claude off
 ```
 
@@ -217,8 +220,11 @@ first launch.
 **Model IDs and `[1m]`.** Short slugs are accepted everywhere and canonical
 `accounts/fireworks/...` IDs are shortened before write. The `[1m]` suffix is applied **per
 model ID**, not per slot, to Claude's 1M-context set: `glm-latest`, `glm-fast-latest`,
-`glm-5p2`, `glm-5p2-fast`, `deepseek-v4-pro`, and `firerouter`. Kimi stays unsuffixed.
+`glm-5p2`, `glm-5p2-fast`, `deepseek-v4-pro`, `firerouter*` (any ID matching that pattern),
+`kimi-k3`, `kimi-k3-fast`, `kimi-latest`, and `kimi-fast-latest`.
 `CLAUDE_CODE_SUBAGENT_MODEL` never gets `[1m]` — Claude Code forwards that value verbatim.
+The `[1m]` tag is Claude Code only; other harnesses (Cursor, etc.) should use the bare
+model ID without the suffix.
 
 ### Text-only models and images
 
@@ -318,6 +324,7 @@ Cursor stores AI settings in SQLite (`state.vscdb`), so FireConnect writes there
 | API key | `cursorAuth/openAIKey` |
 | Base URL | `openAIBaseUrl` → `https://api.fireworks.ai/inference/v1` |
 | Custom models | `aiSettings.userAddedModels` + `aiSettings.modelOverrideEnabled` |
+| Hidden built-ins | `aiSettings.modelOverrideDisabled` |
 | Per-mode model | `aiSettings.modelConfig[mode]` (e.g. `composer`, `cmd-k`) |
 
 ```bash
@@ -332,18 +339,19 @@ fireconnect cursor off
 slugs; legacy canonical entries migrate on the next `on`.
 
 > **Quit Cursor (`Cmd-Q` / File > Quit) before `on` or `off`.** Otherwise Cursor's in-memory
-> state overwrites the write on its next flush. In an interactive terminal FireConnect asks you
-> to quit and press Enter, then errors if Cursor is still running. `--force` writes anyway.
+> state overwrites the write on its next flush. In an interactive terminal FireConnect waits for
+> you to quit (press Enter to confirm, or auto-detect); after ~90s it offers continue-anyway.
+> `--force` writes anyway.
 
-**While FireConnect is on, only Fireworks models in your picker work** — Cursor subscription
-models, Opus modes, and other built-ins won't respond. `fireconnect cursor off` restores them,
-and only removes models FireConnect registered.
+**While FireConnect is on, only Fireworks models work** — Cursor's built-in models (Auto,
+subscription models, Opus modes) are hidden from the picker and won't respond.
+`fireconnect cursor off` restores them, and only removes models FireConnect registered.
 
 ## VS Code Chat
 
 FireConnect adds a `Fireworks` provider to `chatLanguageModels.json` (vendor `customendpoint`,
-`apiType: responses`) pointing at `https://api.fireworks.ai/inference` — VS Code appends
-`/v1/responses`. Azure/Foundry mode uses `apiType: chat-completions`.
+`apiType: chat-completions`) pointing at `https://api.fireworks.ai/inference` — VS Code appends
+`/v1/chat/completions`. Azure/Foundry mode also uses `apiType: chat-completions`.
 
 ```bash
 fireconnect vscode on --api-key fw_...    # quit VS Code first
@@ -420,7 +428,7 @@ server-side — no extra flags. Otherwise pass `--anthropic-api-key sk-ant-...` 
 | Claude Code | Header value | Yes | Fireworks header still wins for gateway auth; only harness that can auto-default `main` |
 | OpenCode | Header value | Yes | `on --model firerouter` registers only that model |
 | Pi | Header value | Yes | Same Fireworks provider as other Pi models |
-| VS Code | Header value | Yes | Same provider (`apiType: responses`) |
+| VS Code | Header value | Yes | Same provider (`apiType: chat-completions`) |
 | Codex | `ANTHROPIC_API_KEY` env reference | No | Export the key, or use workspace BYOK |
 | Cursor | Workspace BYOK only | No | Override UI can't attach a local Anthropic key |
 | Deep Agents | Workspace BYOK only | No | Same BYOK shape as Cursor |

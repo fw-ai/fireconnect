@@ -290,7 +290,7 @@ export function stripFireworksKeyFromCustomHeaders(value) {
 // ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN) so it can't collide with the
 // X-Fireworks-Api-Key that authenticates the gateway.
 export const ANTHROPIC_BYOK_HEADER = "x-anthropic-api-key";
-/** Request-body field FireRouter reads on the Responses API wire (VS Code firerouter model). */
+/** Request-body field FireRouter reads on the VS Code Chat wire (firerouter model). */
 export const ANTHROPIC_BYOK_BODY_FIELD = "anthropic_api_key";
 
 /** Every ANTHROPIC_CUSTOM_HEADERS line FireConnect writes (auth + routing). */

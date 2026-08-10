@@ -11,12 +11,12 @@ import {
 } from "../../lib/config/global-config.mjs";
 import { opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
 import { piAuthPath } from "../../lib/harnesses/pi/core.mjs";
-import { rebakeEnabledHarnessKeysOnUpgrade } from "../../lib/keys/sync.mjs";
+import { reconcileHarnessConfigOnUpgrade } from "../../lib/keys/sync.mjs";
 import { seedKeychainConfig, withTempHome } from "../helpers.mjs";
 
 const KEY = "fw_upgrade_rebake_key_000000000000";
 
-describe("rebakeEnabledHarnessKeysOnUpgrade", () => {
+describe("reconcileHarnessConfigOnUpgrade", () => {
   it("rebakes legacy env-ref harness configs and repairs global env-ref", async () => {
     await withTempHome("upgrade-rebake-", async (home) => {
       process.env.SHELL = "/bin/zsh";
@@ -58,7 +58,7 @@ describe("rebakeEnabledHarnessKeysOnUpgrade", () => {
         ].join("\n"),
       );
 
-      const notes = await rebakeEnabledHarnessKeysOnUpgrade(home);
+      const notes = await reconcileHarnessConfigOnUpgrade(home);
       assert.equal(notes.filter((n) => /OpenCode|Pi/.test(n)).length, 2, notes.join("\n"));
 
       const config = await readGlobalConfig(home);
@@ -79,7 +79,7 @@ describe("rebakeEnabledHarnessKeysOnUpgrade", () => {
       await writeGlobalConfig(home, {
         harnesses: { opencode: { enabled: true, provider: "fireworks" } },
       });
-      assert.deepEqual(await rebakeEnabledHarnessKeysOnUpgrade(home), []);
+      assert.deepEqual(await reconcileHarnessConfigOnUpgrade(home), []);
     });
   });
 
@@ -100,7 +100,7 @@ describe("rebakeEnabledHarnessKeysOnUpgrade", () => {
       // Block shell hook writes — rebake must still complete without throwing.
       await mkdir(path.join(home, ".zshrc"), { recursive: true });
 
-      await assert.doesNotReject(() => rebakeEnabledHarnessKeysOnUpgrade(home));
+      await assert.doesNotReject(() => reconcileHarnessConfigOnUpgrade(home));
       assert.equal(JSON.parse(await readFile(piAuthPath(home), "utf8")).fireworks.key, KEY);
     });
   });

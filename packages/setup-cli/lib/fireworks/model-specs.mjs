@@ -45,11 +45,12 @@ export const FIREWORKS_MODEL_SPECS = {
   "kimi-k3": {
     label: "Kimi K3",
     pricing: { input: 3.00, cachedInput: 0.30, output: 15.00 },
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
+    vscode: { maxInputTokens: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
   "kimi-k3-fast": {
     label: "Kimi K3 Fast",
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
+    pricing: { input: 6.00, cachedInput: 0.60, output: 30.00, tier: "fast" },
+    vscode: { maxInputTokens: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
   "kimi-k2p7-code": {
     label: "Kimi K2.7 Code",
@@ -139,11 +140,23 @@ export const FIREWORKS_MODEL_SPECS = {
   },
 };
 
+/** True when any path segment matches the `firerouter*` prefix. */
+export function isFirerouterGatewayPattern(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  return model.replace(/\[1m\]$/i, "")
+    .trim()
+    .toLowerCase()
+    .split("/")
+    .some((part) => part.startsWith("firerouter"));
+}
+
 export const ROUTER_SPEC_ALIASES = {
   "glm-latest": "glm-5p2",
   "glm-fast-latest": "glm-5p2-fast",
-  "kimi-latest": "kimi-k2p7-code",
-  "kimi-fast-latest": "kimi-k2p7-code-fast",
+  "kimi-latest": "kimi-k3",
+  "kimi-fast-latest": "kimi-k3-fast",
   "minimax-latest": "minimax-m3",
   "qwen-plus-latest": "qwen3p7-plus",
 };
@@ -334,7 +347,7 @@ export function isFireworksRoutedModelRef(modelRef) {
     return true;
   }
   const shortId = specShortIdFromModelRef(ref);
-  if (shortId === "firerouter") {
+  if (isFirerouterGatewayPattern(ref)) {
     return true;
   }
   if (ROUTER_SPEC_ALIASES[shortId]) {
@@ -389,6 +402,10 @@ export function resolveFireworksModelLabel(modelRef) {
 }
 
 export function lookupModelSpec(modelRef) {
+  // firerouter* IDs share the static firerouter catalog metadata (1M context, vision).
+  if (isFirerouterGatewayPattern(modelRef)) {
+    return FIREWORKS_MODEL_SPECS.firerouter;
+  }
   const slug = resolveSpecSlug(modelRef);
   const shortId = specShortIdFromModelRef(modelRef);
   const staticAlias = ROUTER_SPEC_ALIASES[shortId];

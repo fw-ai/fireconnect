@@ -9,6 +9,8 @@ const CLEAR_LINE = ANSI.clearLine;
 const KEY = Object.freeze({
   UP: "\x1b[A",
   DOWN: "\x1b[B",
+  RIGHT: "\x1b[C",
+  LEFT: "\x1b[D",
   ESC: "\x1b",
   CTRL_C: "\x03",
   ENTER_CR: "\r",
@@ -16,6 +18,8 @@ const KEY = Object.freeze({
   BACKSPACE_DEL: "\x7f",
   BACKSPACE_BS: "\b",
 });
+
+export { KEY };
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
 
@@ -125,16 +129,27 @@ export function createKeyParser() {
  * and returns `{ done: true, value }` to finish, or nothing to re-render. The
  * frame is erased on completion — callers print their own one-line summary.
  *
+ * Optional `refreshMs` + `onRefresh` re-draw on a timer (live agent lists).
+ *
  * @template T
  * @param {{
  *   input?: NodeJS.ReadStream,
  *   output?: NodeJS.WriteStream,
  *   renderLines: () => string[],
  *   onKey: (seq: string) => ({ done: true, value: T } | void),
+ *   refreshMs?: number,
+ *   onRefresh?: () => void | Promise<void>,
  * }} args
  * @returns {Promise<T>}
  */
-async function runPrompt({ input = process.stdin, output = process.stdout, renderLines, onKey }) {
+export async function runPrompt({
+  input = process.stdin,
+  output = process.stdout,
+  renderLines,
+  onKey,
+  refreshMs = 0,
+  onRefresh,
+} = {}) {
   if (!input.isTTY) {
     throw new Error("Interactive prompt requires a TTY");
   }
@@ -145,7 +160,13 @@ async function runPrompt({ input = process.stdin, output = process.stdout, rende
   output.write(HIDE_CURSOR);
 
   let prevLines = 0;
+  let closed = false;
+  let refreshing = false;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let refreshTimer = null;
+
   const draw = () => {
+    if (closed) return;
     // `|| 80`, not `?? 80` — a PTY can report columns as 0.
     const width = Math.max(20, output.columns || 80);
     const lines = renderLines().map((line) => fitWidth(line, width));
@@ -171,6 +192,29 @@ async function runPrompt({ input = process.stdin, output = process.stdout, rende
   };
 
   draw();
+  if (refreshMs > 0 && typeof onRefresh === "function") {
+    refreshTimer = setInterval(() => {
+      if (closed || refreshing) return;
+      refreshing = true;
+      // Cap the wait: onRefresh reads files, and a read that never settles (a
+      // stalled network mount) would leave `refreshing` true forever, silently
+      // killing every later tick. Losing one refresh beats freezing the list.
+      let timer = null;
+      const deadline = new Promise((resolve) => {
+        timer = setTimeout(resolve, Math.max(refreshMs * 4, 4000));
+      });
+      Promise.race([Promise.resolve().then(() => onRefresh()), deadline])
+        .then(() => {
+          if (!closed) draw();
+        })
+        .catch(() => { /* keep current frame */ })
+        .finally(() => {
+          if (timer) clearTimeout(timer);
+          refreshing = false;
+        });
+    }, refreshMs);
+  }
+
   try {
     const parser = createKeyParser();
     /** @type {ReturnType<typeof setImmediate> | null} */
@@ -188,6 +232,7 @@ async function runPrompt({ input = process.stdin, output = process.stdout, rende
 
       const handleSeq = (seq) => {
         if (seq === KEY.CTRL_C) {
+          closed = true;
           stop();
           erase();
           restoreTerminal();
@@ -235,6 +280,8 @@ async function runPrompt({ input = process.stdin, output = process.stdout, rende
       input.on("end", onEnd);
     });
   } finally {
+    closed = true;
+    if (refreshTimer) clearInterval(refreshTimer);
     erase();
     restoreTerminal();
   }

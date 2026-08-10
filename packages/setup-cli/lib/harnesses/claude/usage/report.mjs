@@ -1,13 +1,13 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
-import { shortFireworksModelRef } from "../../fireworks/model-id.mjs";
-import { providerListPricing } from "../../demo/incumbent-detect.mjs";
+import { lookupFireworksPricing } from "../../../fireworks/pricing.mjs";
+import { shortFireworksModelRef } from "../../../fireworks/model-id.mjs";
+import { providerListPricing } from "../../../demo/incumbent-detect.mjs";
 import {
   formatCostEstimateNote,
   formatClaudeUsageReportsSummaryDisplay,
   formatClaudeUsageSummaryDisplay,
-} from "./usage-display.mjs";
+} from "./display.mjs";
 
 const DEFAULT_PRICE = {
   input: 1,
@@ -94,7 +94,10 @@ function isExplicitSessionPath(value) {
 
 async function filesWithMtime(files) {
   return Promise.all(
-    files.map(async (filePath) => ({ filePath, mtimeMs: (await stat(filePath)).mtimeMs })),
+    files.map(async (filePath) => {
+      const st = await stat(filePath);
+      return { filePath, mtimeMs: st.mtimeMs, size: st.size };
+    }),
   );
 }
 
@@ -110,6 +113,114 @@ function parseLastN(value) {
 }
 
 /**
+ * Every top-level Claude Code session log under ~/.claude.
+ *
+ * @param {string} home
+ * @returns {Promise<string[]>}
+ */
+export async function listTopLevelSessionLogPaths(home) {
+  if (!home) {
+    throw new Error("HOME is required to find Claude Code session logs.");
+  }
+  const claudeDir = path.join(home, ".claude");
+  return (await collectJsonlFiles(claudeDir)).filter(isTopLevelSessionLog);
+}
+
+/**
+ * Wait until Claude Code creates a session log that did not exist in `beforePaths`.
+ *
+ * @param {{
+ *   home: string,
+ *   beforePaths?: Iterable<string>,
+ *   pollMs?: number,
+ *   signal?: AbortSignal,
+ *   sleep?: (ms: number) => Promise<void>,
+ * }} opts
+ * @returns {Promise<string>} absolute path to the new session log
+ */
+export async function waitForNewSessionLog({
+  home,
+  beforePaths = [],
+  pollMs = 250,
+  signal,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const before = new Set(beforePaths);
+  for (;;) {
+    if (signal?.aborted) {
+      throw new Error("Cancelled while waiting for a new Claude Code session.");
+    }
+    const logs = await listTopLevelSessionLogPaths(home);
+    const fresh = logs.filter((filePath) => !before.has(filePath));
+    if (fresh.length) {
+      const withMtime = await filesWithMtime(fresh);
+      withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return withMtime[0].filePath;
+    }
+    await sleep(pollMs);
+  }
+}
+
+/**
+ * Snapshot top-level session logs for the live split's right pane.
+ *
+ * @param {string} home
+ */
+export async function snapshotLiveSessionLogs(home) {
+  const paths = await listTopLevelSessionLogPaths(home);
+  const logs = await filesWithMtime(paths);
+  return {
+    startedAtMs: Date.now(),
+    logs,
+  };
+}
+
+/**
+ * Wait until Claude Code creates or resumes a session log after `live` starts.
+ *
+ * New sessions add a log path; resumed sessions append to an existing log and
+ * bump its mtime. Only changes at or after `startedAtMs` count so unrelated
+ * background sessions are less likely to steal the lock.
+ *
+ * @param {{
+ *   home: string,
+ *   beforeLogs?: Array<{ filePath: string, mtimeMs: number, size?: number }>,
+ *   pollMs?: number,
+ *   signal?: AbortSignal,
+ *   sleep?: (ms: number) => Promise<void>,
+ * }} opts
+ * @returns {Promise<string>} absolute path to the active session log
+ */
+export async function waitForLiveSessionLog({
+  home,
+  beforeLogs = [],
+  pollMs = 250,
+  signal,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const before = new Map(beforeLogs.map(({ filePath, mtimeMs, size = 0 }) => [filePath, { mtimeMs, size }]));
+  for (;;) {
+    if (signal?.aborted) {
+      throw new Error("Cancelled while waiting for a new Claude Code session.");
+    }
+    const logs = await listTopLevelSessionLogPaths(home);
+    const withMtime = await filesWithMtime(logs);
+    const candidates = withMtime.filter(({ filePath, mtimeMs, size }) => {
+      const prev = before.get(filePath);
+      if (prev == null) {
+        return true;
+      }
+      return mtimeMs > prev.mtimeMs || size > prev.size;
+    });
+    if (candidates.length) {
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return candidates[0].filePath;
+    }
+    await sleep(pollMs);
+  }
+}
+
+/**
  * @param {{ home: string, session?: string }} args
  */
 export async function findClaudeSessionLog({ home, session = "" }) {
@@ -117,9 +228,49 @@ export async function findClaudeSessionLog({ home, session = "" }) {
 }
 
 /**
- * @param {{ home: string, session?: string, lastN?: number|string }} args
+ * Wait until a specific session's log exists (a pinned `--session-id` writes
+ * its log lazily, on the first prompt), then return its path.
+ *
+ * Unlike `findClaudeSessionLog` (which throws when nothing matches), this polls
+ * until the log appears. For a resumed session the log already exists, so it
+ * returns on the first poll.
+ *
+ * @param {{
+ *   home: string,
+ *   session: string,
+ *   pollMs?: number,
+ *   signal?: AbortSignal,
+ *   sleep?: (ms: number) => Promise<void>,
+ * }} opts
+ * @returns {Promise<string>} absolute path to the session log
  */
-export async function findClaudeSessionLogs({ home, session = "", lastN = 1 }) {
+export async function waitForClaudeSessionLog({
+  home,
+  session,
+  pollMs = 250,
+  signal,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  for (;;) {
+    if (signal?.aborted) {
+      throw new Error("Cancelled while waiting for the Claude Code session log.");
+    }
+    try {
+      const logPath = await findClaudeSessionLog({ home, session });
+      if (logPath) {
+        return logPath;
+      }
+    } catch {
+      /* not written yet — the session idles until the first prompt */
+    }
+    await sleep(pollMs);
+  }
+}
+
+/**
+ * @param {{ home: string, session?: string, lastN?: number|string, withinDays?: number }} args
+ */
+export async function findClaudeSessionLogs({ home, session = "", lastN = 1, withinDays } = {}) {
   if (!home) {
     throw new Error("HOME is required to find Claude Code session logs.");
   }
@@ -137,8 +288,17 @@ export async function findClaudeSessionLogs({ home, session = "", lastN = 1 }) {
     throw new Error(`No Claude Code session logs found under ${claudeDir}`);
   }
 
-  const withMtime = await filesWithMtime(candidates);
+  let withMtime = await filesWithMtime(candidates);
   withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  if (withinDays != null && withinDays !== "") {
+    const days = Number(withinDays);
+    if (!Number.isFinite(days) || days <= 0) {
+      throw new Error("withinDays must be a positive number.");
+    }
+    const cutoffMs = Date.now() - days * 86_400_000;
+    withMtime = withMtime.filter(({ mtimeMs }) => mtimeMs >= cutoffMs);
+  }
 
   if (session) {
     const needle = session.toLowerCase();
@@ -151,6 +311,10 @@ export async function findClaudeSessionLogs({ home, session = "", lastN = 1 }) {
       return [fuzzy.filePath];
     }
     throw new Error(`No Claude Code session log matching '${session}' under ${claudeDir}`);
+  }
+
+  if (withMtime.length === 0) {
+    return [];
   }
 
   return withMtime.slice(0, parseLastN(lastN)).map(({ filePath }) => filePath);
@@ -387,9 +551,50 @@ export function parseClaudeSessionName(text) {
   return customTitle || aiTitle || summary || firstUserText || "";
 }
 
+/**
+ * Claude Code's placeholder model id for a turn that never hit the API.
+ *
+ * Written as `<synthetic>` on interrupts and local slash commands, always with
+ * an all-zero usage payload, so it is not a billable call.
+ */
+export function isSyntheticModel(model) {
+  return /^<.*>$/.test(String(model ?? "").trim());
+}
+
+/**
+ * Total billable tokens on a usage payload — the "is this the real one?" test.
+ *
+ * Cache writes arrive in either shape: a flat `cache_creation_input_tokens`, or
+ * a structured `cache_creation` with 5m/1h buckets. Counting only the flat field
+ * undervalued new-format records, so a stale old-format one could outweigh the
+ * record that actually carried the write tokens. Mirrors how
+ * `computeClaudeUsageCost` reads the same two shapes.
+ */
+function usageWeight(usage = {}) {
+  const cacheCreation = usage.cache_creation && typeof usage.cache_creation === "object"
+    ? usage.cache_creation
+    : null;
+  const cacheWrite = cacheCreation
+    ? numberValue(cacheCreation.ephemeral_5m_input_tokens)
+      + numberValue(cacheCreation.ephemeral_1h_input_tokens)
+    : numberValue(usage.cache_creation_input_tokens);
+  return numberValue(usage.input_tokens)
+    + numberValue(usage.cache_read_input_tokens)
+    + cacheWrite
+    + numberValue(usage.output_tokens);
+}
+
 export function parseClaudeUsageLog(text) {
-  const seen = new Set();
-  const rows = [];
+  // Claude Code writes one record per content block, repeating the SAME
+  // message.id. Usage is attached to the LAST of those records — the earlier
+  // ones carry an all-zero payload. Keeping the first (a plain `seen` set)
+  // priced most calls at zero: a real subagent log with 636k tokens reported
+  // $0.00. Billing is per API call, so keep one row per id in first-seen order
+  // (`slotOf` points an id at the slot it owns) and let the richest usage win.
+  /** @type {{ model: string, usage: object, weight: number }[]} */
+  const calls = [];
+  /** @type {Map<string, number>} */
+  const slotOf = new Map();
 
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) {
@@ -405,19 +610,35 @@ export function parseClaudeUsageLog(text) {
       continue;
     }
     const message = entry.message && typeof entry.message === "object" ? entry.message : {};
-    const key = message.id || entry.requestId || entry.uuid || "";
-    if (key) {
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-    }
     const model = message.model || entry.model || "?";
+    // `<synthetic>` marks a turn that never reached the API (interrupt, local
+    // command) and always carries an all-zero payload — not a billable call.
+    if (isSyntheticModel(model)) {
+      continue;
+    }
     const usage = entry.usage || message.usage || {};
-    rows.push(computeClaudeUsageCost(model, usage));
+    const weight = usageWeight(usage);
+    // `||` not `??`: an empty-string id must fall through to the next
+    // candidate, or every id-less record collapses into one bucket.
+    const key = message.id || entry.requestId || entry.uuid || "";
+    if (!key) {
+      // No identity to dedupe on — count it as its own call.
+      calls.push({ model, usage, weight });
+      continue;
+    }
+    const slot = slotOf.get(key);
+    if (slot === undefined) {
+      slotOf.set(key, calls.length);
+      calls.push({ model, usage, weight });
+      continue;
+    }
+    // Ties keep the earlier record: repeated all-zero blocks shouldn't churn.
+    if (weight > calls[slot].weight) {
+      calls[slot] = { model: model || calls[slot].model, usage, weight };
+    }
   }
 
-  return rows;
+  return calls.map(({ model, usage }) => computeClaudeUsageCost(model, usage));
 }
 
 function sumRows(rows) {
@@ -483,6 +704,10 @@ function reportFromRows(filePath, rows, { sessionName = "" } = {}) {
 
 async function readUsageFile(filePath, { includeSessionName = false } = {}) {
   const text = await readFile(filePath, "utf8");
+  return usageReportFromText(filePath, text, { includeSessionName });
+}
+
+export function usageReportFromText(filePath, text, { includeSessionName = false } = {}) {
   const sessionName = includeSessionName ? parseClaudeSessionName(text) : "";
   return reportFromRows(filePath, parseClaudeUsageLog(text), { sessionName });
 }
@@ -496,6 +721,7 @@ async function findSubagentLogs(sessionLogPath) {
   withMtime.sort((a, b) => a.filePath.localeCompare(b.filePath));
   return withMtime.map(({ filePath }) => filePath);
 }
+export { findSubagentLogs };
 
 async function readClaudeUsageAtPath(sessionPath) {
   const report = await readUsageFile(sessionPath, { includeSessionName: true });

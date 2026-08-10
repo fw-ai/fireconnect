@@ -5,6 +5,7 @@ import { chmod, mkdir, unlink } from "node:fs/promises";
 import {
   defaultMainModel,
   fullFireworksResourceId,
+  isFireworksModelId,
   isFirerouterModel,
   normalizeModelId,
   shortFireworksModelRef,
@@ -47,6 +48,7 @@ import {
  *                     fallback so either Cursor version can read the key.
  * - Base URL       -> field `openAIBaseUrl` on the `applicationUser` JSON blob.
  * - Custom models  -> `aiSettings.userAddedModels` + `aiSettings.modelOverrideEnabled`.
+ * - Hidden models  -> `aiSettings.modelOverrideDisabled` (picker hides these).
  * - Per-mode model -> `aiSettings.modelConfig[mode].{modelName, selectedModels}`.
  *
  * The `applicationUser` blob is one ItemTable row whose value is a compact JSON
@@ -96,15 +98,22 @@ export const CURSOR_DEFAULT_MODE = "composer";
 
 /** User-facing note: only Fireworks picker models work while FireConnect routes Cursor. */
 export const CURSOR_FIREWORKS_ONLY_NOTE =
-  "While FireConnect is on, only Fireworks models in your picker work — "
-  + "Cursor subscription models, Opus modes, and other built-in models won't respond. "
-  + "For model access or setup help, reach out to the Fireworks team. "
-  + "Run `fireconnect cursor off` to restore built-in Cursor models.";
+  "Only Fireworks models work while FireConnect is on; Cursor's built-ins are hidden. "
+  + "Run `fireconnect cursor off` to restore them.";
 
 /** Field we own on the blob to track which models fireconnect registered. */
 const FIRECONNECT_ADDED_FIELD = "fireconnectAddedModels";
 /** Field we own to track which modes fireconnect touched (for clean reset). */
 const FIRECONNECT_TOUCHED_MODES_FIELD = "fireconnectTouchedModes";
+/** Field we own to track which built-in models fireconnect hid (for clean reset). */
+const FIRECONNECT_DISABLED_FIELD = "fireconnectDisabledModels";
+/**
+ * Field we own to track which models fireconnect removed from
+ * modelOverrideEnabled while hiding them. Cursor's picker treats
+ * modelOverrideEnabled as overriding modelOverrideDisabled, so a model the
+ * user once toggled on stays visible unless it leaves the enabled list too.
+ */
+const FIRECONNECT_TOGGLED_OFF_FIELD = "fireconnectToggledOffModels";
 
 /**
  * Resolve the path to Cursor's state.vscdb for the current platform.
@@ -328,6 +337,154 @@ export function shortenCursorFireworksModelRefs(blob) {
       };
     }
     ai.modelConfig = config;
+  });
+}
+
+/**
+ * Build a predicate: can this model id actually be served by the active
+ * provider (Fireworks gateway or Foundry resource)? True for known Fireworks
+ * ids plus the explicit servable set (the resolved model + registered catalog).
+ * Cursor-native ids (`auto-smart`, `composer-2.5`, `claude-sonnet-4-6`, …)
+ * return false — routing them through the override base URL only 404s.
+ * @param {string[]} servableIds
+ * @param {{ includeKnownFireworks?: boolean }} [opts]  Pass false for Azure,
+ *   where only the Foundry deployment itself is servable.
+ * @returns {(id: string) => boolean}
+ */
+function servableChecker(servableIds, { includeKnownFireworks = true } = {}) {
+  const set = new Set(
+    servableIds
+      .map((id) => shortFireworksModelRef(String(id ?? "").trim()))
+      .filter(Boolean),
+  );
+  return (id) => {
+    const ref = shortFireworksModelRef(String(id ?? "").trim());
+    if (!ref) {
+      return false;
+    }
+    return set.has(ref) || (includeKnownFireworks && isFireworksModelId(ref));
+  };
+}
+
+/**
+ * Drop fireconnect-registered models the provider can't serve (e.g. an
+ * `auto-smart` an earlier version registered by preserving Cursor's native
+ * selection). Only ids in our own fireconnectAddedModels tracker are removed —
+ * user-added customs are never touched.
+ * @param {object} blob
+ * @param {{ servable: (id: string) => boolean }} opts
+ * @returns {object} new blob
+ */
+export function pruneUnservableAddedModels(blob, { servable }) {
+  const tracked = blob?.aiSettings?.[FIRECONNECT_ADDED_FIELD] ?? [];
+  const stale = tracked.filter((id) => !servable(id));
+  if (stale.length === 0) {
+    return { ...blob };
+  }
+  return withAiSettings(blob, (ai) => {
+    ai.userAddedModels = (ai.userAddedModels ?? []).filter((id) => !stale.includes(id));
+    ai.modelOverrideEnabled = (ai.modelOverrideEnabled ?? []).filter((id) => !stale.includes(id));
+    ai[FIRECONNECT_ADDED_FIELD] = tracked.filter((id) => !stale.includes(id));
+  });
+}
+
+/**
+ * Hide Cursor's built-in models from the picker while routing is active:
+ * every model Cursor itself offers (`availableDefaultModels2`) or the user
+ * once enabled (`modelOverrideEnabled`) that the provider can't serve is added
+ * to `modelOverrideDisabled` AND removed from `modelOverrideEnabled` — the
+ * picker lets an enabled id override a disabled one, so both lists must agree
+ * for a model to actually disappear. Both edits are tracked
+ * (fireconnectDisabledModels / fireconnectToggledOffModels) so `off` restores
+ * exactly what we changed. User-added custom models are never hidden, and
+ * tracked ids that became servable (catalog grew) are re-enabled.
+ * @param {object} blob
+ * @param {{ servable: (id: string) => boolean, extraCandidates?: string[] }} opts
+ *   `extraCandidates`: additional ids to consider hiding even though they're no
+ *   longer in the picker lists (e.g. stale registrations just pruned above).
+ * @returns {object} new blob
+ */
+export function disableUnservableModels(blob, { servable, extraCandidates = [] }) {
+  const userOwns = new Set(blob?.aiSettings?.userAddedModels ?? []);
+  // Cursor's reserved picker sentinels, never real models.
+  const sentinels = new Set(["default", "inherit", "none"]);
+  const candidates = dedupe([
+    ...(Array.isArray(blob?.availableDefaultModels2) ? blob.availableDefaultModels2 : [])
+      .map((model) => model?.name)
+      .filter(Boolean),
+    ...(blob?.aiSettings?.modelOverrideEnabled ?? []),
+    ...extraCandidates,
+  ]).filter((id) => !sentinels.has(id));
+  return withAiSettings(blob, (ai) => {
+    let disabled = [...(ai.modelOverrideDisabled ?? [])];
+    let tracked = [...(ai[FIRECONNECT_DISABLED_FIELD] ?? [])];
+    let enabled = [...(ai.modelOverrideEnabled ?? [])];
+    let toggledOff = [...(ai[FIRECONNECT_TOGGLED_OFF_FIELD] ?? [])];
+    // Re-enable models we hid that are servable now (e.g. catalog grew).
+    for (const id of tracked.filter((id) => servable(id))) {
+      disabled = disabled.filter((hidden) => hidden !== id);
+      tracked = tracked.filter((hidden) => hidden !== id);
+      if (toggledOff.includes(id)) {
+        if (!enabled.includes(id)) {
+          enabled.push(id);
+        }
+        toggledOff = toggledOff.filter((hidden) => hidden !== id);
+      }
+    }
+    for (const id of candidates) {
+      if (servable(id) || userOwns.has(id)) {
+        continue;
+      }
+      if (!disabled.includes(id)) {
+        disabled.push(id);
+        if (!tracked.includes(id)) {
+          tracked.push(id);
+        }
+      }
+      // An enabled id overrides a disabled one in Cursor's picker — strip it
+      // from enabled too, even if we (or the user) already disabled it.
+      if (enabled.includes(id)) {
+        enabled = enabled.filter((model) => model !== id);
+        if (!toggledOff.includes(id)) {
+          toggledOff.push(id);
+        }
+      }
+    }
+    ai.modelOverrideDisabled = disabled;
+    ai[FIRECONNECT_DISABLED_FIELD] = tracked;
+    ai.modelOverrideEnabled = enabled;
+    ai[FIRECONNECT_TOGGLED_OFF_FIELD] = toggledOff;
+  });
+}
+
+/**
+ * Un-hide exactly the built-in models fireconnect hid (tracked in
+ * fireconnectDisabledModels) and restore the enabled-list entries we stripped
+ * (fireconnectToggledOffModels), then clear both trackers. Models the user
+ * disabled or enabled themselves are never touched. No-backup `off` strip
+ * path only.
+ * @param {object} blob
+ * @returns {object} new blob
+ */
+export function reenableFireconnectDisabledModels(blob) {
+  const tracked = blob?.aiSettings?.[FIRECONNECT_DISABLED_FIELD] ?? [];
+  const toggledOff = blob?.aiSettings?.[FIRECONNECT_TOGGLED_OFF_FIELD] ?? [];
+  if (tracked.length === 0 && toggledOff.length === 0) {
+    return { ...blob };
+  }
+  return withAiSettings(blob, (ai) => {
+    ai.modelOverrideDisabled = (ai.modelOverrideDisabled ?? []).filter(
+      (id) => !tracked.includes(id),
+    );
+    const enabled = [...(ai.modelOverrideEnabled ?? [])];
+    for (const id of toggledOff) {
+      if (!enabled.includes(id)) {
+        enabled.push(id);
+      }
+    }
+    ai.modelOverrideEnabled = enabled;
+    ai[FIRECONNECT_DISABLED_FIELD] = [];
+    ai[FIRECONNECT_TOGGLED_OFF_FIELD] = [];
   });
 }
 
@@ -558,14 +715,15 @@ export async function removeCursorBackup(dataDir, dbPath) {
 
 /**
  * Enable Fireworks routing for Cursor: snapshot the pre-Fireconnect state, set
- * the base URL + OpenAI-key flag, register the resolved model, and point every
- * existing mode at it. Re-`on` without a prior backup does not overwrite the
- * original snapshot (so `off` can still restore it).
+ * the base URL + OpenAI-key flag, register the resolved model, point every
+ * existing mode at it, and hide built-in models the gateway can't serve.
+ * Re-`on` without a prior backup does not overwrite the original snapshot
+ * (so `off` can still restore it).
  *
- * @param {{ dbPath: string, dataDir: string, apiKey: string, modelId?: string, keyType?: "fireworks" | "firepass" }} opts
+ * @param {{ dbPath: string, dataDir: string, apiKey: string, modelId?: string, keyType?: "fireworks" | "firepass", catalogUnavailable?: boolean }} opts
  * @returns {Promise<{ model: string, keyType: "fireworks" | "firepass" }>}
  */
-export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, keyType = "fireworks", extraModels = [] }) {
+export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, keyType = "fireworks", extraModels = [], catalogUnavailable = false }) {
   if (!apiKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
@@ -600,24 +758,66 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
   }
   blob = shortenCursorFireworksModelRefs(blob);
   const requestedModel = modelId?.trim() ?? "";
+  // What the gateway can serve: the key-type default plus the registerable
+  // catalog. Used to tell real Fireworks ids apart from Cursor-native ones.
+  // When the catalog fetch failed, also trust what a previous online run
+  // registered — pruning/hiding those just because we're offline would
+  // destroy a working setup. Ids Cursor itself offers as built-ins (and that
+  // aren't known Fireworks ids) stay untrusted, so stale native registrations
+  // like auto-smart still self-heal offline.
+  const cursorBuiltinNames = new Set(
+    (Array.isArray(blob?.availableDefaultModels2) ? blob.availableDefaultModels2 : [])
+      .map((model) => model?.name)
+      .filter(Boolean),
+  );
+  const servable = servableChecker([
+    resolveCursorModelId(requestedModel, resolvedKeyType),
+    ...extraModels,
+    ...(catalogUnavailable
+      ? fireconnectRegisteredModels(blob).filter(
+        (id) => !cursorBuiltinNames.has(id) || isFireworksModelId(id),
+      )
+      : []),
+  ]);
   const currentMode = existingModes(blob).includes(CURSOR_DEFAULT_MODE)
     ? CURSOR_DEFAULT_MODE
     : existingModes(blob)[0];
   const currentModel = currentMode ? cursorCurrentModelId(blob, currentMode) : "";
+  // Re-`on` keeps the user's selection — but only when the gateway can serve
+  // it. A Cursor-native id (auto-smart & friends) would 404 on Fireworks, so
+  // it falls through to the default and is reported as `replacedModel`.
   const preserveModeSelections = !requestedModel
     && providerStatus === "fireworks"
     && (!previousKeyType || previousKeyType === resolvedKeyType)
     && currentModel
     && currentModel !== "default"
-    && !isFirerouterModel(currentModel);
+    && !isFirerouterModel(currentModel)
+    && servable(currentModel);
   const resolvedModel = shortFireworksModelRef(
     preserveModeSelections
       ? normalizeModelId(currentModel)
       : resolveCursorModelId(requestedModel, resolvedKeyType),
   );
+  // Only unservable picks earn the "isn't on Fireworks" note — explicit
+  // --model switches, firerouter picks, and key-type changes drop a perfectly
+  // valid Fireworks model too, and the note would be wrong for those.
+  const replacedModel = !preserveModeSelections
+    && providerStatus === "fireworks"
+    && currentModel
+    && currentModel !== "default"
+    && currentModel !== resolvedModel
+    && !servable(currentModel)
+    ? currentModel
+    : "";
 
   let next = setOpenAiBaseUrl(blob, CURSOR_FIREWORKS_BASE_URL);
   next = setUseOpenAiKey(next, true);
+  // Self-heal registrations an earlier version made from Cursor-native picks.
+  // Capture them first: pruning drops them from the picker lists, but they
+  // should still end up hidden via modelOverrideDisabled below.
+  const staleRegistered = (next.aiSettings?.fireconnectAddedModels ?? [])
+    .filter((id) => !servable(id));
+  next = pruneUnservableAddedModels(next, { servable });
   // Register the resolved active model plus the caller's preferred catalog.
   for (const id of [resolvedModel, ...extraModels]) {
     if (id) {
@@ -627,6 +827,7 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
   if (!preserveModeSelections) {
     next = setAllExistingModes(next, resolvedModel);
   }
+  next = disableUnservableModels(next, { servable, extraCandidates: staleRegistered });
 
   const blobRaw = JSON.stringify(next);
   const { writes, obfuscatedKey } = cursorKeyWrites(dbPath, blobRaw, apiKey);
@@ -634,6 +835,7 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
 
   return {
     model: resolvedModel,
+    replacedModel,
     modelsAdded: fireconnectRegisteredModels(next),
     keyType: resolvedKeyType,
     encrypted: isSecretEncryptionAvailable({ variant: "cursor", localStatePath: cursorLocalStatePath(dbPath) }),
@@ -715,11 +917,13 @@ export async function enableCursorAzure({ dbPath, dataDir, apiKey, baseUrl, mode
 
   // Drop any previously registered fireconnect models (e.g. a prior Fireworks
   // gateway catalog) so only the Foundry deployment remains in the picker.
+  const servable = servableChecker([resolvedModel], { includeKnownFireworks: false });
   let next = removeFireconnectModels(blob);
   next = setOpenAiBaseUrl(next, normalizedBaseUrl);
   next = setUseOpenAiKey(next, true);
   next = addUserModel(next, resolvedModel, { shortenFireworks: false });
   next = setAllExistingModes(next, resolvedModel, { shortenFireworks: false });
+  next = disableUnservableModels(next, { servable });
 
   // Write to the encrypted secret:// cell (modern Cursor) + legacy plaintext
   // fallback, exactly like the gateway path — otherwise a key the user cleared
@@ -791,13 +995,16 @@ export async function disableCursorFireworks({ dbPath, dataDir, wasEnabled = fal
   // a setup we didn't create.
   const hasFireconnectMarkers =
     (blob.aiSettings?.fireconnectAddedModels?.length > 0)
-    || (blob.aiSettings?.fireconnectTouchedModes?.length > 0);
+    || (blob.aiSettings?.fireconnectTouchedModes?.length > 0)
+    || (blob.aiSettings?.fireconnectDisabledModels?.length > 0)
+    || (blob.aiSettings?.fireconnectToggledOffModels?.length > 0);
   if (!hasFireconnectMarkers) {
     return "none";
   }
 
   let next = removeFireconnectModels(blob);
   next = resetFireconnectModelConfig(next);
+  next = reenableFireconnectDisabledModels(next);
   next = setUseOpenAiKey(next, false);
   next = setOpenAiBaseUrl(next, null);
   const blobRaw = JSON.stringify(next);

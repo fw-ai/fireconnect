@@ -116,6 +116,21 @@ describe("parseCli", () => {
     assert.equal(parsed.ctx.plain, true);
   });
 
+  it("parses claude live", () => {
+    const live = parseCli(["claude", "live"]);
+    assert.equal(live.kind, "harness");
+    assert.equal(live.route.harnessId, "claude");
+    assert.equal(live.route.verb, "live");
+    assert.equal(live.route.noun, "");
+  });
+
+  it("rejects claude live kill", () => {
+    assert.throws(
+      () => parseCli(["claude", "live", "kill"]),
+      /does not accept positional arguments/,
+    );
+  });
+
   it("parses --model firerouter and the anthropic key flag", () => {
     const parsed = parseCli([
       "claude", "on", "--model", "firerouter",

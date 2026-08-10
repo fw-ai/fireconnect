@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "0.9.2",
+      "highlights": [
+        "Live session cost meter — watch Fireworks spend accumulate in a tmux split pane beside Claude Code, with a recent-session picker.",
+        "VS Code now uses the chat-completions API for better compatibility.",
+        "Cursor picker hides built-in models and preserves your native model IDs when re-enabling."
+      ],
+      "improvements": [
+        "FireRouter model IDs are treated as 1M-context; Kimi K3 specs corrected to 1M with [1m] enabled for Claude.",
+        "Linux quit detection ignores Electron helper processes in VS Code.",
+        "Claude usage meter exits cleanly on quit."
+      ],
+      "footer": ""
+    },
+    {
       "version": "0.9.1",
       "highlights": [
         "Keep Claude Code connected when you reinstall or upgrade. On FireConnect 0.9.0 and newer, FireConnect no longer asks you to disconnect first — your harness settings stay put.",

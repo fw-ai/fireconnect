@@ -135,15 +135,15 @@ describe("fireworks-model-specs", () => {
       const spec = lookupModelSpec("kimi-fast-latest");
       assert.equal(spec?.label, "Kimi K3 Fast");
       assert.equal(spec?.pricing?.tier, "fast");
-      assert.equal(spec?.pricing?.input, 1.90);
-      assert.equal(lookupFireworksPricing("kimi-fast-latest")?.output, 8.00);
-      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 1.90);
+      assert.equal(spec?.pricing?.input, 6.00);
+      assert.equal(lookupFireworksPricing("kimi-fast-latest")?.output, 30.00);
+      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 6.00);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
   });
 
-  it("falls back to static kimi-k2p7 fast pricing when Kimi K3 is listed without API rates", () => {
+  it("falls back to static kimi-k3-fast pricing when Kimi K3 is listed without API rates", () => {
     setServerlessCatalogSnapshot({
       entries: [{
         id: "accounts/fireworks/models/kimi-k3",
@@ -162,8 +162,8 @@ describe("fireworks-model-specs", () => {
     try {
       const pricing = lookupFireworksPricing("kimi-fast-latest");
       assert.equal(pricing?.tier, "fast");
-      assert.equal(pricing?.input, 1.90);
-      assert.equal(pricing?.output, 8.00);
+      assert.equal(pricing?.input, 6.00);
+      assert.equal(pricing?.output, 30.00);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -248,9 +248,9 @@ describe("fireworks-model-specs", () => {
     try {
       const pricing = lookupFireworksPricing("kimi-fast-latest");
       assert.equal(pricing?.tier, "fast");
-      assert.equal(pricing?.input, 1.90);
-      assert.equal(pricing?.output, 8.00);
-      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 1.90);
+      assert.equal(pricing?.input, 6.00);
+      assert.equal(pricing?.output, 30.00);
+      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 6.00);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -340,7 +340,7 @@ describe("fireworks-model-specs", () => {
     try {
       assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k2p8-code-fast");
       assert.equal(resolveFireworksModelLabel("kimi-fast-latest"), "Kimi K2.8 Code Fast (Latest)");
-      assert.equal(lookupModelSpec("kimi-fast-latest")?.label, "Kimi K2.7 Code Fast");
+      assert.equal(lookupModelSpec("kimi-fast-latest")?.label, "Kimi K3 Fast");
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -374,6 +374,15 @@ describe("fireworks-model-specs", () => {
     assert.equal(spec?.label, "FireRouter");
     assert.equal(spec?.vscode.vision, true);
     assert.equal(lookupVscodeModelMetadata("firerouter").maxInputTokens, 1_048_575);
+  });
+
+  it("shares firerouter spec metadata for firerouter* model ids", () => {
+    const spec = lookupModelSpec("firerouter/x");
+    assert.equal(spec?.label, "FireRouter");
+    assert.equal(spec?.vscode.vision, true);
+    const limits = lookupFireworksModelLimits("firerouter/x");
+    assert.equal(limits.contextWindow, 1_048_575);
+    assert.equal(limits.vision, true);
   });
 
   it("exposes shared limits and cost helpers for non-VS Code harnesses", () => {

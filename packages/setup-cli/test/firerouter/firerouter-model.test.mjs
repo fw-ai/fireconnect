@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   FIREROUTER_MODEL_ID,
   FIREROUTER_ROUTER_ID,
+  isFirerouterGatewayPattern,
   isFirerouterModel,
   normalizeModelId,
 } from "../../lib/fireworks/model-id.mjs";
@@ -50,6 +51,15 @@ describe("firerouter model recognition", () => {
     }
     for (const id of ["glm-fast-latest", "accounts/fireworks/models/deepseek-v4-flash", "", null, undefined]) {
       assert.equal(isFirerouterModel(id), false, String(id));
+    }
+  });
+
+  it("matches firerouter* gateway patterns on any path segment", () => {
+    for (const id of ["firerouter", "firerouter[1m]", "firerouter/x", "FireRouter/x", "firerouterx", "accounts/fireworks/routers/firerouter"]) {
+      assert.equal(isFirerouterGatewayPattern(id), true, id);
+    }
+    for (const id of ["glm-fast-latest", "accounts/fireworks/routers/glm-latest", "", null, undefined]) {
+      assert.equal(isFirerouterGatewayPattern(id), false, String(id));
     }
   });
 

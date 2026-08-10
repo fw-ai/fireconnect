@@ -110,6 +110,34 @@ describe("opencode catalog model handling", () => {
     assert.equal(opencodeProviderModelKey("fireworks-ai/glm-fast-latest"), "glm-fast-latest");
   });
 
+  it("keeps path-shaped firerouter* keys intact", () => {
+    assert.equal(opencodeProviderModelKey("firerouter/x"), "firerouter/x");
+    assert.equal(opencodeProviderModelKey("firerouter"), "firerouter");
+  });
+
+  it("writes firerouter* provider overrides under the full short ref", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-firerouter-path-"));
+    const configPath = path.join(home, "opencode.json");
+    const dataDir = path.join(home, "data");
+    await mkdir(dataDir, { recursive: true });
+
+    await enableOpencodeFireworks({
+      configPath,
+      dataDir,
+      apiKey: "fw_test_key_12345",
+      effectiveApiKey: "fw_test_key_12345",
+      modelId: "firerouter/x",
+      catalogModelIds: ["accounts/fireworks/routers/glm-latest"],
+    });
+
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(config.model, "fireworks-ai/firerouter/x");
+    const models = config.provider?.["fireworks-ai"]?.models ?? {};
+    assert.ok(models["firerouter/x"], "override keyed by full short ref");
+    assert.equal(models.x, undefined, "must not collapse to last path segment");
+    assert.equal(models["firerouter/x"].limit.context, 1_048_575);
+  });
+
   it("re-on with catalog rebuilds idempotently and drops duplicate legacy keys", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-reon-idempotent-"));
     const configPath = path.join(home, "opencode.json");

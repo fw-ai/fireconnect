@@ -17,6 +17,7 @@ import {
   defaultMainModel,
   fireworksModelSlug,
   fullFireworksResourceId,
+  isFirerouterGatewayPattern,
   isFirerouterModel,
   normalizeModelId,
   shortFireworksModelRef,
@@ -94,7 +95,7 @@ export function opencodeNeedsProviderModelOverride(modelId) {
   if (!modelId || typeof modelId !== "string") {
     return false;
   }
-  if (isFirerouterModel(modelId)) {
+  if (isFirerouterGatewayPattern(modelId)) {
     return true;
   }
   const slug = fireworksModelSlug(normalizeModelId(modelId));
@@ -300,7 +301,18 @@ export function buildOpencodeAzureModelEntry(deploymentName) {
 
 /** Canonical `provider.models` key — collapses full resource ids and legacy prefixed refs. */
 export function opencodeProviderModelKey(modelId) {
-  return fireworksModelSlug(normalizeModelId(modelId));
+  const stored = shortFireworksModelRef(normalizeModelId(modelId));
+  // Path-shaped gateway IDs (firerouter/...) must match config.model after the
+  // fireworks-ai/ prefix; last-segment collapse would orphan the override.
+  if (
+    stored.includes("/")
+    && !stored.startsWith("accounts/")
+    && !stored.startsWith("fireworks-ai/")
+    && !stored.startsWith("fireworks/")
+  ) {
+    return stored;
+  }
+  return fireworksModelSlug(stored);
 }
 
 function homeFromDataDir(dataDir) {
@@ -434,7 +446,7 @@ export async function enableOpencodeFireworks({
     return out;
   };
   let models;
-  if (isFirerouterModel(storedModel)) {
+  if (isFirerouterGatewayPattern(storedModel)) {
     models = buildModels([storedModel]);
   } else if (catalog.length) {
     models = buildModels([storedModel, ...catalog]);

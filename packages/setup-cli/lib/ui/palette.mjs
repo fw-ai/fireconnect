@@ -21,6 +21,35 @@ export const ANSI = Object.freeze({
   clearScreen: "\u001b[2J",
   homeCursor: "\u001b[H",
   clearLine: "\u001b[K",
+  // Alternate screen buffer. A fullscreen view that repaints in place must run
+  // here: `[2J` clears what you can SEE, but every repainted frame still lands
+  // in scrollback, so the pane grows without bound and buries the user's shell
+  // history. Enter on start, leave on exit and the terminal restores whatever
+  // was on screen before, exactly like vim or less.
+  enterAltScreen: "\u001b[?1049h",
+  exitAltScreen: "\u001b[?1049l",
+});
+
+/**
+ * Live cost-meter palette (same codes as claude-transparent / PR #230).
+ * Kept here so `fireconnect claude usage` and the meter share one source.
+ */
+export const METER = Object.freeze({
+  accent: "\u001b[38;2;103;32;255m",
+  gold: "\u001b[38;5;220m",
+  ghost: "\u001b[38;5;245m",
+  green: "\u001b[38;5;42m",
+  red: "\u001b[38;5;203m",
+  /** SGR color params (without `\x1b[` / `m`) for per-model badges. */
+  modelPalette: Object.freeze([
+    "38;5;141",
+    "38;5;43",
+    "38;5;215",
+    "38;5;75",
+    "38;5;205",
+    "38;5;191",
+    "38;5;117",
+  ]),
 });
 
 /** Brand purple as RGB tuple (matches BRAND.purple #6720FF). */

@@ -64,12 +64,12 @@ import {
  * `vscode-safestorage.mjs` — so VS Code can actually decrypt and use it.
  *
  * - Provider entry -> array element `{ name, vendor:"customendpoint",
- *   apiType:"responses", apiKey:"${input:<secretId>}", models[] }` (all
- *   Fireworks models, including `firerouter`, use Responses; Azure uses
- *   `chat-completions`).
+ *   apiType:"chat-completions", apiKey:"${input:<secretId>}", models[] }`
+ *   (every route — direct Fireworks, `firerouter`, and Azure — uses the
+ *   chat-completions wire).
  * - Model          -> `{ id, name, url, toolCalling, vision,
  *   maxInputTokens, maxOutputTokens }`. VS Code's `resolveCustomEndpointUrl`
- *   appends `/v1/responses` (or `/v1/chat/completions`) to `url` per apiType,
+ *   appends `/v1/chat/completions` (or `/v1/responses`) to `url` per apiType,
  *   so `https://api.fireworks.ai/inference` resolves correctly.
  * - Secret         -> `state.vscdb` `ItemTable` row, key `secret://<secretId>`,
  *   value = `JSON.stringify(safeStorage.encryptString(key))`.
@@ -362,11 +362,10 @@ export function buildAzureModelEntry(modelId, baseUrl) {
  * models. Replaces an existing fireconnect provider's models; leaves other
  * providers alone.
  *
- * `apiType` selects VS Code's request/response format for the group: every
- * Fireworks model uses the OpenAI Responses API (`responses`); Microsoft
- * Foundry (Azure) uses `chat-completions`. VS Code resolves the endpoint path
- * from the model `url` + apiType (bare base → `<url>/v1/responses` etc.), so
- * the base URL is unchanged.
+ * `apiType` selects VS Code's request/response format for the group: both
+ * direct Fireworks and Microsoft Foundry (Azure) use `chat-completions`.
+ * VS Code resolves the endpoint path from the model `url` + apiType (bare
+ * base → `<url>/v1/chat/completions` etc.), so the base URL is unchanged.
  * @param {object[]} arr
  * @param {{ secretId: string, models: object[], apiType?: "chat-completions" | "responses" }} opts
  * @returns {object[]} new array
@@ -445,6 +444,10 @@ const VSCODE_PROCESS_SPEC = {
   // unrelated helpers (e.g. Chrome crashpad) whose cmdline merely contains "code".
   darwinPattern: "Visual Studio Code( - Insiders)?.app/Contents/MacOS/Electron",
   linuxPattern: "[/]code(-insiders)?([[:space:]]|$)",
+  // Electron spawns `/usr/share/code/code --type=…` helpers that can outlive a
+  // closed window or linger briefly after File > Quit. Only the main process
+  // (no `--type=`) owns state.vscdb and must block writes.
+  linuxCmdlineMatches: (cmdline) => !/\s--type=/.test(cmdline),
   windowsImage: "Code( - Insiders)?\\.exe",
 };
 
@@ -460,10 +463,9 @@ export function isVscodeRunning() {
 
 /**
  * Wait for VS Code to be quit before writing. Interactive: when VS Code is
- * running and stdin is a TTY, prints a "quit VS Code" message and re-prompts
- * (waiting for Enter) until VS Code is no longer running, then returns so the
- * caller's write proceeds. `force` skips the wait (warns instead).
- * Non-interactive throws `VSCODE_RUNNING_MESSAGE`.
+ * running and stdin is a TTY, waits for quit via Enter confirm and/or
+ * auto-detect. `force` skips the wait (warns instead). Non-interactive throws
+ * `VSCODE_RUNNING_MESSAGE`.
  * @param {{ force?: boolean }} [opts]
  */
 export async function ensureVscodeStopped({ force = false } = {}) {
@@ -623,8 +625,9 @@ export async function enableVscodeFireworks({
   const next = addFireworksProvider(arr, {
     secretId,
     models,
-    // Direct Fireworks gateway speaks the OpenAI Responses API in VS Code Chat.
-    apiType: "responses",
+    // Direct Fireworks gateway uses the chat-completions API in VS Code Chat
+    // (same as Azure; explicit for clarity even though it's the default).
+    apiType: "chat-completions",
   });
   await writeChatLanguageModels(vscodePath, next);
 
@@ -823,6 +826,40 @@ export async function disableVscodeFireworks({
     await writeChatLanguageModels(vscodePath, next);
   }
   return "stripped";
+}
+
+/**
+ * Flip the fireconnect-owned provider's `apiType` from `"responses"` to
+ * `"chat-completions"` — the upgrade migration for installs configured when
+ * direct Fireworks routing used the Responses wire. No-ops (returns `false`)
+ * when there is no fireconnect provider, when it is already chat-completions
+ * (Azure included), or when VS Code is running (its exit rewrite would
+ * discard the edit). The secret store is untouched — the `apiKey` reference
+ * and the `state.vscdb` row stay as they are.
+ *
+ * `isRunning` is injectable so the guard is unit-testable without a real IDE.
+ * @param {{ home?: string, vscodePath?: string, isRunning?: () => boolean }} opts
+ * @returns {Promise<boolean>} whether the file was rewritten
+ */
+export async function migrateVscodeResponsesApiType({
+  home = "",
+  vscodePath = "",
+  isRunning = isVscodeRunning,
+} = {}) {
+  const jsonPath = vscodePath || chatLanguageModelsPath({ home });
+  const arr = await readChatLanguageModels(jsonPath);
+  const provider = findFireconnectProvider(arr);
+  if (!provider || provider.apiType !== "responses") {
+    return false;
+  }
+  if (isRunning()) {
+    return false;
+  }
+  await writeChatLanguageModels(
+    jsonPath,
+    arr.map((p) => (p === provider ? { ...p, apiType: "chat-completions" } : p)),
+  );
+  return true;
 }
 
 /**
