@@ -33,7 +33,7 @@ import {
 } from "../helpers.mjs";
 import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 
-const CLAUDE_STORED_MAIN_MODEL = KIMI_FAST_LATEST;
+const CLAUDE_STORED_MAIN_MODEL = `${KIMI_FAST_LATEST}[1m]`;
 const CLAUDE_STORED_GLM_MODEL = `${GLM_FAST_LATEST}[1m]`;
 const packageJsonPath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -132,9 +132,8 @@ describe("harness help matches supported command features", () => {
     const cursor = await runCli(["cursor", "help"]);
     assert.equal(cursor.code, 0, cursor.stderr);
     assert.match(cursor.stdout, /Quit Cursor before on\/off/);
-    assert.match(cursor.stdout, /only Fireworks models in your picker work/);
-    assert.match(cursor.stdout, /Opus modes/);
-    assert.match(cursor.stdout, /reach out to the Fireworks team/);
+    assert.match(cursor.stdout, /Only Fireworks models work while FireConnect is on/);
+    assert.match(cursor.stdout, /built-ins are hidden/);
 
     const deepagents = await runCli(["deepagents", "help"]);
     assert.equal(deepagents.code, 0, deepagents.stderr);
@@ -224,7 +223,7 @@ describe("fireconnect claude on", () => {
       assert.match(settings.model, /kimi-fast-latest/);
       assertClaudeMainModel(settings, CLAUDE_STORED_MAIN_MODEL);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_GLM_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FAST_LATEST);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_MAIN_MODEL);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K2.7 Code Fast (Latest)");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.2 Fast (Latest)");
@@ -261,7 +260,7 @@ describe("fireconnect claude on", () => {
       // Subagent model is forwarded verbatim to the provider, so the [1m] beta
       // tag must be stripped (Fireworks has no "...kimi-fast-latest[1m]" model).
       assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, KIMI_FAST_LATEST);
-      assert.equal(settings.env.CLAUDE_CODE_DISABLE_1M_CONTEXT, "1");
+      assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
 

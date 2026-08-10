@@ -1,7 +1,7 @@
 import process, { stdin, stdout } from "node:process";
 import path from "node:path";
-import { colorEnabled, bold, accent } from "../../ui/term.mjs";
-import { ANSI } from "../../ui/palette.mjs";
+import { colorEnabled, bold, accent } from "../../../ui/term.mjs";
+import { ANSI } from "../../../ui/palette.mjs";
 
 const ANTHROPIC_PRICING_DOCS_URL = "https://platform.claude.com/docs/en/about-claude/pricing";
 

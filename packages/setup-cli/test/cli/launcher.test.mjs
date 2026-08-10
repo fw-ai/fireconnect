@@ -98,6 +98,7 @@ describe("buildActionChoices", () => {
       { verb: "off", noun: "" },
       { verb: "status", noun: "" },
       { verb: "usage", noun: "" },
+      { verb: "live", noun: "" },
     ]);
   });
 });

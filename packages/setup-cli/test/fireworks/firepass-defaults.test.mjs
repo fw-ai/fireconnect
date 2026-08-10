@@ -130,6 +130,11 @@ describe("Fire Pass defaults", () => {
     );
   });
 
+  test("model ID validation allows firerouter* gateway patterns", () => {
+    assert.doesNotThrow(() => validateModelId("firerouter/x", "--model"));
+    assert.doesNotThrow(() => validateModelId("firerouter/x[1m]", "--opus"));
+  });
+
   test("GLM fast routers and GLM 5P2 use Claude Code 1m context", () => {
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/glm-latest"), "accounts/fireworks/routers/glm-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/glm-fast-latest"), "accounts/fireworks/routers/glm-fast-latest[1m]");
@@ -139,6 +144,35 @@ describe("Fire Pass defaults", () => {
     const env = applyClaudeCodeContextPolicy(
       { CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" },
       { main: "accounts/fireworks/routers/glm-fast-latest" },
+    );
+    assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
+  });
+
+  test("Kimi K3 family uses Claude Code 1m context", () => {
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/kimi-latest"), "accounts/fireworks/routers/kimi-latest[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/kimi-fast-latest"), "accounts/fireworks/routers/kimi-fast-latest[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/models/kimi-k3"), "accounts/fireworks/models/kimi-k3[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/kimi-k3-fast"), "accounts/fireworks/routers/kimi-k3-fast[1m]");
+
+    const env = applyClaudeCodeContextPolicy(
+      { CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" },
+      { main: "accounts/fireworks/routers/kimi-fast-latest" },
+    );
+    assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
+  });
+
+  test("firerouter* model patterns use Claude Code 1m context", () => {
+    assert.equal(claudeCodeModelId("firerouter"), "firerouter[1m]");
+    assert.equal(claudeCodeModelId("firerouter[1m]"), "firerouter[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/firerouter"), "accounts/fireworks/routers/firerouter[1m]");
+    assert.equal(claudeCodeModelId("firerouter/x"), "firerouter/x[1m]");
+    assert.equal(claudeCodeModelId("firerouter/x[1m]"), "firerouter/x[1m]");
+    assert.equal(claudeCodeModelId("FireRouter/x"), "FireRouter/x[1m]");
+    assert.equal(claudeCodeModelId("firerouterx"), "firerouterx[1m]");
+
+    const env = applyClaudeCodeContextPolicy(
+      { CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" },
+      { main: "firerouter/x" },
     );
     assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
   });

@@ -10,6 +10,12 @@ import { supportsRoutingPreference } from "../firerouter/flag.mjs";
 export const FIREROUTER_DOCS_URL =
   "https://docs.fireworks.ai/ecosystem/firerouter/overview";
 
+/** Display labels for the workspace-BYOK-only (under-development) note. */
+const FIREROUTER_HARNESS_LABELS = {
+  cursor: "Cursor",
+  deepagents: "Deep Agents",
+};
+
 function displayModel(model) {
   return typeof model === "string"
     ? model.replace(/\[1m\]$/, "").split("/").at(-1)
@@ -237,7 +243,8 @@ export function printFirerouterNote({
       return;
     }
     printNote(
-      "FireRouter wasn't turned on. Ask the Fireworks team to enable it for your account.",
+      `FireRouter support for ${FIREROUTER_HARNESS_LABELS[harnessId] ?? harnessId} is still under development. `
+        + "Reach out to the Fireworks team if you're interested.",
     );
     return;
   }

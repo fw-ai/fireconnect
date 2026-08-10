@@ -352,6 +352,7 @@ export function defineHarnessProfile(profile) {
     off: profile.off ?? ((ctx) => engineOff(profile, ctx)),
     status: profile.status,
     ...(profile.usage ? { usage: profile.usage } : {}),
+    ...(profile.live ? { live: profile.live } : {}),
     ...(profile.resolveOnContext ? { resolveOnContext: profile.resolveOnContext } : {}),
   });
 }

@@ -9,12 +9,16 @@ import {
   findClaudeSessionLogs,
   formatClaudeUsageReport,
   formatClaudeUsageReports,
+  listTopLevelSessionLogPaths,
   parseClaudeSessionName,
   parseClaudeUsageLog,
   readClaudeUsage,
   readClaudeUsages,
-} from "../../../lib/harnesses/claude/usage.mjs";
-import { runFireconnect } from "../../helpers.mjs";
+  snapshotLiveSessionLogs,
+  waitForLiveSessionLog,
+  waitForNewSessionLog,
+} from "../../../../lib/harnesses/claude/usage/report.mjs";
+import { runFireconnect } from "../../../helpers.mjs";
 
 function jsonl(entries) {
   return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
@@ -68,6 +72,125 @@ describe("claude usage", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].displayModel, "glm-5p2");
     assert.equal(rows[0].input, 48_030);
+  });
+
+  it("keeps the richest usage payload when a message id repeats", () => {
+    // Claude Code writes one record per content block under a single
+    // message.id, and only the LAST carries real usage. Keeping the first
+    // priced whole subagent logs at $0.00.
+    const text = jsonl([
+      { type: "user", message: { role: "user", content: "go" } },
+      {
+        type: "assistant",
+        message: {
+          id: "msg_1",
+          model: "accounts/fireworks/models/glm-5p2",
+          usage: { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "msg_1",
+          model: "accounts/fireworks/models/glm-5p2",
+          usage: { input_tokens: 7_023, cache_read_input_tokens: 92_799, output_tokens: 361 },
+        },
+      },
+    ]);
+
+    const rows = parseClaudeUsageLog(text);
+    assert.equal(rows.length, 1, "one API call, not one row per content block");
+    assert.equal(rows[0].input, 7_023);
+    assert.equal(rows[0].cacheRead, 92_799);
+    assert.equal(rows[0].output, 361);
+    assert.ok(rows[0].cost > 0, "a call with real tokens must not price at zero");
+  });
+
+  it("counts distinct calls separately and preserves log order", () => {
+    const text = jsonl([
+      {
+        type: "assistant",
+        message: { id: "msg_a", model: "accounts/fireworks/models/glm-5p2", usage: { input_tokens: 0 } },
+      },
+      {
+        type: "assistant",
+        message: { id: "msg_b", model: "accounts/fireworks/models/glm-5p2", usage: { input_tokens: 500 } },
+      },
+      {
+        type: "assistant",
+        message: { id: "msg_a", model: "accounts/fireworks/models/glm-5p2", usage: { input_tokens: 100 } },
+      },
+    ]);
+
+    const rows = parseClaudeUsageLog(text);
+    assert.equal(rows.length, 2);
+    // msg_a was seen first, so its revised row stays in slot 0.
+    assert.equal(rows[0].input, 100);
+    assert.equal(rows[1].input, 500);
+  });
+
+  it("weighs structured cache_creation when picking the richest payload", () => {
+    // Cache writes arrive either flat or as a 5m/1h object. Counting only the
+    // flat field let a stale old-format record outweigh the one that actually
+    // carried the write tokens.
+    const text = jsonl([
+      {
+        type: "assistant",
+        message: {
+          id: "msg_1",
+          model: "claude-sonnet-4",
+          usage: {
+            input_tokens: 50,
+            cache_read_input_tokens: 20,
+            cache_creation_input_tokens: 100,
+            output_tokens: 30,
+          },
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          id: "msg_1",
+          model: "claude-sonnet-4",
+          usage: {
+            input_tokens: 50,
+            cache_read_input_tokens: 20,
+            cache_creation: { ephemeral_5m_input_tokens: 200 },
+            cache_creation_input_tokens: 0,
+            output_tokens: 30,
+          },
+        },
+      },
+    ]);
+
+    const rows = parseClaudeUsageLog(text);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].cacheWrite5m, 200, "the structured record carries the real write count");
+  });
+
+  it("ignores <synthetic> placeholder records", () => {
+    // Interrupts and local slash commands emit a `<synthetic>` model with an
+    // all-zero payload; it is not a billable call and must not become a model.
+    const text = jsonl([
+      { type: "assistant", message: { id: "msg_s", model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } } },
+      { type: "assistant", message: { id: "msg_1", model: "accounts/fireworks/models/glm-5p2", usage: { input_tokens: 10 } } },
+    ]);
+
+    const rows = parseClaudeUsageLog(text);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].displayModel, "glm-5p2");
+  });
+
+  it("does not collapse records that share an empty message id", () => {
+    // `??` would treat "" as present and bucket every such record together.
+    const text = jsonl([
+      { type: "assistant", message: { id: "", model: "accounts/fireworks/models/glm-5p2", usage: { input_tokens: 10 } } },
+      { type: "assistant", message: { id: "", model: "accounts/fireworks/models/glm-5p2", usage: { input_tokens: 20 } } },
+    ]);
+
+    const rows = parseClaudeUsageLog(text);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].input + rows[1].input, 30);
   });
 
   it("recognizes stored short refs as Fireworks usage", () => {
@@ -549,5 +672,87 @@ describe("claude usage", () => {
     assert.equal(parsed.requests, 1);
     assert.equal(parsed.rows[0].model, "claude-opus-4-8");
     assert.equal(parsed.rows[0].rates.inputPerMillion, 5);
+  });
+});
+
+describe("waitForNewSessionLog", () => {
+  it("returns the first session log that was not in the snapshot", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-live-wait-"));
+    const projectDir = path.join(home, ".claude", "projects", "repo");
+    await mkdir(projectDir, { recursive: true });
+    const existingId = "11111111-1111-4111-8111-111111111111";
+    await writeFile(path.join(projectDir, `${existingId}.jsonl`), "\n");
+
+    const beforePaths = await listTopLevelSessionLogPaths(home);
+    assert.equal(beforePaths.length, 1);
+
+    let polls = 0;
+    const sessionPath = await waitForNewSessionLog({
+      home,
+      beforePaths,
+      pollMs: 0,
+      sleep: async () => {
+        polls += 1;
+        if (polls === 2) {
+          const newId = "22222222-2222-4222-8222-222222222222";
+          await writeFile(path.join(projectDir, `${newId}.jsonl`), "\n");
+        }
+      },
+    });
+
+    assert.equal(path.basename(sessionPath, ".jsonl"), "22222222-2222-4222-8222-222222222222");
+    assert.ok(polls >= 2);
+  });
+});
+
+describe("waitForLiveSessionLog", () => {
+  it("returns a new session log that was not in the snapshot", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-live-wait-resume-"));
+    const projectDir = path.join(home, ".claude", "projects", "repo");
+    await mkdir(projectDir, { recursive: true });
+    const existingId = "11111111-1111-4111-8111-111111111111";
+    await writeFile(path.join(projectDir, `${existingId}.jsonl`), "\n");
+
+    const snapshot = await snapshotLiveSessionLogs(home);
+    let polls = 0;
+    const sessionPath = await waitForLiveSessionLog({
+      home,
+      beforeLogs: snapshot.logs,
+      pollMs: 0,
+      sleep: async () => {
+        polls += 1;
+        if (polls === 2) {
+          const newId = "22222222-2222-4222-8222-222222222222";
+          await writeFile(path.join(projectDir, `${newId}.jsonl`), "\n");
+        }
+      },
+    });
+
+    assert.equal(path.basename(sessionPath, ".jsonl"), "22222222-2222-4222-8222-222222222222");
+  });
+
+  it("returns an existing log when it is resumed and mtime advances", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-live-wait-resume-"));
+    const projectDir = path.join(home, ".claude", "projects", "repo");
+    await mkdir(projectDir, { recursive: true });
+    const existingId = "11111111-1111-4111-8111-111111111111";
+    const existingPath = path.join(projectDir, `${existingId}.jsonl`);
+    await writeFile(existingPath, "\n");
+
+    const snapshot = await snapshotLiveSessionLogs(home);
+    let polls = 0;
+    const sessionPath = await waitForLiveSessionLog({
+      home,
+      beforeLogs: snapshot.logs,
+      pollMs: 0,
+      sleep: async () => {
+        polls += 1;
+        if (polls === 2) {
+          await writeFile(existingPath, "{\"type\":\"user\"}\n", { flag: "a" });
+        }
+      },
+    });
+
+    assert.equal(sessionPath, existingPath);
   });
 });

@@ -1,7 +1,10 @@
 import {
   FIREWORKS_MODEL_SPECS,
   ROUTER_SPEC_ALIASES,
+  isFirerouterGatewayPattern,
 } from "./model-specs.mjs";
+
+export { isFirerouterGatewayPattern };
 
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
 export const FIREROUTER_MODEL_ID = "firerouter";
@@ -130,7 +133,7 @@ export function normalizeModelId(model) {
 }
 
 export function validateModelId(model, flag) {
-  if (!model.startsWith("accounts/") && model.includes("/")) {
+  if (!model.startsWith("accounts/") && model.includes("/") && !isFirerouterGatewayPattern(model)) {
     throw new Error(
       `${flag} must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest`,
     );

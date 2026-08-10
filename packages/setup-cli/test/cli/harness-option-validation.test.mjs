@@ -127,6 +127,7 @@ describe("harness option validation", () => {
       await rejects(home, ["cursor", "on", "--mode", "composer"], /Unknown argument: --mode/);
       await rejects(home, ["cursor", "on", "--slot", "main"], /Unknown argument: --slot/);
       await rejects(home, ["pi", "on", "--opus", "glm-latest"], /apply only to .*claude on/);
+      await rejects(home, ["cursor", "on", "--subagent", "glm-latest"], /apply only to .*claude on/);
       await rejects(home, ["opencode", "on", "--non-interactive"], /applies only to .*claude on/);
       await rejects(home, ["opencode", "on", "--interactive"], /applies only to .*claude on/);
       await rejects(
@@ -149,11 +150,26 @@ describe("harness option validation", () => {
 
   it("rejects usage, JSON, and path options where they are ignored", async () => {
     await withTempHome("option-command-scope-", async (home) => {
-      await rejects(home, ["pi", "status", "--session", "abc"], /apply only to .*claude usage/);
+      await rejects(home, ["pi", "status", "--session", "abc"], /applies only to .*claude usage/);
       await rejects(home, ["opencode", "on", "--json"], /--json is supported by/);
       await rejects(home, ["codex", "status", "--db-path", "/tmp/state.vscdb"], /--db-path is supported only by Cursor/);
       await rejects(home, ["cursor", "status", "--config-path", "/tmp/config"], /--config-path is supported only by/);
       await rejects(home, ["vscode", "status", "--settings-path", "/tmp/settings"], /--settings-path is supported only by/);
+    });
+  });
+
+  it("accepts --session for claude live as well as claude usage", async () => {
+    await withTempHome("option-live-session-", async (home) => {
+      // `claude live --session` must clear option validation; any later failure
+      // (no tmux, or no matching session log in the empty home) is not the
+      // "applies only to" rejection this test guards against.
+      const live = await runCli(["claude", "live", "--session", "abc"], {
+        home,
+        env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" },
+      });
+      assert.doesNotMatch(live.stderr, /--session applies only to/);
+      // Report-only flags stay usage-only even on the live command.
+      await rejects(home, ["claude", "live", "--days", "3"], /--days\/--last-n\/--verbose\/--plain apply only to/);
     });
   });
 });

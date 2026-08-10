@@ -149,12 +149,17 @@ export default defineHarnessProfile({
   enable: async ({ ctx, paths, effectiveKey, keyType, modelId, includeFirerouter = false }) => {
     // Register the preferred catalog; firerouter is workspace-BYOK-gated.
     let extraModels = [];
+    let catalogUnavailable = false;
     try {
       ({ ids: extraModels } = await loadRegisterableModels({
         apiKey: effectiveKey,
         includeFirerouter,
       }));
-    } catch { /* offline / catalog unavailable — register just the active model */ }
+    } catch {
+      // Offline / catalog unavailable — register just the active model, and
+      // tell enable not to prune/hide models a previous online run registered.
+      catalogUnavailable = true;
+    }
     await ensureCursorStopped({ force: ctx.force });
     return enableCursorFireworks({
       dbPath: paths.dbPath,
@@ -163,10 +168,14 @@ export default defineHarnessProfile({
       modelId,
       keyType,
       extraModels,
+      catalogUnavailable,
     });
   },
   printConnected: ({ result }) => {
     printHarnessConnected("Cursor", { model: result.model });
+    if (result.replacedModel) {
+      printNote(`Built-in "${result.replacedModel}" isn't on Fireworks — switched to ${result.model}.`);
+    }
     printNote(CURSOR_FIREWORKS_ONLY_NOTE);
     if (linuxSafeStorageIsObfuscatedFallback()) {
       printNote(

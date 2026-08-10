@@ -5,7 +5,7 @@ import { finalizeInstallOrUpgrade } from "../../lib/system/finalize-install.mjs"
 import { withTempHome } from "../helpers.mjs";
 
 describe("finalizeInstallOrUpgrade", () => {
-  it("ensures deps, reprobes storage, and rebakes (injectable)", async () => {
+  it("ensures deps, reprobes storage, and reconciles (injectable)", async () => {
     await withTempHome("finalize-install-", async (home) => {
       const calls = [];
       const result = await finalizeInstallOrUpgrade({
@@ -21,8 +21,8 @@ describe("finalizeInstallOrUpgrade", () => {
           calls.push(["reprobe", h]);
           return { migrated: true, backend: { backend: "keychain" } };
         },
-        rebake: async (h) => {
-          calls.push(["rebake", h]);
+        reconcile: async (h) => {
+          calls.push(["reconcile", h]);
           return ["Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up."];
         },
       });
@@ -33,14 +33,14 @@ describe("finalizeInstallOrUpgrade", () => {
       ]);
       assert.deepEqual(
         calls.filter(([name]) => name !== "log").map(([name]) => name),
-        ["reprobe", "rebake"],
+        ["reprobe", "reconcile"],
       );
       assert.ok(calls.some(([name, msg]) => name === "log" && /Moved Fireworks API key/.test(String(msg))));
       assert.ok(calls.some(([name, msg]) => name === "log" && /websearch MCP/.test(String(msg))));
     });
   });
 
-  it("swallows reprobe and rebake failures (best-effort)", async () => {
+  it("swallows reprobe and reconcile failures (best-effort)", async () => {
     await withTempHome("finalize-best-effort-", async (home) => {
       const result = await finalizeInstallOrUpgrade({
         home,
@@ -50,8 +50,8 @@ describe("finalizeInstallOrUpgrade", () => {
         reprobe: async () => {
           throw new Error("probe boom");
         },
-        rebake: async () => {
-          throw new Error("rebake boom");
+        reconcile: async () => {
+          throw new Error("reconcile boom");
         },
       });
       assert.equal(result.migrated, false);
@@ -74,8 +74,8 @@ describe("finalizeInstallOrUpgrade", () => {
         calls.push("reprobe");
         return { migrated: false, backend: { backend: "plaintext" } };
       },
-      rebake: async () => {
-        calls.push("rebake");
+      reconcile: async () => {
+        calls.push("reconcile");
         return ["should-not-run"];
       },
     });

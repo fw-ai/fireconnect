@@ -8,7 +8,7 @@ import {
   hasClaudeUsageRows,
   renderSegmentedBar,
   runClaudeUsageInteractiveDisplay,
-} from "../../../lib/harnesses/claude/usage-display.mjs";
+} from "../../../../lib/harnesses/claude/usage/display.mjs";
 
 function lastInteractiveFrame(text) {
   const plain = String(text).replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");

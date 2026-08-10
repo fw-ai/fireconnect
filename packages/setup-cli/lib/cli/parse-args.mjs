@@ -12,7 +12,7 @@ const GLOBAL_COMMANDS = new Set([
 // `key export` is internal plumbing (apiKeyHelper + shell hooks), not a
 // user-facing command; the `key` namespace is intentionally undocumented.
 const KEY_SUBCOMMANDS = new Set(["export"]);
-const HARNESS_VERBS = new Set(["on", "off", "status", "usage"]);
+const HARNESS_VERBS = new Set(["on", "off", "status", "usage", "live"]);
 
 /**
  * Flags that were renamed/retired, mapped to their current spelling. Typing an
@@ -38,7 +38,7 @@ const KNOWN_FLAGS = [
   "--anthropic-api-key", "--model", "--opus",
   "--sonnet", "--haiku", "--fable", "--subagent", "--search",
   "--db-path", "--vscode-path", "--force", "--stored-only",
-  "--last-n", "--plain", "--verbose", "--routing-preference", "--session",
+  "--last-n", "--plain", "--verbose", "--routing-preference", "--session", "--days",
   "--account", "--anthropic", "--paste", "--revoke", "--with-token",
   "--interactive", "--non-interactive",
 ];
@@ -88,6 +88,7 @@ export function createBaseContext() {
     subagent: "",
     search: "",
     session: "",
+    days: 0,
     lastN: "",
     verbose: false,
     plain: false,
@@ -109,6 +110,23 @@ function requireValue(flag, value) {
     throw new Error(`${flag} requires a value`);
   }
   return value;
+}
+
+/**
+ * A positive whole number of days for `--days`.
+ *
+ * Rejects 0 and negatives rather than clamping: `--days 0` reads as "no
+ * lookback", and silently treating it as 3 would show sessions the user asked to
+ * exclude. Capped at 365 so a stray `--days 99999` cannot walk the whole
+ * project history pricing every log it finds.
+ */
+function requireDays(flag, value) {
+  const raw = requireValue(flag, value);
+  const days = Number(raw);
+  if (!Number.isInteger(days) || days < 1 || days > 365) {
+    throw new Error(`${flag} must be a whole number of days between 1 and 365`);
+  }
+  return days;
 }
 
 function requireRoutingPreference(flag, value) {
@@ -176,6 +194,7 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--subagent": ctx.subagent = requireValue(arg, next); return true;
     case "--search": ctx.search = requireValue(arg, next); return true;
     case "--session": ctx.session = requireValue(arg, next); return true;
+    case "--days": ctx.days = requireDays(arg, next); return true;
     case "--last-n": ctx.lastN = requireValue(arg, next); return true;
     case "--db-path": ctx.dbPath = requireValue(arg, next); return true;
     case "--vscode-path": ctx.vscodePath = requireValue(arg, next); return true;

@@ -6,6 +6,9 @@ import { buildServerlessCatalogSnapshot, prettyModelName } from "../../fireworks
 import {
   FIREROUTER_ROUTER_ID,
   fireworksModelSlug,
+  isFirerouterGatewayPattern,
+  isFirerouterModel,
+  shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
 
 export { MODEL_OVERRIDES };
@@ -165,6 +168,42 @@ export function buildCodexCatalogEntryForRouter(routerId, baseModel, displayName
   };
 }
 
+/**
+ * Codex catalog row for firerouter or a selected firerouter* model.
+ * Shares FireRouter static metadata (context, vision, tools, tagline).
+ */
+export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID) {
+  const spec = lookupModelSpec(modelId);
+  const stored = shortFireworksModelRef(modelId);
+  const exact = isFirerouterModel(modelId);
+  return {
+    ...buildCodexCatalogEntry({
+      name: FIREROUTER_ROUTER_ID,
+      displayName: exact ? (spec?.label ?? "FireRouter") : prettyModelName(stored),
+      description: FIREROUTER_TAGLINE,
+      contextLength: spec?.vscode.maxInputTokens ?? 0,
+      supportsImageInput: spec?.vscode.vision ?? false,
+      supportsTools: spec?.vscode.toolCalling ?? true,
+    }),
+    // Path-shaped IDs must keep the full short ref; last-segment slug would collide.
+    slug: exact ? "firerouter" : stored,
+  };
+}
+
+/**
+ * When the active model is a firerouter* pattern missing from the catalog,
+ * append a FireRouter-equivalent metadata row so Codex can resolve context.
+ */
+export function ensureCodexFirerouterPatternEntry(catalog, modelId) {
+  if (!isFirerouterGatewayPattern(modelId) || codexCatalogContainsModel(catalog, modelId)) {
+    return catalog;
+  }
+  return {
+    ...(catalog ?? {}),
+    models: [...(catalog?.models ?? []), buildCodexFirerouterCatalogEntry(modelId)],
+  };
+}
+
 const EXCLUDED_KINDS = new Set(["EMBEDDING_MODEL", "FLUMINA_BASE_MODEL"]);
 
 function isCodexSuitable(model) {
@@ -209,15 +248,7 @@ export function buildCodexCatalogFromSnapshot(snapshot, apiModels) {
   const models = [];
   for (const entry of snapshot.entries) {
     if (entry.id === FIREROUTER_ROUTER_ID) {
-      const spec = lookupModelSpec(FIREROUTER_ROUTER_ID);
-      models.push(buildCodexCatalogEntry({
-        name: FIREROUTER_ROUTER_ID,
-        displayName: spec?.label ?? "FireRouter",
-        description: FIREROUTER_TAGLINE,
-        contextLength: spec?.vscode.maxInputTokens ?? 0,
-        supportsImageInput: spec?.vscode.vision ?? false,
-        supportsTools: spec?.vscode.toolCalling ?? true,
-      }));
+      models.push(buildCodexFirerouterCatalogEntry(FIREROUTER_ROUTER_ID));
       continue;
     }
     if (entry.baseModelId) {
@@ -268,6 +299,9 @@ export function codexCatalogContainsModel(catalog, modelId) {
   if (!catalog?.models?.length || !modelId) {
     return false;
   }
-  const slug = fireworksModelSlug(modelId);
-  return catalog.models.some((entry) => fireworksModelSlug(entry.slug) === slug);
+  const stored = shortFireworksModelRef(modelId);
+  const last = fireworksModelSlug(modelId);
+  return catalog.models.some(
+    (entry) => entry.slug === stored || fireworksModelSlug(entry.slug) === last,
+  );
 }

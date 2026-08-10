@@ -44,6 +44,7 @@ import { HARNESSES } from "./id.mjs";
  * @property {(ctx: HarnessContext) => Promise<void>} off
  * @property {(ctx: HarnessContext) => Promise<void>} status
  * @property {(ctx: HarnessContext) => Promise<void>} [usage]
+ * @property {(ctx: HarnessContext) => Promise<void>} [live]
  * @property {(ctx: HarnessContext) => Promise<string>} resolveKey
  * @property {(ctx: HarnessContext) => Promise<HarnessContext>} [resolveOnContext]
  *   Resolve state-dependent defaults needed before validating `on` options.
@@ -101,6 +102,14 @@ export async function dispatchHarnessCommand(adapter, route, ctx) {
         );
       }
       await adapter.usage(ctx);
+      return;
+    case "live":
+      if (typeof adapter.live !== "function") {
+        throw new Error(
+          `live is not supported for ${adapter.id}. Run: fireconnect ${adapter.id} help`,
+        );
+      }
+      await adapter.live(ctx);
       return;
     default:
       throw new Error(

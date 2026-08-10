@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildOpencodeModelEntry,
   opencodeConfigModelRef,
+  opencodeNeedsProviderModelOverride,
 } from "../../../lib/harnesses/opencode/core.mjs";
 import { lookupFireworksModelLimits } from "../../../lib/fireworks/model-specs.mjs";
 import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
@@ -88,6 +89,7 @@ describe("opencode model entries", () => {
     for (const modelId of [
       "accounts/fireworks/routers/firerouter",
       "firerouter",
+      "firerouter/x",
     ]) {
       const entry = buildOpencodeModelEntry(modelId);
       assert.deepEqual(
@@ -95,7 +97,12 @@ describe("opencode model entries", () => {
         { input: ["text", "image"] },
         modelId,
       );
+      assert.equal(entry.limit.context, 1_048_575, modelId);
     }
+  });
+
+  it("requires a provider override for firerouter* ids", () => {
+    assert.equal(opencodeNeedsProviderModelOverride("firerouter/x"), true);
   });
 
   it("adds image modalities for vision serverless models", () => {

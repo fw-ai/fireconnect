@@ -1,12 +1,18 @@
-import { fireworksModelSlug } from "../../fireworks/model-id.mjs";
+import {
+  fireworksModelSlug,
+  isFirerouterGatewayPattern,
+} from "../../fireworks/model-id.mjs";
 
 export const CLAUDE_CODE_1M_CONTEXT_MODELS = new Set([
   "deepseek-v4-pro",
-  "firerouter",
   "glm-5p2",
   "glm-5p2-fast",
   "glm-fast-latest",
   "glm-latest",
+  "kimi-k3",
+  "kimi-k3-fast",
+  "kimi-fast-latest",
+  "kimi-latest",
 ]);
 
 const CLAUDE_CODE_1M_SUFFIX = "[1m]";
@@ -19,7 +25,8 @@ export function stripClaudeCodeContextSuffix(modelId) {
 }
 
 function needsClaudeCode1mContext(modelId) {
-  return CLAUDE_CODE_1M_CONTEXT_MODELS.has(fireworksModelSlug(modelId));
+  return isFirerouterGatewayPattern(modelId)
+    || CLAUDE_CODE_1M_CONTEXT_MODELS.has(fireworksModelSlug(modelId));
 }
 
 export function claudeCodeModelId(modelId) {

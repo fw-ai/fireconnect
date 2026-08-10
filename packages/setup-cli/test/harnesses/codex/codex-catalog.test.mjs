@@ -10,6 +10,7 @@ import {
   codexCatalogContainsModel,
   codexModelExclusionReason,
   DEPRECATED_MODELS,
+  ensureCodexFirerouterPatternEntry,
   filterPickerCatalogForCodex,
   MODEL_OVERRIDES,
   MODEL_REASONING,
@@ -126,6 +127,26 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(catalog.models[0].supports_parallel_tool_calls, true);
     assert.deepEqual(catalog.models[0].input_modalities, ["text", "image"]);
     assert.equal(catalog.models[0].supports_image_detail_original, true);
+  });
+
+  it("dynamically adds firerouter* entries with shared FireRouter metadata", () => {
+    const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
+    const catalog = ensureCodexFirerouterPatternEntry(base, "firerouter/x");
+    const entry = catalog.models.find((model) => model.slug === "firerouter/x");
+    assert.ok(entry);
+    assert.equal(entry.context_window, 1_048_575);
+    assert.deepEqual(entry.input_modalities, ["text", "image"]);
+    assert.equal(entry.supports_parallel_tool_calls, true);
+    assert.equal(
+      entry.description,
+      "Picks a model for each request based on the task.",
+    );
+    assert.equal(codexCatalogContainsModel(catalog, "firerouter/x"), true);
+    assert.equal(
+      ensureCodexFirerouterPatternEntry(catalog, "firerouter/x"),
+      catalog,
+      "idempotent when already present",
+    );
   });
 
   it("filters out deprecated models", () => {

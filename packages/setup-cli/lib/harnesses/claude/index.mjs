@@ -44,13 +44,16 @@ import {
   formatClaudeUsageReports,
   readClaudeUsage,
   readClaudeUsages,
-} from "./usage.mjs";
+} from "./usage/report.mjs";
 import {
   canRunClaudeUsageInteractiveDisplay,
   hasClaudeUsageRows,
   playUsageIntroAnimation,
   runClaudeUsageInteractiveDisplay,
-} from "./usage-display.mjs";
+} from "./usage/display.mjs";
+import { runClaudeUsageLive, shouldRunClaudeUsageLive } from "./usage/live.mjs";
+import { promptClaudeUsageSession } from "./usage/session-picker.mjs";
+import { runClaudeLiveTmux } from "./live-tmux.mjs";
 import {
   attachPricing,
   CLAUDE_CODE_PRICING_DISCLAIMER,
@@ -700,6 +703,46 @@ export default defineHarnessProfile({
 
   async usage(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CLAUDE);
+    // Meter with live Fireworks prices, not just the static spec table. The
+    // serverless catalog is per-process (no disk cache) and only `status` warmed
+    // it before — so every `claude usage` / live-meter process priced from the
+    // static fallback. Warm it here (self-gates on a genuine fw_ key) before any
+    // cost is computed. Fully best-effort: resolving the key can throw on a
+    // malformed/unreadable settings file, and usage must still work off the
+    // session logs, so the whole warm is wrapped, not just the fetch.
+    try {
+      await warmServerlessPricingCache(await claudeResolveKey(ctx));
+    } catch {
+      /* fall back to static spec pricing */
+    }
+    if (shouldRunClaudeUsageLive(ctx)) {
+      const withinDays = ctx.days || undefined;
+      let session = ctx.session ?? "";
+      if (!session) {
+        // Needs stdin TTY for the multi-session menu; otherwise picks newest.
+        session = await promptClaudeUsageSession({ home: ctx.home, withinDays });
+        if (!session) {
+          return;
+        }
+      }
+      await runClaudeUsageLive({
+        home: ctx.home,
+        session,
+        verbose: ctx.verbose,
+        plain: ctx.plain,
+        ...(process.env.FC_LIVE_SPLIT === "1"
+          ? {}
+          : {
+            // The session list is always reachable, including from an explicit
+            // --session. It was withheld there on the theory that you can only go
+            // "back" somewhere you have been, but the list is a destination in its
+            // own right: --session names a starting point, not a cage, and the only
+            // way out used to be quitting and rerunning.
+            promptSession: (opts) => promptClaudeUsageSession({ ...opts, withinDays }),
+          }),
+      });
+      return;
+    }
     if (ctx.lastN) {
       const reportGroup = await readClaudeUsages({ home: ctx.home, session: ctx.session ?? "", lastN: ctx.lastN });
       if (ctx.json) {
@@ -709,7 +752,11 @@ export default defineHarnessProfile({
       if (!ctx.verbose && !ctx.plain && hasClaudeUsageRows(reportGroup)) {
         await playUsageIntroAnimation();
         if (canRunClaudeUsageInteractiveDisplay() && await runClaudeUsageInteractiveDisplay(reportGroup)) {
-          return;
+          // q/Esc/Ctrl-C resolve the display and restore the cursor, but a
+          // paused TTY stdin still holds a libuv ref, so returning up the stack
+          // hangs the process. Exit explicitly now that the terminal is restored
+          // (same fix as the live meter's quit path in usage/live.mjs).
+          process.exit(0);
         }
       }
       console.log(formatClaudeUsageReports(reportGroup, { verbose: ctx.verbose, plain: ctx.plain }));
@@ -724,10 +771,19 @@ export default defineHarnessProfile({
     if (!ctx.verbose && !ctx.plain && hasClaudeUsageRows(report)) {
       await playUsageIntroAnimation();
       if (canRunClaudeUsageInteractiveDisplay() && await runClaudeUsageInteractiveDisplay(report)) {
-        return;
+        // q/Esc/Ctrl-C resolve the display and restore the cursor, but a paused
+        // TTY stdin still holds a libuv ref, so returning up the stack hangs the
+        // process. Exit explicitly now that the terminal is restored (same fix
+        // as the live meter's quit path in usage/live.mjs).
+        process.exit(0);
       }
     }
     console.log(formatClaudeUsageReport(report, { verbose: ctx.verbose, plain: ctx.plain }));
+  },
+
+  async live(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CLAUDE);
+    await runClaudeLiveTmux({ home: ctx.home, session: ctx.session });
   },
 
 });

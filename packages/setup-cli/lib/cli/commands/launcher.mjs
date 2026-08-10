@@ -83,6 +83,9 @@ export function buildActionChoices(adapter, enabled) {
   if (typeof adapter.usage === "function") {
     actions.splice(3, 0, action("usage", "estimate session usage cost", "usage"));
   }
+  if (typeof adapter.live === "function") {
+    actions.splice(typeof adapter.usage === "function" ? 4 : 3, 0, action("live", "Claude + live usage meter (tmux)", "live"));
+  }
   return actions;
 }
 

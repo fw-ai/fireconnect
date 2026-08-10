@@ -109,7 +109,7 @@ describe("literal-bake CLI flows", () => {
     });
   });
 
-  it("rebakeEnabledHarnessKeysOnUpgrade rebakes legacy env-ref via upgrade finalize path", async () => {
+  it("reconcileHarnessConfigOnUpgrade rebakes legacy env-ref via upgrade finalize path", async () => {
     await withTempHome("cli-upgrade-rebake-", async (home) => {
       process.env.SHELL = "/bin/zsh";
       await seedKeychainConfig(home, KEY);
@@ -140,8 +140,8 @@ describe("literal-bake CLI flows", () => {
         ].join("\n"),
       );
 
-      const { rebakeEnabledHarnessKeysOnUpgrade } = await import("../../lib/keys/sync.mjs");
-      const notes = await rebakeEnabledHarnessKeysOnUpgrade(home);
+      const { reconcileHarnessConfigOnUpgrade } = await import("../../lib/keys/sync.mjs");
+      const notes = await reconcileHarnessConfigOnUpgrade(home);
       assert.equal(notes.length, 1, notes.join("\n"));
 
       const opencode = JSON.parse(await readFile(opencodeConfigPath(home, ""), "utf8"));

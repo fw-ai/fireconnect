@@ -7,6 +7,7 @@ import {
 } from "../harnesses/deepagents/core.mjs";
 import { opencodeConfigPath, refreshOpencodeGatewayKey } from "../harnesses/opencode/core.mjs";
 import { piAuthPath, refreshPiGatewayKey } from "../harnesses/pi/core.mjs";
+import { migrateVscodeResponsesApiType } from "../harnesses/vscode/core.mjs";
 import {
   FIREWORKS_API_KEY_KEYCHAIN_REF,
   readGlobalConfig,
@@ -110,16 +111,18 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
 }
 
 /**
- * After `fireconnect upgrade`, rebake every enabled Fireworks harness config to
- * plaintext literals (including legacy env-reference auth), repair a stale
- * global `{env:FIREWORKS_API_KEY}` ref when keychain holds the secret, and
- * reconcile the shell hook (Anthropic export for Codex BYOK; no FIREWORKS
- * export — websearch MCP bakes its Bearer token).
+ * Post-upgrade reconciliation for harness configs: rebake every enabled
+ * Fireworks harness config to plaintext literals (including legacy
+ * env-reference auth), repair a stale global `{env:FIREWORKS_API_KEY}` ref
+ * when keychain holds the secret, migrate a pre-chat-completions VS Code
+ * provider (`apiType: "responses"`), and reconcile the shell hook (Anthropic
+ * export for Codex BYOK; no FIREWORKS export — websearch MCP bakes its
+ * Bearer token).
  * Never throws.
  * @param {string} home
  * @returns {Promise<string[]>}
  */
-export async function rebakeEnabledHarnessKeysOnUpgrade(home) {
+export async function reconcileHarnessConfigOnUpgrade(home) {
   if (!home) {
     return [];
   }
@@ -139,6 +142,18 @@ export async function rebakeEnabledHarnessKeysOnUpgrade(home) {
     }
   } catch {
     // Best-effort config repair — rebake may still use the keychain secret directly.
+  }
+  try {
+    // VS Code's provider apiType lives in chatLanguageModels.json (no baked
+    // key), so it isn't part of the baked-key sync below — flip pre-0.9.2
+    // "responses" providers to chat-completions here instead. Runs before key
+    // resolution: the migration is key-independent and must not be skipped
+    // when keychain/key lookup fails (that path returns early).
+    if (await migrateVscodeResponsesApiType({ home })) {
+      notes.push("Updated VS Code's Fireworks provider to the chat-completions API — restart VS Code to pick it up.");
+    }
+  } catch {
+    // Best-effort VS Code migration — never fail upgrade over chatLanguageModels.json I/O.
   }
   let key = "";
   try {

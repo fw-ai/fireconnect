@@ -59,7 +59,7 @@ export const FIREPASS_FALLBACK_ROUTERS = [
     id: "accounts/fireworks/routers/kimi-fast-latest",
     shortId: "kimi-fast-latest",
     displayName: "Kimi Fast Latest",
-    baseModelId: "accounts/fireworks/models/kimi-k2p7-code",
+    baseModelId: "accounts/fireworks/models/kimi-k3",
     kind: KIND_SERVERLESS,
   },
   {
@@ -137,7 +137,10 @@ export function stripViaFireworksSuffix(label) {
 }
 
 async function fetchGatewayPage(path, apiKey) {
-  const response = await fetch(`${FIREWORKS_GATEWAY_URL}${path}`, {
+  // Same dev/test override as verify-api-key.mjs — lets the mock gateway
+  // serve the catalog in specs.
+  const gatewayUrl = process.env.FIRECONNECT_GATEWAY_URL?.trim() || FIREWORKS_GATEWAY_URL;
+  const response = await fetch(`${gatewayUrl}${path}`, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       Accept: "application/json",

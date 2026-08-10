@@ -15,6 +15,7 @@ import { assertClaudeMainModel, runFireconnect, withTempHome } from "../../helpe
 
 const FIREWORKS_KEY = "fw_claude_matrix_key_000000000000";
 const KIMI_MODEL = "kimi-fast-latest";
+const KIMI_MODEL_STORED = `${KIMI_MODEL}[1m]`;
 
 describe("Claude main model storage", () => {
   it("honors /model picker choice because main no longer lives in env", async () => {
@@ -57,11 +58,11 @@ describe("Claude main model storage", () => {
         env,
       );
       assert.equal(enabled.code, 0, enabled.stderr);
-      assertClaudeMainModel(JSON.parse(await readFile(settingsPath, "utf8")), KIMI_MODEL);
+      assertClaudeMainModel(JSON.parse(await readFile(settingsPath, "utf8")), KIMI_MODEL_STORED);
 
       const reon = await runFireconnect(["claude", "on"], env);
       assert.equal(reon.code, 0, reon.stderr);
-      assertClaudeMainModel(JSON.parse(await readFile(settingsPath, "utf8")), KIMI_MODEL);
+      assertClaudeMainModel(JSON.parse(await readFile(settingsPath, "utf8")), KIMI_MODEL_STORED);
     });
   });
 

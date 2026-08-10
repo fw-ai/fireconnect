@@ -101,7 +101,8 @@ function claudeHelp() {
       ["on", "Enable Fireworks routing (default)."],
       ["off", "Restore your previous Claude Code settings."],
       ["status", "Show provider, auth, and model mapping."],
-      ["usage", "Estimate cost from a Claude Code session log."],
+      ["usage", "Pick session → live meter (Tab for the agents pane); snapshot with --json / --last-n."],
+      ["live", "tmux split: Claude Code left, live usage meter right (exit Claude to close)."],
       ["help", "Show this help."],
     ]),
     "",
@@ -121,8 +122,9 @@ function claudeHelp() {
     ]),
     "",
     optBlock("Options for usage", [
-      ["--session <id|path>", "Session id prefix or path to a .jsonl log."],
-      ["--last-n <N>", "Usage for the latest N parent sessions."],
+      ["--session <id|path>", "Start on one session; Esc still opens the session list."],
+      ["--days <N>", "Lookback for the session list, 1-365 (default 3)."],
+      ["--last-n <N>", "Snapshot of the latest N parent sessions."],
       ["--plain", "Plain text summary (no interactive TUI styling)."],
       ["-v, --verbose", "Request-level usage rows and rate details."],
     ]),
@@ -274,7 +276,7 @@ export function printHelp(topic = "") {
     vscode: ideHarnessHelp("vscode", "VS Code Chat", {
       pathFlag: "--vscode-path <path>",
       pathDesc: "Explicit chatLanguageModels.json path.",
-      note: "If VS Code is running, on/off wait for you to quit and press Enter. Restart after. status is read-only.",
+      note: "If VS Code is running, on/off wait for you to quit (press Enter or auto-detect). Restart after. status is read-only.",
     }),
     deepagents: configHarnessHelp("deepagents", "Deep Agents (dcode)", {
       configPath: "--config-path <path>",
@@ -364,6 +366,7 @@ export function printHelp(topic = "") {
       ["off", "Restore previous provider settings."],
       ["status", "Show provider, auth, and models."],
       ["usage", "Claude-only: session usage report."],
+      ["live", "Claude-only: tmux split with live usage meter."],
       ["help", "Show harness-specific options."],
     ]),
     "",
