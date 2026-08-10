@@ -73,7 +73,7 @@ describe("fireconnect help quick", () => {
 
 describe("harness help matches supported command features", () => {
   test("documents shared Azure options only on Azure-capable harnesses", async () => {
-    for (const harness of ["opencode", "codex", "pi", "cursor", "vscode", "deepagents"]) {
+    for (const harness of ["opencode", "codex", "pi", "cursor", "vscode", "deepagents", "kimi"]) {
       const result = await runCli(["help", harness]);
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /--azure/);

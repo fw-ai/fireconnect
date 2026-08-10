@@ -2,7 +2,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fw-ai/fireconnect/blob/main/LICENSE)
 
-> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, and Deep Agents.
+> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents, and Kimi Code.
 
 One CLI points your existing AI coding tools at Fireworks. `on` rewrites the tool's own config,
 `off` restores your original file **byte-for-byte** — no proxy to run, no wrapper to launch.
@@ -10,7 +10,7 @@ One CLI points your existing AI coding tools at Fireworks. `on` rewrites the too
 **Contents:** [Quick start](#quick-start) · [Supported harnesses](#supported-harnesses) ·
 [Default models](#default-models) · [Claude Code](#claude-code) · [Codex](#codex) ·
 [OpenCode](#opencode) · [Pi](#pi) · [Cursor](#cursor) · [VS Code Chat](#vs-code-chat) ·
-[Deep Agents](#deep-agents) · [FireRouter](#firerouter) · [Models](#models) ·
+[Deep Agents](#deep-agents) · [Kimi Code](#kimi-code) · [FireRouter](#firerouter) · [Models](#models) ·
 [Azure / Foundry](#azure-microsoft-foundry-endpoints) · [CLI reference](#cli-reference) ·
 [Keys and storage](#keys-and-storage) · [Troubleshooting](#troubleshooting) ·
 [Upgrade and uninstall](#upgrade-and-uninstall)
@@ -68,7 +68,7 @@ Model mapping:
   fable    -> kimi-fast-latest  $4.5 / $22.5 · vision
 ```
 
-Swap `claude` for any harness: `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepagents`.
+Swap `claude` for any harness: `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepagents`, `kimi`.
 Run `fireconnect help` or `fireconnect <harness> help` for every option.
 
 ### Install notes
@@ -101,6 +101,7 @@ mkdir -p ~/.fireconnect && git clone git@github.com:fw-ai/fireconnect.git ~/.fir
 | [Cursor](#cursor) | `fireconnect cursor` | `state.vscdb` (SQLite) | IDE `safeStorage` | **Quit Cursor first** |
 | [VS Code Chat](#vs-code-chat) | `fireconnect vscode` | `chatLanguageModels.json` + `state.vscdb` | IDE `safeStorage` | **Quit VS Code first** |
 | [Deep Agents](#deep-agents) | `fireconnect deepagents` | `~/.deepagents/config.toml` | Baked literal (`0600`) | Restart `dcode` after |
+| [Kimi Code](#kimi-code) | `fireconnect kimi` | `~/.kimi-code/config.toml` | Baked literal (`0600`) | Restart after |
 
 Every harness supports `on`, `off`, `status`, and `help`. `off` restores your pre-connect
 configuration — file-based harnesses byte-for-byte from a snapshot under `~/.fireconnect/`,
@@ -114,7 +115,7 @@ and the IDEs by removing only what FireConnect registered.
 | Claude `opus`, `sonnet` | `glm-fast-latest` |
 | Claude `fable` | `kimi-fast-latest` |
 | Claude `haiku`, `subagent` | `deepseek-v4-flash` |
-| OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents | `kimi-fast-latest` |
+| OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents, Kimi Code | `kimi-fast-latest` |
 | Fire Pass (`fpk_...`) | `kimi-fast-latest` everywhere |
 
 Fire Pass keys are detected automatically — no flags needed. Saved Claude mappings are
@@ -396,6 +397,26 @@ fireconnect deepagents off
 
 Use `--config-path <path>` for a non-default config.
 
+## Kimi Code
+
+Routes [Kimi Code](https://github.com/MoonshotAI/kimi-code) through Fireworks.
+
+```bash
+fireconnect kimi on
+fireconnect kimi status
+fireconnect kimi on --model glm-5p1
+fireconnect kimi off
+```
+
+- Sets the root `default_model` and configures `[providers.fireworks]` (`type = "openai"`) in
+  `~/.kimi-code/config.toml` with the Fireworks OpenAI-compatible base URL and a **baked**
+  `api_key` literal (mode `0600`), plus a `[models."fireworks/<slug>"]` entry carrying the
+  model's context window and capabilities.
+- Kimi Code OAuth credentials are untouched — only FireConnect-owned provider and model entries
+  are written, and `off` restores your previous config.
+
+Use `--config-path <path>` for a non-default config.
+
 ## FireRouter
 
 FireRouter is a judge-model router: simpler requests go to cheaper models, harder ones pass
@@ -428,6 +449,7 @@ server-side — no extra flags. Otherwise pass `--anthropic-api-key sk-ant-...` 
 | Codex | `ANTHROPIC_API_KEY` env reference | No | Export the key, or use workspace BYOK |
 | Cursor | Workspace BYOK only | No | Override UI can't attach a local Anthropic key |
 | Deep Agents | Workspace BYOK only | No | Same BYOK shape as Cursor |
+| Kimi Code | Workspace BYOK only | No | Same BYOK shape as Cursor |
 
 Tune the cost/quality tradeoff where supported:
 
@@ -473,8 +495,8 @@ slugs and migrate legacy canonical configs on the next `on`. Not sure what to pi
 Fireworks models are also first-party models inside
 [Microsoft Foundry](https://docs.fireworks.ai/ecosystem/integrations/azure-foundry), billed
 through Azure and counting toward your MACC. Foundry exposes an **OpenAI-compatible** endpoint,
-so **OpenCode, Codex, Pi, Deep Agents, Cursor, and VS Code** can route there instead of the
-Fireworks gateway.
+so **OpenCode, Codex, Pi, Deep Agents, Kimi Code, Cursor, and VS Code** can route there instead
+of the Fireworks gateway.
 
 Configure once, then `<harness> on` uses it — no per-command flags:
 
@@ -501,7 +523,8 @@ fireconnect opencode on --azure --base-url https://<resource>.services.ai.azure.
   `https://<resource>.services.ai.azure.com/openai/v1`. Find it in the Foundry portal under
   **Project settings**.
 - **Auth.** Use your **Azure** API key (not `fw_`/`fpk_`). `--api-key` writes it literally;
-  exporting `AZURE_API_KEY` writes an environment reference instead.
+  exporting `AZURE_API_KEY` writes an environment reference instead (Kimi Code always bakes a
+  literal — its provider config has no env-reference field).
 - **Model.** The id is your Foundry **deployment** name — the catalog model name without the
   `fireworks-ai/` prefix (e.g. `FW-GLM-5.2`, `FW-MiniMax-M2.5`). Defaults to `FW-GLM-5.2`.
 - **Isolation.** Each harness writes a dedicated `fireworks-azure` provider separate from the
@@ -513,6 +536,7 @@ fireconnect opencode on --azure --base-url https://<resource>.services.ai.azure.
 | Codex | `[model_providers.fireworks-azure]` in `config.toml` (`wire_api = "chat"`, bearer or `env_key = "AZURE_API_KEY"`) | `fireworks-azure` |
 | Pi | custom `openai-completions` provider in `models.json` (`baseUrl`, `authHeader`, `apiKey` literal or `$AZURE_API_KEY`) + `defaultProvider` in `settings.json` | `fireworks-azure` |
 | Deep Agents | `[models.providers.fireworks-azure]` in `config.toml` | `fireworks-azure:<deployment>` |
+| Kimi Code | `[providers.fireworks-azure]` in `config.toml` | `fireworks-azure/<deployment>` |
 | Cursor | OpenAI-compatible URL, deployment, and key in `state.vscdb` | `<deployment>` |
 | VS Code | custom endpoint model in `chatLanguageModels.json`; key in `safeStorage` | `<deployment>` |
 
@@ -526,7 +550,7 @@ fireconnect opencode on --azure --base-url https://<resource>.services.ai.azure.
 
 Harness-first: `fireconnect <harness> <command>`, plus a few global commands.
 
-**Per harness** (`claude`, `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepagents`)
+**Per harness** (`claude`, `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepagents`, `kimi`)
 
 ```text
 fireconnect <harness> on           Route the harness through Fireworks (default if no command).
@@ -567,8 +591,8 @@ runs the same sign-in inline when a key is needed.
   literal key. Legacy installs may still have `{env:FIREWORKS_API_KEY}`.
 - The key itself lives in the OS keychain, or an encrypted-file / plaintext fallback tier when
   no secret service is available (`fireconnect status` reports which).
-- Harness configs hold **baked literals** for Claude's custom header, Codex, OpenCode, Pi, and
-  Deep Agents; Cursor and VS Code use IDE `safeStorage`.
+- Harness configs hold **baked literals** for Claude's custom header, Codex, OpenCode, Pi,
+  Deep Agents, and Kimi Code; Cursor and VS Code use IDE `safeStorage`.
 - Claude websearch MCP no longer uses a shell hook — the Bearer token is baked into
   `~/.claude.json`. Re-running `install.sh` or `fireconnect upgrade` shares one finalize path
   that rebakes enabled harness configs (and any existing websearch entry) to literals, including

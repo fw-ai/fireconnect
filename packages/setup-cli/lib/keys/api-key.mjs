@@ -122,6 +122,9 @@ const HARNESS_KEY_SOURCE = {
   deepagents: {
     readsFrom: "literal api_key in config.toml",
   },
+  kimi: {
+    readsFrom: "literal api_key in config.toml",
+  },
   vscode: {
     readsFrom: "VS Code safeStorage (state.vscdb)",
     storage: "IDE Electron safeStorage (encrypted)",
