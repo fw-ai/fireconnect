@@ -7,6 +7,7 @@ import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import {
   applyClaudeCodeContextPolicy,
   claudeCodeModelId,
+  ensureCatalogForClaudeCodeContext,
   stripClaudeCodeContextSuffix,
 } from "./code-context.mjs";
 import {
@@ -22,10 +23,14 @@ import { lookupModelSpec, FIREWORKS_PRICING_DOCS_URL, resolveFireworksModelLabel
 import { formatPricingDescription, lookupFireworksPricing } from "../../fireworks/pricing.mjs";
 import { prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
 import {
+  CLAUDE_NATIVE_MODEL_ID,
+  DEEPSEEK_FLASH_LATEST_ROUTER_ID,
+  DEEPSEEK_PRO_LATEST_ROUTER_ID,
   FIREWORKS_BASE_URL,
   FIREROUTER_ROUTER_ID,
   GLM_FAST_LATEST_ROUTER_ID,
   KIMI_FAST_LATEST_ROUTER_ID,
+  isClaudeNativeModel,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
 import {
@@ -129,11 +134,10 @@ export const CLAUDE_CODE_BEHAVIOR_ENV = {
 };
 
 export const DEFAULT_FIREWORKS_PRESET = {
-  ANTHROPIC_DEFAULT_OPUS_MODEL: GLM_FAST_LATEST_ROUTER_ID,
+  ANTHROPIC_DEFAULT_OPUS_MODEL: KIMI_FAST_LATEST_ROUTER_ID,
   ANTHROPIC_DEFAULT_SONNET_MODEL: GLM_FAST_LATEST_ROUTER_ID,
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
-  ANTHROPIC_DEFAULT_FABLE_MODEL: "accounts/fireworks/routers/kimi-fast-latest",
-  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: DEEPSEEK_FLASH_LATEST_ROUTER_ID,
+  ANTHROPIC_DEFAULT_FABLE_MODEL: DEEPSEEK_PRO_LATEST_ROUTER_ID,
   ...CLAUDE_CODE_BEHAVIOR_ENV,
 };
 
@@ -177,7 +181,7 @@ function stripMappedModelId(value) {
  * Read the active Claude Code slot mapping from settings on disk. Main uses the
  * top-level `model` field (where `/model` persists); legacy installs may still
  * have `env.ANTHROPIC_MODEL`, which is honored as a fallback until
- * `fireconnect claude on` strips it.
+ * `fireconnect claude` strips it.
  *
  * @param {{ model?: string, env?: Record<string, string> }} settings
  */
@@ -189,13 +193,25 @@ export function mappingFromSettings(settings = {}) {
   const mainFromEnv = env.ANTHROPIC_MODEL
     ? stripMappedModelId(env.ANTHROPIC_MODEL)
     : null;
+  const routed = providerStatusFromEnv(env) === "fireworks";
+  // A routed install with an unset alias slot means "use Claude's own default
+  // (Anthropic) model" — but only for non-Fire Pass keys (Fire Pass skips the
+  // native-Claude setup entirely). Unset pins surface as the native sentinel so
+  // live reads agree with what `on` persisted; Fire Pass falls through to the
+  // Fireworks default display instead.
+  const gatewayKey = fireworksKeyOrEmpty(
+    fireworksKeyFromCustomHeaders(env.ANTHROPIC_CUSTOM_HEADERS),
+  ) || env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || "";
+  const firepass = routed && detectApiKeyType(gatewayKey) === "firepass";
+  const native = routed && !firepass ? CLAUDE_NATIVE_MODEL_ID : null;
+  const resolvedMain = mainFromModel || mainFromEnv;
   return {
-    main: mainFromModel || mainFromEnv || null,
-    opus: stripMappedModelId(env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? null),
-    sonnet: stripMappedModelId(env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? null),
-    haiku: stripMappedModelId(env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? null),
-    fable: stripMappedModelId(env.ANTHROPIC_DEFAULT_FABLE_MODEL ?? null),
-    subagent: stripMappedModelId(env.CLAUDE_CODE_SUBAGENT_MODEL ?? null),
+    main: resolvedMain || native,
+    opus: stripMappedModelId(env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? null) || native,
+    sonnet: stripMappedModelId(env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? null) || native,
+    haiku: stripMappedModelId(env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? null) || native,
+    fable: stripMappedModelId(env.ANTHROPIC_DEFAULT_FABLE_MODEL ?? null) || native,
+    subagent: stripMappedModelId(env.CLAUDE_CODE_SUBAGENT_MODEL ?? null) || native,
   };
 }
 
@@ -222,25 +238,6 @@ export function hasLegacyAnthropicMainEnv(settings = {}) {
     (env.ANTHROPIC_MODEL || env.ANTHROPIC_SMALL_FAST_MODEL)
     && providerStatusFromEnv(env) === "fireworks",
   );
-}
-
-/**
- * Drop legacy main-default env keys from FireConnect-managed Claude settings.
- *
- * @param {Record<string, unknown>} settings
- * @returns {{ settings: Record<string, unknown>, changed: boolean }}
- */
-export function migrateLegacyAnthropicMainEnv(settings) {
-  if (!hasLegacyAnthropicMainEnv(settings)) {
-    return { settings, changed: false };
-  }
-  return {
-    settings: {
-      ...settings,
-      env: withoutLegacyAnthropicMainEnv(settings.env ?? {}),
-    },
-    changed: true,
-  };
 }
 
 export function fireworksHostnameFromBaseUrl(baseUrl) {
@@ -616,13 +613,18 @@ export function fireworksFableOptionFields(fableModelId) {
 
 /** Subscription picker labels for opus/sonnet/haiku/fable alias slots. */
 export function syncFireworksModelDisplay(env, mapping) {
-  return stripCustomModelOptionEnv({
-    ...env,
-    ...fireworksModelDisplayFields(mapping.opus, "ANTHROPIC_DEFAULT_OPUS_MODEL"),
-    ...fireworksModelDisplayFields(mapping.sonnet, "ANTHROPIC_DEFAULT_SONNET_MODEL"),
-    ...fireworksModelDisplayFields(mapping.haiku, "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-    ...fireworksModelDisplayFields(mapping.fable, "ANTHROPIC_DEFAULT_FABLE_MODEL"),
-  });
+  const fields = {};
+  for (const [slot, prefix] of [
+    ["opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"],
+    ["sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"],
+    ["haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+    ["fable", "ANTHROPIC_DEFAULT_FABLE_MODEL"],
+  ]) {
+    if (!isClaudeNativeModel(mapping[slot])) {
+      Object.assign(fields, fireworksModelDisplayFields(mapping[slot], prefix));
+    }
+  }
+  return stripCustomModelOptionEnv({ ...env, ...fields });
 }
 
 /** @deprecated Use {@link syncFireworksModelDisplay} */
@@ -630,20 +632,42 @@ export function syncFireworksFableOption(env, mapping) {
   return syncFireworksModelDisplay(env, mapping);
 }
 
+const SLOT_MODEL_ENV_KEY = Object.freeze({
+  opus: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  sonnet: "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  haiku: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  fable: "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  subagent: "CLAUDE_CODE_SUBAGENT_MODEL",
+});
+
+function envKeysToClearForNativeSlot(slot) {
+  const key = SLOT_MODEL_ENV_KEY[slot];
+  if (!key) {
+    return [];
+  }
+  return slot === "subagent"
+    ? [key]
+    : [key, `${key}_NAME`, `${key}_DESCRIPTION`];
+}
+
 export function modelEnvFromMapping(mapping) {
-  return {
-    ANTHROPIC_DEFAULT_OPUS_MODEL: shortFireworksModelRef(claudeCodeModelId(mapping.opus)),
-    ANTHROPIC_DEFAULT_SONNET_MODEL: shortFireworksModelRef(claudeCodeModelId(mapping.sonnet)),
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: shortFireworksModelRef(claudeCodeModelId(mapping.haiku)),
-    ANTHROPIC_DEFAULT_FABLE_MODEL: shortFireworksModelRef(claudeCodeModelId(mapping.fable)),
-    // Claude Code forwards the subagent model id verbatim to the provider API,
-    // unlike ANTHROPIC_MODEL/DEFAULT_* slots where it consumes the [1m] beta tag.
-    // Fireworks has no model literally named "glm-latest[1m]", so the suffix
-    // must be stripped here or subagent/agent-team spawns fail with "model may not exist".
-    CLAUDE_CODE_SUBAGENT_MODEL: stripClaudeCodeContextSuffix(
-      shortFireworksModelRef(claudeCodeModelId(mapping.subagent)),
-    ),
-  };
+  const merged = {};
+  for (const [slot, modelId] of Object.entries(mapping)) {
+    if (modelId == null || isClaudeNativeModel(modelId)) {
+      continue; // native/unset slots pin nothing (main uses top-level `model`)
+    }
+    const envKey = SLOT_MODEL_ENV_KEY[slot];
+    if (!envKey) continue;
+    const ref = shortFireworksModelRef(claudeCodeModelId(modelId));
+    merged[envKey] = slot === "subagent"
+      // Claude Code forwards the subagent model id verbatim to the provider API,
+      // unlike ANTHROPIC_MODEL/DEFAULT_* slots where it consumes the [1m] beta tag.
+      // Fireworks has no model literally named "glm-latest[1m]", so the suffix
+      // must be stripped here or subagent/agent-team spawns fail with "model may not exist".
+      ? stripClaudeCodeContextSuffix(ref)
+      : ref;
+  }
+  return merged;
 }
 
 export function mergeModelsIntoEnv(env, mapping) {
@@ -715,17 +739,23 @@ export function buildFireworksProviderEnv(env, {
     // authenticates with X-Fireworks-Api-Key.
     nextEnv.ANTHROPIC_AUTH_TOKEN = apiKey.trim();
   }
+  // Native Claude slots leave no pin behind: clear the slot's model + picker
+  // label keys (including any pre-existing user values that survived the env
+  // spread) so Claude Code falls back to its own (Anthropic) default model.
+  for (const [slot, modelId] of Object.entries(mapping)) {
+    if (!isClaudeNativeModel(modelId)) {
+      continue;
+    }
+    for (const key of envKeysToClearForNativeSlot(slot)) {
+      delete nextEnv[key];
+    }
+  }
   return applyClaudeCodeContextPolicy(nextEnv, mapping);
 }
 
 /**
  * Pure builder: the settings object `enableFireworksProvider` would write to
- * disk, WITHOUT reading or writing any file. Used by `fireconnect demo` to
- * produce a per-process `--settings` tmp file that routes the real Claude Code
- * tool to Fireworks direct (GLM 5.2 Fast) without touching the user's
- * ~/.claude/settings.json. Resolves the token the same way the writer does
- * (flag > existing env > FIREWORKS_API_KEY) and returns it so the caller can
- * avoid re-resolving.
+ * disk, WITHOUT reading or writing any file.
  *
  * @param {Record<string, unknown>} settings  current settings (env read from here)
  * @param {{
@@ -779,7 +809,13 @@ export function buildFireworksSettings(settings, {
     }),
   };
   if (providerStatusFromEnv(next.env) === "fireworks") {
-    next.model = shortFireworksModelRef(claudeCodeModelId(mapping.main));
+    if (isClaudeNativeModel(mapping.main)) {
+      // Native main: leave Claude Code's own default (Anthropic) model in charge
+      // and drop any previously pinned model (incl. one from an earlier `on`).
+      delete next.model;
+    } else {
+      next.model = shortFireworksModelRef(claudeCodeModelId(mapping.main));
+    }
   }
   return { settings: next, token, keyType: resolvedKeyType };
 }
@@ -816,6 +852,8 @@ export async function enableFireworksProvider({
   if (existingBackup.snapshot === undefined && existingBackup.values === undefined && !alreadyRouted) {
     await writeSettingsSnapshotBackup({ settingsPath, backupPath });
   }
+
+  await ensureCatalogForClaudeCodeContext({ apiKey: effectiveApiKey, keyType });
 
   const built = buildFireworksSettings(settings, {
     apiKey: effectiveApiKey,

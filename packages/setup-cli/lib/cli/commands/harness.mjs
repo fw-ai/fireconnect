@@ -86,7 +86,7 @@ function validateHarnessOptions(route, ctx) {
     throw new Error("--settings-path is supported only by Claude and Pi.");
   }
   if (ctx.configPath && !FILE_CONFIG_HARNESS_SET.has(harnessId)) {
-    throw new Error("--config-path is supported only by OpenCode, Codex, Pi, and Deep Agents.");
+    throw new Error("--config-path is supported only by OpenCode, Codex, Pi, and DeepSeek Harness.");
   }
   if (ctx.dbPath && harnessId !== HARNESS.CURSOR) {
     throw new Error("--db-path is supported only by Cursor.");

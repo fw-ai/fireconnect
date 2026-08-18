@@ -28,6 +28,8 @@ import {
 import {
   FIREWORKS_BASE_URL,
 } from "../../fireworks/model-id.mjs";
+import { assertRequestedModelsServable } from "../../fireworks/model-servability.mjs";
+import { isClaudeNativeModel, normalizeModelId } from "../../fireworks/model-id.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import {
   detectApiKeyType,
@@ -109,6 +111,7 @@ import {
   defaultClaudeModelMapping,
   hasClaudeModelOverrides,
   inferClaudeActiveKeyType,
+  isClaudeMappingOverride,
   mappingUsesFirerouter,
   withSavedClaudeModelMapping,
 } from "./model-profile.mjs";
@@ -125,11 +128,11 @@ export const CLAUDE_FIREROUTER_FALLBACK_WARNING =
 export const CLAUDE_FIREROUTER_AUTH_REQUIRED =
   "FireRouter requires Claude sign-in, workspace BYOK, or an Anthropic API key. "
   + "Sign in with `/login` in Claude Code or rerun with "
-  + "`fireconnect claude on --anthropic-api-key <sk-ant-...>`.";
+  + "`fireconnect claude --anthropic-api-key <sk-ant-...>`.";
 
 export const CLAUDE_LEGACY_ANTHROPIC_MODEL_WARNING =
   "Legacy env.ANTHROPIC_MODEL is still set and overrides Claude Code's /model picker. "
-  + "Run `fireconnect claude on` to migrate.";
+  + "Run `fireconnect claude` to migrate.";
 
 export function resolveClaudeAuthState(settings, state = {}) {
   const env = settings.env ?? {};
@@ -397,6 +400,13 @@ export default defineHarnessProfile({
       throw new Error("--anthropic-api-key must be an Anthropic API key (sk-ant-...).");
     }
     const keyType = detectApiKeyType(fireworksKey);
+    // Normalize first so friendly aliases like `native` are seen as the native
+    // sentinel (claude-default) before the servability check, not as a bare,
+    // unrecognized model id.
+    await assertRequestedModelsServable(
+      [ctx.main, ctx.opus, ctx.sonnet, ctx.haiku, ctx.fable, ctx.subagent].map(normalizeModelId),
+      { apiKey: fireworksKey, keyType },
+    );
     const nativeBaseline = claudeNativeAuthBaseline(
       snapshot.settings,
       snapshot.backup,
@@ -493,6 +503,13 @@ export default defineHarnessProfile({
     }
     if (usesFirerouter && keyType === "firepass") {
       throw new Error(FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE);
+    }
+    if (keyType === "firepass"
+      && Object.values(mapping).some(isClaudeNativeModel)) {
+      throw new Error(
+        "Claude default slots require a Fireworks API key; "
+          + "Fire Pass keys use Fireworks models.",
+      );
     }
     let anthropicKeyForFirerouter = nativeAuth.anthropicApiKey;
     if (usesFirerouter && !canUseFirerouter) {
@@ -633,6 +650,13 @@ export default defineHarnessProfile({
     printClaudeRestartHint();
   },
 
+  async providerStatus(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CLAUDE);
+    const { settingsPath } = claudePathsFor(ctx);
+    const settings = await readJsonIfExists(settingsPath);
+    return providerStatusFromEnv(settings.env ?? {});
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CLAUDE);
     const { settingsPath, dataDir } = claudePathsFor(ctx);
@@ -678,6 +702,12 @@ export default defineHarnessProfile({
       model: routed ? undefined : mainModel,
       mappingRows: routed
         ? Object.entries(payload.current)
+          .filter(([slot, modelId]) => isClaudeMappingOverride(
+            modelId,
+            slot,
+            payload.keyType,
+            payload.defaults,
+          ))
           .map(([slot, modelId]) => {
             const resolved = modelId || payload.defaults[slot] || "";
             const detailParts = [

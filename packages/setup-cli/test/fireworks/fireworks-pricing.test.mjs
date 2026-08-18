@@ -15,10 +15,6 @@ function seedPricingCache() {
   buildPickerCatalogFromApiModels([
     mockServerlessModel(),
     mockServerlessModel({
-      name: "accounts/fireworks/models/glm-5p1",
-      displayName: "GLM 5.1",
-    }),
-    mockServerlessModel({
       name: "accounts/fireworks/models/kimi-k2p7-code",
       displayName: "Kimi K2.7 Code",
       serverlessModes: [
@@ -84,7 +80,7 @@ describe("fireworks-pricing", () => {
   });
 
   it("formats compact in/out pricing for tables", () => {
-    const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p1");
+    const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p2");
     assert.equal(formatPricingInOut(pricing), "$1.4 / $4.4");
   });
 
@@ -96,6 +92,12 @@ describe("fireworks-pricing", () => {
   it("returns null pricing metadata for unknown models", () => {
     assert.equal(lookupFireworksPricing("accounts/fireworks/models/unknown-model"), null);
     assert.equal(attachPricing("accounts/fireworks/models/unknown-model"), null);
+  });
+
+  it("keeps static pricing for deprecated glm-5p1 deployments", () => {
+    const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p1");
+    assert.equal(pricing?.label, "GLM 5.1");
+    assert.equal(pricing?.input, 1.40);
   });
 
   it("falls back to docs link when pricing is unknown", () => {

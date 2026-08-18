@@ -210,7 +210,7 @@ describe("install.sh Claude upgrade preflight", () => {
       );
       assert.match(
         result.stdout,
-        /Reconnect Claude Code through FireConnect: fireconnect claude on/,
+        /Reconnect Claude Code through FireConnect: fireconnect claude/,
       );
     });
   });

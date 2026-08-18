@@ -219,40 +219,49 @@ test("looksRunnable", () => {
   assert.equal(looksRunnable("just text"), false);
 });
 
-// ── parse-args: demo command ────────────────────────────────────────────────
+// ── parse-args: claude demo command ───────────────────────────────────────────
 
-test("parseCli: demo with positional preset folds into ctx.prompt", () => {
-  const parsed = parseCli(["demo", "snake"]);
+test("parseCli: claude demo with positional preset folds into ctx.prompt", () => {
+  const parsed = parseCli(["claude", "demo", "snake"]);
   assert.equal(parsed.kind, "demo");
+  assert.equal(parsed.deprecated, false);
   assert.equal(parsed.ctx.prompt, "snake");
 });
 
-test("parseCli: demo custom is accepted as the fifth prompt option", () => {
-  const parsed = parseCli(["demo", "custom"]);
+test("parseCli: deprecated top-level demo still parses with deprecated flag", () => {
+  const parsed = parseCli(["demo", "snake"]);
+  assert.equal(parsed.kind, "demo");
+  assert.equal(parsed.deprecated, true);
+  assert.equal(parsed.ctx.prompt, "snake");
+});
+
+test("parseCli: claude demo custom is accepted as the fifth prompt option", () => {
+  const parsed = parseCli(["claude", "demo", "custom"]);
   assert.equal(parsed.kind, "demo");
   assert.equal(parsed.ctx.prompt, "custom");
 });
 
-test("parseCli: demo --prompt flag", () => {
-  const parsed = parseCli(["demo", "--prompt", "clock"]);
+test("parseCli: claude demo --prompt flag", () => {
+  const parsed = parseCli(["claude", "demo", "--prompt", "clock"]);
   assert.equal(parsed.kind, "demo");
   assert.equal(parsed.ctx.prompt, "clock");
 });
 
 test("parseCli: explicit --prompt wins over positional preset", () => {
-  const parsed = parseCli(["demo", "tetris", "--prompt", "snake"]);
+  const parsed = parseCli(["claude", "demo", "tetris", "--prompt", "snake"]);
   assert.equal(parsed.ctx.prompt, "snake");
 });
 
 test("parseCli: unknown preset rejected", () => {
-  assert.throws(() => parseCli(["demo", "pong"]), /Unknown demo preset: pong/);
+  assert.throws(() => parseCli(["claude", "demo", "pong"]), /Unknown demo preset: pong/);
 });
 
-test("parseCli: demo flags parsed", () => {
+test("parseCli: claude demo flags parsed", () => {
   const parsed = parseCli([
-    "demo", "--challenger", "glm-5p2", "--no-open",
+    "claude", "demo", "--right-model", "glm-5p2", "--no-open",
     "--out", "./x", "--yes", "--json",
   ]);
+  assert.equal(parsed.ctx.rightModel, "glm-5p2");
   assert.equal(parsed.ctx.challenger, "glm-5p2");
   assert.equal(parsed.ctx.noOpen, true);
   assert.equal(parsed.ctx.out, "./x");
@@ -260,58 +269,76 @@ test("parseCli: demo flags parsed", () => {
   assert.equal(parsed.ctx.json, true);
 });
 
-test("parseCli: demo --anthropic-model sets ctx.anthropicModel", () => {
-  assert.equal(parseCli(["demo", "--anthropic-model", "opus"]).ctx.anthropicModel, "opus");
+test("parseCli: claude demo --left-model and --right-model", () => {
+  const parsed = parseCli(["claude", "demo", "--left-model", "firerouter", "--right-model", "kimi-k3-fast"]);
+  assert.equal(parsed.ctx.leftModel, "firerouter");
+  assert.equal(parsed.ctx.rightModel, "kimi-k3-fast");
 });
 
-test("parseCli: demo rejects removed --mode", () => {
+test("parseCli: claude demo --anthropic-model sets ctx.leftModel (legacy alias)", () => {
+  assert.equal(parseCli(["claude", "demo", "--anthropic-model", "opus"]).ctx.leftModel, "opus");
+  assert.equal(parseCli(["claude", "demo", "--anthropic-model", "opus"]).ctx.anthropicModel, "opus");
+});
+
+test("parseCli: claude demo --challenger sets ctx.rightModel (legacy alias)", () => {
+  const parsed = parseCli(["claude", "demo", "--challenger", "glm-5p2"]);
+  assert.equal(parsed.ctx.challenger, "glm-5p2");
+  assert.equal(parsed.ctx.rightModel, "glm-5p2");
+});
+
+test("parseCli: claude demo rejects removed --mode", () => {
   assert.throws(
-    () => parseCli(["demo", "--mode", "harness-swap"]),
+    () => parseCli(["claude", "demo", "--mode", "harness-swap"]),
     /Unknown argument: --mode.*Run: fireconnect help/,
   );
 });
 
 test("parseCli: --seed is no longer accepted", () => {
-  assert.throws(() => parseCli(["demo", "--seed", "7"]), /Unknown argument: --seed/);
+  assert.throws(() => parseCli(["claude", "demo", "--seed", "7"]), /Unknown argument: --seed/);
 });
 
-test("parseCli: demo --prompt-file", () => {
-  const parsed = parseCli(["demo", "--prompt-file", "/tmp/p.txt"]);
+test("parseCli: claude demo --prompt-file", () => {
+  const parsed = parseCli(["claude", "demo", "--prompt-file", "/tmp/p.txt"]);
   assert.equal(parsed.ctx.promptFile, "/tmp/p.txt");
 });
 
-test("parseCli: demo clean sets ctx.clean and takes --out/--yes", () => {
-  const bare = parseCli(["demo", "clean"]);
+test("parseCli: claude demo clean sets ctx.clean and takes --out/--yes", () => {
+  const bare = parseCli(["claude", "demo", "clean"]);
   assert.equal(bare.kind, "demo");
   assert.equal(bare.ctx.clean, true);
-  const withFlags = parseCli(["demo", "clean", "--out", "./x", "--yes"]);
+  const withFlags = parseCli(["claude", "demo", "clean", "--out", "./x", "--yes"]);
   assert.equal(withFlags.ctx.clean, true);
   assert.equal(withFlags.ctx.out, "./x");
   assert.equal(withFlags.ctx.yes, true);
 });
 
-test("parseCli: a normal demo run has clean=false", () => {
-  assert.equal(parseCli(["demo", "snake"]).ctx.clean, false);
+test("parseCli: a normal claude demo run has clean=false", () => {
+  assert.equal(parseCli(["claude", "demo", "snake"]).ctx.clean, false);
 });
 
-test("parseCli: demo clean rejects a trailing preset", () => {
-  assert.throws(() => parseCli(["demo", "clean", "snake"]), /clean takes no preset/);
+test("parseCli: claude demo clean rejects a trailing preset", () => {
+  assert.throws(() => parseCli(["claude", "demo", "clean", "snake"]), /clean takes no preset/);
 });
 
-test("parseCli: global flags may precede the demo command", () => {
-  // Regression: `--json demo` used to throw "Unknown command: demo" after the
-  // isolation refactor. It must resolve the same as `demo --json`.
-  const a = parseCli(["--json", "demo", "snake"]);
+test("parseCli: global flags may precede claude demo", () => {
+  const a = parseCli(["--json", "claude", "demo", "snake"]);
   assert.equal(a.kind, "demo");
   assert.equal(a.ctx.json, true);
   assert.equal(a.ctx.prompt, "snake");
-  const b = parseCli(["--home", "/tmp/x", "demo"]);
+  const b = parseCli(["--home", "/tmp/x", "claude", "demo"]);
   assert.equal(b.kind, "demo");
   assert.equal(b.ctx.home, "/tmp/x");
-  assert.equal(parseCli(["--json", "demo", "clean"]).ctx.clean, true);
+  assert.equal(parseCli(["--json", "claude", "demo", "clean"]).ctx.clean, true);
 });
 
-test("parseCli: demo accepts shared global flags (e.g. --settings-path)", () => {
-  const parsed = parseCli(["demo", "--settings-path", "/s"]);
+test("parseCli: global flags may appear between claude and demo", () => {
+  const parsed = parseCli(["claude", "--settings-path", "/s", "demo", "snake"]);
+  assert.equal(parsed.kind, "demo");
+  assert.equal(parsed.ctx.settingsPath, "/s");
+  assert.equal(parsed.ctx.prompt, "snake");
+});
+
+test("parseCli: claude demo accepts shared global flags (e.g. --settings-path)", () => {
+  const parsed = parseCli(["claude", "demo", "--settings-path", "/s"]);
   assert.equal(parsed.ctx.settingsPath, "/s");
 });

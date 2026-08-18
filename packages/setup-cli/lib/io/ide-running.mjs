@@ -40,6 +40,36 @@ export const IDE_QUIT_WAIT_MS = 90_000;
 const ENTER_PROMPT = "Press Enter once it's quit: ";
 
 /**
+ * Platform-appropriate "how to quit the IDE" shortcut. Closing the window is
+ * not enough — the IDE keeps an in-memory/WAL cache that overwrites the store
+ * on a clean quit — so the instruction names the real quit path per OS.
+ * @returns {string}
+ */
+function quitShortcut() {
+  const platform = os.platform();
+  if (platform === "win32") return "Alt+F4 / File > Exit";
+  if (platform === "darwin") return "Cmd-Q / File > Quit";
+  return "Ctrl-Q / File > Quit";
+}
+
+/**
+ * The menu label for fully exiting the IDE (differs on Windows).
+ * @returns {string}
+ */
+function fileQuitLabel() {
+  return os.platform() === "win32" ? "File > Exit" : "File > Quit";
+}
+
+/**
+ * Platform-aware "Quit <label> (<shortcut>)" phrase for prompts and warnings.
+ * @param {string} label
+ * @returns {string}
+ */
+export function quitInstruction(label) {
+  return `Quit ${label} (${quitShortcut()})`;
+}
+
+/**
  * @param {string | number} pid
  * @returns {string}
  */
@@ -211,7 +241,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     throw new Error(runningMessage);
   }
 
-  log(`${label} is running. Quit it (Cmd-Q / File > Quit), then press Enter — or just wait, I'll detect the exit.`);
+  log(`${label} is running. ${quitInstruction(label)}, then press Enter — or just wait, I'll detect the exit.`);
   log(`Ctrl-C cancels. Or re-run with --force to write while it's still open (not recommended).`);
 
   const deadline = now() + maxWaitMs;
@@ -219,7 +249,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     if (now() >= deadline) {
       log(
         `${label} still appears to be running after ${Math.round(maxWaitMs / 1000)}s. `
-        + "Use File > Quit (not just close the window).",
+        + `Use ${fileQuitLabel()} (not just close the window).`,
       );
       const proceed = await confirm(
         `Continue anyway and write while ${label} is still open? (not recommended)`,
@@ -273,7 +303,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     }
     if (winner === "enter") {
       log(
-        `${label} still appears to be running. Use File > Quit (not just close the window), `
+        `${label} still appears to be running. Use ${fileQuitLabel()} (not just close the window), `
         + "then press Enter again — or wait for auto-detect.",
       );
     }

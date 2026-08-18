@@ -43,6 +43,10 @@ import { HARNESSES } from "./id.mjs";
  * @property {(ctx: HarnessContext) => Promise<void|{ cancelled?: boolean }>} on
  * @property {(ctx: HarnessContext) => Promise<void>} off
  * @property {(ctx: HarnessContext) => Promise<void>} status
+ * @property {(ctx: HarnessContext) => Promise<"fireworks"|"azure"|"none"|"custom"|"default">} [providerStatus]
+ *   Read the harness's real config and return the active provider, the same
+ *   ground truth `status` reports. Used by global `fireconnect status` so the
+ *   per-harness summary reflects what's actually routed, not a stale flag.
  * @property {(ctx: HarnessContext) => Promise<void>} [usage]
  * @property {(ctx: HarnessContext) => Promise<void>} [live]
  * @property {(ctx: HarnessContext) => Promise<string>} resolveKey

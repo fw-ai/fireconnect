@@ -1,4 +1,5 @@
-import { lookupVscodeModelMetadata } from "./model-specs.mjs";
+import { resolveModelDisplayMetadata } from "./model-display.mjs";
+import { resolveRouterSpecAliasTarget } from "./model-specs.mjs";
 import { visionCapabilityLabel } from "./vision.mjs";
 import { attachPricing } from "./pricing.mjs";
 import {
@@ -24,28 +25,57 @@ function displayName(entry) {
   return visionLabel === "text-only" ? `${name} (text-only)` : name;
 }
 
-function isFastRouter(entry) {
-  return entry.pricing?.tier === "fast"
-    || /(?:-fast|-turbo)(?:-|$)/i.test(entry.shortId);
+function isFastLatestRouter(entry) {
+  // For now, the FAST section surfaces only the `-fast-latest` router aliases
+  // (glm-fast-latest, kimi-fast-latest, …) — the versioned `-fast`/`-turbo`
+  // models (kimi-k3-fast, glm-5p2-fast, …) collapse into those aliases via
+  // preferLatestAliases and shouldn't be listed separately here.
+  return entry.shortId?.endsWith("-fast-latest");
 }
 
 function sortEntries(entries) {
   return [...entries].sort((left, right) => left.shortId.localeCompare(right.shortId));
 }
 
+function resolveLatestRouterBaseModelId(entry, catalog) {
+  if (entry.baseModelId) {
+    return entry.baseModelId;
+  }
+  const entryIds = new Set(catalog.map(({ id }) => id));
+  const targetSlug = resolveRouterSpecAliasTarget(entry.shortId, entryIds);
+  return targetSlug ? `accounts/fireworks/models/${targetSlug}` : null;
+}
+
+function individualModelsFromLatestRouters(catalog, latestRouters) {
+  const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
+  const modelIds = new Set();
+
+  for (const router of latestRouters) {
+    const baseModelId = resolveLatestRouterBaseModelId(router, catalog);
+    if (baseModelId && catalogById.has(baseModelId)) {
+      modelIds.add(baseModelId);
+    }
+  }
+
+  return sortEntries([...modelIds].map((id) => catalogById.get(id)));
+}
+
 export function organizeCatalogForDisplay(catalog) {
   const smartRouters = catalog.filter((entry) => entry.shortId === "firerouter");
-  const routers = preferLatestAliases(catalog.filter((entry) => (
+  // Collapse versioned families via their -latest router aliases across the
+  // whole catalog, then split. Running preferLatestAliases over the full set is
+  // what keeps standalone models that have no -latest alias (gpt-oss-120b,
+  // inkling, nemotron-3-ultra-nvfp4) visible instead of dropping them.
+  const preferred = preferLatestAliases(catalog.filter((entry) => (
     entry.shortId !== "firerouter"
-    && entry.id.includes("/routers/")
   )));
-  const models = preferLatestAliases(catalog.filter((entry) => entry.id.includes("/models/")));
-
-  const fastRouters = routers.filter(isFastRouter);
+  const routers = preferred.filter((entry) => entry.id.includes("/routers/"));
+  const fastRouters = routers.filter(isFastLatestRouter);
   const latestRouters = routers.filter((entry) => (
-    !isFastRouter(entry)
+    !isFastLatestRouter(entry)
     && entry.shortId.endsWith("-latest")
   ));
+  const models = individualModelsFromLatestRouters(catalog, latestRouters);
   const otherRouters = routers.filter((entry) => (
     !fastRouters.includes(entry)
     && !latestRouters.includes(entry)
@@ -90,23 +120,26 @@ function tableWidths(catalog) {
   };
 }
 
-function formatTable(catalog, widths) {
+function formatTable(catalog, widths, showPricing) {
   const header = bold(
     `${"ID".padEnd(widths.id)}  `
     + `${"NAME".padEnd(widths.name)}  `
-    + `${"INPUT".padStart(widths.input)}  `
-    + `${"CACHED".padStart(widths.cached)}  `
-    + `${"OUTPUT".padStart(widths.output)}`,
+    + (showPricing
+      ? `${"INPUT".padStart(widths.input)}  `
+        + `${"CACHED".padStart(widths.cached)}  `
+        + `${"OUTPUT".padStart(widths.output)}`
+      : ""),
   );
   const lines = catalog.map((entry) => {
+    const base = `${bold(entry.shortId.padEnd(widths.id))}  `
+      + `${displayName(entry).padEnd(widths.name)}`;
+    if (!showPricing) {
+      return base;
+    }
     const input = formatUsd(entry.pricing?.inputPerMillion).padStart(widths.input);
     const cached = formatUsd(entry.pricing?.cachedInputPerMillion).padStart(widths.cached);
     const output = formatUsd(entry.pricing?.outputPerMillion).padStart(widths.output);
-    return (
-      `${bold(entry.shortId.padEnd(widths.id))}  `
-      + `${displayName(entry).padEnd(widths.name)}  `
-      + `${dim(input)}  ${dim(cached)}  ${dim(output)}`
-    );
+    return `${base}  ${dim(input)}  ${dim(cached)}  ${dim(output)}`;
   });
   return [header, ...lines].join("\n");
 }
@@ -114,26 +147,29 @@ function formatTable(catalog, widths) {
 export function formatCatalogSections(sections) {
   const catalog = sections.flatMap((section) => section.entries);
   const widths = tableWidths(catalog);
+  // Fire Pass is a subscription — no per-model metered pricing to display.
+  const showPricing = catalog.some((entry) => entry.pricing);
   const lines = [
     bold("FireConnect coding models"),
-    dim("Prices in USD per 1M tokens."),
+    ...(showPricing ? [dim("Prices in USD per 1M tokens.")] : []),
   ];
 
   for (const section of sections) {
     const heading = section.description
       ? `${section.title} — ${section.description}`
       : section.title;
-    lines.push("", bold(heading), formatTable(section.entries, widths));
+    lines.push("", bold(heading), formatTable(section.entries, widths, showPricing));
   }
   return lines.join("\n");
 }
 
-function enrichCatalogWithPricing(catalog) {
+function enrichCatalogWithPricing(catalog, { firepass = false } = {}) {
   return catalog.map((entry) => {
-    const pricing = attachPricing(entry.id);
+    // Fire Pass is a subscription — no per-model metered pricing to display.
+    const pricing = firepass ? null : attachPricing(entry.id);
     return {
       ...entry,
-      ...lookupVscodeModelMetadata(entry.id),
+      ...resolveModelDisplayMetadata(entry.id),
       pricing,
       pricingDisplay: pricing?.display ?? "—",
     };
@@ -154,7 +190,9 @@ export async function runModelListCommand({ options, apiKey }) {
     includeFirerouter: globalListIncludesFirerouter(keyType),
   });
 
-  const enriched = enrichCatalogWithPricing(fullCatalog);
+  const enriched = enrichCatalogWithPricing(fullCatalog, {
+    firepass: keyType === "firepass",
+  });
 
   if (options.json) {
     const filtered = filterCatalogBySearch(enriched, options.search);

@@ -2,12 +2,22 @@ import {
   FIREWORKS_MODEL_SPECS,
   ROUTER_SPEC_ALIASES,
   isFirerouterGatewayPattern,
+  isRouterShortId,
 } from "./model-specs.mjs";
 
 export { isFirerouterGatewayPattern };
 
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
 export const FIREROUTER_MODEL_ID = "firerouter";
+// Reserved slot value meaning "don't pin this Claude Code slot — let it fall back
+// to Claude's own (Anthropic) default model." The Fireworks gateway serves
+// Anthropic models even though they aren't in the serverless catalog, so the
+// writer translates this sentinel into "omit the pin" rather than a model id.
+export const CLAUDE_NATIVE_MODEL_ID = "claude-default";
+/** User-facing label for an unpinned Claude Code slot (native Anthropic default). */
+export const CLAUDE_NATIVE_SLOT_LABEL = "Claude default";
+/** CLI slot value meaning "use Claude's native Anthropic default for this slot". */
+export const CLAUDE_NATIVE_SLOT_ALIAS = "native";
 export const FIREROUTER_ROUTER_ID =
   "accounts/fireworks/routers/firerouter";
 export const GLM_LATEST_ROUTER_ID =
@@ -16,6 +26,10 @@ export const GLM_FAST_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/glm-fast-latest";
 export const KIMI_FAST_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/kimi-fast-latest";
+export const DEEPSEEK_FLASH_LATEST_ROUTER_ID =
+  "accounts/fireworks/routers/deepseek-flash-latest";
+export const DEEPSEEK_PRO_LATEST_ROUTER_ID =
+  "accounts/fireworks/routers/deepseek-pro-latest";
 export const DEFAULT_MAIN_MODEL = "kimi-fast-latest";
 export const DEFAULT_FIREPASS_MAIN_MODEL = DEFAULT_MAIN_MODEL;
 
@@ -32,7 +46,6 @@ const FIREWORKS_ROUTER_SHORT_IDS = new Set([
   "kimi-fast-latest",
   "kimi-k2p6-fast",
   "kimi-k2p6-turbo",
-  "kimi-k2p7-code-fast",
   "kimi-latest",
   "firerouter",
 ]);
@@ -83,6 +96,52 @@ export function isFirerouterModel(model) {
 }
 
 /**
+ * Whether a model reference is a real Anthropic model id (e.g. claude-sonnet-4-5).
+ * Anthropic models are served on the Fireworks gateway even though they don't
+ * appear in the public serverless catalog, so they're exempt from catalog
+ * validation and treated as vision-capable. Bare "claude" is NOT matched — it
+ * normalizes to {@link CLAUDE_NATIVE_MODEL_ID} instead.
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function isAnthropicModelId(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  const bare = stripContextSuffix(model.trim());
+  if (bare === CLAUDE_NATIVE_MODEL_ID) {
+    return false;
+  }
+  return /^claude-[a-z0-9.-]+(\[1m\])?$/i.test(bare);
+}
+
+/** Whether a user-supplied slot value is the native-default alias (`native`). */
+export function isClaudeNativeSlotAlias(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  return model.trim().toLowerCase() === CLAUDE_NATIVE_SLOT_ALIAS;
+}
+
+/** Whether a model reference is the reserved native-Claude slot value. */
+export function isClaudeNativeModel(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  return stripContextSuffix(model.trim()) === CLAUDE_NATIVE_MODEL_ID;
+}
+
+/** Native sentinel or concrete Anthropic id — served on the gateway, not the catalog. */
+export function isGatewayAnthropicSlot(model) {
+  return isClaudeNativeModel(model) || isAnthropicModelId(model);
+}
+
+/** Human label for a slot model id; native slots read as {@link CLAUDE_NATIVE_SLOT_LABEL}. */
+export function formatClaudeSlotModelLabel(modelId) {
+  return isClaudeNativeModel(modelId) ? CLAUDE_NATIVE_SLOT_LABEL : modelId;
+}
+
+/**
  * Expand a short gateway slug to a full accounts/fireworks resource id for
  * catalog/spec lookups. Stored harness config keeps short slugs as-is.
  * @param {string} model
@@ -102,7 +161,11 @@ export function fullFireworksResourceId(model) {
   if (isFirerouterModel(bare)) {
     return FIREROUTER_ROUTER_ID;
   }
-  const kind = FIREWORKS_ROUTER_SHORT_IDS.has(bare) ? "routers" : "models";
+  // Classify routers by the same suffix/alias heuristic spec lookups use
+  // (`isRouterShortId`), not a hand-maintained list. A stale list would expand a
+  // real router slug (e.g. kimi-k3-fast) to a non-existent models/ path, which
+  // then fails to match its catalog row and yields duplicate Pi model entries.
+  const kind = isRouterShortId(bare) ? "routers" : "models";
   return `accounts/fireworks/${kind}/${bare}`;
 }
 
@@ -122,6 +185,9 @@ export function normalizeModelId(model) {
   }
   if (isFirerouterModel(bare)) {
     return FIREROUTER_MODEL_ID;
+  }
+  if (isClaudeNativeSlotAlias(bare)) {
+    return CLAUDE_NATIVE_MODEL_ID;
   }
   if (bare.startsWith("accounts/fireworks/")) {
     return shortFireworksModelRef(bare);

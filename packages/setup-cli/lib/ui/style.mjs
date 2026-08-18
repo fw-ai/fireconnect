@@ -19,12 +19,12 @@ function wrap(open, close) {
   return (text) => (enabled ? `${open}${text}${close}` : String(text));
 }
 
-export const bold = wrap(ANSI.bold, "\u001b[22m");
-export const dim = wrap(ANSI.dimFaint, "\u001b[22m");
-export const muted = wrap(ANSI.muted, "\u001b[39m");
-export const red = wrap(ANSI.red, "\u001b[39m");
-export const green = wrap(ANSI.green, "\u001b[39m");
-export const yellow = wrap(ANSI.yellow, "\u001b[39m");
+export const bold = wrap(ANSI.bold, "[22m");
+export const dim = wrap(ANSI.dimFaint, "[22m");
+export const muted = wrap(ANSI.muted, "[39m");
+export const red = wrap(ANSI.red, "[39m");
+export const yellow = wrap(ANSI.yellow, "[39m");
+export const cyan = wrap(ANSI.cyan, "[39m");
 
 /**
  * Cyan emphasis for commands and interactive tokens.
@@ -33,11 +33,11 @@ export function accent(text, stream = undefined) {
   const useColor = stream === undefined
     ? enabled
     : colorsEnabled(stream);
-  return useColor ? `${ANSI.cyan}${text}\u001b[39m` : String(text);
+  return useColor ? `${ANSI.cyan}${text}[39m` : String(text);
 }
 
 /** Spend bars and brand highlights. */
-export const orange = wrap(ANSI.orange, "\u001b[39m");
+export const orange = wrap(ANSI.orange, "[39m");
 
 function unicodeOk(env = process.env) {
   if (process.platform === "win32") {
@@ -54,7 +54,7 @@ const glyphs = unicodeOk()
 export const symbols = Object.freeze(glyphs);
 
 export function ok(message) {
-  return `${green(symbols.ok)} ${message}`;
+  return `${cyan(symbols.ok)} ${message}`;
 }
 
 export function fail(message) {
@@ -66,12 +66,12 @@ export function warn(message) {
 }
 
 export function yesNo(value) {
-  return value ? green("yes") : red("no");
+  return value ? cyan("yes") : red("no");
 }
 
-/** Green "✓" success glyph (login/status). */
+/** Cyan "✓" success glyph (login/status). */
 export function check(stream = process.stdout) {
-  return (enabled || colorsEnabled(stream)) ? green(symbols.ok) : symbols.ok;
+  return (enabled || colorsEnabled(stream)) ? cyan(symbols.ok) : symbols.ok;
 }
 
 /**

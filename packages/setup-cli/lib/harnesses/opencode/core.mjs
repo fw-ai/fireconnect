@@ -24,15 +24,18 @@ import {
 } from "../../fireworks/model-id.mjs";
 import {
   appendLatestRouterSuffix,
-  assumedModelsDevListed,
-  hasRichFireworksLimits,
-  lookupFireworksModelLimits,
   lookupModelSpec,
-  opencodeModalitiesField,
+  resolveFireworksCatalog,
   resolveFireworksModelLabel,
   ROUTER_SPEC_ALIASES,
 } from "../../fireworks/model-specs.mjs";
 import { prettyModelName } from "../../fireworks/models.mjs";
+import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
+import {
+  assumedModelsDevListed,
+  hasRichFireworksLimits,
+  opencodeModalitiesField,
+} from "./catalog-policy.mjs";
 import {
   modelsDevRegistryStatus,
   refreshModelsDevFireworksRegistry,
@@ -108,7 +111,7 @@ export function opencodeNeedsProviderModelOverride(modelId) {
     return false;
   }
 
-  const limits = lookupFireworksModelLimits(modelId);
+  const limits = resolveFireworksCatalog(modelId).limits;
   if (!hasRichFireworksLimits(limits)) {
     return false;
   }
@@ -257,23 +260,31 @@ export function opencodeAuthKeyMode(storedRef) {
  * Latest router aliases are absent from models.dev, so limit.context/output
  * must be set explicitly or OpenCode falls back to ~128k.
  * @param {string} modelId
+ * @param {{ firepass?: boolean }} [opts]
  * @returns {{ name: string, limit: { context: number, output: number }, modalities?: { input: string[] } }}
  */
-export function buildOpencodeModelEntry(modelId) {
+export function buildOpencodeModelEntry(modelId, { firepass = false } = {}) {
   const normalized = normalizeModelId(modelId);
-  const limits = lookupFireworksModelLimits(normalized);
-  const entry = {
+  const { limits, input } = resolveFireworksCatalog(normalized);
+  // Fire Pass is a subscription — no per-model metered cost.
+  const pricing = firepass ? null : lookupFireworksPricing(normalized);
+  return {
     name: opencodeFireworksDisplayName(normalized),
     limit: {
       context: limits.contextWindow,
       output: limits.maxTokens,
     },
+    ...(pricing
+      ? {
+          cost: {
+            input: pricing.input,
+            output: pricing.output,
+            cache_read: pricing.cachedInput,
+          },
+        }
+      : {}),
+    ...(limits.vision ? { modalities: { input } } : {}),
   };
-  const modalities = opencodeModalitiesField(limits);
-  if (modalities) {
-    entry.modalities = modalities;
-  }
-  return entry;
 }
 
 /**
@@ -430,6 +441,7 @@ export async function enableOpencodeFireworks({
   // failure doesn't wipe the picker. FireRouter routes server-side → only the
   // firerouter model.
   const catalog = catalogModelIds.filter((id) => typeof id === "string" && id.startsWith("accounts/"));
+  const firepass = resolvedKeyType === "firepass";
   const buildModels = (ids) => {
     /** @type {Record<string, { name: string, modalities?: { input: string[] } }>} */
     const out = {};
@@ -440,7 +452,7 @@ export async function enableOpencodeFireworks({
       const normalized = normalizeModelId(id);
       const stored = opencodeProviderModelKey(normalized);
       if (stored) {
-        out[stored] = buildOpencodeModelEntry(normalized);
+        out[stored] = buildOpencodeModelEntry(normalized, { firepass });
       }
     }
     return out;
@@ -458,11 +470,11 @@ export async function enableOpencodeFireworks({
       }
       const normalized = normalizeModelId(id);
       const stored = opencodeProviderModelKey(id);
-      models[stored] = buildOpencodeModelEntry(normalized);
+      models[stored] = buildOpencodeModelEntry(normalized, { firepass });
     }
     const activeModelKey = opencodeProviderModelKey(storedModel);
     if (storedModel && opencodeNeedsProviderModelOverride(storedModel) && !models[activeModelKey]) {
-      models[activeModelKey] = buildOpencodeModelEntry(storedModel);
+      models[activeModelKey] = buildOpencodeModelEntry(storedModel, { firepass });
     }
   }
   provider[OPENCODE_FIREWORKS_PROVIDER_ID] = {

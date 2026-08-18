@@ -20,6 +20,7 @@ import {
   migrateVscodeResponsesApiType,
   prettyModelName,
   removeFireconnectProvider,
+  vscodeDataDir,
 } from "../../../lib/harnesses/vscode/core.mjs";
 import { FIRECONNECT_REFERER, runCli, runCliJson, withTempHome, itIfSqlite } from "../../helpers.mjs";
 
@@ -440,7 +441,7 @@ describe("vscode harness integration", () => {
       // simulate a no-backup state.
       const withUser = [...enabled, userProvider()];
       await writeFile(vscodePath, JSON.stringify(withUser, null, "\t") + "\n");
-      const backupDir = path.join(home, ".fireconnect", "claude");
+      const backupDir = vscodeDataDir(home);
       for (const f of readdirSync(backupDir)) {
         if (f.startsWith("vscode-backup.")) unlinkSync(path.join(backupDir, f));
       }

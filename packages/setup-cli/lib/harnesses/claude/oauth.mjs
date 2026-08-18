@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import { readJsonIfExists } from "../../io/json.mjs";
+import { writeJson } from "../../io/json.mjs";
 
 export const CLAUDE_CREDENTIALS_FILENAME = ".credentials.json";
 export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
@@ -47,6 +48,21 @@ export function claudeCredentialsPath(home, settingsPath = "") {
   return path.join(home, ".claude", CLAUDE_CREDENTIALS_FILENAME);
 }
 
+async function readCredentialsFile(filePath) {
+  try {
+    const parsed = JSON.parse(await readFile(filePath, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    if (error instanceof SyntaxError) {
+      throw new Error(`${filePath} is not valid JSON`);
+    }
+    throw error;
+  }
+}
+
 function readClaudeKeychainCredentials() {
   const testBlob = process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN;
   if (testBlob !== undefined) {
@@ -76,20 +92,59 @@ function readClaudeKeychainCredentials() {
   }
 }
 
+/**
+ * Read Claude Code OAuth credentials. On macOS, Claude Code often stores login
+ * tokens only in the Keychain (`Claude Code-credentials`) — there may be no
+ * `~/.claude/.credentials.json` on disk. Linux/Windows use the file when present.
+ *
+ * @param {{
+ *   home: string,
+ *   settingsPath?: string,
+ *   platform?: NodeJS.Platform,
+ *   readKeychainCredentials?: typeof readClaudeKeychainCredentials,
+ * }} args
+ * @returns {Promise<Record<string, unknown> | null>}
+ */
+export async function readClaudeOAuthCredentials({
+  home,
+  settingsPath = "",
+  platform = process.platform,
+  readKeychainCredentials = readClaudeKeychainCredentials,
+}) {
+  const credentials = await readCredentialsFile(
+    claudeCredentialsPath(home, settingsPath),
+  );
+  if (hasClaudeOAuthTokenMaterial(credentials)) {
+    return credentials;
+  }
+  if (platform !== "darwin") {
+    return null;
+  }
+  const keychain = readKeychainCredentials();
+  return hasClaudeOAuthTokenMaterial(keychain) ? keychain : null;
+}
+
 export async function hasClaudeOAuthCredentials({
   home,
   settingsPath = "",
   platform = process.platform,
   readKeychainCredentials = readClaudeKeychainCredentials,
 }) {
-  const credentials = await readJsonIfExists(
-    claudeCredentialsPath(home, settingsPath),
-  );
-  if (hasClaudeOAuthTokenMaterial(credentials)) {
-    return true;
-  }
-  if (platform !== "darwin") {
-    return false;
-  }
-  return hasClaudeOAuthTokenMaterial(readKeychainCredentials());
+  return (await readClaudeOAuthCredentials({
+    home,
+    settingsPath,
+    platform,
+    readKeychainCredentials,
+  })) != null;
+}
+
+/**
+ * Copy Claude Code OAuth credentials into an isolated CLAUDE_CONFIG_DIR so a
+ * headless `claude -p` child can authenticate without reading ~/.claude.
+ *
+ * @param {{ configDir: string, credentials: Record<string, unknown> }} args
+ */
+export async function writeClaudeOAuthCredentialsToDir({ configDir, credentials }) {
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  await writeJson(path.join(configDir, CLAUDE_CREDENTIALS_FILENAME), credentials, { mode: 0o600 });
 }

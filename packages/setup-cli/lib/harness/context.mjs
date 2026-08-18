@@ -8,9 +8,10 @@ import {
   codexDataDir,
 } from "../harnesses/codex/core.mjs";
 import {
-  deepagentsConfigPath,
-  deepagentsDataDir,
-} from "../harnesses/deepagents/core.mjs";
+  deepseekCredentialsPath,
+  deepseekDataDir,
+  deepseekSettingsPath,
+} from "../harnesses/deepseek/core.mjs";
 import {
   opencodeConfigPath,
   opencodeDataDir,
@@ -21,8 +22,8 @@ import {
   piModelsPath,
   piSettingsPath,
 } from "../harnesses/pi/core.mjs";
-import { cursorStateDbPath } from "../harnesses/cursor/core.mjs";
-import { chatLanguageModelsPath, vscodeStateDbPath } from "../harnesses/vscode/core.mjs";
+import { cursorStateDbPath, cursorDataDir } from "../harnesses/cursor/core.mjs";
+import { chatLanguageModelsPath, vscodeDataDir, vscodeStateDbPath } from "../harnesses/vscode/core.mjs";
 
 /** @typedef {import("./types.mjs").HarnessContext} HarnessContext */
 
@@ -76,7 +77,7 @@ export function piPathsFor(ctx) {
 export function cursorPathsFor(ctx) {
   return {
     dbPath: cursorStateDbPath({ home: ctx.home, dbPath: ctx.dbPath }),
-    dataDir: resolveDataDir({ home: ctx.home, dataDir: ctx.dataDir }),
+    dataDir: cursorDataDir(ctx.home, ctx.dataDir),
   };
 }
 
@@ -87,18 +88,19 @@ export function vscodePathsFor(ctx) {
   return {
     vscodePath: chatLanguageModelsPath({ home: ctx.home, vscodePath: ctx.vscodePath }),
     stateDbPath: vscodeStateDbPath({ home: ctx.home, vscodePath: ctx.vscodePath }),
-    dataDir: resolveDataDir({ home: ctx.home, dataDir: ctx.dataDir }),
+    dataDir: vscodeDataDir(ctx.home, ctx.dataDir),
   };
 }
 
 /**
  * @param {HarnessContext} ctx
  */
-export function deepagentsPathsFor(ctx) {
-  const configPath = deepagentsConfigPath(ctx.home, ctx.configPath);
+export function deepseekPathsFor(ctx) {
+  const settingsPath = deepseekSettingsPath(ctx.home, ctx.configPath);
   return {
-    configPath,
-    dataDir: deepagentsDataDir(ctx.home, ctx.dataDir),
+    settingsPath,
+    credentialsPath: deepseekCredentialsPath(ctx.home, { settingsPath }),
+    dataDir: deepseekDataDir(ctx.home, ctx.dataDir),
   };
 }
 
@@ -110,12 +112,12 @@ const HOME_VALIDATION = {
   pi: { fields: ["settingsPath", "configPath"], flag: "--settings-path" },
   cursor: { fields: ["dbPath"], flag: "--db-path" },
   vscode: { fields: ["vscodePath"], flag: "--vscode-path" },
-  deepagents: { fields: ["configPath"], flag: "--config-path" },
+  deepseek: { fields: ["configPath"], flag: "--config-path" },
 };
 
 /**
  * @param {HarnessContext} ctx
- * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepagents"} harnessId
+ * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepseek"} harnessId
  */
 export function ensureHomeForHarness(ctx, harnessId) {
   const req = HOME_VALIDATION[harnessId] ?? HOME_VALIDATION.claude;

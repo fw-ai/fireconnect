@@ -16,8 +16,8 @@ import {
   snapshotReferencesFireworksCatalog,
 } from "../../harnesses/codex/core.mjs";
 import {
-  DEEPAGENTS_DATA_RELATIVE_DIR,
-} from "../../harnesses/deepagents/core.mjs";
+  DEEPSEEK_DATA_RELATIVE_DIR,
+} from "../../harnesses/deepseek/core.mjs";
 import {
   PI_DATA_RELATIVE_DIR,
 } from "../../harnesses/pi/core.mjs";
@@ -103,6 +103,7 @@ function claudeHelp() {
       ["status", "Show provider, auth, and model mapping."],
       ["usage", "Pick session → live meter (Tab for the agents pane); snapshot with --json / --last-n."],
       ["live", "tmux split: Claude Code left, live usage meter right (exit Claude to close)."],
+      ["demo", "Race two models on a prompt (requires claude on)."],
       ["help", "Show this help."],
     ]),
     "",
@@ -133,6 +134,8 @@ function claudeHelp() {
       ["--json", "Machine-readable JSON output."],
     ]),
     "",
+    `Run \`${CLI_NAME} help demo\` for demo-specific options.`,
+    "",
     optBlock("Options for all commands", [
       OPT_HOME,
       ["--settings-path <path>", "Explicit Claude Code settings file."],
@@ -143,8 +146,9 @@ function claudeHelp() {
 
 function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "" } = {}) {
   const onOpts = standardOnOpts({
+    azure: Boolean(getHarness(id).azure),
     firerouter: getHarness(id).firerouter,
-    modelNote: id === "deepagents" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
+    modelNote: id === "deepseek" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
   });
   const allOpts = [
     OPT_HOME,
@@ -212,7 +216,7 @@ export function mainCommandsHelp() {
     "",
     cmdBlock("Get started", [
       ["login", "Sign in to Fireworks."],
-      ["claude on", "Route Claude Code through Fireworks."],
+      ["claude", "Route Claude Code through Fireworks."],
     ]),
     "",
     cmdBlock("Harnesses", [
@@ -222,7 +226,7 @@ export function mainCommandsHelp() {
       ["pi", "Pi"],
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
-      ["deepagents", "Deep Agents (dcode)"],
+      ["deepseek", "DeepSeek Harness (dsh)"],
     ]),
     "",
     cmdBlock("Per harness", [
@@ -278,9 +282,9 @@ export function printHelp(topic = "") {
       pathDesc: "Explicit chatLanguageModels.json path.",
       note: "If VS Code is running, on/off wait for you to quit (press Enter or auto-detect). Restart after. status is read-only.",
     }),
-    deepagents: configHarnessHelp("deepagents", "Deep Agents (dcode)", {
+    deepseek: configHarnessHelp("deepseek", "DeepSeek Harness (dsh)", {
       configPath: "--config-path <path>",
-      configPathNote: "Explicit ~/.deepagents/config.toml path.",
+      configPathNote: "Explicit ~/.dsh/settings.yaml path.",
     }),
     login: helpLines(
       `Usage: ${CLI_NAME} login [options]`,
@@ -328,7 +332,7 @@ export function printHelp(topic = "") {
         OPT_HOME,
       ]),
     ),
-    demo: demoHelpText(CLI_NAME),
+    demo: demoHelpText(CLI_NAME, { deprecatedTopLevel: true }),
     uninstall: helpLines(
       `Usage: ${CLI_NAME} uninstall`,
       "",
@@ -358,7 +362,7 @@ export function printHelp(topic = "") {
       ["pi", "Pi"],
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
-      ["deepagents", "Deep Agents (dcode)"],
+      ["deepseek", "DeepSeek Harness (dsh)"],
     ]),
     "",
     cmdBlock("Harness commands", [
@@ -367,6 +371,7 @@ export function printHelp(topic = "") {
       ["status", "Show provider, auth, and models."],
       ["usage", "Claude-only: session usage report."],
       ["live", "Claude-only: tmux split with live usage meter."],
+      ["demo", "Claude-only: race two models on a prompt."],
       ["help", "Show harness-specific options."],
     ]),
     "",
@@ -376,7 +381,6 @@ export function printHelp(topic = "") {
       ["status", "Show sign-in state, machine environment, and key storage."],
       ["model list", "Browse serverless models."],
       ["configure", "Set provider and Anthropic key."],
-      ["demo", "Race your provider vs Fireworks on a prompt."],
       ["upgrade", "Update FireConnect."],
       ["uninstall", "Remove FireConnect."],
       ["help", "Show help (`help <topic>` or `<harness> help`)."],
@@ -612,7 +616,7 @@ export async function runUpgradeCommand({
 
   if (claudePreflight.restored) {
     log("Upgrade complete. Your original Claude Code settings were restored.");
-    log(`To reconnect with FireConnect v${after || before || "unknown"}:\n  fireconnect claude on`);
+    log(`To reconnect with FireConnect v${after || before || "unknown"}:\n  fireconnect claude`);
   }
 }
 
@@ -695,7 +699,7 @@ export async function runUninstallCommand(ctx) {
     path.join(home, CODEX_DATA_RELATIVE_DIR),
     ...(removeCatalog ? [path.join(home, CODEX_CATALOG_RELATIVE_PATH)] : []),
     path.join(home, PI_DATA_RELATIVE_DIR),
-    path.join(home, DEEPAGENTS_DATA_RELATIVE_DIR),
+    path.join(home, DEEPSEEK_DATA_RELATIVE_DIR),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),
     path.join(home, ".local/bin/fireconnect"),
@@ -716,7 +720,7 @@ export async function runUninstallCommand(ctx) {
 
   const hasErrors = offErrors.length > 0 || removalFailures.length > 0;
   if (!hasErrors) {
-    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, Deep Agents) to fully apply.");
+    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, DeepSeek Harness) to fully apply.");
   } else {
     if (removalFailures.length > 0) {
       console.error("FireConnect uninstall completed with file removal errors:");

@@ -1,47 +1,41 @@
 /**
- * Help text for `fireconnect demo`.
- *
- * Kept in the demo folder so the shared help builder (`../commands/global.mjs`)
- * holds no demo help content of its own — it just imports this string. The
- * general `fireconnect help` output still lists `demo` via a couple of one-line
- * navigational mentions there; the full usage block lives here.
+ * Help text for `fireconnect claude demo`.
  *
  * @param {string} cliName  the CLI's display name (e.g. "fireconnect")
+ * @param {{ deprecatedTopLevel?: boolean }} [opts]
  * @returns {string}
  */
-export function demoHelpText(cliName) {
+export function demoHelpText(cliName, { deprecatedTopLevel = false } = {}) {
+  const deprecatedNote = deprecatedTopLevel
+    ? `\nDeprecated: \`${cliName} demo\` moved to \`${cliName} claude demo\`.\n`
+    : "";
   return `Usage:
-  ${cliName} demo [prompt] [options]
-  ${cliName} demo clean [--out <dir>] [--yes]
+  ${cliName} claude demo [prompt] [options]
+  ${cliName} claude demo clean [--out <dir>] [--yes]
+${deprecatedNote}
+Race two models on the same code-generation prompt via Claude Code. Requires
+\`fireconnect claude\`. Interactive runs: pick two models, pick a game,
+then watch the split-pane race and open the browser comparison.
 
-Race Claude Code (your tool, on Anthropic) against a Fireworks model on the same
-code-generation prompt. Stream both live in a split-pane terminal UI, then open a
-browser page where both generated apps run side by side.
+  Each side runs \`claude -p\` with your existing FireConnect Claude profile —
+  same auth and routing as \`fireconnect claude\`. Only \`--model\` differs
+  per side; ~/.claude/settings.json is never modified.
 
-  Each side runs the real \`claude -p\` tool in its own isolated throwaway config
-  dir — your ~/.claude/settings.json is never touched. The incumbent (Anthropic)
-  side needs an Anthropic API key; the challenger uses your Fireworks key. Only
-  Claude Code is supported today (opencode/codex/etc. planned).
-
-Prompts: tetris (default), tictactoe, snake, clock, custom.
+Games: tetris (default), tictactoe, snake, clock, custom.
 
 Options:
-  --prompt <preset|task>    One of: tetris, tictactoe, snake, clock, or a
-                            custom standalone HTML task.
-  --prompt-file <path>      Use a custom task from a file (overrides preset).
-  --challenger <model>      Fireworks model to race (default: glm-5p2-fast).
-  --anthropic-model <alias> Anthropic model for your side — one of:
-                            opus (default), sonnet, haiku. Also settable in the form.
-  --anthropic-key <key>     Anthropic API key for your side
-                            (defaults to ANTHROPIC_API_KEY / config / a TTY prompt).
+  --prompt <preset|task>    Game preset or custom standalone HTML task.
+  --prompt-file <path>      Custom task from a file (overrides preset).
+  --left-model <model>      Left model (default: opus).
+  --right-model <model>     Right model (default: glm-fast-latest).
+  --challenger <model>      Alias for --right-model.
+  --anthropic-model <alias> Alias for --left-model (opus/sonnet/haiku/fable).
   --api-key <key>           Fireworks API key (defaults to FIREWORKS_API_KEY / config).
   --no-open                 Skip the browser handoff; leave outputs on disk.
   --out <dir>               Output directory (default: ./fireconnect-demo/).
   --yes                     Non-interactive: skip the setup form.
-  --json                    Emit a machine-readable result to stdout (skips TUI/browser).
+  --json                    Machine-readable result (skips TUI/browser).
 
 Maintenance:
-  ${cliName} demo clean     Remove generated output (default ./fireconnect-demo/) and
-                            any leftover tmp dirs from crashed runs. Prompts unless
-                            --yes; only deletes directories that hold demo output.`;
+  ${cliName} claude demo clean     Remove generated output and leftover tmp dirs.`;
 }

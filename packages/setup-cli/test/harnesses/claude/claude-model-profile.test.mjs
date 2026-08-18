@@ -9,6 +9,7 @@ import {
   CLAUDE_MODEL_SLOTS,
   defaultClaudeModelMapping,
   inferClaudeActiveKeyType,
+  migrateLegacyClaudeModelMapping,
   normalizeClaudeProfiles,
   savedClaudeModelMapping,
   withSavedClaudeModelMapping,
@@ -110,6 +111,12 @@ describe("Claude model profiles", () => {
       main: firepass.main,
       opus: firepass.opus,
       sonnet: firepass.sonnet,
+      // Neutral subagent and fable so neither profile clears the strong-match
+      // threshold. Fable matters because kimi-fast-latest is both the fireworks
+      // fable default and the whole firepass mapping, so leaving it would score
+      // for both profiles and tip firepass over the line.
+      subagent: "glm-fast-latest",
+      fable: "glm-latest",
     };
     assert.equal(inferClaudeActiveKeyType({
       profiles,
@@ -139,5 +146,79 @@ describe("Claude model profiles", () => {
     ]) {
       assert.equal(canOnboardingSelectFirerouter(options), false);
     }
+  });
+
+  it("migrates legacy pinned deepseek-v4-flash slots to the deepseek-flash-latest router alias", () => {
+    // Bare slug, full accounts/fireworks ref, and [1m]-tagged forms all migrate;
+    // unrelated slots pass through unchanged. The writer re-applies [1m] per
+    // slot, so the migration target is the bare router alias.
+    const migrated = migrateLegacyClaudeModelMapping({
+      main: "kimi-fast-latest",
+      opus: "accounts/fireworks/models/deepseek-v4-flash",
+      sonnet: "glm-5p1",
+      haiku: "deepseek-v4-flash",
+      fable: "kimi-fast-latest",
+      subagent: "deepseek-v4-flash[1m]",
+    });
+    assert.equal(migrated.changed, true);
+    assert.deepEqual(migrated.mapping, {
+      main: "kimi-fast-latest",
+      opus: "deepseek-flash-latest",
+      sonnet: "glm-5p1",
+      haiku: "deepseek-flash-latest",
+      fable: "kimi-fast-latest",
+      subagent: "deepseek-flash-latest",
+    });
+
+    // A mapping with no legacy slugs is returned unchanged.
+    const clean = migrateLegacyClaudeModelMapping(defaultClaudeModelMapping("fireworks"));
+    assert.equal(clean.changed, false);
+    assert.deepEqual(clean.mapping, defaultClaudeModelMapping("fireworks"));
+  });
+
+  it("migrates baked-in legacy slots but honors explicit per-run overrides", async () => {
+    // An existing install has deepseek-v4-flash baked into its live mapping.
+    const profiles = withSavedClaudeModelMapping({}, "fireworks", {
+      ...defaultClaudeModelMapping("fireworks"),
+      haiku: "deepseek-v4-flash",
+      subagent: "deepseek-v4-flash",
+    });
+    const plan = resolveClaudeActivationPlan({
+      ctx: EMPTY_OVERRIDES,
+      keyType: "fireworks",
+      snapshot: {
+        profiles,
+        intent: {
+          mapping: {
+            ...defaultClaudeModelMapping("fireworks"),
+            haiku: "deepseek-v4-flash",
+            subagent: "deepseek-v4-flash",
+          },
+        },
+      },
+      activeKeyType: "fireworks",
+    });
+    assert.equal(plan.mapping.haiku, "deepseek-flash-latest");
+    assert.equal(plan.mapping.subagent, "deepseek-flash-latest");
+
+    // An explicit --haiku deepseek-v4-pro override is honored (not migrated),
+    // while the still-default subagent still migrates from the baked-in slug.
+    const overridden = resolveClaudeActivationPlan({
+      ctx: { ...EMPTY_OVERRIDES, haiku: "deepseek-v4-pro" },
+      keyType: "fireworks",
+      snapshot: {
+        profiles,
+        intent: {
+          mapping: {
+            ...defaultClaudeModelMapping("fireworks"),
+            haiku: "deepseek-v4-flash",
+            subagent: "deepseek-v4-flash",
+          },
+        },
+      },
+      activeKeyType: "fireworks",
+    });
+    assert.equal(overridden.mapping.haiku, "deepseek-v4-pro");
+    assert.equal(overridden.mapping.subagent, "deepseek-flash-latest");
   });
 });

@@ -1,6 +1,9 @@
 import {
+  CLAUDE_NATIVE_MODEL_ID,
   DEFAULT_FIREPASS_MAIN_MODEL,
   defaultMainModel,
+  fireworksModelSlug,
+  isClaudeNativeModel,
   isFirerouterModel,
   normalizeModelId,
   validateModelId,
@@ -15,10 +18,12 @@ export const CLAUDE_MODEL_SLOTS = Object.freeze([
   "subagent",
 ]);
 
-export const DEFAULT_OPUS_MODEL = "glm-fast-latest";
+export const DEFAULT_OPUS_MODEL = "deepseek-pro-latest";
 export const DEFAULT_FABLE_MODEL = "kimi-fast-latest";
-export const DEFAULT_SONNET_MODEL = "glm-fast-latest";
-export const DEFAULT_HAIKU_MODEL = "deepseek-v4-flash";
+// Sonnet stays native: it is the alias most people pick deliberately in
+// `/model`, so FireConnect leaves it pointing at Anthropic's own model.
+export const DEFAULT_SONNET_MODEL = CLAUDE_NATIVE_MODEL_ID;
+export const DEFAULT_HAIKU_MODEL = "deepseek-flash-latest";
 export const DEFAULT_SUBAGENT_MODEL = DEFAULT_HAIKU_MODEL;
 
 const PROFILE_VERSION = 1;
@@ -30,14 +35,70 @@ export function defaultClaudeModelMapping(keyType = "fireworks") {
       CLAUDE_MODEL_SLOTS.map((slot) => [slot, DEFAULT_FIREPASS_MAIN_MODEL]),
     );
   }
+  // Main is never pinned: Claude Code resolves an unset main through the
+  // account-default alias (Opus/Sonnet), which the slots below already remap.
+  // Pinning it would write settings.model and shadow the `/model` picker.
   return {
-    main: defaultMainModel(),
+    main: CLAUDE_NATIVE_MODEL_ID,
     opus: DEFAULT_OPUS_MODEL,
     sonnet: DEFAULT_SONNET_MODEL,
     haiku: DEFAULT_HAIKU_MODEL,
     fable: DEFAULT_FABLE_MODEL,
     subagent: DEFAULT_SUBAGENT_MODEL,
   };
+}
+
+/**
+ * Pinned model slugs from older FireConnect defaults that should be rewritten to
+ * their stable `-latest` router alias when an existing Claude Code install is
+ * re-`on`ed. The writer re-applies the Claude Code `[1m]` context tag per slot,
+ * so entries map bare slug -> bare router alias (e.g. deepseek-v4-flash ->
+ * deepseek-flash-latest, which the writer serves as deepseek-flash-latest[1m]).
+ */
+const LEGACY_CLAUDE_MODEL_MIGRATIONS = Object.freeze({
+  "deepseek-v4-flash": "deepseek-flash-latest",
+});
+
+/**
+ * Rewrite any slot whose model slug is a legacy pinned default to its `-latest`
+ * router alias. Used on the persisted (saved profile / live settings) mapping
+ * during activation so an existing `claude on` install is migrated to the
+ * current default routing; explicit per-run CLI overrides are merged afterward
+ * and are not migrated.
+ * @param {Record<string, string>} mapping
+ * @returns {{ mapping: Record<string, string>, changed: boolean }}
+ */
+export function migrateLegacyClaudeModelMapping(mapping = {}) {
+  const next = {};
+  let changed = false;
+  for (const [slot, modelId] of Object.entries(mapping)) {
+    if (typeof modelId !== "string" || !modelId.trim()) {
+      next[slot] = modelId;
+      continue;
+    }
+    const target = LEGACY_CLAUDE_MODEL_MIGRATIONS[fireworksModelSlug(modelId)];
+    if (target) {
+      next[slot] = target;
+      changed = true;
+    } else {
+      next[slot] = modelId;
+    }
+  }
+  return { mapping: next, changed };
+}
+
+/** Whether a slot should appear in `claude status` (overrides only). */
+export function isClaudeMappingOverride(modelId, slot, keyType, defaults = defaultClaudeModelMapping(keyType)) {
+  if (!modelId) {
+    return false;
+  }
+  if (isClaudeNativeModel(modelId)) {
+    return false;
+  }
+  if (modelId === defaults[slot]) {
+    return false;
+  }
+  return true;
 }
 
 /** Merge model sources from lowest to highest precedence. */
@@ -118,6 +179,13 @@ export function savedClaudeModelMapping(profiles, keyType) {
   return normalizeClaudeProfiles(profiles)[keyType]?.models ?? {};
 }
 
+// A native-Claude slot is persisted as the sentinel but read live as null/unset.
+// Treat the two as equal when matching a live mapping against saved profiles.
+function claudeSlotValuesMatch(left, right) {
+  const norm = (value) => (value == null ? CLAUDE_NATIVE_MODEL_ID : value);
+  return norm(left) === norm(right);
+}
+
 export function inferClaudeActiveKeyType({
   tokenKeyType = "",
   recordedKeyType = "",
@@ -132,7 +200,7 @@ export function inferClaudeActiveKeyType({
   const entries = Object.entries(normalized);
   const exactMatches = entries.filter(([, profile]) => (
     CLAUDE_MODEL_SLOTS.every(
-      (slot) => profile.models[slot] === activeMapping[slot],
+      (slot) => claudeSlotValuesMatch(profile.models[slot], activeMapping[slot]),
     )
   ));
   if (exactMatches.length === 1) return exactMatches[0][0];
@@ -140,7 +208,7 @@ export function inferClaudeActiveKeyType({
     .map(([keyType, profile]) => ({
       keyType,
       matches: CLAUDE_MODEL_SLOTS.filter(
-        (slot) => profile.models[slot] === activeMapping[slot],
+        (slot) => claudeSlotValuesMatch(profile.models[slot], activeMapping[slot]),
       ).length,
     }))
     .sort((left, right) => right.matches - left.matches);

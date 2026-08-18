@@ -50,6 +50,15 @@ export const DEMO_PRESETS = Object.freeze({
 export const DEFAULT_DEMO_PRESET = "tetris";
 export const CUSTOM_DEMO_PROMPT_ID = "custom";
 
+/** Short UX hints for the demo wizard game picker. */
+export const DEMO_PRESET_HINTS = Object.freeze({
+  tetris: "~2–4 min · playable Tetris",
+  tictactoe: "~1–2 min · two-player board",
+  snake: "~1–3 min · classic Snake",
+  clock: "~1 min · animated analog clock",
+  [CUSTOM_DEMO_PROMPT_ID]: "Describe any standalone HTML app",
+});
+
 /**
  * @param {string} id
  * @returns {PromptPreset}

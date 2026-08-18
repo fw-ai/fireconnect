@@ -4,6 +4,7 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { seedOnCommandCatalog } from "../../helpers.mjs";
 
 import {
   OPENCODE_AZURE_PROVIDER_ID,
@@ -18,6 +19,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
+    if (args.includes("on")) { seedOnCommandCatalog(env.HOME, args); }
     const child = spawn(process.execPath, [CLI, ...args], {
       env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],

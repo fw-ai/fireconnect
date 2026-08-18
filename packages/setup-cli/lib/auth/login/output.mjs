@@ -53,7 +53,7 @@ export function printSuccessBlock(result, notes = [], { nextHint = true } = {}) 
   console.log(`  Remove it from this machine anytime with  ${accent("fireconnect logout")}`);
   console.log("");
   if (nextHint) {
-    console.log(`  Next: connect a tool with  ${accent("fireconnect claude on")}`);
+    console.log(`  Next: connect a tool with  ${accent("fireconnect claude")}`);
   }
 }
 

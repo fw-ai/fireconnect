@@ -19,17 +19,23 @@ test("parseStreamJson: empty text_delta is not emitted", () => {
   assert.deepEqual(out.deltas, []);
 });
 
-test("parseStreamJson: non-text deltas (thinking, tool input) are ignored for the race", () => {
+test("parseStreamJson: non-text deltas (tool input) are ignored for app output", () => {
+  const out = parseStreamJson({
+    type: "stream_event",
+    event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{}" } },
+  });
+  assert.deepEqual(out.deltas, []);
+  assert.deepEqual(out.thinkingDeltas, []);
+});
+
+test("parseStreamJson: thinking_delta is surfaced separately from app output", () => {
   const out = parseStreamJson({
     type: "stream_event",
     event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } },
   });
   assert.deepEqual(out.deltas, []);
-  const out2 = parseStreamJson({
-    type: "stream_event",
-    event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{}" } },
-  });
-  assert.deepEqual(out2.deltas, []);
+  assert.deepEqual(out.thinkingDeltas, ["hmm"]);
+  assert.match(out.status, /thinking/i);
 });
 
 test("parseStreamJson: message_start carries input_tokens and marks a boundary", () => {
@@ -116,6 +122,7 @@ test("parseStreamJson: phase statuses for message_start, tool_use, and thinking"
     event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm" } },
   });
   assert.deepEqual(thinking.deltas, []);
+  assert.deepEqual(thinking.thinkingDeltas, ["hmm"]);
   assert.match(thinking.status, /thinking/i);
 });
 

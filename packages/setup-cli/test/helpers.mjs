@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,11 @@ import { fileURLToPath } from "node:url";
 import { USER_SETTINGS_RELATIVE_PATH } from "../lib/harnesses/claude/core.mjs";
 import { OPENCODE_CONFIG_RELATIVE_PATH } from "../lib/harnesses/opencode/core.mjs";
 import { CODEX_CONFIG_RELATIVE_PATH } from "../lib/harnesses/codex/core.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  readCatalogCache,
+  setServerlessCatalogSnapshot,
+} from "../lib/fireworks/serverless-catalog-cache.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
@@ -17,6 +22,65 @@ const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
 process.env.FIRECONNECT_SECRET_STORE ??= "memory";
 process.env.FIRECONNECT_TEST ??= "1";
 process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN ??= "";
+// Isolate the persisted catalog cache from the developer's real ~/.fireconnect.
+// Every test process gets its own throwaway dir; spawned CLI children inherit
+// it, so they can read whatever a test seeded (offline registration / `off`
+// cleanup previously relied on a hardcoded router list).
+process.env.FIRECONNECT_CACHE_DIR ??= mkdtempSync(path.join(os.tmpdir(), "fc-cache-"));
+
+/**
+ * Persist a serverless catalog snapshot to `home`'s scoped cache file so a CLI
+ * child spawned with that HOME lazy-loads it (offline registration / `off`
+ * cleanup previously relied on a hardcoded router list). Scoping by HOME keeps
+ * each test's seed isolated from every other test's. Idempotent: a home that
+ * already has a cache file is left untouched.
+ * @param {string} home
+ * @param {{ id: string, shortId: string, displayName: string, kind: string }[]} entries
+ */
+export function seedServerlessCatalogCache(home, entries) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    if (readCatalogCache()?.snapshot) {
+      return;
+    }
+    cacheServerlessCatalogSnapshot({
+      entries,
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map(),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+  } finally {
+    process.env.HOME = prevHome;
+    // The persisted file is what spawned CLIs lazy-load; leave this process's
+    // in-memory snapshot empty so it can't leak into unrelated tests.
+    setServerlessCatalogSnapshot(null);
+  }
+}
+
+// Default catalog a spawned `on` child gets when a test didn't seed one. An
+// EMPTY snapshot is enough: the cache-first loader serves it (so `on` is not a
+// cold start and doesn't hard-fail), harnesses register just the active model —
+// exactly matching the pre-cache behavior exercises depend on — and validation
+// skips ids it can't verify. Tests that need a specific catalog seed it
+// explicitly via seedServerlessCatalogCache.
+const DEFAULT_TEST_CATALOG_ENTRIES = [];
+
+/**
+ * Seed a default (empty) catalog into `home` for an `on`-family command so it
+ * isn't a cold start (which now hard-fails). Empty = harnesses register just the
+ * active model and validation skips unverifiable ids — matching pre-cache test
+ * behavior. Keys marked "cataloged" are skipped: the mock gateway serves them a
+ * real catalog, and seeding (even empty) would short-circuit that fetch.
+ */
+export function seedOnCommandCatalog(home, args = []) {
+  const raw = Array.isArray(args) ? args.join(" ") : String(args ?? "");
+  if (home && !/cataloged/i.test(raw)) {
+    seedServerlessCatalogCache(home, DEFAULT_TEST_CATALOG_ENTRIES);
+  }
+}
 // Tests pass a temp HOME and expect it to isolate Claude credentials. But
 // claudeCredentialsPath() honors CLAUDE_CONFIG_DIR over home, so a dev
 // machine running Claude Code under a custom config dir leaks real OAuth
@@ -63,7 +127,6 @@ export const GLM_LATEST = "glm-latest";
 export const GLM_FAST_LATEST = "glm-fast-latest";
 export const GLM_5P2_FAST = "glm-5p2-fast";
 export const KIMI_FAST_LATEST = "kimi-fast-latest";
-export const K2P7_FAST = "kimi-k2p7-code-fast";
 export const FIREPASS_ROUTER = "accounts/fireworks/routers/kimi-fast-latest";
 // Default model for Fire Pass keys.
 export const FIREPASS_DEFAULT_ROUTER = FIREPASS_ROUTER;
@@ -161,6 +224,9 @@ async function removeTempDir(dir) {
 
 export function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
+    if (args.includes("on")) {
+      seedOnCommandCatalog(env.HOME, args);
+    }
     const child = spawn(process.execPath, [CLI, ...args], {
       env: {
         ...process.env,
@@ -207,6 +273,9 @@ export async function seedKeychainConfig(home, apiKey) {
 
 export async function runCli(args, { home, env = {} } = {}) {
   return new Promise((resolve, reject) => {
+    if (args.includes("on")) {
+      seedOnCommandCatalog(home, args);
+    }
     const child = spawn(process.execPath, [CLI, ...args], {
       env: {
         ...process.env,
@@ -276,7 +345,7 @@ export async function writeCodexConfig(home, { apiKey = FW_CODEX_KEY, envRef = f
     : [`experimental_bearer_token = "${apiKey}"`];
   const toml = [
     'model_provider = "fireworks-ai"',
-    `model = "accounts/fireworks/routers/${K2P7_FAST}"`,
+    `model = "accounts/fireworks/routers/${KIMI_FAST_LATEST}"`,
     "",
     "[model_providers.fireworks-ai]",
     'name = "Fireworks"',

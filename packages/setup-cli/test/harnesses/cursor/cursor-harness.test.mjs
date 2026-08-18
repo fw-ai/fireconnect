@@ -217,7 +217,7 @@ describe("cursor-core pure transforms", () => {
   it("prettyModelName renders human-readable names", () => {
     assert.equal(prettyModelName("accounts/fireworks/models/glm-5p2"), "GLM 5.2");
     assert.equal(prettyModelName("accounts/fireworks/routers/glm-latest"), "GLM Latest");
-    assert.equal(prettyModelName("accounts/fireworks/routers/kimi-k2p7-code-fast"), "Kimi K2.7 Code Fast");
+    assert.equal(prettyModelName("accounts/fireworks/routers/kimi-k3-fast"), "Kimi K3 Fast");
     assert.equal(prettyModelName("accounts/fireworks/models/deepseek-v4-flash"), "Deepseek V4 Flash");
     assert.equal(prettyModelName("composer-2.5"), "Composer 2.5");
     assert.equal(prettyModelName("default"), "default");
@@ -423,8 +423,8 @@ describe("cursor harness integration", () => {
 
       const blob = readBlob(dbPath);
       // The active default (kimi-fast-latest) plus the rest of the Fire Pass
-      // catalog with latest aliases preferred (pinned glm-5p2-fast /
-      // kimi-k2p7-code-fast dropped in favor of glm-fast-latest / kimi-fast-latest).
+      // catalog with latest aliases preferred (pinned glm-5p2-fast dropped in
+      // favor of glm-fast-latest).
       assert.deepEqual(blob.aiSettings.userAddedModels, [
         "kimi-fast-latest",
         "glm-latest",

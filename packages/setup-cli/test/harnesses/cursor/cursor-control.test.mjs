@@ -1,10 +1,22 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import { ensureIdeStopped } from "../../../lib/io/ide-running.mjs";
 
-const SPEC = { darwinPattern: "Cursor", linuxPattern: "^cursor", windowsImage: "Cursor\\.exe" };
+const SPEC = {
+  darwinPattern: "Cursor",
+  linuxPattern: "[/]cursor([[:space:]]|$)",
+  linuxCmdlineMatches: (cmdline) => !/\s--type=/.test(cmdline),
+  windowsImage: "Cursor\\.exe",
+};
 const MSG = "Cursor is running. Quit it first.";
+
+/** POSIX ERE check (same dialect as `pgrep -f`). Node RegExp lacks `[[:space:]]`. */
+function linuxCmdlineMatchesPattern(pattern, cmdline) {
+  const r = spawnSync("grep", ["-E", pattern], { input: cmdline, encoding: "utf8" });
+  return r.status === 0;
+}
 
 /** Prompt that never resolves until aborted (so auto-poll can win). */
 function hangingPrompt({ signal }) {
@@ -17,6 +29,32 @@ function hangingPrompt({ signal }) {
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
+
+describe("Cursor linux pgrep pattern", () => {
+  const { linuxPattern, linuxCmdlineMatches } = SPEC;
+
+  it("matches the Cursor executable at common install paths", () => {
+    assert.ok(linuxCmdlineMatchesPattern(linuxPattern, "/opt/cursor/cursor --no-sandbox"));
+    assert.ok(linuxCmdlineMatchesPattern(linuxPattern, "/usr/share/cursor/cursor --unity-launch"));
+  });
+
+  it("does not match unrelated paths that merely contain 'cursor'", () => {
+    assert.ok(!linuxCmdlineMatchesPattern(linuxPattern, "/usr/bin/xcursor-tool --foo"));
+    assert.ok(!linuxCmdlineMatchesPattern(linuxPattern, "/home/user/cursor-theme/build/cc1"));
+  });
+
+  it("treats Electron helper processes as not running once the main process exits", () => {
+    assert.equal(
+      linuxCmdlineMatches("/opt/cursor/cursor --type=utility --utility-sub-type=network.mojom.NetworkService"),
+      false,
+    );
+    assert.equal(
+      linuxCmdlineMatches("/opt/cursor/cursor --type=renderer --enable-crash-reporter=abc"),
+      false,
+    );
+    assert.equal(linuxCmdlineMatches("/opt/cursor/cursor --no-sandbox"), true);
+  });
+});
 
 describe("ensureIdeStopped", () => {
   it("returns immediately when the IDE is not running", async () => {

@@ -16,6 +16,7 @@ const ANTHROPIC_KEY = "sk-ant-claude-matrix-byok";
 const DIRECT_MAIN_MODEL = "kimi-fast-latest[1m]";
 const DIRECT_ALIAS_MODEL = "glm-fast-latest[1m]";
 const KIMI_FABLE_MODEL = "kimi-fast-latest[1m]";
+const DS_PRO_OPUS_MODEL = "deepseek-pro-latest[1m]";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const SUBSCRIPTION_SETTINGS = `${JSON.stringify({
   model: "sonnet",
@@ -130,17 +131,24 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
           settings.env.ANTHROPIC_AUTH_TOKEN,
           hasNativeAuth ? undefined : FIREWORKS_KEY,
         );
-        const expectedMain = !scenario.firerouter && hasNativeAuth
+        // Main stays native (unpinned) in every scenario; FireRouter is Opus-tier
+        // so it lands on Opus (explicitly or via the fresh-default auto-pin), not Main.
+        const expectedMain = undefined;
+        // Opus is firerouter when native auth is present (explicit --opus firerouter
+        // or the fresh-default auto-pin); otherwise the DeepSeek V4 Pro default.
+        const expectedOpus = hasNativeAuth
           ? FIREROUTER_MODEL
-          : DIRECT_MAIN_MODEL;
-        const expectedFable = KIMI_FABLE_MODEL;
+          : DS_PRO_OPUS_MODEL;
         assertClaudeMainModel(settings, expectedMain);
         assert.equal(
           settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL,
-          scenario.firerouter ? FIREROUTER_MODEL : DIRECT_ALIAS_MODEL,
+          expectedOpus,
         );
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, DIRECT_ALIAS_MODEL);
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, expectedFable);
+        // Sonnet is native by default, so its alias env key is never written.
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
+        // Fable carries the vision model in every scenario now, so the old
+        // firerouter-only shift is gone.
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FABLE_MODEL);
         assert.equal(settings.apiKeyHelper, undefined);
         assert.match(headers, new RegExp(`X-Fireworks-Api-Key: ${FIREWORKS_KEY}`));
         assert.match(headers, /X-Title: Claude Code/);
@@ -191,9 +199,11 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         const settings = JSON.parse(
           await readFile(path.join(home, USER_SETTINGS_RELATIVE_PATH), "utf8"),
         );
-        assertClaudeMainModel(settings, FIREROUTER_MODEL);
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, DIRECT_ALIAS_MODEL);
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, DIRECT_ALIAS_MODEL);
+        assert.equal(settings.model, undefined);
+        assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
+        // Sonnet is native by default, so its alias env key is never written.
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
         assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FABLE_MODEL);
         assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
         assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, FIREWORKS_KEY);

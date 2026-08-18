@@ -1,15 +1,8 @@
 /**
- * Real-tool driver for `fireconnect demo`'s race.
+ * Real-tool driver for `fireconnect claude demo`'s race.
  *
- * Spawns a `claude -p` (Claude Code, headless) process in an isolated
- * CLAUDE_CONFIG_DIR, and parses its `--output-format stream-json` stdout into a
- * delta/usage/result shape the demo's TUI, measurement, and output-dir writes
- * consume. Token-level streaming comes from `--include-partial-messages`, which
- * emits a `text_delta` `stream_event` per content-block delta.
- *
- * Nothing here touches `~/.claude/settings.json`: routing lives entirely in the
- * tmp `--settings` file for the lifetime of this child. Auth comes from the
- * shared HOME / keychain (no re-login, no second key).
+ * Spawns a `claude -p` (Claude Code, headless) process using the user's
+ * FireConnect-managed profile and parses its `--output-format stream-json` stdout.
  */
 
 import { spawn } from "node:child_process";
@@ -19,21 +12,15 @@ import { FIRST_TOKEN_TIMEOUT_MS, HARD_RUN_CAP_MS } from "./constants.mjs";
 import { FIREWORKS_ENV_KEYS } from "../harnesses/claude/core.mjs";
 import { CLAUDE_FIREROUTER_ENV_KEYS } from "../firerouter/core.mjs";
 
-// Env keys to strip from the child's inherited process env so the isolated
-// CLAUDE_CONFIG_DIR's settings.json is the sole source of routing/model/auth.
-// Without this, a leaked ANTHROPIC_BASE_URL / ANTHROPIC_DEFAULT_SONNET_MODEL
-// from the parent's Fireworks-routed session would override the clean settings.
+// Only stripped when racing in an isolated CLAUDE_CONFIG_DIR (legacy path).
 const STRIP_CHILD_ENV_KEYS = new Set([...FIREWORKS_ENV_KEYS, ...CLAUDE_FIREROUTER_ENV_KEYS]);
 
 /**
- * Build the child process env for an isolated `claude -p` run: the parent env
- * with all Fireworks/firerouter-owned keys stripped, plus CLAUDE_CONFIG_DIR
- * pointed at the side's clean config dir.
  * @param {Record<string, string>} env
  * @param {string} configDir
  * @returns {Record<string, string>}
  */
-function buildChildEnv(env, configDir) {
+function buildIsolatedChildEnv(env, configDir) {
   const next = {};
   for (const [k, v] of Object.entries(env)) {
     if (!STRIP_CHILD_ENV_KEYS.has(k)) {
@@ -52,6 +39,7 @@ function buildChildEnv(env, configDir) {
  * @param {any} obj
  * @returns {{
  *   deltas?: string[],
+ *   thinkingDeltas?: string[],
  *   inputTokens?: number,
  *   outputTokens?: number,
  *   result?: string,
@@ -64,7 +52,7 @@ export function parseStreamJson(obj) {
   if (!obj || typeof obj !== "object") {
     return {};
   }
-  const out = { deltas: [] };
+  const out = { deltas: [], thinkingDeltas: [] };
 
   if (obj.type === "stream_event" && obj.event) {
     const ev = obj.event;
@@ -72,8 +60,12 @@ export function parseStreamJson(obj) {
         && typeof ev.delta.text === "string" && ev.delta.text.length > 0) {
       out.deltas.push(ev.delta.text);
     } else if (ev.type === "content_block_delta" && ev.delta?.type === "thinking_delta") {
-      // Reasoning tokens (GLM 5.2, Claude thinking): not shown as app output,
-      // but a useful "still working" phase for the pre-first-token panel.
+      // Reasoning tokens (GLM 5.2, Claude thinking): shown in the pane body
+      // (dimmed, above final code output), not mixed into the app-output buffer.
+      const thinking = ev.delta.thinking ?? ev.delta.text;
+      if (typeof thinking === "string" && thinking.length > 0) {
+        out.thinkingDeltas.push(thinking);
+      }
       out.status = "Thinking…";
     } else if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
       out.status = `Running ${ev.content_block.name || "tool"}…`;
@@ -145,11 +137,12 @@ export function parseStreamJson(obj) {
  * Spawn a routed `claude -p` headless run and parse its stream-json stdout.
  *
  * @param {{
- *   configDir: string,
+ *   configDir?: string,
  *   cwd: string,
  *   prompt: string,
  *   signal?: AbortSignal,
  *   onDelta?: (text: string, msSinceStart: number) => void,
+ *   onThinking?: (text: string, msSinceStart: number) => void,
  *   onTokens?: (tokens: { inputTokens?: number, outputTokens?: number }) => void,
  *   onError?: (result: ClaudeRunResult) => void,
  *   onStatus?: (label: string) => void,
@@ -161,11 +154,12 @@ export function parseStreamJson(obj) {
  * @returns {Promise<ClaudeRunResult>}
  */
 export async function runClaude({
-  configDir,
+  configDir = "",
   cwd,
   prompt,
   signal,
   onDelta,
+  onThinking,
   onTokens,
   onError,
   onStatus,
@@ -194,13 +188,11 @@ export async function runClaude({
   let stderrTail = "";
   let timedOut = false;
 
-  // Run `claude -p` in an isolated CLAUDE_CONFIG_DIR (the side's clean config
-  // dir) so it loads ONLY that dir's settings.json — no merge with the user's
-  // ~/.claude/settings.json. Strip Fireworks/firerouter env from the inherited
-  // process env so a leaked ANTHROPIC_BASE_URL / model-mapping var can't
-  // override the clean settings. The side's settings.json provides routing +
-  // auth (inline API key).
-  const childEnv = buildChildEnv(env, configDir);
+  // Use the user's FireConnect-managed Claude profile unless a legacy isolated
+  // config dir is passed (tests only).
+  const childEnv = configDir
+    ? buildIsolatedChildEnv(env, configDir)
+    : { ...env };
   const args = [
     "-p", prompt,
     "--output-format", "stream-json",
@@ -226,6 +218,11 @@ export async function runClaude({
     tokenLog.push({ t, text: delta });
     text += delta;
     onDelta?.(delta, t);
+  };
+
+  const recordThinking = (delta) => {
+    const t = performance.now() - start;
+    onThinking?.(delta, t);
   };
 
   // Backstops: first-token stall + hard run cap. Cleared on exit.
@@ -297,6 +294,9 @@ export async function runClaude({
       // An agentic phase (thinking, tool use, retry) IS progress — push the
       // first-token watchdog back so a long pre-text agentic run isn't killed.
       resetFirstTokenTimer();
+    }
+    if (parsed.thinkingDeltas && parsed.thinkingDeltas.length > 0) {
+      for (const d of parsed.thinkingDeltas) recordThinking(d);
     }
     if (parsed.deltas && parsed.deltas.length > 0) {
       for (const d of parsed.deltas) recordDelta(d);

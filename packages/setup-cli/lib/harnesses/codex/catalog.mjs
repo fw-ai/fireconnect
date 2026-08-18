@@ -47,10 +47,6 @@ export const MODEL_REASONING = {
     default: "max",
     levels: [reasoningLevel("high"), reasoningLevel("max")],
   },
-  "accounts/fireworks/models/glm-5p1": {
-    default: "high",
-    levels: [reasoningLevel("high")],
-  },
   "accounts/fireworks/models/deepseek-v4-flash": {
     default: "high",
     levels: [reasoningLevel("high"), reasoningLevel("max")],
@@ -95,6 +91,8 @@ const DEFAULT_REASONING = {
 };
 
 export const DEPRECATED_MODELS = new Set([
+  "accounts/fireworks/models/glm-5p1",
+  "accounts/fireworks/routers/glm-5p1-fast",
   "accounts/fireworks/models/kimi-k2p5",
   "accounts/fireworks/models/qwen3p6-plus",
 ]);
@@ -181,9 +179,9 @@ export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID)
       name: FIREROUTER_ROUTER_ID,
       displayName: exact ? (spec?.label ?? "FireRouter") : prettyModelName(stored),
       description: FIREROUTER_TAGLINE,
-      contextLength: spec?.vscode.maxInputTokens ?? 0,
-      supportsImageInput: spec?.vscode.vision ?? false,
-      supportsTools: spec?.vscode.toolCalling ?? true,
+      contextLength: spec?.capabilities.contextWindow ?? 0,
+      supportsImageInput: spec?.capabilities.vision ?? false,
+      supportsTools: spec?.capabilities.toolCalling ?? true,
     }),
     // Path-shaped IDs must keep the full short ref; last-segment slug would collide.
     slug: exact ? "firerouter" : stored,

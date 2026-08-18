@@ -48,23 +48,44 @@ export function buildCompareHtml({
   const fw = result.fireworks;
   const bothOk = inc.ok && fw.ok;
   const ratio = formatSpeedRatio(result.summary.speedRatio);
-  const delta = formatCostDelta(result.summary.costSavedFraction);
+  // This is a model-vs-model comparison — the side labels are the actual
+  // model names (e.g. "Claude Opus", "GLM 5.2 Fast", "Kimi K3 Fast"), so the
+  // verdict attributes speed/cost to the winning model, not a hardcoded
+  // "Fireworks" assumption or an incumbent/provider framing.
+  const incModel = escapeHtml(incumbentLabel);
+  const fwModel = escapeHtml(fireworksLabel);
+  // Attribute the cost win to the cheaper model. costSavedFraction is
+  // relative to the incumbent cost: >0 means the Fireworks (right) model is
+  // cheaper; <0 means the incumbent is cheaper. Re-base to the more-expensive
+  // model's cost so the cheaper model's savings aren't inflated (a 2× cost
+  // gap reads as 50% cheaper, not 100%), and format as "X% cheaper".
+  const cf = result.summary.costSavedFraction;
+  let costFraction = cf;
+  let costSide = fwModel;
+  if (Number.isFinite(cf) && cf < 0) {
+    costSide = incModel;
+    costFraction = fw.cost > 0 ? (fw.cost - inc.cost) / fw.cost : Number.NaN;
+  }
+  const delta = formatCostDelta(costFraction);
   const inc1k = costPerGenerations({ cost: inc.cost });
   const fw1k = costPerGenerations({ cost: fw.cost });
   // Speed direction: speedRatio = incumbentSeconds / fireworksSeconds, so >1
-  // means Fireworks (challenger) is faster and <1 means the incumbent is faster.
-  // Only attribute the speed to a side when the ratio is finite and decisive.
+  // means the Fireworks (challenger) model is faster and <1 means the
+  // incumbent model is faster. Only attribute speed when the ratio is finite.
   const sr = result.summary.speedRatio;
-  let speedSide = "Fireworks";
+  let speedSide = fwModel;
   if (Number.isFinite(sr) && sr > 0) {
-    if (sr < 1) speedSide = escapeHtml(incumbentLabel);
-    else if (sr > 1) speedSide = escapeHtml(fireworksLabel);
+    if (sr < 1) speedSide = incModel;
+    else if (sr > 1) speedSide = fwModel;
   }
+  // Cost direction: costSavedFraction >0 means the Fireworks (right) model is
+  // cheaper; <0 means the incumbent model is cheaper (costSide/costFraction
+  // were rebased above).
   // Only a run where both sides finished yields an honest comparison. On a
   // partial run, the strip states what happened instead of asserting a winner.
   const stripInner = bothOk
     ? `<div class="item">Speed: <b>${ratio}</b> on ${speedSide}</div>
-  <div class="item">Cost: <b>${delta}</b> on Fireworks</div>
+  <div class="item">Cost: <b>${delta}</b> on ${costSide}</div>
   <div class="item extrap">At 1,000 generations: ${formatUsd(inc1k)} → ${formatUsd(fw1k)} <span class="badge" style="margin-left:6px">linear extrapolation</span></div>`
     : `<div class="item">Run incomplete — ${escapeHtml(!inc.ok ? incumbentLabel : fireworksLabel)} didn't finish, so no speed/cost comparison is shown.</div>`;
 
@@ -123,7 +144,7 @@ export function buildCompareHtml({
 <body>
 <header>
   <h1>FireConnect Demo</h1>
-  <span class="sub">${escapeHtml(result.promptTitle)} · same prompt, same seed, two providers</span>
+  <span class="sub">${escapeHtml(result.promptTitle)} · same prompt, same seed · ${incModel} vs ${fwModel}</span>
 </header>
 <div class="grid">
   ${panelHtml({ side: "incumbent", label: incumbentLabel, run: inc, callMode: inc.callMode, appHtml: incumbentAppHtml, runnable: incumbentRunnable, fw: false })}

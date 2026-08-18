@@ -71,7 +71,6 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
 
   for (const [modelName, defaultLevel, efforts, summaryFormat] of [
     ["accounts/fireworks/models/glm-5p2", "max", ["high", "max"], "experimental"],
-    ["accounts/fireworks/models/glm-5p1", "high", ["high"], "none"],
     ["accounts/fireworks/models/minimax-m2p7", "medium", ["low", "medium", "high"], "experimental"],
   ]) {
     it(`uses correct reasoning config for ${modelName.split("/").pop()}`, () => {
@@ -152,9 +151,11 @@ describe("codex-catalog buildCodexCatalog", () => {
   it("filters out deprecated models", () => {
     const catalog = buildCodexCatalog([
       mockModel({ name: "accounts/fireworks/models/glm-5p2" }),
+      mockModel({ name: "accounts/fireworks/models/glm-5p1" }),
       mockModel({ name: "accounts/fireworks/models/kimi-k2p5" }),
     ]);
     const slugs = catalog.models.map((entry) => entry.slug);
+    assert.ok(!slugs.includes("glm-5p1"));
     assert.ok(!slugs.includes("kimi-k2p5"));
     assert.ok(slugs.includes("glm-5p2"));
   });
@@ -248,26 +249,26 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.ok(slugs.includes("kimi-latest"));
   });
 
-  it("still synthesizes kimi-fast-latest when API exposes kimi-k2p7-code-fast", () => {
+  it("still synthesizes kimi-fast-latest when API exposes kimi-k3-fast", () => {
     const catalog = buildCodexCatalog([
       mockModel({
-        name: "accounts/fireworks/models/kimi-k2p7-code",
-        displayName: "Kimi K2.7 Code",
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
         serverlessModes: [
           {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/default",
             skuInfos: [],
           },
           {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
+            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
             skuInfos: [],
           },
         ],
       }),
     ]);
     const slugs = catalog.models.map((entry) => entry.slug);
-    assert.ok(slugs.includes("kimi-k2p7-code-fast"));
+    assert.ok(slugs.includes("kimi-k3-fast"));
     assert.ok(slugs.includes("kimi-fast-latest"));
   });
 
@@ -353,7 +354,6 @@ describe("codex-catalog metadata tables", () => {
   it("MODEL_REASONING has entries for all documented models", () => {
     const expected = [
       "accounts/fireworks/models/glm-5p2",
-      "accounts/fireworks/models/glm-5p1",
       "accounts/fireworks/models/deepseek-v4-flash",
       "accounts/fireworks/models/deepseek-v4-pro",
       "accounts/fireworks/models/kimi-k2p6",

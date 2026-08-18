@@ -8,7 +8,7 @@ import { buildCompareHtml, serveStatic } from "../../lib/demo/browser.mjs";
 import http from "node:http";
 import { detectIncumbent, detectActiveFireworksHarness, incumbentPricing, providerListPricing } from "../../lib/demo/incumbent-detect.mjs";
 import {
-  isAuthFailure, isDemoOutputDir, findStaleDemoTmp, runDemoClean,
+  isDemoOutputDir, findStaleDemoTmp, runDemoClean,
 } from "../../lib/demo/command.mjs";
 import { buildResult } from "../../lib/demo/measurement.mjs";
 import {
@@ -38,7 +38,7 @@ const header = (provider, model, costLabel, rates) => ({ provider, model, costLa
 test("tui: split layout renders two columns with a divider and the right number of rows", () => {
   const out = fakeStdout({ columns: 100, rows: 24 });
   const r = new SplitPaneRenderer({
-    incumbent: header("Anthropic", "Claude Sonnet 5", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
+    incumbent: header("Anthropic", "Claude Sonnet 5", "list price", { inputPerMillion: 2, outputPerMillion: 10 }),
     fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
     stdout: out,
   });
@@ -111,6 +111,63 @@ test("tui: freeze(side, true) immediately shows the full bar + done ✓ (no movi
   r.finish("incumbent", { ok: true, inputTokens: 5, outputTokens: 20, seconds: 2, cost: 0.001 });
   r.stop();
   assert.match(out._buf.out, /done ✓/);
+});
+
+// Regression: freeze() sets done=true before finish() reconciles cost. The meter
+// must keep estimating from streamed tokens/chars in that window — not flash $0.
+test("tui: freeze() keeps a running cost estimate until finish() reconciles", () => {
+  const out = fakeStdout({ columns: 100, rows: 24 });
+  const r = new SplitPaneRenderer({
+    incumbent: header("Anthropic", "Claude", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
+    fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
+    stdout: out,
+  });
+  r.start();
+  r.setTokens("incumbent", { inputTokens: 100, outputTokens: 500 });
+  r.pushDelta("incumbent", "<html><body>hello world</body></html>");
+  r.freeze("incumbent", true);
+  r.render();
+  const mid = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
+  assert.doesNotMatch(mid, /\$0(?:\s|$)/, "frozen side should not show $0 while cost is still estimated");
+  assert.match(mid, /\$0\.00/, "estimated cost from tokens should be visible");
+  r.finish("incumbent", { ok: true, inputTokens: 100, outputTokens: 500, seconds: 2, cost: 0.0081 });
+  r.stop();
+});
+
+test("tui: pushThinking renders reasoning above output in dim style", () => {
+  const out = fakeStdout({ columns: 100, rows: 24 });
+  const r = new SplitPaneRenderer({
+    incumbent: header("Anthropic", "Claude", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
+    fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
+    stdout: out,
+  });
+  r.start();
+  r.pushThinking("fireworks", "Plan the HTML layout first.");
+  r.pushDelta("fireworks", "<html><body>ok</body></html>");
+  r.render();
+  const plain = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
+  const thinkingIdx = plain.indexOf("Plan the HTML layout first.");
+  const outputIdx = plain.indexOf("<html><body>ok</body></html>");
+  assert.ok(thinkingIdx >= 0, "thinking trace should render in the pane");
+  assert.ok(outputIdx >= 0, "output should render in the pane");
+  assert.ok(thinkingIdx < outputIdx, "thinking should appear before final output");
+  r.stop();
+});
+
+test("tui: long thinking does not crowd out streaming code output", () => {
+  const out = fakeStdout({ columns: 100, rows: 24 });
+  const r = new SplitPaneRenderer({
+    incumbent: header("Anthropic", "Claude", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
+    fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
+    stdout: out,
+  });
+  r.start();
+  r.pushThinking("fireworks", "x".repeat(5000));
+  r.pushDelta("fireworks", "<html><body>visible code</body></html>");
+  r.render();
+  const plain = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(plain, /visible code/, "code output must remain visible when thinking is long");
+  r.stop();
 });
 
 test("tui: freeze(side, false) immediately shows failed ✗", () => {
@@ -274,8 +331,8 @@ function sampleResult() {
   return buildResult({
     incumbent: {
       side: "incumbent", provider: "Anthropic", model: "Claude Sonnet 5", modelId: "claude-sonnet-5",
-      callMode: "live", inputTokens: 100, outputTokens: 2000, seconds: 8.0, cost: 0.03,
-      rates: { inputPerMillion: 3, outputPerMillion: 15, source: "https://www.anthropic.com/pricing" },
+      callMode: "live", inputTokens: 100, outputTokens: 2000, seconds: 8.0, cost: 0.0202,
+      rates: { inputPerMillion: 2, outputPerMillion: 10, source: "https://www.anthropic.com/pricing" },
       ok: true, appRunnable: true,
     },
     fireworks: {
@@ -299,7 +356,7 @@ test("browser: compare.html is self-contained and inlines both apps", () => {
     fireworksRunnable: true,
     incumbentLabel: "Anthropic · Claude Sonnet 5",
     fireworksLabel: "Fireworks · GLM 5.2 Fast",
-    copySummary: "Raced Claude vs GLM. Built with `fireconnect demo`.",
+    copySummary: "Raced Claude vs GLM. Built with `fireconnect claude demo`.",
   });
   assert.match(html, /<!doctype html>/);
   assert.match(html, /Anthropic · Claude Sonnet 5/);
@@ -309,12 +366,41 @@ test("browser: compare.html is self-contained and inlines both apps", () => {
   assert.match(html, /INC/);
   assert.match(html, /FW/);
   // copy summary inlined
-  assert.match(html, /fireconnect demo/);
+  assert.match(html, /fireconnect claude demo/);
   // no external network (no http(s) resource refs in tags)
   assert.doesNotMatch(html, /<script src=/);
   assert.doesNotMatch(html, /<link [^>]*href=/);
   // comparison strip numbers present (8s / 2s = 4×)
   assert.match(html, /4×/);
+});
+
+test("browser: cost strip attributes the win to the cheaper model with a rebased percent", () => {
+  // Incumbent model is cheaper (costSavedFraction < 0). The strip must say
+  // the incumbent model is X% cheaper — rebased to the fireworks cost so the
+  // savings aren't inflated — not "X% more expensive" (the old right-side-
+  // relative phrase inverted it) and not 100% cheaper (the old Math.abs of
+  // the incumbent-relative fraction).
+  const result = sampleResult();
+  result.incumbent.cost = 0.013;
+  result.fireworks.cost = 0.0202;
+  result.summary.costSavedFraction = (0.013 - 0.0202) / 0.013;
+  const html = buildCompareHtml({
+    result,
+    incumbentAppHtml: "<html><body>INC</body></html>",
+    fireworksAppHtml: "<html><body>FW</body></html>",
+    incumbentRunnable: true,
+    fireworksRunnable: true,
+    incumbentLabel: "Claude Sonnet 5",
+    fireworksLabel: "GLM 5.2 Fast",
+    copySummary: "x",
+  });
+  const strip = html.match(/Cost: <b>[^<]*<\/b> on [^<]*/)?.[0] ?? "";
+  assert.match(strip, /cheaper/);
+  assert.doesNotMatch(strip, /more expensive/);
+  // cheaper side is the incumbent model
+  assert.match(strip, /Claude Sonnet 5/);
+  // rebased: (0.0202 - 0.013) / 0.0202 ≈ 36%, not |(0.013 - 0.0202) / 0.013| ≈ 56%
+  assert.match(strip, /36% cheaper/);
 });
 
 test("browser: non-runnable panel shows the didn't-run note and code by default", () => {
@@ -345,7 +431,7 @@ test("browser: result JSON script block round-trips without entity corruption", 
     fireworksRunnable: true,
     incumbentLabel: "Anthropic · Claude",
     fireworksLabel: "Fireworks · GLM 5.2 Fast",
-    copySummary: "Raced Claude vs GLM. Built with `fireconnect demo`.",
+    copySummary: "Raced Claude vs GLM. Built with `fireconnect claude demo`.",
   });
   // extract the result script block content and parse it
   const m = html.match(/<script id="result" type="application\/json">([\s\S]*?)<\/script>/);
@@ -357,7 +443,7 @@ test("browser: result JSON script block round-trips without entity corruption", 
   // copy summary is a valid JS string literal (single surrounding pair of quotes)
   const copyMatch = html.match(/var text = (".*?");\n/s);
   assert.ok(copyMatch, "copy text assignment present");
-  assert.equal(JSON.parse(copyMatch[1]), "Raced Claude vs GLM. Built with `fireconnect demo`.");
+  assert.equal(JSON.parse(copyMatch[1]), "Raced Claude vs GLM. Built with `fireconnect claude demo`.");
 });
 
 test("browser: a failed side shows an honest 'run incomplete' strip, not a comparison", () => {
@@ -484,7 +570,7 @@ async function pathExistsForTest(p) {
 
 test("providerListPricing: known anthropic + openai models resolve real rates", () => {
   const a = providerListPricing({ provider: "anthropic", modelId: "claude-sonnet-5" });
-  assert.equal(a.inputPerMillion, 3);
+  assert.equal(a.inputPerMillion, 2);
   assert.equal(a.estimated, false);
   const o = providerListPricing({ provider: "openai", modelId: "gpt-4o" });
   assert.equal(o.inputPerMillion, 2.5);
@@ -530,7 +616,7 @@ test("providerListPricing: new OpenAI flagships (GPT-5.5 / 5.4 / 5.4 mini) resol
 
 test("providerListPricing: anthropic cached input is 10% of input", () => {
   const r = providerListPricing({ provider: "anthropic", modelId: "claude-sonnet-5" });
-  assert.ok(Math.abs(r.cachedInputPerMillion - 0.3) < 1e-9, `cached ~0.3, got ${r.cachedInputPerMillion}`);
+  assert.ok(Math.abs(r.cachedInputPerMillion - 0.2) < 1e-9, `cached ~0.2, got ${r.cachedInputPerMillion}`);
 });
 
 test("providerListPricing: unknown provider → not-per-token subscription shape", () => {
@@ -559,36 +645,6 @@ test("readBestHtmlFromDir: recovers the largest .html file a tool wrote", async 
 test("readBestHtmlFromDir: missing dir yields empty string (never throws)", async () => {
   assert.equal(await readBestHtmlFromDir("/nonexistent/path/xyz"), "");
   assert.equal(await readBestHtmlFromDir(""), "");
-});
-
-// ── pre-flight auth classification ───────────────────────────────────────────
-// A 401/403 (bad key) must be treated as prompt-able — the demo should ask for
-// a fresh key, not tell the user to "pick another model". A non-auth failure
-// (model not enabled) is not fixable by re-entering a key and stays a throw.
-
-test("isAuthFailure: 401 httpStatus is an auth failure (prompt, don't bail)", () => {
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 401, error: "Fireworks request failed (401 )" }), true);
-});
-
-test("isAuthFailure: 403 httpStatus is an auth failure", () => {
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 403, error: "forbidden" }), true);
-});
-
-test("isAuthFailure: 404 / non-auth status is NOT an auth failure (pick another model)", () => {
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 404, error: "model not found" }), false);
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 400, error: "bad request" }), false);
-});
-
-test("isAuthFailure: the real reported 401 body classifies as auth (regression)", () => {
-  // Verbatim from a user run: a stale key resolved from env/config was rejected
-  // with this body. Pre-fix the demo threw "pick another model"; it should prompt.
-  const body = 'Fireworks request failed (401 ): {"error":{"message":"The API key you provided is invalid.","param":null,"code":"UNAUTHORIZED","type":"error"}}';
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 401, error: body }), true);
-});
-
-test("isAuthFailure: text backstop catches a thrown error with no status", () => {
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 0, error: "UNAUTHORIZED: invalid api key" }), true);
-  assert.equal(isAuthFailure({ ok: false, httpStatus: 0, error: "model not deployed on account" }), false);
 });
 
 // ── incumbent detection ──────────────────────────────────────────────────────
@@ -760,8 +816,8 @@ test("detectActiveFireworksHarness: empty home returns null", async () => {
 test("incumbentPricing: Anthropic sonnet list rate with source", () => {
   const inc = { kind: "anthropic", modelId: "claude-sonnet-5" };
   const p = incumbentPricing(inc);
-  assert.equal(p.inputPerMillion, 3);
-  assert.equal(p.outputPerMillion, 15);
+  assert.equal(p.inputPerMillion, 2);
+  assert.equal(p.outputPerMillion, 10);
   assert.equal(p.estimated, false);
   assert.equal(p.source, "https://www.anthropic.com/pricing");
 });

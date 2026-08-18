@@ -1,7 +1,7 @@
 import { writeFileAtomic } from "../../io/atomic-write.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, unlink } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -17,7 +17,7 @@ import {
   isFireworksShapedKey,
   MISSING_FIREWORKS_API_KEY_MESSAGE,
 } from "../../keys/key-type.mjs";
-import { lookupVscodeModelMetadata } from "../../fireworks/model-specs.mjs";
+import { resolveModelDisplayMetadata } from "../../fireworks/model-display.mjs";
 import { FIREPASS_ROUTER_ID, prettyModelName } from "../../fireworks/models.mjs";
 import {
   AZURE_API_KEY_ENV,
@@ -32,7 +32,7 @@ import {
   ANTHROPIC_BYOK_BODY_FIELD,
   ANTHROPIC_BYOK_HEADER,
 } from "../../firerouter/core.mjs";
-import { assertIdeStopped, ensureIdeStopped, isIdeRunning } from "../../io/ide-running.mjs";
+import { assertIdeStopped, ensureIdeStopped, isIdeRunning, quitInstruction } from "../../io/ide-running.mjs";
 import {
   withFireconnectRequestHeadersForModels,
 } from "./request-headers.mjs";
@@ -334,7 +334,7 @@ export function buildModelEntry(modelId) {
     id: shortFireworksModelRef(modelId),
     name: prettyModelName(modelId),
     url: VSCODE_FIREWORKS_MODEL_URL,
-    ...lookupVscodeModelMetadata(modelId),
+    ...resolveModelDisplayMetadata(modelId),
   };
 }
 
@@ -353,7 +353,7 @@ export function buildAzureModelEntry(modelId, baseUrl) {
     id: modelId,
     name: modelId,
     url: baseUrl,
-    ...lookupVscodeModelMetadata(metadataRef),
+    ...resolveModelDisplayMetadata(metadataRef),
   };
 }
 
@@ -452,7 +452,7 @@ const VSCODE_PROCESS_SPEC = {
 };
 
 const VSCODE_RUNNING_MESSAGE =
-  "VS Code is running. Quit it first (Cmd-Q / File > Quit) so the API key write to state.vscdb isn't discarded when VS Code exits, then rerun. Or pass --force to write anyway (not recommended).";
+  `VS Code is running. ${quitInstruction("VS Code")} so the API key write to state.vscdb isn't discarded when VS Code exits, then rerun. Or pass --force to write anyway (not recommended).`;
 
 /**
  * @returns {boolean} true if the VS Code GUI process is currently running.
@@ -486,6 +486,19 @@ export function assertVscodeStopped({ force = false } = {}) {
 /* Snapshot/restore (mirror cursor-core's backup pattern)                      */
 /* -------------------------------------------------------------------------- */
 
+export const VSCODE_DATA_RELATIVE_DIR = ".fireconnect/vscode";
+
+/**
+ * VS Code's FireConnect data dir (backup + state). Defaults to
+ * `~/.fireconnect/vscode` unless overridden via `--data-dir`.
+ * @param {string} home
+ * @param {string} [dataDir]
+ * @returns {string}
+ */
+export function vscodeDataDir(home, dataDir = "") {
+  return dataDir || path.join(home, VSCODE_DATA_RELATIVE_DIR);
+}
+
 /**
  * @param {string} dataDir
  * @param {string} filePath
@@ -498,6 +511,40 @@ export function vscodeBackupPath(dataDir, filePath) {
 /** @param {string} dataDir @param {string} filePath @returns {Promise<object>} */
 export async function readVscodeBackup(dataDir, filePath) {
   return readJsonIfExists(vscodeBackupPath(dataDir, filePath));
+}
+
+/**
+ * One-time relocation of VS Code backups from the legacy shared Claude data dir
+ * (`~/.fireconnect/claude`, where older releases wrote them because the
+ * VS Code harness reused Claude's `resolveDataDir`) into VS Code's own data
+ * dir. Idempotent; safe to call on every command. Leaves any claude-owned
+ * `provider-*` files untouched.
+ * @param {{ home: string, dataDir: string }} opts
+ */
+export async function relocateLegacyVscodeBackups({ home, dataDir }) {
+  const newDir = vscodeDataDir(home, dataDir);
+  const legacyDir = path.join(home, ".fireconnect/claude");
+  if (path.resolve(newDir) === path.resolve(legacyDir) || !existsSync(legacyDir)) {
+    return;
+  }
+  let entries;
+  try {
+    entries = await readdir(legacyDir);
+  } catch {
+    return; // legacy dir absent — nothing to relocate
+  }
+  await mkdir(newDir, { recursive: true, mode: 0o700 }).catch(() => {});
+  for (const name of entries) {
+    if (!name.startsWith("vscode-backup.")) continue;
+    const from = path.join(legacyDir, name);
+    const to = path.join(newDir, name);
+    if (existsSync(to)) continue; // already migrated or a new `on` wrote here
+    try {
+      await rename(from, to);
+    } catch {
+      /* dest appeared between check and move; leave the legacy file in place */
+    }
+  }
 }
 
 /**

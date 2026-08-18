@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { OPENCODE_API_KEY_ENV_REF } from "../../lib/harnesses/opencode/core.mjs";
 import {
   DEFAULT_HAIKU_MODEL,
+  DEFAULT_OPUS_MODEL,
   DEFAULT_SONNET_MODEL,
 } from "../../lib/harnesses/claude/model-profile.mjs";
 import {
@@ -16,7 +17,6 @@ import {
   FIREPASS_ROUTER,
   GLM_LATEST,
   GLM_FAST_LATEST,
-  K2P7_FAST,
   KIMI_FAST_LATEST,
   NO_ENV_KEY,
   expectedOpencodeLatestRouterEntry,
@@ -35,6 +35,8 @@ import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 
 const CLAUDE_STORED_MAIN_MODEL = `${KIMI_FAST_LATEST}[1m]`;
 const CLAUDE_STORED_GLM_MODEL = `${GLM_FAST_LATEST}[1m]`;
+const CLAUDE_STORED_DS_PRO_MODEL = "deepseek-pro-latest[1m]";
+const CLAUDE_STORED_DS_FLASH_MODEL = "deepseek-flash-latest[1m]";
 const packageJsonPath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../package.json",
@@ -60,7 +62,7 @@ describe("fireconnect help quick", () => {
       assert.equal(quick.code, 0, quick.stderr);
       assert.match(quick.stdout, /Get started/);
       assert.match(quick.stdout, /login\s+Sign in to Fireworks/);
-      assert.match(quick.stdout, /claude on\s+Route Claude Code/);
+      assert.match(quick.stdout, /claude\s+Route Claude Code/);
       assert.match(quick.stdout, /help\s+Full command reference/);
       assert.doesNotMatch(quick.stdout, /Global options/);
       assert.ok(
@@ -73,23 +75,30 @@ describe("fireconnect help quick", () => {
 
 describe("harness help matches supported command features", () => {
   test("documents shared Azure options only on Azure-capable harnesses", async () => {
-    for (const harness of ["opencode", "codex", "pi", "cursor", "vscode", "deepagents"]) {
-      const result = await runCli(["help", harness]);
-      assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /--azure/);
-      assert.match(result.stdout, /Microsoft Foundry endpoint/);
-    }
-    const claude = await runCli(["help", "claude"]);
-    assert.doesNotMatch(claude.stdout, /--azure/);
-    assert.match(claude.stdout, /Anthropic-compatible gateway URL override/);
+    await withTempHome("help-azure", async (home) => {
+      for (const harness of ["opencode", "codex", "pi", "cursor", "vscode"]) {
+        const result = await runCli(["help", harness], { home });
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /--azure/);
+        assert.match(result.stdout, /Microsoft Foundry endpoint/);
+      }
+      const deepseek = await runCli(["help", "deepseek"], { home });
+      assert.equal(deepseek.code, 0, deepseek.stderr);
+      assert.doesNotMatch(deepseek.stdout, /--azure/);
+      const claude = await runCli(["help", "claude"], { home });
+      assert.doesNotMatch(claude.stdout, /--azure/);
+      assert.match(claude.stdout, /Anthropic-compatible gateway URL override/);
+    });
   });
 
   test("does not advertise ignored gateway base-url overrides", async () => {
-    for (const harness of ["codex", "pi"]) {
-      const result = await runCli(["help", harness]);
-      assert.doesNotMatch(result.stdout, /Fireworks gateway URL override/);
-      assert.match(result.stdout, /--base-url.*Microsoft Foundry endpoint/);
-    }
+    await withTempHome("help-baseurl", async (home) => {
+      for (const harness of ["codex", "pi"]) {
+        const result = await runCli(["help", harness], { home });
+        assert.doesNotMatch(result.stdout, /Fireworks gateway URL override/);
+        assert.match(result.stdout, /--base-url.*Microsoft Foundry endpoint/);
+      }
+    });
   });
 
   test("documents optional usage and VS Code FireRouter options", async () => {
@@ -135,9 +144,9 @@ describe("harness help matches supported command features", () => {
     assert.match(cursor.stdout, /Only Fireworks models work while FireConnect is on/);
     assert.match(cursor.stdout, /built-ins are hidden/);
 
-    const deepagents = await runCli(["deepagents", "help"]);
-    assert.equal(deepagents.code, 0, deepagents.stderr);
-    assert.match(deepagents.stdout, /use firerouter for FireRouter/);
+    const deepseek = await runCli(["deepseek", "help"]);
+    assert.equal(deepseek.code, 0, deepseek.stderr);
+    assert.match(deepseek.stdout, /use firerouter for FireRouter/);
   });
 
   test("fireconnect <harness> help matches fireconnect help <harness>", async () => {
@@ -209,7 +218,7 @@ describe("unexpected input guidance", () => {
 });
 
 describe("fireconnect claude on", () => {
-  test("fw_ uses kimi-fast-latest as default main router", async () => {
+  test("fw_ leaves main and Sonnet native and pins the rest to Fireworks", async () => {
     await withTempHome("on-fw", async (home) => {
       const result = await runCli(
         ["claude", "on", "--api-key", FW_CLAUDE_KEY],
@@ -217,19 +226,23 @@ describe("fireconnect claude on", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /FireRouter off/);
-      assert.doesNotMatch(result.stdout, /Using glm-fast-latest/);
 
       const settings = await readClaudeSettings(home);
-      assert.match(settings.model, /kimi-fast-latest/);
-      assertClaudeMainModel(settings, CLAUDE_STORED_MAIN_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_GLM_MODEL);
+      // Main is native (unpinned): no top-level model and no legacy main env.
+      assert.equal(settings.model, undefined);
+      assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_DS_PRO_MODEL);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "DeepSeek V4 Pro (0813) (Latest)");
+      // Sonnet is native (unpinned): the alias env keys are never written.
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, undefined);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, CLAUDE_STORED_DS_FLASH_MODEL);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash (0731) (Latest)");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_MAIN_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K2.7 Code Fast (Latest)");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash");
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K3 Fast (Latest)");
+      // Subagent takes the Haiku model, with the [1m] tag stripped.
+      assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, "deepseek-flash-latest");
       assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, CLAUDE_STORED_GLM_MODEL);
       assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, undefined);
       assert.equal(settings.env.DISABLE_TELEMETRY, "1");
       assert.equal(settings.env.DO_NOT_TRACK, "1");
@@ -280,8 +293,12 @@ describe("fireconnect claude on", () => {
       const settings = await readClaudeSettings(home);
       assert.equal(settings.apiKeyHelper, undefined);
       assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Fireworks-Api-Key: ${FW_CLAUDE_KEY}`));
-      assertClaudeMainModel(settings, "firerouter[1m]");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_GLM_MODEL);
+      // FireRouter is Opus-tier: with native Anthropic auth present it takes the
+      // Opus slot. Main stays native (unpinned).
+      assert.equal(settings.model, undefined);
+      assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_MAIN_MODEL);
       assert.equal(settings.env.ANTHROPIC_API_KEY, SK_ANT_KEY);
       assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
       assert.equal(settings.env.ANTHROPIC_BASE_URL, FIREWORKS_INFERENCE_URL);
@@ -328,7 +345,7 @@ describe("fireconnect opencode on", () => {
       assert.deepEqual(
         config.provider["fireworks-ai"].models[KIMI_FAST_LATEST],
         {
-          ...expectedOpencodeLatestRouterEntry("Kimi K2.7 Code Fast (Latest)", 262_000, 262_000),
+          ...expectedOpencodeLatestRouterEntry("Kimi K3 Fast (Latest)", 1_040_000, 131_072),
           modalities: { input: ["text", "image"] },
         },
       );
@@ -348,7 +365,7 @@ describe("fireconnect opencode on", () => {
       assert.deepEqual(
         config.provider["fireworks-ai"].models[KIMI_FAST_LATEST],
         {
-          ...expectedOpencodeLatestRouterEntry("Kimi K2.7 Code Fast (Latest)", 262_000, 262_000),
+          ...expectedOpencodeLatestRouterEntry("Kimi K3 Fast (Latest)", 1_040_000, 131_072),
           modalities: { input: ["text", "image"] },
         },
       );
@@ -364,10 +381,10 @@ describe("fireconnect model list", () => {
         { home, env: NO_ENV_KEY },
       );
       assert.equal(json.keyType, "firepass");
-      assert.equal(json.count, 5);
+      assert.equal(json.count, 4);
       assert.deepEqual(
         json.models.map((entry) => entry.shortId),
-        [GLM_LATEST, GLM_FAST_LATEST, "glm-5p2-fast", KIMI_FAST_LATEST, K2P7_FAST],
+        [GLM_LATEST, GLM_FAST_LATEST, "glm-5p2-fast", KIMI_FAST_LATEST],
       );
     });
   });
@@ -402,7 +419,7 @@ describe("fireconnect model list", () => {
     });
   });
 
-  test("text output groups preferred Fire Pass routers and pricing columns", async () => {
+  test("text output groups preferred Fire Pass routers without pricing columns (subscription)", async () => {
     await withTempHome("ml-banner", async (home) => {
       const result = await runCli(
         ["model", "list", "--api-key", FPK_KEY],
@@ -411,17 +428,17 @@ describe("fireconnect model list", () => {
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /LATEST ROUTERS — recommended, automatically track new versions/);
       assert.match(result.stdout, /FAST ROUTERS — higher tokens per second/);
-      assert.match(result.stdout, /INPUT\s+CACHED\s+OUTPUT/);
+      // Fire Pass is a subscription — no per-model metered pricing columns.
+      assert.doesNotMatch(result.stdout, /INPUT\s+CACHED\s+OUTPUT/);
+      assert.doesNotMatch(result.stdout, /\$/);
       assert.match(result.stdout, /glm-latest/);
       assert.match(result.stdout, /glm-fast-latest/);
       assert.match(result.stdout, /kimi-fast-latest/);
       assert.match(result.stdout, /\(text-only\)/);
       assert.doesNotMatch(result.stdout, /glm-5p2-fast/);
-      assert.doesNotMatch(result.stdout, /kimi-k2p7-code-fast/);
       assert.doesNotMatch(result.stdout, /kimi-k2p6-turbo/);
       assert.doesNotMatch(result.stdout, /kimi-latest/);
       assert.doesNotMatch(result.stdout, /\bKIND\b/);
-      assert.match(result.stdout, /\$2\.1\s+\$0\.21\s+\$6\.6/);
     });
   });
 
@@ -446,10 +463,11 @@ describe("fireconnect <harness> status", () => {
     await withTempHome("status-fw", async (home) => {
       await writeClaudeSettings(home, FW_CLAUDE_KEY);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
-      assert.equal(json.defaults.main, KIMI_FAST_LATEST);
-      assert.equal(json.defaults.opus, GLM_FAST_LATEST);
+      assert.equal(json.defaults.main, "claude-default");
+      assert.equal(json.defaults.opus, DEFAULT_OPUS_MODEL);
+      // Sonnet is native by default too.
       assert.equal(json.defaults.sonnet, DEFAULT_SONNET_MODEL);
-      assert.equal(json.defaults.haiku, "deepseek-v4-flash");
+      assert.equal(json.defaults.haiku, DEFAULT_HAIKU_MODEL);
     });
   });
 

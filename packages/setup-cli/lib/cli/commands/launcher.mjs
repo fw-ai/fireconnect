@@ -3,7 +3,7 @@ import { listHarnesses } from "../../harness/registry.mjs";
 import { detectInstalledHarnesses } from "../../harness/detect.mjs";
 import { readGlobalConfig } from "../../config/global-config.mjs";
 import { promptSelect } from "../../ui/prompt.mjs";
-import { accent, bold, dim, green } from "../../ui.mjs";
+import { accent, bold, dim, cyan } from "../../ui.mjs";
 import { readLocalVersion } from "../../system/version.mjs";
 import { runHarnessCommand } from "./harness.mjs";
 import { printHelp } from "./global.mjs";
@@ -17,7 +17,7 @@ import { printHelp } from "./global.mjs";
  */
 export function harnessStatusText(entry, detected) {
   if (entry?.enabled) {
-    return green("on");
+    return cyan("on");
   }
   if (entry) {
     return dim("off");

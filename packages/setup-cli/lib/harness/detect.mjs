@@ -30,7 +30,7 @@ export function detectInstalledHarnesses(home) {
     // The User dir exists on any VS Code install; chatLanguageModels.json
     // itself only appears once the user touches custom models.
     [HARNESS.VSCODE]: [path.dirname(chatLanguageModelsPath({ home }))],
-    [HARNESS.DEEPAGENTS]: [path.join(home, ".deepagents")],
+    [HARNESS.DEEPSEEK]: [path.join(home, ".dsh")],
   };
 
   return Object.entries(probes)

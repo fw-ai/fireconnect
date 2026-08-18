@@ -110,4 +110,24 @@ describe("opencode model entries", () => {
     assert.deepEqual(entry.modalities, { input: ["text", "image"] });
     assert.equal(entry.name, "Kimi K2.7 Code");
   });
+
+  it("emits OpenCode cost with snake_case cache_read for priced models", () => {
+    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-fast-latest");
+    assert.deepEqual(entry.cost, {
+      input: 2.1,
+      output: 6.6,
+      cache_read: 0.21,
+    });
+  });
+
+  it("omits cost for unpriced models (firerouter)", () => {
+    const entry = buildOpencodeModelEntry("firerouter");
+    assert.equal(entry.cost, undefined);
+  });
+
+  it("omits cost for Fire Pass subscription keys", () => {
+    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-fast-latest", { firepass: true });
+    assert.equal(entry.cost, undefined);
+    assert.ok(entry.limit.context >= 1_000_000);
+  });
 });

@@ -1,5 +1,5 @@
 /**
- * Argument parser for `fireconnect demo`.
+ * Argument parser for `fireconnect claude demo`.
  *
  * Lives in the demo folder on purpose: the shared CLI parser (`../parse-args.mjs`)
  * carries no demo-*specific* flag knowledge — its only demo touchpoint is a
@@ -9,30 +9,111 @@
  * Demo-specific flags (`--prompt`, `--challenger`, …) are handled here; the
  * command-agnostic global flags (`--json`, `--home`, `--api-key`, `--mode`, …)
  * are delegated to `applyGlobalFlag` so that knowledge stays in exactly one place
- * and `fireconnect demo` accepts the same global flags as every other command.
+ * and `fireconnect claude demo` accepts the same global flags as every other command.
+ *
+ * Top-level `fireconnect demo` is deprecated but still parsed here for compatibility.
  */
 
-import { applyGlobalFlag } from "../cli/parse-args.mjs";
+import { applyGlobalFlag, createBaseContext } from "../cli/parse-args.mjs";
 
 const DEMO_PROMPT_PRESETS = new Set(["tetris", "tictactoe", "snake", "clock", "custom"]);
 
 function requireValue(flag, value) {
   if (!value || value.startsWith("--")) {
-    throw new Error(`${flag} requires a value. Run: fireconnect help`);
+    throw new Error(`${flag} requires a value. Run: fireconnect claude help`);
   }
   return value;
 }
 
 /**
- * @param {string[]} rest  argv with the `demo` command token removed
- * @param {import("../harness/types.mjs").HarnessContext} ctx  a fresh base context
- * @returns {{ kind: "demo", ctx: object }
- *   | { kind: "global", command: "help", ctx: object, helpTopic: string }}
+ * Skip consecutive global flags starting at `start`, returning the next index.
+ * @param {string[]} argv
+ * @param {number} start
+ * @returns {number}
  */
-export function parseDemoArgs(rest, ctx) {
+function skipLeadingGlobalFlags(argv, start) {
+  let i = start;
+  const scratch = createBaseContext();
+  while (i < argv.length) {
+    const arg = argv[i];
+    if (!arg.startsWith("-")) {
+      break;
+    }
+    let consumed;
+    try {
+      consumed = applyGlobalFlag(scratch, arg, argv[i + 1]);
+    } catch {
+      break;
+    }
+    if (consumed === true) {
+      i += 2;
+    } else if (consumed === false) {
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  return i;
+}
+
+/**
+ * Locate a demo invocation in argv, tolerating leading global flags and flags
+ * between `claude` and `demo` (same as other Claude subcommands).
+ * @param {string[]} argv
+ * @returns {{ deprecated: boolean, rest: string[] } | null}
+ */
+export function findDemoInvocation(argv) {
+  const scratch = createBaseContext();
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h" || arg === "--version" || arg === "-V") {
+      return null;
+    }
+    if (!arg.startsWith("-")) {
+      if (arg === "demo") {
+        return {
+          deprecated: true,
+          rest: argv.slice(0, i).concat(argv.slice(i + 1)),
+        };
+      }
+      if (arg === "claude") {
+        const demoIndex = skipLeadingGlobalFlags(argv, i + 1);
+        if (argv[demoIndex] === "demo") {
+          return {
+            deprecated: false,
+            rest: argv.slice(0, i).concat(argv.slice(i + 1, demoIndex)).concat(argv.slice(demoIndex + 1)),
+          };
+        }
+      }
+      return null;
+    }
+    let consumed;
+    try {
+      consumed = applyGlobalFlag(scratch, arg, argv[i + 1]);
+    } catch {
+      return null;
+    }
+    if (consumed === true) {
+      i += 1;
+    } else if (consumed === null) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {string[]} rest  argv with `demo` or `claude demo` removed
+ * @param {import("../harness/types.mjs").HarnessContext} ctx  a fresh base context
+ * @returns {{ kind: "demo", ctx: object, deprecated?: boolean }
+ *   | { kind: "global", command: "help"|"version", ctx: object, helpTopic?: string }}
+ */
+export function parseDemoArgs(rest, ctx, { deprecated = false } = {}) {
   // Demo-specific defaults — the shared base context doesn't declare these.
   ctx.prompt = "";
   ctx.promptFile = "";
+  ctx.leftModel = "";
+  ctx.rightModel = "";
   ctx.challenger = "";
   ctx.anthropicModel = "";
   ctx.noOpen = false;
@@ -51,7 +132,7 @@ export function parseDemoArgs(rest, ctx) {
       return { kind: "global", command: "help", ctx, helpTopic: "demo" };
     }
 
-    // `fireconnect demo --version` mirrors every other subcommand: print the
+    // `fireconnect claude demo --version` mirrors every other subcommand: print the
     // CLI version instead of falling through to "Unknown argument: --version".
     if (arg === "--version" || arg === "-V") {
       return { kind: "global", command: "version", ctx };
@@ -64,11 +145,23 @@ export function parseDemoArgs(rest, ctx) {
     if (arg === "--prompt-file") {
       ctx.promptFile = requireValue(arg, next); i += 1; continue;
     }
+    if (arg === "--left-model") {
+      ctx.leftModel = requireValue(arg, next); i += 1; continue;
+    }
+    if (arg === "--right-model") {
+      ctx.rightModel = requireValue(arg, next);
+      ctx.challenger = ctx.rightModel;
+      i += 1; continue;
+    }
     if (arg === "--challenger") {
-      ctx.challenger = requireValue(arg, next); i += 1; continue;
+      ctx.challenger = requireValue(arg, next);
+      ctx.rightModel = ctx.challenger;
+      i += 1; continue;
     }
     if (arg === "--anthropic-model") {
-      ctx.anthropicModel = requireValue(arg, next); i += 1; continue;
+      ctx.anthropicModel = requireValue(arg, next);
+      ctx.leftModel = ctx.anthropicModel;
+      i += 1; continue;
     }
     if (arg === "--out") {
       ctx.out = requireValue(arg, next); i += 1; continue;
@@ -105,8 +198,8 @@ export function parseDemoArgs(rest, ctx) {
     }
     if (positional) {
       throw new Error(ctx.clean
-        ? "fireconnect demo clean takes no preset. Run: fireconnect help"
-        : "fireconnect demo takes an optional preset, not subcommands. Run: fireconnect help");
+        ? "fireconnect claude demo clean takes no preset. Run: fireconnect claude help"
+        : "fireconnect claude demo takes an optional preset, not subcommands. Run: fireconnect claude help");
     }
     if (arg === "clean") {
       ctx.clean = true;
@@ -115,21 +208,21 @@ export function parseDemoArgs(rest, ctx) {
   }
 
   if (ctx.clean) {
-    return { kind: "demo", ctx };
+    return { kind: "demo", ctx, deprecated };
   }
 
-  // `fireconnect demo [preset]` — the positional preset folds into ctx.prompt,
+  // `fireconnect claude demo [preset]` — the positional preset folds into ctx.prompt,
   // mirroring `--prompt`. An explicit --prompt wins over the positional.
   if (positional) {
     if (!DEMO_PROMPT_PRESETS.has(positional)) {
       throw new Error(
         `Unknown demo preset: ${positional}. Choose one of: `
-          + `${[...DEMO_PROMPT_PRESETS].join(", ")}. Run: fireconnect help`,
+          + `${[...DEMO_PROMPT_PRESETS].join(", ")}. Run: fireconnect claude help`,
       );
     }
     if (!ctx.prompt) {
       ctx.prompt = positional;
     }
   }
-  return { kind: "demo", ctx };
+  return { kind: "demo", ctx, deprecated };
 }

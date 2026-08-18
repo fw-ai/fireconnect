@@ -7,6 +7,7 @@ import {
   printHarnessOnSuccess,
 } from "../cli/messages.mjs";
 import { isFirerouterModel } from "../fireworks/model-id.mjs";
+import { assertRequestedModelServable } from "../fireworks/model-servability.mjs";
 import { detectApiKeyType } from "../keys/key-type.mjs";
 import { resolveAzureBaseUrl, resolveAzureOnApiKey } from "../fireworks/azure-core.mjs";
 import {
@@ -160,6 +161,8 @@ export async function engineOn(profile, ctx) {
     }
   }
 
+  await assertRequestedModelServable(modelId, { apiKey: effectiveKey, keyType });
+
   const result = await profile.enable({
     ctx,
     paths,
@@ -274,7 +277,20 @@ async function resolveOnKey(profile, ctx, paths) {
 export async function engineOff(profile, ctx) {
   ensureHomeForHarness(ctx, profile.id);
   const paths = profile.paths(ctx);
-  const wasEnabled = await isHarnessEnabled(ctx.home, profile.id);
+  // `wasEnabled` drives restore-vs-strip in `profile.disable`. The global
+  // `enabled` flag can drift from ground truth (older CLI versions, adapters
+  // that didn't maintain it), so prefer the harness's real config when the
+  // profile exposes `providerStatus` — otherwise a stale `false` flag would
+  // make `off` skip restoring a harness that's actually routed through Fireworks.
+  let wasEnabled = await isHarnessEnabled(ctx.home, profile.id);
+  if (typeof profile.providerStatus === "function") {
+    try {
+      const provider = await profile.providerStatus(ctx);
+      wasEnabled = provider === "fireworks" || provider === "azure";
+    } catch {
+      // Config unreadable (e.g. IDE DB locked): keep the flag-based value.
+    }
+  }
   if (profile.prepareOff) {
     await profile.prepareOff(ctx);
   }
@@ -347,10 +363,12 @@ export function defineHarnessProfile(profile) {
     label: profile.label,
     resolveKey: profile.resolveKey,
     firerouter: profile.firerouter ?? null,
+    azure: profile.azure ?? null,
     // Engine supplies the default flow; a profile may override when needed.
     on: profile.on ?? ((ctx) => engineOn(profile, ctx)),
     off: profile.off ?? ((ctx) => engineOff(profile, ctx)),
     status: profile.status,
+    ...(profile.providerStatus ? { providerStatus: profile.providerStatus } : {}),
     ...(profile.usage ? { usage: profile.usage } : {}),
     ...(profile.live ? { live: profile.live } : {}),
     ...(profile.resolveOnContext ? { resolveOnContext: profile.resolveOnContext } : {}),

@@ -11,6 +11,7 @@ import {
   claudeModelOverridesFrom,
   hasClaudeModelOverrides,
   mergeClaudeModelMappings,
+  migrateLegacyClaudeModelMapping,
   normalizeClaudeProfiles,
   resolveClaudeModelMapping,
   savedClaudeModelMapping,
@@ -54,14 +55,24 @@ export function resolveClaudeActivationPlan({
   const firstSetup = !snapshot.intent && Object.keys(saved).length === 0;
   const overrides = claudeModelOverridesFrom(ctx);
   const explicitOverrides = hasClaudeModelOverrides(ctx);
+  // FireRouter is Opus-tier (it routes hard tasks to Claude Opus 5), so on first
+  // setup with firerouter auth it takes the Opus slot. Every other slot keeps its
+  // default; Fable already carries the vision model, so the vision slot stays
+  // covered when Opus is the router.
   const automatic = firstSetup && automaticFirerouter && !explicitOverrides
-    ? { main: "firerouter" }
+    ? { opus: "firerouter" }
     : {};
+  // Migrate legacy pinned slugs baked into an existing install (saved profile
+  // and/or live settings) to their -latest router aliases before merging. Only
+  // persisted state is migrated; explicit per-run CLI overrides (`overrides`)
+  // are merged afterward so a deliberate `--haiku deepseek-v4-flash` is honored.
+  const migratedSaved = migrateLegacyClaudeModelMapping(saved).mapping;
+  const migratedActive = migrateLegacyClaudeModelMapping(active).mapping;
   return {
     firstSetup,
     explicitOverrides,
     mapping: resolveClaudeModelMapping(
-      mergeClaudeModelMappings(saved, active, automatic, overrides),
+      mergeClaudeModelMappings(migratedSaved, migratedActive, automatic, overrides),
       keyType,
     ),
   };

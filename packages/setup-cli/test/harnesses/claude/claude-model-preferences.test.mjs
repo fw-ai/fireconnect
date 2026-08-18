@@ -14,6 +14,7 @@ import {
   userSettingsPath,
 } from "../../../lib/harnesses/claude/core.mjs";
 import {
+  defaultClaudeModelMapping,
   savedClaudeModelMapping,
   withSavedClaudeModelMapping,
 } from "../../../lib/harnesses/claude/model-profile.mjs";
@@ -97,7 +98,14 @@ describe("Claude model preferences", () => {
       env,
     );
     assert.equal(reon.code, 0, reon.stderr);
-    const expected = { ...initial, opus: "kimi-fast-latest" };
+    // Persisted state is migrated on re-on, so the stored deepseek-v4-flash
+    // subagent comes back as its -latest router alias. Only explicit per-run
+    // flags escape the migration, and this re-on passes just --opus.
+    const expected = {
+      ...initial,
+      opus: "kimi-fast-latest",
+      subagent: "deepseek-flash-latest",
+    };
     assert.deepEqual(await activeMapping(home), expected);
     let config = await readGlobalConfig(home);
     assert.deepEqual(
@@ -121,7 +129,7 @@ describe("Claude model preferences", () => {
     const onAgain = await runFireconnect(["claude", "on", "--non-interactive"], env);
     assert.equal(onAgain.code, 0, onAgain.stderr);
     assert.match(onAgain.stdout, /Manage models/);
-    assert.match(onAgain.stdout, /fireconnect claude on --interactive/);
+    assert.match(onAgain.stdout, /fireconnect claude (?:on )?--interactive/);
     assert.deepEqual(await activeMapping(home), expected);
     const settings = await readJsonIfExists(userSettingsPath(home));
     assert.equal(settings.model, "glm-latest[1m]");
@@ -217,13 +225,6 @@ describe("Claude model preferences", () => {
       cliEnv(home),
     );
     assert.equal(fireworksSwitch.code, 0, fireworksSwitch.stderr);
-    assert.deepEqual(await activeMapping(home), {
-      main: "kimi-fast-latest",
-      opus: "glm-fast-latest",
-      sonnet: "glm-fast-latest",
-      haiku: "deepseek-v4-flash",
-      fable: "kimi-fast-latest",
-      subagent: "deepseek-v4-flash",
-    });
+    assert.deepEqual(await activeMapping(home), defaultClaudeModelMapping("fireworks"));
   });
 });

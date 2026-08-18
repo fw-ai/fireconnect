@@ -1,170 +1,40 @@
 import {
   appendLatestRouterSuffix,
   fireworksInputModalities,
+  isRouterShortId,
   lookupFireworksModelCost,
   lookupFireworksModelLimits,
   lookupModelSpec,
   resolveFireworksModelLabel,
 } from "../../fireworks/model-specs.mjs";
 import {
+  fireworksModelSlug,
+  fullFireworksResourceId,
   isFirerouterGatewayPattern,
   isFirerouterModel,
-  normalizeModelId,
-  shortFireworksModelRef,
-  fullFireworksResourceId,
 } from "../../fireworks/model-id.mjs";
-import { prettyModelName } from "../../fireworks/models.mjs";
+import { prettyModelName, preferLatestAliases } from "../../fireworks/models.mjs";
+import { getServerlessCatalogSnapshot } from "../../fireworks/serverless-catalog-cache.mjs";
 import { mergeFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
 const PI_PROVIDER = "fireworks";
 
-/** Fireworks router IDs FireConnect registers for Pi's /model picker. */
-const PI_FIREWORKS_ROUTER_IDS = [
-  "accounts/fireworks/routers/glm-latest",
-  "accounts/fireworks/routers/glm-fast-latest",
-  "accounts/fireworks/routers/glm-5p2-fast",
-  "accounts/fireworks/routers/kimi-fast-latest",
-  "accounts/fireworks/routers/kimi-k2p7-code-fast",
-  "accounts/fireworks/routers/kimi-latest",
-];
-
 /**
- * Canonical model IDs Pi ships in its built-in `fireworks` catalog. Pi keys
- * those definitions by canonical ID, so FireConnect cannot rely on them after
- * writing short IDs. Complete short-ID rows are built from the metadata below.
- * @see https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/fireworks.models.ts
+ * Fireworks model ids currently known from the in-process serverless catalog
+ * cache (preferLatestAliases-filtered, like the live registerable set). Used as
+ * the offline/no-catalog registration source instead of a hand-maintained list.
+ * Returns [] when no cached snapshot is available.
  */
-export const PI_BUILTIN_FIREWORKS_MODEL_IDS = new Set([
-  "accounts/fireworks/models/deepseek-v4-flash",
-  "accounts/fireworks/models/deepseek-v4-pro",
-  "accounts/fireworks/models/glm-5p1",
-  "accounts/fireworks/models/glm-5p2",
-  "accounts/fireworks/models/gpt-oss-120b",
-  "accounts/fireworks/models/gpt-oss-20b",
-  "accounts/fireworks/models/kimi-k2p6",
-  "accounts/fireworks/models/kimi-k2p7-code",
-  "accounts/fireworks/models/minimax-m2p7",
-  "accounts/fireworks/models/minimax-m3",
-  "accounts/fireworks/models/qwen3p7-plus",
-  "accounts/fireworks/routers/glm-5p1-fast",
-  "accounts/fireworks/routers/glm-5p2-fast",
-  "accounts/fireworks/routers/kimi-k2p6-fast",
-  "accounts/fireworks/routers/kimi-k2p7-code-fast",
-]);
+export function cachedFireworksModelIds() {
+  const snapshot = getServerlessCatalogSnapshot();
+  if (!snapshot?.entries?.length) {
+    return [];
+  }
+  return preferLatestAliases(snapshot.entries)
+    .filter((entry) => typeof entry.id === "string" && entry.id.startsWith("accounts/"))
+    .map((entry) => entry.id);
+}
 
-/**
- * Pi built-in fireworks catalog fields FireConnect tests merge against.
- * Values mirror pi-mono `fireworks.models.ts` (contextWindow / cost / input).
- */
-export const PI_BUILTIN_FIREWORKS_CATALOG = {
-  "accounts/fireworks/models/deepseek-v4-flash": {
-    contextWindow: 1_000_000,
-    maxTokens: 384_000,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/deepseek-v4-pro": {
-    contextWindow: 1_000_000,
-    maxTokens: 384_000,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 1.74, output: 3.48, cacheRead: 0.145, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/glm-5p1": {
-    contextWindow: 202_800,
-    maxTokens: 131_072,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/glm-5p2": {
-    contextWindow: 1_048_575,
-    maxTokens: 131_072,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/gpt-oss-120b": {
-    contextWindow: 131_072,
-    maxTokens: 32_768,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/gpt-oss-20b": {
-    contextWindow: 131_072,
-    maxTokens: 32_768,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0.07, output: 0.3, cacheRead: 0.035, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/kimi-k2p6": {
-    contextWindow: 262_000,
-    maxTokens: 262_000,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0.95, output: 4, cacheRead: 0.16, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/kimi-k2p7-code": {
-    contextWindow: 262_000,
-    maxTokens: 262_000,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/minimax-m2p7": {
-    contextWindow: 196_608,
-    maxTokens: 196_608,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/minimax-m3": {
-    contextWindow: 512_000,
-    maxTokens: 512_000,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0 },
-  },
-  "accounts/fireworks/models/qwen3p7-plus": {
-    contextWindow: 262_144,
-    maxTokens: 65_536,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0.4, output: 1.6, cacheRead: 0.08, cacheWrite: 0 },
-  },
-  "accounts/fireworks/routers/glm-5p1-fast": {
-    contextWindow: 202_800,
-    maxTokens: 131_072,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 2.8, output: 8.8, cacheRead: 0.52, cacheWrite: 0 },
-  },
-  "accounts/fireworks/routers/glm-5p2-fast": {
-    contextWindow: 1_048_575,
-    maxTokens: 131_072,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 2.1, output: 6.6, cacheRead: 0.21, cacheWrite: 0 },
-  },
-  "accounts/fireworks/routers/kimi-k2p6-fast": {
-    contextWindow: 262_000,
-    maxTokens: 262_000,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 2, output: 8, cacheRead: 0.3, cacheWrite: 0 },
-  },
-  "accounts/fireworks/routers/kimi-k2p7-code-fast": {
-    contextWindow: 262_000,
-    maxTokens: 262_000,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
-  },
-};
-
-const ONE_MILLION_CONTEXT = 1_000_000;
 const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
 const PI_DEFAULT_MAX_TOKENS = 16_384;
 const PI_DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -196,63 +66,76 @@ function piFireworksDisplayName(modelId) {
   return prettyModelName(modelId);
 }
 
-function piFireworksRouterEntries() {
-  return PI_FIREWORKS_ROUTER_IDS.map((id) => ({
-    id,
-    name: piFireworksDisplayName(id),
-  }));
-}
-
-/** Full custom model entry using the short ID stored in Pi config. */
-export function buildPiCustomFireworksModelEntry(modelId, name, reasoning = true) {
+/**
+ * Full custom model entry keyed by the canonical accounts/fireworks/... id, so
+ * Pi's `mergeCustomModels` replaces any built-in row of the same id (an actual
+ * override, not a short-id duplicate) and appends models Pi doesn't ship.
+ * Limits/modalities/cost come from the shared Fireworks specs — the same source
+ * OpenCode's `buildOpencodeModelEntry` uses — so there is no Pi-specific catalog
+ * table to keep in sync.
+ * @param {string} modelId
+ * @param {string} name
+ * @param {boolean} [reasoning=true]
+ * @param {{ firepass?: boolean }} [options]
+ */
+export function buildPiCustomFireworksModelEntry(modelId, name, reasoning = true, { firepass = false } = {}) {
   const limits = lookupFireworksModelLimits(modelId);
   const entry = {
-    id: shortFireworksModelRef(modelId),
+    id: fullFireworksResourceId(modelId),
     name,
     reasoning,
     input: fireworksInputModalities(limits),
     contextWindow: limits.contextWindow,
     maxTokens: limits.maxTokens,
   };
-  const cost = lookupFireworksModelCost(modelId);
+  // Fire Pass is a subscription — no per-model metered cost.
+  const cost = lookupFireworksModelCost(modelId, { firepass });
   if (cost) {
     entry.cost = cost;
   }
   return entry;
 }
 
-/** Complete short-ID entry, retaining Pi's richer built-in metadata when known. */
-function buildPiStoredFireworksModelEntry(modelId, name, reasoning = true) {
-  const canonicalId = fullFireworksResourceId(modelId);
-  const builtin = PI_BUILTIN_FIREWORKS_CATALOG[canonicalId];
-  if (!builtin) {
-    return buildPiCustomFireworksModelEntry(modelId, name, reasoning);
+/**
+ * Pi `enabledModels` glob that scopes the picker to FireConnect's router rows
+ * only, hiding Pi's built-in concrete Fireworks models (gpt-oss-120b, glm-5p2,
+ * …) which surface because they share the `fireworks` provider auth. Matched by
+ * Pi's resolveModelScope against `provider/modelId` (provider = "fireworks").
+ */
+export const PI_FIREWORKS_ROUTER_SCOPE = "fireworks/accounts/fireworks/routers/*";
+export const PI_ENABLED_MODELS = [PI_FIREWORKS_ROUTER_SCOPE];
+
+function isRouterCatalogId(id) {
+  if (!id || typeof id !== "string") {
+    return false;
   }
-  return {
-    id: shortFireworksModelRef(canonicalId),
-    name,
-    ...structuredClone(builtin),
-    reasoning,
-  };
+  // firerouter* gateway patterns (incl. slash-bearing like firerouter/x).
+  if (isFirerouterGatewayPattern(id)) {
+    return true;
+  }
+  // Router aliases / suffixed router slugs, by the same heuristic
+  // fullFireworksResourceId uses to pick routers/ vs models/.
+  return isRouterShortId(fireworksModelSlug(id));
 }
 
 function piModelsToRegister(resolvedModel, catalogModelIds = []) {
-  // FireRouter routes server-side, so register only the selected firerouter* model.
-  if (isFirerouterGatewayPattern(resolvedModel)) {
-    return [{ id: resolvedModel, name: piFireworksDisplayName(resolvedModel), reasoning: true }];
-  }
-  // The caller already reduced the catalog to latest aliases or the newest
-  // concrete family version. Offline, fall back to the bundled router set.
+  // Always register FireConnect's router catalog (-latest/-fast/-turbo aliases +
+  // firerouter*) — not concrete models like gpt-oss-120b — so every router is
+  // pickable in Pi's UI regardless of which one is active (firerouter included).
+  // The picker is scoped to routers via `enabledModels` (see
+  // PI_FIREWORKS_ROUTER_SCOPE), so Pi's built-in concrete models don't surface.
+  // Offline, fall back to the cached serverless catalog, filtered the same way.
   const catalog = catalogModelIds.filter((id) => typeof id === "string" && id.startsWith("accounts/"));
-  const entries = catalog.length
-    ? catalog.map((id) => ({ id, name: piFireworksDisplayName(id), reasoning: true }))
-    : piFireworksRouterEntries().map((entry) => ({ ...entry, reasoning: true }));
-  // Always include the active model. Even Pi built-ins need a complete custom
-  // row because settings.defaultModel is stored as a short ID.
-  if (resolvedModel.startsWith("accounts/")
-    && !entries.some(
-      (entry) => shortFireworksModelRef(entry.id) === shortFireworksModelRef(resolvedModel),
-    )) {
+  const routerCatalog = (catalog.length ? catalog : cachedFireworksModelIds())
+    .filter(isRouterCatalogId);
+  const entries = routerCatalog.map((id) => ({ id, name: piFireworksDisplayName(id), reasoning: true }));
+  // Always include the active model so a `--model <id>` that isn't in the router
+  // catalog (e.g. a concrete direct model or a custom deployment) is still
+  // registered — it becomes defaultModel. It is hidden from the picker by the
+  // router-only enabledModels scope, but Pi can still use it as the default.
+  const resolvedCanonical = fullFireworksResourceId(resolvedModel);
+  if (resolvedCanonical
+    && !entries.some((entry) => fullFireworksResourceId(entry.id) === resolvedCanonical)) {
     entries.push({
       id: resolvedModel,
       name: piFireworksDisplayName(resolvedModel),
@@ -264,7 +147,7 @@ function piModelsToRegister(resolvedModel, catalogModelIds = []) {
 
 export function managedPiFireworksModelIds(resolvedModel, catalogModelIds = []) {
   return piModelsToRegister(resolvedModel, catalogModelIds)
-    .map((entry) => shortFireworksModelRef(entry.id));
+    .map((entry) => fullFireworksResourceId(entry.id));
 }
 
 function applyPiModelOverride(base, override) {
@@ -280,32 +163,34 @@ function applyPiModelOverride(base, override) {
 
 /**
  * Resolve the effective Pi fireworks model after applying models.json wiring.
- * Mirrors Pi's merge rules: a `models` entry replaces the built-in catalog row;
- * `modelOverrides` deep-merge onto the built-in catalog row.
+ * Mirrors Pi's merge rules (model-registry.js): a `models` entry whose canonical
+ * id matches replaces the built-in; otherwise limits/cost resolve from the
+ * shared Fireworks specs (the same source the entries are built from).
  * @param {object | undefined} fireworksProvider
  * @param {string} modelId
  */
 export function resolvePiEffectiveFireworksModel(fireworksProvider, modelId) {
-  const storedId = shortFireworksModelRef(modelId);
+  const canonicalId = fullFireworksResourceId(modelId);
   const custom = fireworksProvider?.models?.find(
-    (model) => shortFireworksModelRef(model.id) === storedId,
+    (model) => fullFireworksResourceId(model.id) === canonicalId,
   );
   if (custom) {
     return withPiModelDefaults(custom);
   }
-  const canonicalId = fullFireworksResourceId(modelId);
-  const builtin = PI_BUILTIN_FIREWORKS_CATALOG[canonicalId];
-  if (!builtin) {
-    return null;
-  }
-  const overrides = fireworksProvider?.modelOverrides ?? {};
-  return applyPiModelOverride(
-    builtin,
-    overrides[modelId] ?? overrides[storedId] ?? overrides[canonicalId],
-  );
+  const limits = lookupFireworksModelLimits(canonicalId);
+  const cost = lookupFireworksModelCost(modelId);
+  return withPiModelDefaults({
+    id: canonicalId,
+    name: piFireworksDisplayName(canonicalId),
+    reasoning: true,
+    input: fireworksInputModalities(limits),
+    contextWindow: limits.contextWindow,
+    maxTokens: limits.maxTokens,
+    ...(cost ? { cost } : {}),
+  });
 }
 
-export function mergePiFireworksRouterModels(config, resolvedModel, managedHeaders = {}, catalogModelIds = [], previousManagedIds = []) {
+export function mergePiFireworksRouterModels(config, resolvedModel, managedHeaders = {}, catalogModelIds = [], previousManagedIds = [], { firepass = false } = {}) {
   const next = config && typeof config === "object"
     ? structuredClone(config)
     : { providers: {} };
@@ -322,33 +207,39 @@ export function mergePiFireworksRouterModels(config, resolvedModel, managedHeade
   const rebuilding = isFirerouterGatewayPattern(resolvedModel)
     || catalogModelIds.some((id) => typeof id === "string" && id.startsWith("accounts/"));
   if (rebuilding && previousManagedIds.length) {
-    const prior = new Set(previousManagedIds.map(shortFireworksModelRef));
+    const prior = new Set(previousManagedIds.map(fullFireworksResourceId));
     models = models.filter(
-      (model) => !prior.has(shortFireworksModelRef(model.id)),
+      (model) => !prior.has(fullFireworksResourceId(model.id)),
     );
     for (const id of Object.keys(modelOverrides)) {
-      if (prior.has(shortFireworksModelRef(id))) {
+      if (prior.has(fullFireworksResourceId(id))) {
         delete modelOverrides[id];
       }
     }
   }
 
   for (const entry of piModelsToRegister(resolvedModel, catalogModelIds)) {
-    const storedId = shortFireworksModelRef(entry.id);
-    const customEntry = buildPiStoredFireworksModelEntry(
+    const canonicalId = fullFireworksResourceId(entry.id);
+    const customEntry = buildPiCustomFireworksModelEntry(
       entry.id,
       entry.name,
       entry.reasoning,
+      { firepass },
     );
     const existing = models.find(
-      (model) => shortFireworksModelRef(model.id) === storedId,
+      (model) => fullFireworksResourceId(model.id) === canonicalId,
     );
     models = models.filter(
-      (model) => shortFireworksModelRef(model.id) !== storedId,
+      (model) => fullFireworksResourceId(model.id) !== canonicalId,
     );
-    models.push({ ...(existing ?? {}), ...customEntry });
+    const merged = { ...(existing ?? {}), ...customEntry };
+    if (firepass) {
+      // Subscription: never inherit a metered cost from a previous row.
+      delete merged.cost;
+    }
+    models.push(merged);
     for (const id of Object.keys(modelOverrides)) {
-      if (shortFireworksModelRef(id) === storedId) {
+      if (fullFireworksResourceId(id) === canonicalId) {
         delete modelOverrides[id];
       }
     }
@@ -390,4 +281,4 @@ export function mergePiFireworksRouterModels(config, resolvedModel, managedHeade
   return next;
 }
 
-export { ONE_MILLION_CONTEXT, PI_FIREWORKS_ROUTER_IDS, piFireworksRouterEntries };
+export const ONE_MILLION_CONTEXT = 1_000_000;

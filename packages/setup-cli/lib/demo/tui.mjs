@@ -91,6 +91,18 @@ export class SplitPaneRenderer {
   }
 
   /** @param {"incumbent" | "fireworks"} side @param {string} text */
+  pushThinking(side, text) {
+    const s = this.sides[side];
+    if (!s || s.done || !text) {
+      return;
+    }
+    s.thinkingBuffer += text;
+    if (s.thinkingBuffer.length > 200_000) {
+      s.thinkingBuffer = s.thinkingBuffer.slice(-100_000);
+    }
+  }
+
+  /** @param {"incumbent" | "fireworks"} side @param {string} text */
   pushDelta(side, text) {
     const s = this.sides[side];
     if (!s || s.done) {
@@ -189,6 +201,7 @@ export class SplitPaneRenderer {
     s.inputTokens = final.inputTokens;
     s.outputTokens = final.outputTokens;
     s.cost = final.cost;
+    s.costFinalized = true;
     s.seconds = final.seconds;
     this.render();
   }
@@ -324,12 +337,14 @@ export class SplitPaneRenderer {
     const inRate = s.header.rates.inputPerMillion;
     const outRate = s.header.rates.outputPerMillion;
     let cost;
-    if (s.done) {
+    const estIn = (s.inputTokens != null && s.inputTokens > 0)
+      ? s.inputTokens
+      : (Math.floor((s.header.promptChars ?? 0) / 4) || 0);
+    if (s.costFinalized) {
       cost = s.cost;
     } else {
-      const estIn = (s.inputTokens != null && s.inputTokens > 0)
-        ? s.inputTokens
-        : (Math.floor((s.header.promptChars ?? 0) / 4) || 0);
+      // Keep estimating through freeze() — done is set when the runner resolves,
+      // but finish() (reconciled cost) only runs after finalizeBoth().
       cost = (estIn / 1e6) * inRate + (tokens / 1e6) * outRate;
     }
 
@@ -338,8 +353,10 @@ export class SplitPaneRenderer {
     // bare bright-default (white-on-white on light themes); the color also
     // distinguishes the two sides at a glance.
     const headColor = side === "fireworks" ? GREEN : CYAN;
-    lines.push(` ${BOLD}${headColor}${truncateVisible(s.header.provider, width - 1)}${RESET}`);
-    const modelLine = ` ${DIM}${truncateVisible(s.header.model, width - 1)}${RESET}`;
+    // Model is the headline (this is a model-vs-model comparison);
+    // the provider is a dim secondary line, not the framing.
+    lines.push(` ${BOLD}${headColor}${truncateVisible(s.header.model, width - 1)}${RESET}`);
+    const modelLine = ` ${DIM}${truncateVisible(s.header.provider, width - 1)}${RESET}`;
     lines.push(padRight(modelLine, width));
     // divider
     lines.push(`${DIM} ${"─".repeat(Math.max(0, width - 2))}${RESET}`);
@@ -356,7 +373,7 @@ export class SplitPaneRenderer {
     // tools, fed by setStatus), and this side's OWN elapsed clock. The ticking
     // clock proves it started at the same t=0 as the other side; the phase proves
     // it's actively working, not stalled.
-    const waiting = !s.done && !s.buffer;
+    const waiting = !s.done && !s.buffer && !s.thinkingBuffer;
     if (waiting) {
       const spin = SPINNER[Math.floor(now / 80) % SPINNER.length];
       const phase = s.status || "waiting for first token…";
@@ -366,13 +383,15 @@ export class SplitPaneRenderer {
         lines.push("");
       }
     } else {
-      const body = failed ? hardWrap(s.error, width) : tailLines(s.buffer, bodyRows);
+      const body = failed ? hardWrap(s.error, width) : paneBodyLines(s, bodyRows);
       for (let i = 0; i < bodyRows; i += 1) {
         const line = body[i] ?? "";
         if (failed) {
           lines.push(` ${RED}${truncateVisible(line, width - 2)}${RESET}`);
+        } else if (line.thinking) {
+          lines.push(` ${DIM}${truncateVisible(line.text, width - 2)}${RESET}`);
         } else {
-          lines.push(` ${truncateVisible(line, width - 2)}`);
+          lines.push(` ${truncateVisible(line.text, width - 2)}`);
         }
       }
     }
@@ -434,6 +453,41 @@ export class SplitPaneRenderer {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+/** Max thinking rows once code output has started — output tail always wins. */
+const MAX_THINKING_BODY_ROWS = 3;
+
+/**
+ * Tail of the pane body: reasoning/thinking (dim) above streamed output when both
+ * exist, but cap thinking so long traces cannot crowd out live code.
+ * @param {SideState} s
+ * @param {number} bodyRows
+ * @returns {{ text: string, thinking?: boolean }[]}
+ */
+function paneBodyLines(s, bodyRows) {
+  if (!s.buffer) {
+    const thinkingLines = s.thinkingBuffer ? tailLines(s.thinkingBuffer, bodyRows) : [];
+    const lines = thinkingLines.map((text) => ({ text, thinking: true }));
+    while (lines.length < bodyRows) {
+      lines.push({ text: "" });
+    }
+    return lines;
+  }
+  const thinkRows = s.thinkingBuffer
+    ? Math.min(MAX_THINKING_BODY_ROWS, Math.max(0, bodyRows - 1))
+    : 0;
+  const outRows = bodyRows - thinkRows;
+  const thinkingLines = thinkRows > 0 ? tailLines(s.thinkingBuffer, thinkRows) : [];
+  const outputLines = tailLines(s.buffer, outRows);
+  const lines = thinkingLines.map((text) => ({ text, thinking: true }));
+  for (const text of outputLines) {
+    lines.push({ text });
+  }
+  while (lines.length < bodyRows) {
+    lines.push({ text: "" });
+  }
+  return lines;
+}
+
 /**
  * @param {SideHeader} header
  * @returns {SideState}
@@ -442,6 +496,7 @@ function makeSide(header) {
   return {
     header,
     buffer: "",
+    thinkingBuffer: "",
     status: "",
     chars: 0,
     deltasEmitted: 0,
@@ -457,6 +512,7 @@ function makeSide(header) {
     inputTokens: null,
     outputTokens: null,
     cost: 0,
+    costFinalized: false,
     seconds: 0,
   };
 }

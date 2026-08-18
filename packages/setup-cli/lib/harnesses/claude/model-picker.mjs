@@ -1,4 +1,5 @@
-import { lookupVscodeModelMetadata, FIREWORKS_MODEL_SPECS, ROUTER_SPEC_ALIASES } from "../../fireworks/model-specs.mjs";
+import { resolveModelDisplayMetadata } from "../../fireworks/model-display.mjs";
+import { FIREWORKS_MODEL_SPECS, ROUTER_SPEC_ALIASES } from "../../fireworks/model-specs.mjs";
 import {
   catalogWithAutomaticFirerouter,
   FIREPASS_FALLBACK_ROUTERS,
@@ -7,16 +8,21 @@ import {
   prettyModelName,
   stripViaFireworksSuffix,
 } from "../../fireworks/models.mjs";
-import { fullFireworksResourceId } from "../../fireworks/model-id.mjs";
+import {
+  CLAUDE_NATIVE_MODEL_ID,
+  CLAUDE_NATIVE_SLOT_LABEL,
+  fullFireworksResourceId,
+  isClaudeNativeModel,
+} from "../../fireworks/model-id.mjs";
 import { attachPricing } from "../../fireworks/pricing.mjs";
 
 const SLOT_RECOMMENDATIONS = Object.freeze({
   main: ["kimi-fast-latest", "firerouter", "glm-fast-latest", "glm-latest"],
   opus: ["glm-fast-latest", "glm-latest", "deepseek-v4-pro", "firerouter"],
-  sonnet: ["glm-fast-latest", "kimi-fast-latest", "glm-latest", "deepseek-v4-flash"],
-  haiku: ["deepseek-v4-flash", "kimi-fast-latest", "gpt-oss-120b", "minimax-latest"],
+  sonnet: ["glm-fast-latest", "kimi-fast-latest", "glm-latest", "deepseek-flash-latest"],
+  haiku: ["deepseek-flash-latest", "kimi-fast-latest", "gpt-oss-120b", "minimax-latest"],
   fable: ["kimi-fast-latest", "kimi-latest", "qwen-plus-latest", "minimax-latest"],
-  subagent: ["deepseek-v4-flash", "kimi-fast-latest", "gpt-oss-120b", "glm-fast-latest"],
+  subagent: ["deepseek-flash-latest", "kimi-fast-latest", "gpt-oss-120b", "glm-fast-latest"],
 });
 
 const STATIC_MODEL_SLUGS = [
@@ -35,6 +41,28 @@ function syntheticEntry(modelId) {
   };
 }
 
+/**
+ * The "Claude default" slot choice. Selecting it means "don't pin
+ * this slot — use Claude's own default Anthropic model for the role" (served via
+ * the Fireworks gateway). Keep it out of the Fireworks-only fast/non-fast tiers;
+ * it's a first-class choice with no pricing/limits in the FW catalog.
+ */
+function claudeNativePickerEntry() {
+  const id = fullFireworksResourceId(CLAUDE_NATIVE_MODEL_ID);
+  return {
+    id,
+    slug: CLAUDE_NATIVE_MODEL_ID,
+    label: CLAUDE_NATIVE_SLOT_LABEL,
+    fast: false,
+    contextWindow: 1_000_000,
+    vision: true,
+    tools: true,
+    router: false,
+    firerouter: false,
+    pricing: undefined,
+  };
+}
+
 function offlineCatalog(keyType) {
   if (keyType === "firepass") {
     return FIREPASS_FALLBACK_ROUTERS;
@@ -43,7 +71,7 @@ function offlineCatalog(keyType) {
 }
 
 function enrichEntry(entry) {
-  const metadata = lookupVscodeModelMetadata(entry.id);
+  const metadata = resolveModelDisplayMetadata(entry.id);
   const pricing = attachPricing(entry.id);
   return {
     id: entry.id,
@@ -86,6 +114,10 @@ export async function loadClaudeModelPickerCatalog({
       .filter((model) => model.tools)
       .map((model) => [model.slug, model]),
   );
+  // Native-Claude slot: fw_ keys only (Fire Pass skips the setup entirely).
+  if (keyType !== "firepass") {
+    bySlug.set(CLAUDE_NATIVE_MODEL_ID, claudeNativePickerEntry());
+  }
   return [...bySlug.values()];
 }
 
@@ -98,6 +130,14 @@ export function rankClaudeModelsForSlot(models, {
   const rank = (model) => {
     if (model.slug === currentModel) return -300;
     if (model.slug === recommendedModel) return -200;
+    if (model.slug === CLAUDE_NATIVE_MODEL_ID) {
+      // Always keep "Claude default" in the visible top slice — in non-fast mode
+      // too, where the slot's recommendation is a Fireworks alias and the native
+      // entry would otherwise rank off the end of the list.
+      return isClaudeNativeModel(currentModel) || isClaudeNativeModel(recommendedModel)
+        ? -250
+        : -150;
+    }
     const recommendedIndex = recommendations.indexOf(model.slug);
     if (recommendedIndex !== -1) return -100 + recommendedIndex;
     return 0;
@@ -128,6 +168,7 @@ export function modelPickerBadges(model, {
   return [
     model.slug === currentModel ? "Current" : "",
     model.slug === recommendedModel ? "Recommended" : "",
+    isClaudeNativeModel(model.slug) ? CLAUDE_NATIVE_SLOT_LABEL : "",
     model.firerouter ? "Automatic routing" : (model.fast ? "Fast" : "Standard"),
     formatContextWindow(model.contextWindow),
     model.firerouter ? "" : (model.vision ? "Vision" : "Text-only"),

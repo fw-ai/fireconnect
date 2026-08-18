@@ -119,8 +119,8 @@ const HARNESS_KEY_SOURCE = {
   pi: {
     readsFrom: "literal key in auth.json",
   },
-  deepagents: {
-    readsFrom: "literal api_key in config.toml",
+  deepseek: {
+    readsFrom: "FIREWORKS_API_KEY in ~/.dsh/.credentials.yaml",
   },
   vscode: {
     readsFrom: "VS Code safeStorage (state.vscdb)",

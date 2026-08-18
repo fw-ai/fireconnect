@@ -229,7 +229,11 @@ describe("firerouter routing plan", () => {
     const catalog = [
       { shortId: "deepseek-v3", id: "accounts/fireworks/models/deepseek-v3" },
       { shortId: "deepseek-v4-flash", id: "accounts/fireworks/models/deepseek-v4-flash" },
+      { shortId: "deepseek-v4-flash-0731", id: "accounts/fireworks/models/deepseek-v4-flash-0731" },
       { shortId: "deepseek-v4-pro", id: "accounts/fireworks/models/deepseek-v4-pro" },
+      { shortId: "deepseek-v4-pro-0813", id: "accounts/fireworks/models/deepseek-v4-pro-0813" },
+      { shortId: "deepseek-flash-latest", id: "accounts/fireworks/routers/deepseek-flash-latest", baseModelId: "accounts/fireworks/models/deepseek-v4-flash-0731" },
+      { shortId: "deepseek-pro-latest", id: "accounts/fireworks/routers/deepseek-pro-latest", baseModelId: "accounts/fireworks/models/deepseek-v4-pro-0813" },
       { shortId: "gpt-oss-120b", id: "accounts/fireworks/models/gpt-oss-120b" },
       { shortId: "glm-5p1", id: "accounts/fireworks/models/glm-5p1" },
       { shortId: "glm-5p1-fast", id: "accounts/fireworks/routers/glm-5p1-fast", baseModelId: "accounts/fireworks/models/glm-5p1" },
@@ -248,8 +252,9 @@ describe("firerouter routing plan", () => {
     ];
     const kept = preferLatestAliases(catalog).map((e) => e.shortId);
     assert.deepEqual(kept, [
-      "deepseek-v4-flash",
-      "deepseek-v4-pro",
+      "deepseek-v3",
+      "deepseek-flash-latest",
+      "deepseek-pro-latest",
       "gpt-oss-120b",
       "glm-fast-latest",
       "glm-latest",
@@ -257,6 +262,73 @@ describe("firerouter routing plan", () => {
       "minimax-latest",
       "qwen-plus-latest",
     ]);
+  });
+
+  it("preferLatestAliases collapses pure-digit kimi fast models into kimi-fast-latest", () => {
+    // kimi-k3-fast (no `p\d`) used to fall through to the per-shortId
+    // fallback, so it landed in its own family and wasn't collapsed into the
+    // kimi-fast-latest alias. It must share the "kimi" family.
+    const catalog = [
+      { shortId: "kimi-fast-latest", id: "accounts/fireworks/routers/kimi-fast-latest" },
+      { shortId: "kimi-k3-fast", id: "accounts/fireworks/routers/kimi-k3-fast" },
+      { shortId: "glm-fast-latest", id: "accounts/fireworks/routers/glm-fast-latest" },
+      { shortId: "glm-5p2-fast", id: "accounts/fireworks/routers/glm-5p2-fast" },
+    ];
+    const kept = preferLatestAliases(catalog).map((e) => e.shortId);
+    assert.deepEqual(kept, ["kimi-fast-latest", "glm-fast-latest"]);
+  });
+
+  it("preferLatestAliases collapses the kimi-k3 base model into the kimi aliases", () => {
+    // kimi-k3 (no `p\d`, no `-fast`) matched none of the vendor patterns and
+    // leaked into registered catalogs next to kimi-latest/kimi-fast-latest.
+    const catalog = [
+      { shortId: "kimi-latest", id: "accounts/fireworks/routers/kimi-latest" },
+      { shortId: "kimi-fast-latest", id: "accounts/fireworks/routers/kimi-fast-latest" },
+      { shortId: "kimi-k3", id: "accounts/fireworks/models/kimi-k3" },
+    ];
+    const kept = preferLatestAliases(catalog).map((e) => e.shortId);
+    assert.deepEqual(kept, ["kimi-latest", "kimi-fast-latest"]);
+  });
+
+  it("preferLatestAliases collapses unseen families into their own -latest alias", () => {
+    // A family the CLI has no vendor rule for: the base slug equals the alias
+    // family (possibly with digits/dashes), so it must collapse without a
+    // hand-written pattern.
+    const catalog = [
+      { shortId: "modelfamily-a1b2-abvc-latest", id: "accounts/fireworks/routers/modelfamily-a1b2-abvc-latest" },
+      { shortId: "modelfamily-a1b2-abvc", id: "accounts/fireworks/models/modelfamily-a1b2-abvc" },
+      { shortId: "newmodel-1p2", id: "accounts/fireworks/models/newmodel-1p2" },
+      { shortId: "newmodel-latest", id: "accounts/fireworks/routers/newmodel-latest" },
+    ];
+    const kept = preferLatestAliases(catalog).map((e) => e.shortId);
+    assert.deepEqual(kept, ["modelfamily-a1b2-abvc-latest", "newmodel-latest"]);
+  });
+
+  it("preferLatestAliases keeps only the newest version of an aliaseless family", () => {
+    // No -latest alias for the family: generic version extraction must still
+    // group the variants and keep only the newest — whatever the version
+    // shape (p-versions, dotted versions, multi-part versions).
+    const catalog = [
+      { shortId: "acme-1p2", id: "accounts/fireworks/models/acme-1p2" },
+      { shortId: "acme-1p3", id: "accounts/fireworks/models/acme-1p3" },
+      { shortId: "acme-1p3-fast", id: "accounts/fireworks/routers/acme-1p3-fast" },
+      { shortId: "dotco-1.5", id: "accounts/fireworks/models/dotco-1.5" },
+      { shortId: "dotco-1.6", id: "accounts/fireworks/models/dotco-1.6" },
+      { shortId: "multi-1p2p3", id: "accounts/fireworks/models/multi-1p2p3" },
+      { shortId: "multi-1p2p4", id: "accounts/fireworks/models/multi-1p2p4" },
+    ];
+    const kept = preferLatestAliases(catalog).map((e) => e.shortId);
+    assert.deepEqual(kept, ["acme-1p3", "acme-1p3-fast", "dotco-1.6", "multi-1p2p4"]);
+  });
+
+  it("preferLatestAliases keeps distinct parameter sizes separate", () => {
+    // "120b"-style size suffixes are not versions: every size stays visible.
+    const catalog = [
+      { shortId: "gpt-oss-20b", id: "accounts/fireworks/models/gpt-oss-20b" },
+      { shortId: "gpt-oss-120b", id: "accounts/fireworks/models/gpt-oss-120b" },
+    ];
+    const kept = preferLatestAliases(catalog).map((e) => e.shortId);
+    assert.deepEqual(kept, ["gpt-oss-20b", "gpt-oss-120b"]);
   });
 
   it("registerableModelIds includes firerouter only when requested and supported", () => {

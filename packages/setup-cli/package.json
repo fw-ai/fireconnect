@@ -1,6 +1,6 @@
 {
   "name": "@fireconnect/cli",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "FireConnect CLIs for using Fireworks models with Claude Code",
   "type": "module",
   "bin": {
@@ -19,7 +19,8 @@
   "dependencies": {
     "ansis": "^4.3.1",
     "cross-keychain": "^1.1.0",
-    "smol-toml": "^1.7.0"
+    "smol-toml": "^1.7.0",
+    "yaml": "^2.9.0"
   },
   "license": "Apache-2.0"
 }

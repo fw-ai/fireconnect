@@ -13,7 +13,7 @@ export const FIREROUTER_DOCS_URL =
 /** Display labels for the workspace-BYOK-only (under-development) note. */
 const FIREROUTER_HARNESS_LABELS = {
   cursor: "Cursor",
-  deepagents: "Deep Agents",
+  deepseek: "DeepSeek Harness",
 };
 
 function displayModel(model) {
@@ -24,8 +24,8 @@ function displayModel(model) {
 
 function firerouterOnCommand(harnessId) {
   return harnessId === "claude"
-    ? "fireconnect claude on --opus firerouter"
-    : `fireconnect ${harnessId} on --model firerouter`;
+    ? "fireconnect claude --opus firerouter"
+    : `fireconnect ${harnessId} --model firerouter`;
 }
 
 function printRoutingPreferenceHint(harnessId, routingPreference) {
@@ -92,14 +92,16 @@ export function printModelsAdded(models = [], { primaryModel } = {}) {
 export function printClaudeModelManagementHints() {
   const rows = [
     ["Browse", "fireconnect model list"],
-    ["Configure", "fireconnect claude on --interactive"],
-    ["Set one", "fireconnect claude on --opus <model>"],
+    ["Configure", "fireconnect claude --interactive"],
+    ["Set one", "fireconnect claude --opus <model>"],
     ["Other slots", "--model --sonnet --haiku --fable --subagent"],
+    ["Claude default", "fireconnect claude --opus native"],
   ];
   console.log("");
   console.log(bold("Manage models"));
+  const labelWidth = Math.max(...rows.map(([label]) => label.length));
   for (const [label, command] of rows) {
-    console.log(`  ${muted(label.padEnd(12))}${accent(command)}`);
+    console.log(`  ${muted(label.padEnd(labelWidth))} ${accent(command)}`);
   }
 }
 
@@ -328,8 +330,8 @@ export function printPiRestartHint() {
   printSessionRestartHint("Pi");
 }
 
-export function printDeepagentsRestartHint() {
-  printSessionRestartHint("Deep Agents");
+export function printDeepseekRestartHint() {
+  printSessionRestartHint("DeepSeek Harness");
 }
 
 export function printOpenCodeRestartHint() {

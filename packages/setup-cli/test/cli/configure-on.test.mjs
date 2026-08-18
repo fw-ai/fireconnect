@@ -12,7 +12,7 @@ import { runFireconnect, seedKeychainConfig } from "../helpers.mjs";
 
 describe("configure to harness on propagation", () => {
   it("gives every direct harness the same login and custom SSO guidance when no key exists", async () => {
-    for (const harness of ["claude", "opencode", "codex", "pi", "cursor", "vscode", "deepagents"]) {
+    for (const harness of ["claude", "opencode", "codex", "pi", "cursor", "vscode", "deepseek"]) {
       const home = await mkdtemp(path.join(os.tmpdir(), `fc-missing-${harness}-`));
       const result = await runFireconnect(
         [harness, "on"],
@@ -92,25 +92,26 @@ describe("configure to harness on propagation", () => {
     assert.doesNotMatch(config, /env_key = "FIREWORKS_API_KEY"/);
   });
 
-  it("deepagents on reads keychain key from configure global config", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-deepagents-on-"));
-    await mkdir(path.join(home, ".deepagents"), { recursive: true });
+  it("deepseek on reads keychain key from configure global config", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-deepseek-on-"));
+    await mkdir(path.join(home, ".dsh"), { recursive: true });
     await seedKeychainConfig(home, "fw_test_key_12345");
 
-    const onResult = await runFireconnect(["deepagents", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
+    const onResult = await runFireconnect(["deepseek", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
     assert.equal(onResult.code, 0);
 
-    const config = await readFile(path.join(home, ".deepagents/config.toml"), "utf8");
-    assert.match(config, /api_key = "fw_test_key_12345"/);
-    assert.doesNotMatch(config, /api_key_env = "FIREWORKS_API_KEY"/);
-    assert.match(config, /base_url = "https:\/\/api\.fireworks\.ai\/inference"/);
+    const settings = await readFile(path.join(home, ".dsh/settings.yaml"), "utf8");
+    assert.match(settings, /apiKeyEnv: FIREWORKS_API_KEY/);
+    assert.match(settings, /baseURL: https:\/\/api\.fireworks\.ai\/inference\/v1/);
+    const credentials = await readFile(path.join(home, ".dsh/.credentials.yaml"), "utf8");
+    assert.match(credentials, /FIREWORKS_API_KEY: fw_test_key_12345/);
   });
 
-  it("deepagents on fails with guidance when configure stored no key", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-deepagents-missing-"));
-    await mkdir(path.join(home, ".deepagents"), { recursive: true });
+  it("deepseek on fails with guidance when configure stored no key", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-deepseek-missing-"));
+    await mkdir(path.join(home, ".dsh"), { recursive: true });
 
-    const onResult = await runFireconnect(["deepagents", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
+    const onResult = await runFireconnect(["deepseek", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
     assert.notEqual(onResult.code, 0);
     assert.match(onResult.stderr, new RegExp(MISSING_FIREWORKS_API_KEY_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });

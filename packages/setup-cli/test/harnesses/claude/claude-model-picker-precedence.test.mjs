@@ -6,7 +6,6 @@ import { describe, it } from "node:test";
 import {
   hasLegacyAnthropicMainEnv,
   mappingFromSettings,
-  migrateLegacyAnthropicMainEnv,
   userSettingsPath,
 } from "../../../lib/harnesses/claude/core.mjs";
 import { CLAUDE_LEGACY_ANTHROPIC_MODEL_WARNING } from "../../../lib/harnesses/claude/index.mjs";
@@ -105,23 +104,6 @@ describe("mappingFromSettings", () => {
         ANTHROPIC_MODEL: "firerouter[1m]",
       },
     }), true);
-  });
-
-  it("migrateLegacyAnthropicMainEnv strips legacy keys without touching other env", () => {
-    const { settings, changed } = migrateLegacyAnthropicMainEnv({
-      model: "kimi-fast-latest[1m]",
-      env: {
-        ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
-        ANTHROPIC_MODEL: "firerouter[1m]",
-        ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-fast-latest[1m]",
-        USER_ENV: "keep-me",
-      },
-    });
-    assert.equal(changed, true);
-    assert.equal(settings.env.ANTHROPIC_MODEL, undefined);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "glm-fast-latest[1m]");
-    assert.equal(settings.env.USER_ENV, "keep-me");
-    assert.equal(settings.model, "kimi-fast-latest[1m]");
   });
 
   it("status warns when legacy ANTHROPIC_MODEL is still present", async () => {

@@ -387,7 +387,7 @@ print_claude_restore_summary() {
   fi
   echo
   echo "Your original Claude Code settings were restored before the upgrade."
-  echo "Reconnect Claude Code through FireConnect: fireconnect claude on"
+  echo "Reconnect Claude Code through FireConnect: fireconnect claude"
 }
 
 ensure_durable_source() {

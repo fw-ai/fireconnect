@@ -16,7 +16,7 @@ import { printNote, printSuccess } from "../messages.mjs";
  * for FireRouter mode.
  *
  * It does NOT set the Fireworks API key (use `fireconnect login`) and does NOT
- * register harnesses (enable one with `fireconnect <harness> on`). In this
+ * register harnesses (enable one with `fireconnect <harness>`). In this
  * command `--api-key` is the *Azure* endpoint key and is only accepted with
  * `--provider azure`.
  *
@@ -49,7 +49,7 @@ export async function runConfigureCommand(ctx) {
     console.log(`  Sign in / set your key:  ${accent("fireconnect login")}`);
     console.log(`  Choose a provider:       ${accent("fireconnect configure --provider azure --base-url <url> --api-key <azure-key>")}`);
     console.log(`  Set the Anthropic key:   ${accent("fireconnect configure --anthropic-api-key sk-ant-…")}`);
-    console.log(`  Enable a harness:        ${accent("fireconnect <harness> on")}`);
+    console.log(`  Enable a harness:        ${accent("fireconnect <harness>")}`);
     return;
   }
 

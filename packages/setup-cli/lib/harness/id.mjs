@@ -1,4 +1,4 @@
-/** @typedef {"" | "claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepagents"} HarnessArg */
+/** @typedef {"" | "claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepseek"} HarnessArg */
 
 export const HARNESS = Object.freeze({
   CLAUDE: "claude",
@@ -7,17 +7,17 @@ export const HARNESS = Object.freeze({
   PI: "pi",
   CURSOR: "cursor",
   VSCODE: "vscode",
-  DEEPAGENTS: "deepagents",
+  DEEPSEEK: "deepseek",
 });
 
 export const HARNESSES = Object.freeze(Object.values(HARNESS));
 
-/** Codex, OpenCode, Pi, and Deep Agents — file-based configs (literal or legacy env ref). */
+/** Codex, OpenCode, Pi, and DeepSeek Harness — file-based configs (literal or legacy env ref). */
 export const FILE_CONFIG_HARNESS_IDS = Object.freeze([
   HARNESS.CODEX,
   HARNESS.OPENCODE,
   HARNESS.PI,
-  HARNESS.DEEPAGENTS,
+  HARNESS.DEEPSEEK,
 ]);
 
 export const FILE_CONFIG_HARNESS_SET = new Set(FILE_CONFIG_HARNESS_IDS);
