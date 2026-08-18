@@ -176,7 +176,7 @@ export function linuxSafeStorageObfuscatedKeyNote(variant) {
     : variant === "insiders"
       ? "VS Code Insiders"
       : "VS Code";
-  const harnessCmd = variant === "cursor" ? "fireconnect cursor on" : "fireconnect vscode on";
+  const harnessCmd = variant === "cursor" ? "fireconnect cursor" : "fireconnect vscode";
   // encryptSecret uses secret-tool only (forEncrypt). When dbus is up but
   // secret-tool is absent, peanuts/v10 is still written. Only recommend
   // libsecret-tools when a v2 password is already present (python can see it);

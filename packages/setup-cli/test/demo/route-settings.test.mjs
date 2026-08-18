@@ -1,82 +1,65 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {
-  buildIncumbentSettings,
-  buildChallengerSettings,
-  ANTHROPIC_DIRECT_BASE_URL,
+  demoCliModel,
+  prepareRouteSettings,
 } from "../../lib/demo/route-settings.mjs";
-import { FIREWORKS_ENV_KEYS } from "../../lib/harnesses/claude/core.mjs";
+import { FIRECONNECT_REQUIRED_MSG } from "../../lib/demo/demo-prep.mjs";
 import { FIREWORKS_BASE_URL } from "../../lib/fireworks/model-id.mjs";
-import { CLAUDE_FIREROUTER_ENV_KEYS } from "../../lib/firerouter/core.mjs";
-import { withoutEnvFireworksKey } from "../helpers.mjs";
 
-// Both builders now produce CLEAN, isolated settings — no baseSettings spread,
-// no inherited ~/.claude/settings.json keys. They're written to their own
-// CLAUDE_CONFIG_DIR so Claude Code never merges against the user file.
+async function seedFireconnectedClaude(home) {
+  const settingsDir = path.join(home, ".claude");
+  await mkdir(settingsDir, { recursive: true });
+  await writeFile(
+    path.join(settingsDir, "settings.json"),
+    JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
+        ANTHROPIC_CUSTOM_HEADERS: "X-Fireworks-Api-Key: fw_testkey",
+      },
+    }),
+  );
+}
 
-test("buildIncumbentSettings: Anthropic direct base URL + inline Anthropic key", () => {
-  const s = buildIncumbentSettings({ anthropicKey: "sk-ant-test" });
-  assert.equal(s.env.ANTHROPIC_BASE_URL, ANTHROPIC_DIRECT_BASE_URL);
-  assert.equal(s.env.ANTHROPIC_API_KEY, "sk-ant-test");
+test("demoCliModel: Anthropic slots pass through unchanged", () => {
+  assert.equal(demoCliModel("opus"), "opus");
+  assert.equal(demoCliModel("sonnet"), "sonnet");
 });
 
-test("buildIncumbentSettings: no apiKeyHelper, no Fireworks/firerouter env, no model", () => {
-  const s = buildIncumbentSettings({ anthropicKey: "sk-ant-test" });
-  assert.equal(s.apiKeyHelper, undefined);
-  assert.equal(s.model, undefined);
-  // ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY are the incumbent's legit Anthropic-
-  // direct routing + auth; every OTHER Fireworks/firerouter-owned key is absent.
-  for (const k of [...FIREWORKS_ENV_KEYS, ...CLAUDE_FIREROUTER_ENV_KEYS]) {
-    if (k === "ANTHROPIC_BASE_URL" || k === "ANTHROPIC_API_KEY") continue;
-    assert.equal(s.env[k], undefined, `${k} must not be set on the incumbent`);
+test("demoCliModel: Fireworks models get Claude Code context suffix when needed", () => {
+  assert.equal(demoCliModel("glm-5p2-fast"), "glm-5p2-fast[1m]");
+  assert.equal(demoCliModel("kimi-k2p6-fast"), "kimi-k2p6-fast");
+});
+
+test("prepareRouteSettings: resolves left/right cli models when claude is on", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fc-demo-route-"));
+  try {
+    await seedFireconnectedClaude(home);
+    const result = await prepareRouteSettings({
+      leftModel: "opus",
+      rightModel: "glm-5p2-fast",
+      home,
+    });
+    assert.equal(result.leftCliModel, "opus");
+    assert.equal(result.rightCliModel, "glm-5p2-fast[1m]");
+    assert.equal(typeof result.cleanup, "function");
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
-  assert.equal(s.env.ANTHROPIC_AUTH_TOKEN, undefined);
 });
 
-test("buildIncumbentSettings: no key still yields a valid (keyless) Anthropic-direct config", () => {
-  // The orchestrator rejects an empty key before reaching here, but the builder
-  // stays pure: it simply omits ANTHROPIC_API_KEY rather than inventing one.
-  const s = buildIncumbentSettings({ anthropicKey: "" });
-  assert.equal(s.env.ANTHROPIC_BASE_URL, ANTHROPIC_DIRECT_BASE_URL);
-  assert.equal(s.env.ANTHROPIC_API_KEY, undefined);
-});
-
-test("buildChallengerSettings: routes to Fireworks direct with the challenger model + inline key", async () => {
-  const { settings, token } = await buildChallengerSettings({
-    fireworksKey: "fw_testkey",
-    challengerModel: "glm-5p2-fast",
-  });
-  assert.equal(token, "fw_testkey");
-  assert.equal(settings.env.ANTHROPIC_BASE_URL, FIREWORKS_BASE_URL);
-  assert.equal(settings.env.ANTHROPIC_API_KEY, "fw_testkey");
-  assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "fw_testkey");
-  // Main default is stored in top-level `model`; env no longer carries ANTHROPIC_MODEL.
-  assert.equal(settings.env.ANTHROPIC_MODEL, undefined);
-  assert.equal(settings.model, "glm-5p2-fast[1m]");
-});
-
-test("buildChallengerSettings: top-level model is the challenger (direct mode)", async () => {
-  const { settings } = await buildChallengerSettings({
-    fireworksKey: "fw_testkey",
-    challengerModel: "glm-5p2-fast",
-  });
-  assert.equal(settings.model, "glm-5p2-fast[1m]");
-});
-
-test("buildChallengerSettings: no apiKeyHelper (isolated, no keychain)", async () => {
-  const { settings } = await buildChallengerSettings({
-    fireworksKey: "fw_testkey",
-    challengerModel: "glm-5p2-fast",
-  });
-  assert.equal(settings.apiKeyHelper, undefined);
-});
-
-test("buildChallengerSettings: throws without a Fireworks key", async () => {
-  await withoutEnvFireworksKey(async () => {
+test("prepareRouteSettings: requires fireconnect claude on", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "fc-demo-route-off-"));
+  try {
     await assert.rejects(
-      buildChallengerSettings({ fireworksKey: "", challengerModel: "glm-5p2-fast" }),
-      /No Fireworks API key found/,
+      prepareRouteSettings({ leftModel: "opus", rightModel: "glm-5p2-fast", home }),
+      (err) => err.message === FIRECONNECT_REQUIRED_MSG,
     );
-  });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });

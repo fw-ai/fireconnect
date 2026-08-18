@@ -35,6 +35,12 @@ async function run() {
   }
 
   if (parsed.kind === "demo") {
+    if (parsed.deprecated) {
+      const { warn } = await import("../lib/ui/index.mjs");
+      warn("`fireconnect demo` is deprecated. Use `fireconnect claude demo` instead.");
+      console.log("Run `fireconnect claude demo` to race two models — see `fireconnect claude demo --help` for options.");
+      return;
+    }
     await runDemoCommand(parsed.ctx);
     return;
   }

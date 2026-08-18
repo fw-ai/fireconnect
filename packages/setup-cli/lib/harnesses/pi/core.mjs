@@ -6,8 +6,8 @@ import process from "node:process";
 import {
   DEFAULT_FIREPASS_MAIN_MODEL,
   defaultMainModel,
+  fullFireworksResourceId,
   normalizeModelId,
-  shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import {
@@ -28,15 +28,20 @@ import {
 import { fireworksInputModalities } from "../../fireworks/model-specs.mjs";
 import { warmServerlessPricingCache } from "../../fireworks/models.mjs";
 import {
+  readGlobalConfig,
+  setHarnessState,
+} from "../../config/global-config.mjs";
+import { HARNESS } from "../../harness/id.mjs";
+import {
+  cachedFireworksModelIds,
   managedPiFireworksModelIds,
   mergePiFireworksRouterModels,
-  PI_FIREWORKS_ROUTER_IDS,
+  PI_ENABLED_MODELS,
 } from "./fireworks-models.mjs";
 import { stripFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
 export {
   mergePiFireworksRouterModels,
-  PI_BUILTIN_FIREWORKS_MODEL_IDS,
   resolvePiEffectiveFireworksModel,
 } from "./fireworks-models.mjs";
 
@@ -111,14 +116,14 @@ function stripManagedFireworksProviderConfig(fireworks, managedModelIds) {
     return { provider: fireworks, changed: false, dropProvider: false };
   }
   const managed = new Set(
-    [...managedModelIds].map(shortFireworksModelRef),
+    [...managedModelIds].map(fullFireworksResourceId),
   );
   let changed = false;
   let next = { ...fireworks };
 
   if (Array.isArray(next.models)) {
     const remaining = next.models.filter(
-      (model) => !managed.has(shortFireworksModelRef(model.id)),
+      (model) => !managed.has(fullFireworksResourceId(model.id)),
     );
     if (remaining.length !== next.models.length) {
       changed = true;
@@ -133,7 +138,7 @@ function stripManagedFireworksProviderConfig(fireworks, managedModelIds) {
   if (next.modelOverrides && typeof next.modelOverrides === "object") {
     const overrides = { ...next.modelOverrides };
     for (const id of Object.keys(overrides)) {
-      if (managed.has(shortFireworksModelRef(id))) {
+      if (managed.has(fullFireworksResourceId(id))) {
         delete overrides[id];
         changed = true;
       }
@@ -186,14 +191,50 @@ function backupPath(dataDir, filePath, label) {
   return path.join(dataDir, `${label}-backup.${key}.json`);
 }
 
-function statePath(dataDir) {
+// Pre-consolidation state file. Managed model ids now live in the global
+// config (harnesses.pi.profiles.managedModelIds); the enabled flag is the
+// engine's wasEnabled (global flag cross-checked against providerStatus).
+function legacyStatePath(dataDir) {
   return path.join(dataDir, "state.json");
 }
 
-async function writeState(dataDir, enabled, managedModelIds = [], mode = "direct") {
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  await writeJson(statePath(dataDir), { enabled, managedModelIds, mode });
-  await chmod(statePath(dataDir), 0o600);
+/**
+ * Model ids FireConnect registered in models.json on the last `on` — the only
+ * record of which entries are ours (model rows carry no per-entry marker).
+ * Primary source is the global config; falls back to the legacy state.json
+ * (pre-consolidation installs) and then to the cached serverless catalog.
+ */
+async function readManagedModelIds(home, dataDir) {
+  if (home) {
+    const config = await readGlobalConfig(home);
+    const ids = config.harnesses[HARNESS.PI]?.profiles?.managedModelIds;
+    if (Array.isArray(ids) && ids.length > 0) {
+      return ids;
+    }
+  }
+  const legacy = await readJsonIfExists(legacyStatePath(dataDir));
+  if (Array.isArray(legacy.managedModelIds) && legacy.managedModelIds.length > 0) {
+    return legacy.managedModelIds;
+  }
+  return cachedFireworksModelIds().map(fullFireworksResourceId);
+}
+
+/**
+ * Record the registered ids in the global config (empty clears the key) and
+ * remove any legacy state.json so old installs migrate on their next on/off.
+ */
+async function persistManagedModelIds(home, dataDir, ids) {
+  if (home) {
+    const config = await readGlobalConfig(home);
+    const profiles = { ...(config.harnesses[HARNESS.PI]?.profiles ?? {}) };
+    if (ids.length > 0) {
+      profiles.managedModelIds = ids;
+    } else {
+      delete profiles.managedModelIds;
+    }
+    await setHarnessState(home, HARNESS.PI, { profiles });
+  }
+  await unlink(legacyStatePath(dataDir)).catch(() => {});
 }
 
 export function resolvePiApiKeyValue(key) {
@@ -342,7 +383,7 @@ function mergePiAzureProvider(config, { baseUrl, apiKey, modelId }) {
  */
 function stripManagedFireworksModels(config) {
   const fireworks = config.providers?.[PI_PROVIDER];
-  const managedIds = PI_FIREWORKS_ROUTER_IDS;
+  const managedIds = cachedFireworksModelIds();
   const { provider, changed, dropProvider } = stripManagedFireworksProviderConfig(
     fireworks,
     managedIds,
@@ -403,6 +444,7 @@ export async function enablePiFireworks({
   authPath,
   modelsPath,
   dataDir,
+  home = "",
   apiKey,
   apiKeyFromFlag = false,
   effectiveApiKey = "",
@@ -423,8 +465,8 @@ export async function enablePiFireworks({
   const auth = await parseJsonFile(authPath, authSnapshot);
   const modelsConfig = await parseJsonFile(modelsPath, modelsSnapshot);
 
-  // Resolve the key for validation/model policy, but retain an environment
-  // reference on disk so rotations take effect without re-running on.
+  // Resolve the key for validation/model policy; the literal is baked into
+  // auth.json and re-baked by refreshPiGatewayKey on login/rotation.
   const resolvedEffective = effectiveApiKey?.trim() || resolvePiApiKeyValue(apiKey);
   if (!resolvedEffective?.trim()) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
@@ -450,7 +492,7 @@ export async function enablePiFireworks({
   const resolvedModel = normalizeModelId(
     effectiveModelId || defaultMainModel(),
   );
-  const storedModel = shortFireworksModelRef(resolvedModel);
+  const storedModel = fullFireworksResourceId(resolvedModel);
 
   const settingsBackup = backupPath(dataDir, settingsPath, "settings");
   const hasActiveBackup = (await readJsonIfExists(settingsBackup)).snapshot !== undefined;
@@ -473,6 +515,11 @@ export async function enablePiFireworks({
     ...settings,
     defaultProvider: PI_PROVIDER,
     defaultModel: storedModel,
+    // Scope Pi's picker to FireConnect's router rows only, hiding Pi's built-in
+    // concrete Fireworks models (which surface because they share the fireworks
+    // provider auth). A concrete --model selection still works as defaultModel;
+    // it just isn't pickable. See PI_FIREWORKS_ROUTER_SCOPE.
+    enabledModels: PI_ENABLED_MODELS,
   });
   await writeAuthFile(authPath, {
     ...auth,
@@ -482,20 +529,21 @@ export async function enablePiFireworks({
   // so only one FireConnect-managed provider remains (matches OpenCode/Codex).
   // Ids FireConnect registered on the previous `on`, so a rebuild from a fresh
   // catalog can drop them (no accumulation) without touching user-added entries.
-  const previousManagedIds = managedModelIdsFromState(await readJsonIfExists(statePath(dataDir)));
+  const previousManagedIds = await readManagedModelIds(home, dataDir);
   const fireworksModels = mergePiFireworksRouterModels(
     modelsConfig,
     resolvedModel,
     { ...telemetryHeaders, ...byokHeaders },
     catalogModelIds,
     previousManagedIds,
+    { firepass: resolvedKeyType === "firepass" },
   );
   if (fireworksModels.providers?.[PI_AZURE_PROVIDER]) {
     delete fireworksModels.providers[PI_AZURE_PROVIDER];
   }
   await writeJson(modelsPath, fireworksModels);
   const managedModelIds = managedPiFireworksModelIds(resolvedModel, catalogModelIds);
-  await writeState(dataDir, true, managedModelIds);
+  await persistManagedModelIds(home, dataDir, managedModelIds);
 
   return {
     model: storedModel,
@@ -527,6 +575,7 @@ export async function enablePiAzure({
   authPath = "",
   modelsPath,
   dataDir,
+  home = "",
   apiKey,
   apiKeyFromFlag = false,
   baseUrl,
@@ -560,11 +609,17 @@ export async function enablePiAzure({
   }
 
   const apiKeyValue = apiKeyFromFlag ? apiKey : PI_AZURE_API_KEY_ENV_REF;
-  await writeJson(settingsPath, {
+  const azureSettings = {
     ...settings,
     defaultProvider: PI_AZURE_PROVIDER,
     defaultModel: resolvedModel,
-  });
+  };
+  // Azure mode is unscaffolded (no picker scope). Drop a stale Fireworks
+  // enabledModels so switching Fireworks → Azure doesn't leave the picker scoped
+  // to Fireworks routers (which have no auth in Azure mode → empty picker) and
+  // hide the Azure deployment.
+  delete azureSettings.enabledModels;
+  await writeJson(settingsPath, azureSettings);
   // Drop FireConnect-managed Fireworks gateway router models when switching to
   // Foundry, so only one managed provider remains (matches OpenCode/Codex).
   const azureModels = stripManagedFireworksModels(
@@ -575,7 +630,7 @@ export async function enablePiAzure({
     }),
   );
   await writeJson(modelsPath, azureModels, { mode: apiKeyFromFlag ? 0o600 : undefined });
-  await writeState(dataDir, true, []);
+  await persistManagedModelIds(home, dataDir, []);
 
   return {
     model: resolvedModel,
@@ -623,6 +678,14 @@ async function stripManagedSettings(settingsPath) {
     delete next.defaultModel;
     changed = true;
   }
+  // enabledModels is FireConnect's picker scope (routers only). Clear it on off
+  // so Pi's picker returns to its default model set. The backup-restore path
+  // already restores the pre-FireConnect settings; this handles the no-backup
+  // strip path.
+  if (Array.isArray(next.enabledModels) && (wasFireworks || wasAzure)) {
+    delete next.enabledModels;
+    changed = true;
+  }
   if (changed) {
     await writeJson(settingsPath, next);
   }
@@ -649,13 +712,6 @@ async function stripManagedAzureModels(modelsPath) {
   }
   await writeJson(modelsPath, next);
   return true;
-}
-
-function managedModelIdsFromState(state) {
-  if (Array.isArray(state.managedModelIds) && state.managedModelIds.length > 0) {
-    return state.managedModelIds;
-  }
-  return PI_FIREWORKS_ROUTER_IDS.map((id) => shortFireworksModelRef(id));
 }
 
 async function stripManagedModels(modelsPath, managedModelIds) {
@@ -712,20 +768,34 @@ async function stripManagedAuth(authPath) {
   return true;
 }
 
-export async function disablePiFireworks({ settingsPath, authPath, modelsPath, dataDir }) {
-  const state = await readJsonIfExists(statePath(dataDir));
-  const wasEnabled = state.enabled === true;
-  const managedModelIds = managedModelIdsFromState(state);
+/**
+ * @param {{
+ *   settingsPath: string,
+ *   authPath: string,
+ *   modelsPath: string,
+ *   dataDir: string,
+ *   home?: string,
+ *   wasEnabled?: boolean,
+ * }} args
+ * `wasEnabled` is the engine's flag (global config cross-checked against
+ * providerStatus); it decides restore-vs-strip alongside backup presence.
+ */
+export async function disablePiFireworks({ settingsPath, authPath, modelsPath, dataDir, home = "", wasEnabled = false }) {
+  const managedModelIds = await readManagedModelIds(home, dataDir);
   const settingsBackup = backupPath(dataDir, settingsPath, "settings");
   const hasBackup = (await readJsonIfExists(settingsBackup)).snapshot !== undefined;
 
   if (!wasEnabled && !hasBackup) {
     const auth = await readJsonIfExists(authPath);
     const settings = await readJsonIfExists(settingsPath);
-    const hasFireconnectState = (await readRawIfExists(statePath(dataDir))).existed;
-    const models = await readJsonIfExists(modelsPath);
     const hasManagedAuth = isFireconnectManagedAuth(auth);
     if (!hasManagedAuth) {
+      const profiles = home
+        ? (await readGlobalConfig(home)).harnesses[HARNESS.PI]?.profiles
+        : undefined;
+      const hasFireconnectState = (Array.isArray(profiles?.managedModelIds)
+          && profiles.managedModelIds.length > 0)
+        || (await readRawIfExists(legacyStatePath(dataDir))).existed;
       if (!hasFireconnectState || !isFireconnectActive(settings)) {
         return { changed: false };
       }
@@ -740,7 +810,7 @@ export async function disablePiFireworks({ settingsPath, authPath, modelsPath, d
     if (!changed) {
       return { changed: false };
     }
-    await writeState(dataDir, false, []);
+    await persistManagedModelIds(home, dataDir, []);
     return { changed: true };
   }
 
@@ -773,6 +843,6 @@ export async function disablePiFireworks({ settingsPath, authPath, modelsPath, d
     changed = (await stripManagedAzureModels(modelsPath)) || changed;
   }
 
-  await writeState(dataDir, false, []);
+  await persistManagedModelIds(home, dataDir, []);
   return { changed };
 }

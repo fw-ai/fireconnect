@@ -8,6 +8,7 @@ import {
 } from "../fireworks/azure-core.mjs";
 import { readJsonIfExists, writeJson } from "../io/json.mjs";
 import { isFireworksShapedKey } from "../keys/key-type.mjs";
+import { HARNESSES } from "../harness/id.mjs";
 
 export const GLOBAL_CONFIG_RELATIVE_PATH = ".fireconnect/config.json";
 export const FIREWORKS_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
@@ -131,6 +132,10 @@ function normalizeHarnessMap(raw) {
   /** @type {HarnessConfigMap} */
   const map = {};
   for (const [harnessId, entry] of Object.entries(raw)) {
+    // Drop retired/unknown harness ids (e.g. the legacy `deepagents` entry
+    // from the plugin era) so the config map stays in sync with the current
+    // roster. Known ids are preserved verbatim through normalizeHarnessEntry.
+    if (!HARNESSES.includes(harnessId)) continue;
     map[harnessId] = normalizeHarnessEntry(entry);
   }
   return map;

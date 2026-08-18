@@ -5,7 +5,7 @@ import {
   printPiRestartHint,
 } from "../../cli/messages.mjs";
 import process from "node:process";
-import { defaultMainModel } from "../../fireworks/model-id.mjs";
+import { defaultMainModel, shortFireworksModelRef } from "../../fireworks/model-id.mjs";
 import { readJsonIfExists } from "../../io/json.mjs";
 import {
   PI_API_KEY_ENV_REF,
@@ -91,6 +91,7 @@ export default defineHarnessProfile({
       authPath: paths.authPath,
       modelsPath: paths.modelsPath,
       dataDir: paths.dataDir,
+      home: ctx.home,
       apiKey,
       apiKeyFromFlag,
       baseUrl,
@@ -103,6 +104,7 @@ export default defineHarnessProfile({
     return piStoredApiKeyRef(auth);
   },
   enable: async ({
+    ctx,
     paths,
     apiKeyRef,
     effectiveKey,
@@ -113,16 +115,16 @@ export default defineHarnessProfile({
     includeFirerouter,
   }) => {
     // Register the preferred catalog; firerouter is workspace-BYOK-gated.
-    // Fail open offline — enablePiFireworks falls back to bundled routers.
-    let catalogModelIds = [];
-    try {
-      ({ ids: catalogModelIds } = await loadRegisterableModels({
-        apiKey: effectiveKey,
-        includeFirerouter,
-      }));
-    } catch { /* offline / catalog unavailable */ }
+    // A TTL-cached snapshot serves offline fine; only a cold start with no
+    // network throws here, and that must fail the `on` rather than register a
+    // model list that was never fetched.
+    const { ids: catalogModelIds } = await loadRegisterableModels({
+      apiKey: effectiveKey,
+      includeFirerouter,
+    });
     return enablePiFireworks({
       ...paths,
+      home: ctx.home,
       apiKey: apiKeyRef,
       effectiveApiKey: effectiveKey,
       modelId,
@@ -135,8 +137,12 @@ export default defineHarnessProfile({
   envHookOn: (ctx) => finishEnvHarnessOn(ctx.home, { harnessId: "pi" }),
   restartHint: () => printPiRestartHint(),
 
-  disable: async ({ paths }) => {
-    const { changed } = await disablePiFireworks(paths);
+  disable: async ({ ctx, paths, wasEnabled }) => {
+    const { changed } = await disablePiFireworks({
+      ...paths,
+      home: ctx.home,
+      wasEnabled,
+    });
     return changed ? "restored" : "unchanged";
   },
   restartHintOff: (outcome) => {
@@ -144,6 +150,13 @@ export default defineHarnessProfile({
       printPiRestartHint();
     }
   },
+  async providerStatus(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.PI);
+    const { settingsPath } = piPathsFor(ctx);
+    const settings = await readJsonIfExists(settingsPath);
+    return piProviderStatus(settings);
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
     const { settingsPath, authPath, modelsPath } = piPathsFor(ctx);
@@ -180,7 +193,9 @@ export default defineHarnessProfile({
     const authKey = piStoredApiKeyRef(auth);
     const keyType = detectApiKeyType(resolvePiApiKeyValue(authKey));
     const model = typeof settings.defaultModel === "string" ? settings.defaultModel : null;
-    const currentModel = provider === "fireworks" ? model : null;
+    const currentModel = provider === "fireworks" && model
+      ? shortFireworksModelRef(model)
+      : null;
     const payload = {
       harness: HARNESS.PI,
       provider,

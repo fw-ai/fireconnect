@@ -24,11 +24,11 @@ describe("detectInstalledHarnesses", () => {
     try {
       await mkdir(path.join(home, ".claude"), { recursive: true });
       await mkdir(path.join(home, ".codex"), { recursive: true });
-      await mkdir(path.join(home, ".deepagents"), { recursive: true });
+      await mkdir(path.join(home, ".dsh"), { recursive: true });
       const detected = detectInstalledHarnesses(home);
       assert.ok(detected.includes("claude"));
       assert.ok(detected.includes("codex"));
-      assert.ok(detected.includes("deepagents"));
+      assert.ok(detected.includes("deepseek"));
       assert.ok(!detected.includes("pi"));
     } finally {
       await rm(home, { recursive: true, force: true });

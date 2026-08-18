@@ -2,9 +2,10 @@ import process from "node:process";
 import { keyStatusSummary, resolveFireworksKeyWithSource } from "../../keys/api-key.mjs";
 import { identityLabel, verifyFireworksApiKey } from "../../keys/verify-api-key.mjs";
 import { detectEnvironment } from "../../system/environment.mjs";
-import { accent, check } from "../../ui/term.mjs";
-import { bold, muted } from "../../ui.mjs";
-import { printBoolField, printField, printSectionHeader } from "../../harness/status-display.mjs";
+import { accent } from "../../ui/term.mjs";
+import { bold, cyan, muted, symbols } from "../../ui.mjs";
+import { formatOnOff, printBoolField, printField, printSectionHeader } from "../../harness/status-display.mjs";
+import { listHarnesses } from "../../harness/registry.mjs";
 
 /**
  * `fireconnect status`: report sign-in state, machine environment, and where
@@ -25,6 +26,27 @@ export async function runStatusCommand(ctx) {
   }
 
   const summary = await keyStatusSummary(home);
+  // The global `harnesses[*].enabled` flag in ~/.fireconnect/config.json is not
+  // reliably maintained (only Claude writes it; older CLI versions and several
+  // adapters never flip it), so it drifts from ground truth. Override each
+  // entry's `enabled` from the adapter's real config — the same source
+  // `<harness> status` reports — so the summary reflects what's actually routed.
+  const adapters = listHarnesses();
+  const adapterById = new Map(adapters.map((a) => [a.id, a]));
+  await Promise.all(summary.perHarness.map(async (h) => {
+    const adapter = adapterById.get(h.id);
+    if (!adapter || typeof adapter.providerStatus !== "function") return;
+    try {
+      const provider = await adapter.providerStatus({ ...ctx, home });
+      h.enabled = provider === "fireworks" || provider === "azure";
+    } catch {
+      // A harness whose config can't be read (e.g. IDE SQLite locked) keeps the
+      // flag-based value rather than failing the whole status command.
+    }
+  }));
+  // Present harnesses in stable registry order (claude, opencode, …).
+  const byId = new Map(summary.perHarness.map((h) => [h.id, h]));
+  summary.perHarness = adapters.map((a) => byId.get(a.id)).filter(Boolean);
   const environment = detectEnvironment({ home });
   const { key: active, source } = await resolveFireworksKeyWithSource({ apiKey: "", home });
   // The resolver prefers FIREWORKS_API_KEY, so when it is set it is the
@@ -127,11 +149,12 @@ function printAuthLine(auth, fromEnv) {
  */
 function formatSignedInLine(auth) {
   const { email, accountId } = auth;
+  const mark = cyan(symbols.ok);
   if (email && accountId) {
-    return `${check()} Signed in as ${email} (account: ${accountId}).`;
+    return `${mark} Signed in as ${email} (account: ${accountId}).`;
   }
   const who = identityLabel({ email, accountId });
-  return who ? `${check()} Signed in as ${who}.` : `${check()} Signed in.`;
+  return who ? `${mark} Signed in as ${who}.` : `${mark} Signed in.`;
 }
 
 /**
@@ -191,14 +214,13 @@ function printStorage(summary, source) {
  * @param {Array<{ id: string, enabled: boolean, readsFrom: string, storage: string }>} perHarness
  */
 function printHarnesses(perHarness) {
-  const enabled = perHarness.filter((h) => h.enabled);
   console.log("");
   printSectionHeader("Harnesses");
-  if (enabled.length === 0) {
-    console.log(muted("  All off."));
-    return;
-  }
-  for (const h of enabled) {
-    console.log(`  ${bold(h.id)}  ·  ${h.readsFrom}`);
+  const width = perHarness.reduce((m, h) => Math.max(m, h.id.length), 0);
+  for (const h of perHarness) {
+    // Reuse the shared on/off formatter so the summary matches the coloring
+    // every `<harness> status` uses (cyan "on" / dim "off") — one
+    // semantic, not a per-command palette.
+    console.log(`  ${bold(h.id.padEnd(width))}  ${formatOnOff(h.enabled)}`);
   }
 }

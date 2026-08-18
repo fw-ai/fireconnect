@@ -443,12 +443,11 @@ const ANTHROPIC_PRICING_URL = "https://www.anthropic.com/pricing";
 const OPENAI_PRICING_URL = "https://openai.com/api/pricing/";
 
 /** USD per 1M tokens, list price. Embedded reference — verify at the source URL.
- * Verified 2026-07-06 against https://www.anthropic.com/pricing. */
+ * Verified 2026-08-12 against https://www.anthropic.com/pricing. */
 const ANTHROPIC_LIST_RATES = {
-  // Current flagship (API tab). Sonnet 5 has introductory $2/$10 pricing through
-  // Aug 31 2026, reverting to $3/$15 standard; we use the standard rate so the
-  // demo doesn't underestimate incumbent cost after the promo ends.
-  "claude-sonnet-5": { input: 3, output: 15, label: "Claude Sonnet 5" },
+  // Current flagship (API tab). Sonnet 5 is $2/$10; Anthropic made the launch
+  // intro rate permanent on 2026-08-10 (the planned $3/$15 increase was canceled).
+  "claude-sonnet-5": { input: 2, output: 10, label: "Claude Sonnet 5" },
   "claude-sonnet": { input: 3, output: 15, label: "Claude Sonnet" },
   // Opus 4.5–4.8 are all $5/$25. The old $15/$75 was Opus 4.1 only.
   "claude-opus-4-8": { input: 5, output: 25, label: "Claude Opus 4.8" },
@@ -465,7 +464,7 @@ const ANTHROPIC_LIST_RATES = {
   "claude-fable": { input: 10, output: 50, label: "Claude Fable" },
   // Bare `/model` aliases (settings.json `model` may be just "opus"/"sonnet"/"haiku").
   "opus": { input: 5, output: 25, label: "Claude Opus" },
-  "sonnet": { input: 3, output: 15, label: "Claude Sonnet" },
+  "sonnet": { input: 2, output: 10, label: "Claude Sonnet" },
   "haiku": { input: 1, output: 5, label: "Claude Haiku" },
   "fable": { input: 10, output: 50, label: "Claude Fable" },
 };
@@ -484,7 +483,7 @@ const OPENAI_LIST_RATES = {
   "o3": { input: 2, output: 8, label: "o3" },
 };
 
-const DEFAULT_ANTHROPIC_RATE = { input: 3, output: 15, label: "Claude Sonnet (reference)" };
+const DEFAULT_ANTHROPIC_RATE = { input: 2, output: 10, label: "Claude Sonnet (reference)" };
 const DEFAULT_OPENAI_RATE = { input: 2.5, output: 10, label: "GPT-4o (reference)" };
 
 /**
@@ -519,7 +518,7 @@ export function providerListPricing({ provider, modelId }) {
     if (rate) {
       return toRateShape(rate, ANTHROPIC_PRICING_URL, rate.input * 0.1, false);
     }
-    return toRateShape(DEFAULT_ANTHROPIC_RATE, ANTHROPIC_PRICING_URL, 0.3, true);
+    return toRateShape(DEFAULT_ANTHROPIC_RATE, ANTHROPIC_PRICING_URL, 0.2, true);
   }
   if (provider === "openai") {
     const id = String(modelId).toLowerCase();

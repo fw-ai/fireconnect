@@ -15,124 +15,129 @@ export const FIREWORKS_MODEL_SPECS = {
   "deepseek-v4-pro": {
     label: "DeepSeek V4 Pro",
     pricing: { input: 1.74, cachedInput: 0.145, output: 3.48 },
-    vscode: { maxInputTokens: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
+  },
+  "deepseek-v4-pro-0813": {
+    label: "DeepSeek V4 Pro (0813)",
+    pricing: { input: 1.74, cachedInput: 0.145, output: 3.48 },
+    capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
   },
   "deepseek-v4-flash": {
     label: "DeepSeek V4 Flash",
     pricing: { input: 0.14, cachedInput: 0.028, output: 0.28 },
-    vscode: { maxInputTokens: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
+  },
+  "deepseek-v4-flash-0731": {
+    label: "DeepSeek V4 Flash (0731)",
+    pricing: { input: 0.14, cachedInput: 0.028, output: 0.28 },
+    capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
   },
   "glm-5p2": {
     label: "GLM 5.2",
     pricing: { input: 1.40, cachedInput: 0.14, output: 4.40 },
-    vscode: { maxInputTokens: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
   "glm-5p1": {
     label: "GLM 5.1",
     pricing: { input: 1.40, cachedInput: 0.26, output: 4.40 },
-    vscode: { maxInputTokens: 202_800, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 202_800, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
   "glm-5p1-fast": {
     label: "GLM 5.1 Fast",
     pricing: { input: 2.80, cachedInput: 0.52, output: 8.80, tier: "fast" },
-    vscode: { maxInputTokens: 202_800, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 202_800, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
   "glm-5p2-fast": {
     label: "GLM 5.2 Fast",
     pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
-    vscode: { maxInputTokens: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
   "kimi-k3": {
     label: "Kimi K3",
     pricing: { input: 3.00, cachedInput: 0.30, output: 15.00 },
-    vscode: { maxInputTokens: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
   "kimi-k3-fast": {
     label: "Kimi K3 Fast",
     pricing: { input: 6.00, cachedInput: 0.60, output: 30.00, tier: "fast" },
-    vscode: { maxInputTokens: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
   "kimi-k2p7-code": {
     label: "Kimi K2.7 Code",
     pricing: { input: 0.95, cachedInput: 0.19, output: 4.00 },
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
-  },
-  "kimi-k2p7-code-fast": {
-    label: "Kimi K2.7 Code Fast",
-    pricing: { input: 1.90, cachedInput: 0.38, output: 8.00, tier: "fast" },
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
   },
   "kimi-k2p6": {
     label: "Kimi K2.6",
     pricing: { input: 0.95, cachedInput: 0.16, output: 4.00 },
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
   },
   "kimi-k2p6-fast": {
     label: "Kimi K2.6 Fast",
     pricing: { input: 2.00, cachedInput: 0.30, output: 8.00, tier: "fast" },
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
   },
   "kimi-k2p6-turbo": {
     label: "Kimi K2.6 Turbo",
     pricing: { input: 2.00, cachedInput: 0.30, output: 8.00, tier: "fast" },
-    vscode: { maxInputTokens: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_000, maxOutputTokens: 262_000, vision: true, toolCalling: true },
   },
   "kimi-k2p5": {
     label: "Kimi K2.5",
     pricing: { input: 0.60, cachedInput: 0.10, output: 3.00 },
-    vscode: { maxInputTokens: 262_144, maxOutputTokens: 32_768, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_144, maxOutputTokens: 32_768, vision: true, toolCalling: true },
   },
   "minimax-m2p5": {
     label: "MiniMax 2.5",
     pricing: { input: 0.30, cachedInput: 0.03, output: 1.20 },
-    vscode: { maxInputTokens: 196_608, maxOutputTokens: 24_576, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 196_608, maxOutputTokens: 24_576, vision: false, toolCalling: true },
   },
   "minimax-m2p7": {
     label: "MiniMax 2.7",
     pricing: { input: 0.30, cachedInput: 0.06, output: 1.20 },
-    vscode: { maxInputTokens: 196_608, maxOutputTokens: 196_608, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 196_608, maxOutputTokens: 196_608, vision: false, toolCalling: true },
   },
   "minimax-m3": {
     label: "MiniMax M3",
     pricing: { input: 0.30, cachedInput: 0.06, output: 1.20 },
-    vscode: { maxInputTokens: 512_000, maxOutputTokens: 512_000, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 512_000, maxOutputTokens: 512_000, vision: true, toolCalling: true },
   },
   "qwen3p7-plus": {
     label: "Qwen 3.7 Plus",
     pricing: { input: 0.40, cachedInput: 0.08, output: 1.60 },
-    vscode: { maxInputTokens: 262_144, maxOutputTokens: 65_536, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_144, maxOutputTokens: 65_536, vision: true, toolCalling: true },
     api: { contextLength: 262_144, supportsImageInput: true },
   },
   "qwen3p6-plus": {
     label: "Qwen 3.6 Plus",
     pricing: { input: 0.50, cachedInput: 0.10, output: 3.00 },
-    vscode: { maxInputTokens: 262_144, maxOutputTokens: 32_768, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 262_144, maxOutputTokens: 32_768, vision: true, toolCalling: true },
   },
   "gpt-oss-120b": {
     label: "GPT-OSS 120B",
     pricing: { input: 0.15, cachedInput: 0.015, output: 0.60 },
-    vscode: { maxInputTokens: 131_072, maxOutputTokens: 32_768, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 131_072, maxOutputTokens: 32_768, vision: false, toolCalling: true },
   },
   "gpt-oss-20b": {
     label: "GPT-OSS 20B",
     pricing: { input: 0.07, cachedInput: 0.035, output: 0.30 },
-    vscode: { maxInputTokens: 131_072, maxOutputTokens: 32_768, vision: false, toolCalling: false },
+    capabilities: { contextWindow: 131_072, maxOutputTokens: 32_768, vision: false, toolCalling: false },
   },
   inkling: {
     label: "Inkling",
     pricing: { input: 1.00, cachedInput: 0.17, output: 4.05 },
-    vscode: { maxInputTokens: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+    capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
     api: { contextLength: 1_048_576, supportsImageInput: true },
     modelsDev: false,
   },
   "nemotron-3-ultra-nvfp4": {
     label: "NVIDIA Nemotron 3 Ultra NVFP4",
-    vscode: { maxInputTokens: 262_144, maxOutputTokens: 32_768, vision: false, toolCalling: true },
+    capabilities: { contextWindow: 262_144, maxOutputTokens: 32_768, vision: false, toolCalling: true },
   },
   firerouter: {
     label: "FireRouter",
-    vscode: {
-      maxInputTokens: 1_048_575,
+    capabilities: {
+      contextWindow: 1_048_575,
       maxOutputTokens: 131_072,
       vision: true,
       toolCalling: true,
@@ -153,6 +158,8 @@ export function isFirerouterGatewayPattern(model) {
 }
 
 export const ROUTER_SPEC_ALIASES = {
+  "deepseek-flash-latest": "deepseek-v4-flash-0731",
+  "deepseek-pro-latest": "deepseek-v4-pro-0813",
   "glm-latest": "glm-5p2",
   "glm-fast-latest": "glm-5p2-fast",
   "kimi-latest": "kimi-k3",
@@ -161,6 +168,8 @@ export const ROUTER_SPEC_ALIASES = {
   "qwen-plus-latest": "qwen3p7-plus",
 };
 
+const DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES = ["deepseek-v4-flash-0731", "deepseek-v4-flash"];
+const DEEPSEEK_PRO_LATEST_BASE_CANDIDATES = ["deepseek-v4-pro-0813", "deepseek-v4-pro"];
 const KIMI_LATEST_BASE_CANDIDATES = ["kimi-k3", "kimi-k2p8-code", "kimi-k2p7-code"];
 const MINIMAX_LATEST_BASE_CANDIDATES = ["minimax-m3", "minimax-m2p7", "minimax-m2p5"];
 const QWEN_PLUS_LATEST_BASE_CANDIDATES = ["qwen3p7-plus", "qwen3p6-plus"];
@@ -217,6 +226,16 @@ export function resolveRouterSpecAliasTarget(alias, entryIds = null) {
       ?? ROUTER_SPEC_ALIASES[alias]
       ?? null;
   }
+  if (alias === "deepseek-flash-latest") {
+    return resolveFirstCatalogCandidate(catalogCheck, DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
+  }
+  if (alias === "deepseek-pro-latest") {
+    return resolveFirstCatalogCandidate(catalogCheck, DEEPSEEK_PRO_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
+  }
   return ROUTER_SPEC_ALIASES[alias] ?? null;
 }
 
@@ -231,7 +250,7 @@ export function routerIdsForTargetSlug(targetSlug) {
   return [...new Set(ids)];
 }
 
-export const DEFAULT_VSCODE_MODEL_METADATA = {
+export const DEFAULT_MODEL_CAPABILITIES = {
   vision: false,
   toolCalling: true,
 };
@@ -423,8 +442,22 @@ export function lookupModelSpec(modelRef) {
   return aliasSpec;
 }
 
-function isRouterShortId(shortId) {
-  return shortId === "firerouter"
+/**
+ * Whether a bare short slug is a router (not a model). Suffix-based so new
+ * `*-fast` / `*-latest` / `*-turbo` router slugs are classified correctly
+ * without needing a hand-maintained list — `fullFireworksResourceId` relies on
+ * this to pick `routers/` vs `models/`, so a stale list would mis-expand a
+ * real router id to a non-existent `accounts/fireworks/models/...` path.
+ * @param {string} shortId
+ * @returns {boolean}
+ */
+export function isRouterShortId(shortId) {
+  if (typeof shortId !== "string") {
+    return false;
+  }
+  // `firerouter*` prefix (not just the bare slug) mirrors
+  // isFirerouterGatewayPattern, so firerouter variants classify as routers too.
+  return shortId.startsWith("firerouter")
     || Boolean(ROUTER_SPEC_ALIASES[shortId])
     || shortId.endsWith("-latest")
     || shortId.endsWith("-fast")
@@ -540,27 +573,6 @@ function firstCachedServerlessPricing(modelRef) {
   return null;
 }
 
-export function lookupVscodeModelMetadata(modelRef) {
-  const spec = lookupModelSpec(modelRef);
-  const cachedModalities = firstCachedInputModalities(modelRef);
-  const cachedContextLength = firstCachedContextLength(modelRef);
-  const cachedSupportsTools = firstCachedSupportsTools(modelRef);
-  const base = spec?.vscode ?? DEFAULT_VSCODE_MODEL_METADATA;
-
-  if (!cachedModalities && !cachedContextLength && cachedSupportsTools === null) {
-    return base;
-  }
-
-  return {
-    ...base,
-    ...(cachedContextLength
-      ? { maxInputTokens: cachedContextLength, maxOutputTokens: base.maxOutputTokens ?? 16_384 }
-      : {}),
-    ...(cachedModalities ? { vision: cachedModalities.includes("image") } : {}),
-    ...(cachedSupportsTools === null ? {} : { toolCalling: cachedSupportsTools }),
-  };
-}
-
 export const DEFAULT_FIREWORKS_MODEL_LIMITS = {
   contextWindow: 128_000,
   maxTokens: 16_384,
@@ -572,53 +584,47 @@ export function fireworksInputModalities(limits) {
   return limits?.vision ? ["text", "image"] : ["text"];
 }
 
-/** OpenCode provider.models modalities field, omitted when text-only. */
-export function opencodeModalitiesField(limits) {
-  if (!limits?.vision) {
-    return undefined;
-  }
-  return { input: fireworksInputModalities(limits) };
-}
-
-/** @param {{ contextWindow?: number, maxTokens?: number, vision?: boolean }} limits */
-export function hasRichFireworksLimits(limits) {
-  return limits.contextWindow !== DEFAULT_FIREWORKS_MODEL_LIMITS.contextWindow
-    || limits.maxTokens !== DEFAULT_FIREWORKS_MODEL_LIMITS.maxTokens
-    || limits.vision !== DEFAULT_FIREWORKS_MODEL_LIMITS.vision;
-}
-
-/**
- * When models.dev is unavailable, static-spec catalog models are assumed listed
- * there unless explicitly marked `modelsDev: false` (e.g. inkling).
- * @param {string} modelRef
- */
-export function assumedModelsDevListed(modelRef) {
-  const spec = lookupModelSpec(modelRef);
-  if (spec?.modelsDev === false) {
-    return false;
-  }
-  return Boolean(spec?.vscode);
-}
-
 /** Harness-neutral context and modality limits for a Fireworks model or router. */
-export function lookupFireworksModelLimits(modelRef) {
-  const cachedContextLength = firstCachedContextLength(modelRef);
-  const cachedModalities = firstCachedInputModalities(modelRef);
-  const limits = lookupModelSpec(modelRef)?.vscode;
-  if (!limits && !cachedContextLength && !cachedModalities) {
-    return DEFAULT_FIREWORKS_MODEL_LIMITS;
+function resolveFireworksCatalogLimits(modelRef, {
+  cachedContextLength,
+  cachedModalities,
+  specCapabilities,
+}) {
+  if (!specCapabilities && !cachedContextLength && !cachedModalities) {
+    return { ...DEFAULT_FIREWORKS_MODEL_LIMITS };
   }
   return {
-    contextWindow: cachedContextLength ?? limits?.maxInputTokens ?? DEFAULT_FIREWORKS_MODEL_LIMITS.contextWindow,
-    maxTokens: limits?.maxOutputTokens ?? DEFAULT_FIREWORKS_MODEL_LIMITS.maxTokens,
+    contextWindow: cachedContextLength ?? specCapabilities?.contextWindow ?? DEFAULT_FIREWORKS_MODEL_LIMITS.contextWindow,
+    maxTokens: specCapabilities?.maxOutputTokens ?? DEFAULT_FIREWORKS_MODEL_LIMITS.maxTokens,
     vision: cachedModalities
       ? cachedModalities.includes("image")
-      : (limits?.vision ?? DEFAULT_FIREWORKS_MODEL_LIMITS.vision),
+      : (specCapabilities?.vision ?? DEFAULT_FIREWORKS_MODEL_LIMITS.vision),
   };
 }
 
 /** Per-million-token cost block for Pi models.json `cost` fields. */
-export function lookupFireworksModelCost(modelRef) {
+function resolveFireworksCatalogCost(modelRef, specPricing) {
+  const pricing = firstCachedServerlessPricing(modelRef) ?? specPricing;
+  if (!pricing) {
+    return null;
+  }
+  return {
+    input: pricing.input,
+    output: pricing.output,
+    cacheRead: pricing.cachedInput ?? 0,
+    cacheWrite: 0,
+  };
+}
+
+/**
+ * Per-million-token cost block for Pi models.json `cost` fields.
+ * Fire Pass is a subscription: it has no per-model pricing, so `firepass`
+ * returns null and the harness omits the cost block.
+ */
+export function lookupFireworksModelCost(modelRef, { firepass = false } = {}) {
+  if (firepass) {
+    return null;
+  }
   const pricing = firstCachedServerlessPricing(modelRef)
     ?? lookupModelSpec(modelRef)?.pricing;
   if (!pricing) {
@@ -630,6 +636,50 @@ export function lookupFireworksModelCost(modelRef) {
     cacheRead: pricing.cachedInput ?? 0,
     cacheWrite: 0,
   };
+}
+
+/**
+ * Canonical Fireworks catalog snapshot for a model/router ref.
+ * Static specs and the warmed serverless cache are merged once here.
+ * @param {string} modelRef
+ * @returns {{
+ *   limits: { contextWindow: number, maxTokens: number, vision: boolean },
+ *   cost: { input: number, output: number, cacheRead: number, cacheWrite: number } | null,
+ *   input: string[],
+ *   toolCalling: boolean | null,
+ *   cache: {
+ *     contextLength: number | null,
+ *     inputModalities: string[] | null,
+ *     supportsTools: boolean | null,
+ *   },
+ * }}
+ */
+export function resolveFireworksCatalog(modelRef) {
+  const spec = lookupModelSpec(modelRef);
+  const cachedContextLength = firstCachedContextLength(modelRef);
+  const cachedModalities = firstCachedInputModalities(modelRef);
+  const cachedSupportsTools = firstCachedSupportsTools(modelRef);
+  const limits = resolveFireworksCatalogLimits(modelRef, {
+    cachedContextLength,
+    cachedModalities,
+    specCapabilities: spec?.capabilities,
+  });
+  return {
+    limits,
+    cost: resolveFireworksCatalogCost(modelRef, spec?.pricing),
+    input: fireworksInputModalities(limits),
+    toolCalling: cachedSupportsTools ?? spec?.capabilities?.toolCalling ?? null,
+    cache: {
+      contextLength: cachedContextLength,
+      inputModalities: cachedModalities,
+      supportsTools: cachedSupportsTools,
+    },
+  };
+}
+
+/** @param {string} modelRef */
+export function lookupFireworksModelLimits(modelRef) {
+  return resolveFireworksCatalog(modelRef).limits;
 }
 
 export const MODEL_API_OVERRIDES = Object.fromEntries(

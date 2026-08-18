@@ -15,7 +15,10 @@ import {
   routerIdsForTargetSlug,
 } from "./model-specs.mjs";
 import {
+  cacheServerlessCatalogSnapshot,
   getServerlessCatalogSnapshot,
+  isCatalogCacheFresh,
+  readCatalogCache,
   setServerlessCatalogSnapshot,
 } from "./serverless-catalog-cache.mjs";
 
@@ -29,7 +32,6 @@ export const FIREPASS_ROUTER_IDS = new Set([
   "accounts/fireworks/routers/glm-latest",
   "accounts/fireworks/routers/glm-5p2-fast",
   "accounts/fireworks/routers/glm-fast-latest",
-  "accounts/fireworks/routers/kimi-k2p7-code-fast",
 ]);
 
 /** Fire Pass keys cannot list the catalog; these routers stay available offline. */
@@ -62,13 +64,6 @@ export const FIREPASS_FALLBACK_ROUTERS = [
     baseModelId: "accounts/fireworks/models/kimi-k3",
     kind: KIND_SERVERLESS,
   },
-  {
-    id: "accounts/fireworks/routers/kimi-k2p7-code-fast",
-    shortId: "kimi-k2p7-code-fast",
-    displayName: "Kimi K2.7 Code Fast",
-    baseModelId: "accounts/fireworks/models/kimi-k2p7-code",
-    kind: KIND_SERVERLESS,
-  },
 ];
 
 /** @typedef {{ id: string, shortId: string, displayName: string, baseModelId?: string, kind: "serverless", serverlessMode?: string }} CatalogEntry */
@@ -94,7 +89,7 @@ export function shortIdFromResourceName(name) {
  * Turn a model id into a human-readable name for display, without any network
  * call. e.g. `accounts/fireworks/models/glm-5p2` -> "GLM 5.2",
  * `accounts/fireworks/routers/glm-latest` -> "GLM Latest",
- * `kimi-k2p7-code-fast` -> "Kimi K2.7 Code Fast", `composer-2.5` -> "Composer 2.5".
+ * `kimi-k3-fast` -> "Kimi K3 Fast", `composer-2.5` -> "Composer 2.5".
  * Falls back to the last path segment if prettification yields nothing better.
  * @param {string} modelId
  * @returns {string}
@@ -539,7 +534,7 @@ function dedupeCatalog(entries) {
 export async function fetchServerlessCatalog(apiKey) {
   const models = await fetchServerlessCatalogRaw(apiKey);
   const snapshot = buildServerlessCatalogSnapshot(models);
-  setServerlessCatalogSnapshot(snapshot);
+  cacheServerlessCatalogSnapshot(snapshot);
   return {
     catalog: snapshot.entries,
     routersUnavailable: false,
@@ -616,30 +611,78 @@ export function filterCatalogBySearch(catalog, search = "") {
   ));
 }
 
-function catalogFamilyVersion(shortId = "") {
-  if (shortId.endsWith("-fast-latest")) {
-    return { family: shortId.slice(0, -"-fast-latest".length), version: [], latest: true };
+// Alias suffixes whose prefix names a model family (kimi-fast-latest → kimi).
+const LATEST_ALIAS_SUFFIXES = ["-fast-latest", "-latest"];
+
+// Version extraction is deliberately permissive: any digit-bearing segment is
+// version-shaped, whatever the vendor's marker convention (k3, v4, m2p7, 5p2,
+// qwen3p7, 0731, 1.5, a1b2, …). The one carve-out is parameter sizes
+// (7b, 20b, 120b, 1p5b, 135m): those name a distinct model, not a version, so
+// gpt-oss-20b and gpt-oss-120b must never collapse into one family.
+const PARAM_SIZE_SEGMENT_RE = /^\d+(?:[p.]\d+)?[bm]$/i;
+const LEADING_ALPHA_RE = /^[a-z]+/i;
+
+function versionNumbers(text) {
+  return (text.match(/\d+/g) ?? []).map(Number);
+}
+
+/**
+ * Strip version-shaped segments from a slug to recover its family name,
+ * collecting the digits as a comparable version vector. A multi-letter alpha
+ * prefix on a digit-bearing segment is part of the family (qwen3p7 → qwen);
+ * a single letter is a version marker and goes with the digits (k3, v4, m2p7).
+ * Works for arbitrary families without per-vendor rules: glm-5p2 → glm [5,2],
+ * kimi-k3 → kimi [3], qwen3p7-plus → qwen-plus [3,7],
+ * deepseek-v4-flash-0731 → deepseek-flash [4,731],
+ * modelfamily-a1b2-abvc → modelfamily-abvc [1,2].
+ */
+function stripVersionSegments(shortId) {
+  const literals = [];
+  const version = [];
+  for (const segment of shortId.split("-")) {
+    if (!/\d/.test(segment) || PARAM_SIZE_SEGMENT_RE.test(segment)) {
+      literals.push(segment);
+      continue;
+    }
+    version.push(...versionNumbers(segment));
+    const prefix = segment.match(LEADING_ALPHA_RE)?.[0] ?? "";
+    if (prefix.length > 1) {
+      literals.push(prefix);
+    }
   }
-  if (shortId.endsWith("-latest")) {
-    return { family: shortId.slice(0, -"-latest".length), version: [], latest: true };
+  return { family: literals.join("-"), version };
+}
+
+/** Family prefix of a `-latest` / `-fast-latest` alias slug, else null. */
+function latestAliasFamily(shortId) {
+  for (const suffix of LATEST_ALIAS_SUFFIXES) {
+    if (shortId.endsWith(suffix) && shortId.length > suffix.length) {
+      return shortId.slice(0, -suffix.length);
+    }
   }
+  return null;
+}
 
-  let match = shortId.match(/^glm-(\d+)p(\d+)(?:-|$)/);
-  if (match) return { family: "glm", version: [Number(match[1]), Number(match[2])], latest: false };
-
-  match = shortId.match(/^kimi-k(\d+)p(\d+)(?:-|$)/);
-  if (match) return { family: "kimi", version: [Number(match[1]), Number(match[2])], latest: false };
-
-  match = shortId.match(/^minimax-m(\d+)(?:p(\d+))?(?:-|$)/);
-  if (match) return { family: "minimax", version: [Number(match[1]), Number(match[2] ?? 0)], latest: false };
-
-  match = shortId.match(/^qwen(\d+)p(\d+)-(.+)$/);
-  if (match) return { family: `qwen-${match[3]}`, version: [Number(match[1]), Number(match[2])], latest: false };
-
-  match = shortId.match(/^deepseek-v(\d+)(?:-|$)/);
-  if (match) return { family: "deepseek", version: [Number(match[1])], latest: false };
-
-  return { family: shortId, version: [], latest: false };
+/**
+ * { family, version, latest } for a catalog shortId. `aliasFamilies` — the
+ * normalized families of the catalog's own -latest aliases — lets variants
+ * whose trailing suffix isn't version-shaped (kimi-k2p7-code, glm-5p1-fast)
+ * still land in the family their alias advertises, and lets a base model
+ * whose slug exactly equals the alias family (kimi-k3 vs kimi-latest,
+ * modelfamily-a1b2-abvc vs modelfamily-a1b2-abvc-latest) collapse into it.
+ * Resolution: exact alias-family match first, then longest alias-family
+ * prefix; otherwise the stripped family stands alone.
+ */
+function catalogFamilyVersion(shortId = "", aliasFamilies = []) {
+  const aliasFamily = latestAliasFamily(shortId);
+  if (aliasFamily !== null) {
+    return { family: stripVersionSegments(aliasFamily).family, version: [], latest: true };
+  }
+  const { family, version } = stripVersionSegments(shortId);
+  const prefixed = aliasFamilies
+    .filter((candidate) => family !== candidate && family.startsWith(`${candidate}-`))
+    .sort((a, b) => b.length - a.length)[0];
+  return { family: prefixed ?? family, version, latest: false };
 }
 
 function compareVersions(a, b) {
@@ -661,9 +704,18 @@ function compareVersions(a, b) {
  * @returns {import("./models.mjs").CatalogEntry[]}
  */
 export function preferLatestAliases(catalog) {
+  // First pass: the families this catalog's -latest aliases advertise, so
+  // versioned entries (including families this CLI has never seen) resolve
+  // against them in the second pass.
+  const aliasFamilies = [...new Set(
+    catalog
+      .map((entry) => latestAliasFamily(entry.shortId ?? ""))
+      .filter((family) => family !== null)
+      .map((family) => stripVersionSegments(family).family),
+  )];
   const parsed = catalog.map((entry) => ({
     entry,
-    ...catalogFamilyVersion(entry.shortId),
+    ...catalogFamilyVersion(entry.shortId, aliasFamilies),
   }));
   const aliasedFamilies = new Set(
     parsed.filter(({ latest }) => latest).map(({ family }) => family),
@@ -739,16 +791,56 @@ export async function loadServerlessCatalog({ apiKey, keyType = "" }) {
       keyType: resolvedKeyType,
       catalog: filterCatalogForKeyType(FIREPASS_FALLBACK_ROUTERS, "firepass"),
       routersUnavailable: false,
+      source: "firepass",
     };
   }
 
-  const { catalog, routersUnavailable } = await fetchServerlessCatalog(resolvedKey);
-  const filteredCatalog = filterCatalogForKeyType(catalog, resolvedKeyType);
+  // Eligible commands (harness `on`, `model list`, the Claude picker) all load
+  // through here and therefore share this TTL-bounded cache: a fresh persisted
+  // snapshot is served without a network round-trip, a stale one is refreshed,
+  // and offline we reuse whatever is cached so the picker is never wiped. Only
+  // a true cold start (no cache + unreachable network) is an error.
+  const cache = readCatalogCache();
+  if (cache && isCatalogCacheFresh()) {
+    // Serve from disk AND hydrate the in-memory snapshot, so downstream
+    // catalog consumers (getServerlessCatalogSnapshot) see it even if this
+    // process previously resolved the snapshot to null.
+    setServerlessCatalogSnapshot(cache.snapshot);
+    return {
+      apiKey: resolvedKey,
+      keyType: resolvedKeyType,
+      catalog: filterCatalogForKeyType(cache.snapshot.entries, resolvedKeyType),
+      routersUnavailable: false,
+      source: "cache",
+    };
+  }
 
-  return {
-    apiKey: resolvedKey,
-    keyType: resolvedKeyType,
-    catalog: filteredCatalog,
-    routersUnavailable,
-  };
+  try {
+    const { catalog, routersUnavailable } = await fetchServerlessCatalog(resolvedKey);
+    const filteredCatalog = filterCatalogForKeyType(catalog, resolvedKeyType);
+    return {
+      apiKey: resolvedKey,
+      keyType: resolvedKeyType,
+      catalog: filteredCatalog,
+      routersUnavailable,
+      source: "network",
+    };
+  } catch (error) {
+    if (cache?.snapshot) {
+      setServerlessCatalogSnapshot(cache.snapshot);
+      return {
+        apiKey: resolvedKey,
+        keyType: resolvedKeyType,
+        catalog: filterCatalogForKeyType(cache.snapshot.entries, resolvedKeyType),
+        routersUnavailable: false,
+        source: "stale",
+      };
+    }
+    throw new Error(
+      "Couldn't fetch the Fireworks model catalog and no cached copy exists yet. "
+      + "Reconnect to the network and run any FireConnect command that loads the "
+      + "catalog (e.g. `fireconnect <harness>` or `fireconnect model list`) — the "
+      + "data is cached with a TTL, so eligible commands won't refetch while it's fresh.",
+    );
+  }
 }

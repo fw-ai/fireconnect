@@ -78,8 +78,10 @@ describe("claude harness integration", () => {
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
     assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-original");
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
-    assertClaudeMainModel(enabled, "firerouter[1m]");
-    assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "glm-fast-latest[1m]");
+    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
+    assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
+    assert.equal(enabled.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "kimi-fast-latest[1m]");
     assert.equal(enabled.env.DISABLE_TELEMETRY, "1");
     assert.equal(enabled.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
     assert.equal(
@@ -139,7 +141,8 @@ describe("claude harness integration", () => {
     assert.equal(enabled.apiKeyHelper, "/usr/local/bin/user-anthropic-key-helper");
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, "sk-ant-native-auth-token");
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
-    assertClaudeMainModel(enabled, "firerouter[1m]");
+    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
   });
 
@@ -164,7 +167,8 @@ describe("claude harness integration", () => {
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(enabled.apiKeyHelper, "/usr/local/bin/user-anthropic-key-helper");
-    assertClaudeMainModel(enabled, "firerouter[1m]");
+    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
   });
@@ -188,7 +192,8 @@ describe("claude harness integration", () => {
 
     const enabled = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-native-flag");
-    assertClaudeMainModel(enabled, "firerouter[1m]");
+    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
   });
 
@@ -458,7 +463,7 @@ describe("claude harness integration", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(
       result.stdout,
-      /Text-only: deepseek-v4-flash, glm-fast-latest · Avoid images; recover with \/rewind\./,
+      /Text-only: deepseek-flash-latest, deepseek-pro-latest, glm-fast-latest · Avoid images; recover with \/rewind\./,
     );
     assert.doesNotMatch(result.stdout, /Claude Code cannot mark models as text-only/);
   });
@@ -491,7 +496,7 @@ describe("claude harness integration", () => {
 describe("fireworksModelPickerName", () => {
   it("uses catalog labels instead of raw slugs for subscription picker names", () => {
     assert.equal(fireworksModelPickerName("glm-fast-latest"), "GLM 5.2 Fast (Latest)");
-    assert.equal(fireworksModelPickerName("kimi-fast-latest"), "Kimi K2.7 Code Fast (Latest)");
+    assert.equal(fireworksModelPickerName("kimi-fast-latest"), "Kimi K3 Fast (Latest)");
     assert.equal(fireworksModelPickerName("deepseek-v4-flash"), "DeepSeek V4 Flash");
     assert.equal(fireworksModelPickerName("firerouter"), "FireRouter");
   });
@@ -571,7 +576,7 @@ describe("fireworksModelPickerName", () => {
     assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
     assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.2 Fast (Latest)");
     assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash");
-    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K2.7 Code Fast (Latest)");
+    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K3 Fast (Latest)");
     assert.equal(env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
     assert.match(env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION, /GLM 5\.2 Fast/);
   });

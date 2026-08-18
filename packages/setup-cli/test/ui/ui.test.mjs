@@ -156,7 +156,7 @@ describe("styling", () => {
   it("emits escape codes when enabled", () => {
     _setColorEnabled(true);
     assert.ok(dim("x").includes("\x1b[2m"));
-    assert.ok(yesNo(true).includes("\x1b[32m"));
+    assert.ok(yesNo(true).includes("\x1b[36m"));
     assert.ok(yesNo(false).includes("\x1b[31m"));
   });
 

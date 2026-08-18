@@ -298,22 +298,22 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest"), undefined);
   });
 
-  test("synthesizes kimi-latest and kimi-fast-latest when API exposes kimi-k2p7-code-fast", () => {
+  test("synthesizes kimi-latest and kimi-fast-latest when API exposes kimi-k3-fast", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k2p7-code",
-        displayName: "Kimi K2.7 Code",
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
         serverlessModes: [
           {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/default",
             skuInfos: [
               { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
               { sku: "LLM output tokens", amount: { units: "4" } },
             ],
           },
           {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
+            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
             skuInfos: [
               { sku: "LLM input tokens (uncached)", amount: { units: "1", nanos: 900_000_000 } },
               { sku: "LLM output tokens", amount: { units: "8" } },
@@ -323,7 +323,7 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       }),
     ]);
     const ids = snapshot.entries.map((entry) => entry.id);
-    assert.ok(ids.includes("accounts/fireworks/routers/kimi-k2p7-code-fast"));
+    assert.ok(ids.includes("accounts/fireworks/routers/kimi-k3-fast"));
     assert.ok(ids.includes("accounts/fireworks/routers/kimi-fast-latest"));
     assert.ok(ids.includes("accounts/fireworks/routers/kimi-latest"));
     assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest")?.tier, "fast");
@@ -361,6 +361,32 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     );
   });
 
+  test("synthesizes deepseek-flash-latest and deepseek-pro-latest", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/deepseek-v4-flash-0731",
+        displayName: "DeepSeek V4 Flash (0731)",
+        serverlessModes: [],
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/deepseek-v4-pro-0813",
+        displayName: "DeepSeek V4 Pro (0813)",
+        serverlessModes: [],
+      }),
+    ]);
+    const ids = snapshot.entries.map((entry) => entry.id);
+    assert.ok(ids.includes("accounts/fireworks/routers/deepseek-flash-latest"));
+    assert.ok(ids.includes("accounts/fireworks/routers/deepseek-pro-latest"));
+    assert.equal(
+      snapshot.routerBaseModelById.get("accounts/fireworks/routers/deepseek-flash-latest"),
+      "accounts/fireworks/models/deepseek-v4-flash-0731",
+    );
+    assert.equal(
+      snapshot.routerBaseModelById.get("accounts/fireworks/routers/deepseek-pro-latest"),
+      "accounts/fireworks/models/deepseek-v4-pro-0813",
+    );
+  });
+
   test("exposes kimi-fast-latest directly when API uses it as usage_identifier", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
@@ -387,7 +413,7 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     ]);
     const ids = snapshot.entries.map((entry) => entry.id);
     assert.ok(ids.includes("accounts/fireworks/routers/kimi-fast-latest"));
-    assert.ok(!ids.includes("accounts/fireworks/routers/kimi-k2p7-code-fast"));
+    assert.ok(!ids.includes("accounts/fireworks/routers/kimi-k3-fast"));
     assert.equal(snapshot.routerBaseModelById.get("accounts/fireworks/routers/kimi-fast-latest"),
       "accounts/fireworks/models/kimi-k2p7-code");
   });
@@ -438,27 +464,29 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
   });
 
   test("model list groups aliases and keeps only the newest pinned family versions", () => {
-    const entry = (shortId, kind) => ({
+    const entry = (shortId, kind, baseModelId = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,
       shortId,
       displayName: shortId,
       kind: "serverless",
+      ...(baseModelId ? { baseModelId } : {}),
     });
     const sections = organizeCatalogForDisplay([
       entry("firerouter", "routers"),
       entry("glm-5p1", "models"),
       entry("glm-5p2", "models"),
       entry("glm-5p2-fast", "routers"),
-      entry("glm-latest", "routers"),
-      entry("glm-fast-latest", "routers"),
+      entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p2"),
+      entry("glm-fast-latest", "routers", "accounts/fireworks/models/glm-5p2"),
       entry("kimi-k2p6", "models"),
       entry("kimi-k2p7-code", "models"),
-      entry("kimi-k2p7-code-fast", "routers"),
-      entry("kimi-latest", "routers"),
-      entry("kimi-fast-latest", "routers"),
+      entry("kimi-k3", "models"),
+      entry("kimi-k3-fast", "routers"),
+      entry("kimi-latest", "routers", "accounts/fireworks/models/kimi-k3"),
+      entry("kimi-fast-latest", "routers", "accounts/fireworks/models/kimi-k3"),
       entry("minimax-m2p7", "models"),
       entry("minimax-m3", "models"),
-      entry("minimax-latest", "routers"),
+      entry("minimax-latest", "routers", "accounts/fireworks/models/minimax-m3"),
     ]);
     const idsBySection = Object.fromEntries(sections.map((section) => [
       section.title,
@@ -469,7 +497,38 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       "SMART ROUTER": ["firerouter"],
       "LATEST ROUTERS": ["glm-latest", "kimi-latest", "minimax-latest"],
       "FAST ROUTERS": ["glm-fast-latest", "kimi-fast-latest"],
-      "INDIVIDUAL MODELS": ["glm-5p2", "kimi-k2p7-code", "minimax-m3"],
+      "INDIVIDUAL MODELS": ["glm-5p2", "kimi-k3", "minimax-m3"],
     });
+  });
+
+  test("individual models only include bases targeted by -latest routers", () => {
+    const entry = (shortId, kind, baseModelId = undefined) => ({
+      id: `accounts/fireworks/${kind}/${shortId}`,
+      shortId,
+      displayName: shortId,
+      kind: "serverless",
+      ...(baseModelId ? { baseModelId } : {}),
+    });
+    const sections = organizeCatalogForDisplay([
+      entry("deepseek-flash-latest", "routers", "accounts/fireworks/models/deepseek-v4-flash-0731"),
+      entry("deepseek-pro-latest", "routers", "accounts/fireworks/models/deepseek-v4-pro-0813"),
+      entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p2"),
+      entry("deepseek-v4-flash-0731", "models"),
+      entry("deepseek-v4-pro-0813", "models"),
+      // Versioned flash with no base-model id: collapsed by the deepseek-flash
+      // family alias, so it must not reappear.
+      entry("deepseek-v4-flash", "models"),
+      entry("glm-5p2", "models"),
+      // Standalone model with no -latest alias: excluded from INDIVIDUAL MODELS.
+      entry("gpt-oss-120b", "models"),
+    ]);
+    const individual = sections.find((section) => section.title === "INDIVIDUAL MODELS")?.entries
+      .map(({ shortId }) => shortId);
+
+    assert.deepEqual(individual, [
+      "deepseek-v4-flash-0731",
+      "deepseek-v4-pro-0813",
+      "glm-5p2",
+    ]);
   });
 });

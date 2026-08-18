@@ -1,4 +1,4 @@
-import { bold, dim, green, muted, yesNo } from "../ui.mjs";
+import { bold, dim, cyan, muted, yesNo } from "../ui.mjs";
 import { AZURE_PROVIDER_LABEL } from "../fireworks/azure-core.mjs";
 
 const HARNESS_LABELS = {
@@ -8,7 +8,7 @@ const HARNESS_LABELS = {
   pi: "Pi",
   cursor: "Cursor",
   vscode: "VS Code",
-  deepagents: "Deep Agents",
+  deepseek: "DeepSeek Harness",
 };
 
 const AUTH_MODE_LABELS = {
@@ -28,7 +28,7 @@ export function formatHarnessTitle(harnessId) {
 /** Provider is the transport/account boundary (fireworks, azure, custom, default, none). */
 export function formatProvider(provider) {
   if (provider === "fireworks") {
-    return green("Fireworks");
+    return cyan("Fireworks");
   }
   if (provider === "azure") {
     return AZURE_PROVIDER_LABEL;
@@ -164,7 +164,7 @@ export function printMappingRow(slot, value, { dimValue = false, detail = "" } =
 }
 
 export function formatOnOff(enabled) {
-  return enabled ? green("on") : dim("off");
+  return enabled ? cyan("on") : dim("off");
 }
 
 export function printMutedNote(text) {

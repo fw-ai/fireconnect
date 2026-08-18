@@ -14,11 +14,13 @@ import {
 } from "../../../lib/harnesses/opencode/core.mjs";
 import { readJsonIfExists } from "../../../lib/io/json.mjs";
 import { FIRECONNECT_REFERER, GLM_FAST_LATEST } from "../../helpers.mjs";
+import { seedOnCommandCatalog } from "../../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "fireconnect.mjs");
 
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
+    if (args.includes("on")) { seedOnCommandCatalog(env.HOME, args); }
     const child = spawn(process.execPath, [CLI, ...args], {
       env: {
         ...process.env,
@@ -181,7 +183,7 @@ describe("opencode harness integration", () => {
     );
     assert.equal(models["glm-fast-latest"].modalities, undefined);
     assert.ok(!ids.includes("glm-5p2-fast"));
-    assert.ok(!ids.includes("kimi-k2p7-code-fast"));
+    assert.ok(!ids.includes("kimi-k3-fast"));
     assert.equal(enabled.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/kimi-fast-latest`);
 
     const offResult = await runFireconnect(["opencode", "off"], { HOME: home });

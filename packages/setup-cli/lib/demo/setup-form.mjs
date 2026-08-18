@@ -1,253 +1,260 @@
 /**
- * Interactive setup form for `fireconnect demo` (replaces the old one-line
- * "press enter to race, or e to edit" consent prompt).
- *
- * Pre-fills reasonable defaults (from auto-detection + CLI flags) and lets the
- * user adjust them in place: move a cursor between fields with ↑/↓, cycle
- * choices with ←/→ (or jump with a number), and type to edit the seed / output
- * path. Enter races; q / Esc / Ctrl-C quits without making any call.
- *
- * Two layers, like the split-pane TUI:
- *   - `applyKey(state, key)` — a pure reducer, fully unit-testable (no TTY).
- *   - `runSetupForm(...)` — a thin raw-ANSI stdin/render shell that feeds keys
- *     to the reducer and redraws in place. Dep-free; reuses ./ansi.mjs.
- *
- * Non-TTY / --yes / --json paths never reach this module (the orchestrator
- * skips the form entirely).
+ * Multi-step onboarding wizard for `fireconnect claude demo`.
  */
-
-import process from "node:process";
 
 import {
-  BOLD, DIM, CYAN, RESET, REVERSE, HIDE_CURSOR, SHOW_CURSOR,
-  HOME_CURSOR, CLEAR_SCREEN, moveTo, CLEAR_LINE, stripAnsi, visibleWidth, padRight,
+  BOLD, CYAN, DIM, RED, RESET, REVERSE,
+  HIDE_CURSOR, SHOW_CURSOR, HOME_CURSOR, CLEAR_SCREEN, moveTo, CLEAR_LINE,
+  padRight,
 } from "./ansi.mjs";
-import { CUSTOM_DEMO_PROMPT_ID, DEMO_PRESETS } from "./presets.mjs";
-import { FIREWORKS_MODEL_SPECS } from "../fireworks/model-specs.mjs";
-import { lookupFireworksPricing } from "../fireworks/pricing.mjs";
-
-// Curated challenger list — only specs that carry pricing, so the demo's
-// `fireworksRates` never throws. Order = display order; default first.
-const CURATED_CHALLENGER_IDS = [
-  "glm-5p2-fast", "glm-5p2", "deepseek-v4-flash", "deepseek-v4-pro",
-  "kimi-k2p7-code-fast", "kimi-k2p7-code", "qwen3p7-plus", "gpt-oss-120b",
-];
-
-/** @returns {{ id: string, label: string }[]} */
-export function curatedChallengers() {
-  return CURATED_CHALLENGER_IDS
-    .filter((id) => FIREWORKS_MODEL_SPECS[id])
-    .map((id) => ({ id, label: FIREWORKS_MODEL_SPECS[id].label }));
-}
+import { CUSTOM_DEMO_PROMPT_ID, DEMO_PRESETS, DEMO_PRESET_HINTS } from "./presets.mjs";
+import {
+  demoModelCatalog,
+  demoModelLabel,
+  demoModelRates,
+} from "./demo-models.mjs";
+import {
+  CUSTOM_MATCHUP_ID,
+  demoMatchupOptionIds,
+  demoMatchupPreset,
+} from "./demo-matchups.mjs";
+import { DEMO_CANCELLED_MSG } from "./demo-readiness.mjs";
 
 const PROMPT_OPTION_IDS = [...Object.keys(DEMO_PRESETS), CUSTOM_DEMO_PROMPT_ID];
-const OUT_ALLOWED = /[A-Za-z0-9._\-\/]/;
+const MATCHUP_OPTION_IDS = demoMatchupOptionIds();
 const CUSTOM_PROMPT_ALLOWED = /[\x20-\x7e]/;
+const WIZARD_STEPS = 3;
 
-// Curated Anthropic model aliases for the incumbent side. Claude Code resolves
-// these to the latest respective model on Anthropic direct. Order = display
-// order; default first.
-const CURATED_ANTHROPIC_MODELS = [
-  { id: "opus", label: "Claude Opus" },
-  { id: "sonnet", label: "Claude Sonnet" },
-  { id: "haiku", label: "Claude Haiku" },
-];
-const CURATED_ANTHROPIC_IDS = CURATED_ANTHROPIC_MODELS.map((m) => m.id);
+/** Rough per-side token budget for wizard cost hints. */
+const EST_INPUT_TOKENS = 4_000;
+const EST_OUTPUT_TOKENS = 8_000;
 
-/**
- * @typedef {Object} FormField
- * @property {"choice"|"number"|"text"|"readonly"} type
- * @property {string} key
- * @property {string} label
- * @property {string[]} [options]   choice: option ids
- * @property {number} [index]       choice: selected index
- * @property {string} [text]        number/text: current raw text
- * @property {string} [display]     readonly: text to show
- * @property {number} [fallback]    number: default when empty
- */
+/** @returns {{ id: string, label: string }[]} */
+export function curatedDemoModels() {
+  return demoModelCatalog();
+}
+
+/** @deprecated */
+export function curatedChallengers() {
+  return demoModelCatalog().filter((m) => m.kind !== "anthropic");
+}
 
 /**
- * @typedef {Object} FormState
- * @property {object} defaults
- * @property {FormField[]} fields
- * @property {number} focus
- * @property {boolean} done
- * @property {boolean} quit
- */
-
-/**
- * @param {{
- *   defaults: {
- *     promptSource: "preset"|"file"|"literal",
- *     promptPresetId?: string,
- *     promptText?: string,
- *     promptTitle?: string,
- *     challenger: string,
- *     out: string,
- *     incumbentModel?: string,
- *   },
- * }} args
- * @returns {FormState}
+ * @param {{ defaults: object }} args
  */
 export function createFormState({ defaults }) {
+  const matchupIndex = Math.max(0, MATCHUP_OPTION_IDS.indexOf(defaults.matchupPresetId ?? "subscription-vs-fireworks"));
+  const preset = demoMatchupPreset(MATCHUP_OPTION_IDS[matchupIndex]);
   return {
+    step: "matchup",
     defaults,
-    fields: buildFields(defaults),
-    focus: 0,
+    leftModel: defaults.leftModel,
+    rightModel: defaults.rightModel,
+    matchupIndex,
+    focus: "presets",
+    modelFocus: 0,
+    promptIndex: Math.max(0, PROMPT_OPTION_IDS.indexOf(defaults.promptPresetId ?? "tetris")),
+    customPromptText: defaults.promptSource === "literal" ? (defaults.promptText ?? "") : "",
+    error: "",
     done: false,
     quit: false,
+    presetApplied: Boolean(preset && MATCHUP_OPTION_IDS[matchupIndex] !== CUSTOM_MATCHUP_ID),
   };
 }
 
-// ── field builders ────────────────────────────────────────────────────────────
-
-/** The ordered field list. Prompt is always field[0]. */
-function buildFields(defaults) {
-  return [
-    promptField(defaults),
-    customPromptField(defaults),
-    incumbentModelField(defaults),
-    challengerField(defaults),
-    outField(defaults),
-  ];
+function modelField(key, label, current) {
+  const ids = curatedDemoModels().map((m) => m.id);
+  return ids.includes(current)
+    ? { type: "choice", key, label, options: ids, index: Math.max(0, ids.indexOf(current)), compact: true }
+    : { type: "readonly", key, label, display: current };
 }
 
-function promptField(defaults) {
-  const selected = defaults.promptSource === "preset"
-    ? defaults.promptPresetId
-    : CUSTOM_DEMO_PROMPT_ID;
-  const presetIndex = Math.max(0, PROMPT_OPTION_IDS.indexOf(selected ?? ""));
-  return { type: "choice", key: "prompt", label: "Prompt", options: PROMPT_OPTION_IDS, index: presetIndex };
+function customMatchupIndex() {
+  return MATCHUP_OPTION_IDS.indexOf(CUSTOM_MATCHUP_ID);
 }
 
-function customPromptField(defaults) {
-  const text = defaults.promptSource === "preset" ? "" : (defaults.promptText ?? "");
+function markCustomIfModelsDrift(state, leftModel, rightModel) {
+  const preset = demoMatchupPreset(MATCHUP_OPTION_IDS[state.matchupIndex]);
+  if (!preset || preset.leftModel !== leftModel || preset.rightModel !== rightModel) {
+    return { ...state, leftModel, rightModel, matchupIndex: customMatchupIndex(), presetApplied: false, error: "" };
+  }
+  return { ...state, leftModel, rightModel, error: "" };
+}
+
+function patchModel(state, key, modelId) {
+  if (key === "leftModel") {
+    return markCustomIfModelsDrift(state, modelId, state.rightModel);
+  }
+  return markCustomIfModelsDrift(state, state.leftModel, modelId);
+}
+
+function sameModelError(state) {
+  return state.leftModel === state.rightModel
+    ? "Pick two different models — both sides cannot use the same one."
+    : "";
+}
+
+function applyMatchupPreset(state, index) {
+  const id = MATCHUP_OPTION_IDS[index];
+  if (id === CUSTOM_MATCHUP_ID) {
+    return { ...state, matchupIndex: index, presetApplied: false, error: "" };
+  }
+  const preset = demoMatchupPreset(id);
+  if (!preset) {
+    return state;
+  }
   return {
-    type: "text",
-    key: "customPrompt",
-    label: "Custom task",
-    text,
-    fallback: "Describe the standalone HTML app to build",
+    ...state,
+    matchupIndex: index,
+    leftModel: preset.leftModel,
+    rightModel: preset.rightModel,
+    presetApplied: true,
+    error: "",
   };
 }
 
-/** The Anthropic model for the incumbent side (choice of aliases). */
-function incumbentModelField(defaults) {
-  const cur = defaults.incumbentModel ?? "opus";
-  return CURATED_ANTHROPIC_IDS.includes(cur)
-    ? { type: "choice", key: "incumbentModel", label: "Your model", options: CURATED_ANTHROPIC_IDS, index: Math.max(0, CURATED_ANTHROPIC_IDS.indexOf(cur)) }
-    : { type: "readonly", key: "incumbentModel", label: "Your model", display: cur };
+function advanceFromMatchup(state) {
+  const err = sameModelError(state);
+  if (err) {
+    return { ...state, error: err };
+  }
+  return { ...state, step: "game", error: "" };
 }
 
-function challengerField(defaults) {
-  const challengerIds = curatedChallengers().map((c) => c.id);
-  // If the configured challenger isn't in the curated list, lock the field
-  // read-only so the user can't cycle into a model with no pricing entry.
-  return challengerIds.includes(defaults.challenger)
-    ? { type: "choice", key: "challenger", label: "Challenger", options: challengerIds, index: Math.max(0, challengerIds.indexOf(defaults.challenger)) }
-    : { type: "readonly", key: "challenger", label: "Challenger", display: defaults.challenger };
+function advanceFromGame(state) {
+  if (PROMPT_OPTION_IDS[state.promptIndex] === CUSTOM_DEMO_PROMPT_ID) {
+    if (!state.customPromptText.trim()) {
+      return { ...state, error: "Enter a custom task before continuing." };
+    }
+  }
+  return { ...state, step: "confirm", error: "" };
 }
 
-function outField(defaults) {
-  return { type: "text", key: "out", label: "Output", text: defaults.out ?? "", fallback: defaults.out || "./fireconnect-demo" };
+function tryFinish(state) {
+  const err = sameModelError(state);
+  if (err) {
+    return { ...state, error: err };
+  }
+  return { ...state, done: true, error: "" };
 }
 
-/** Snapshot the currently-edited values. */
-function readValues(state) {
-  const byKey = Object.fromEntries(state.fields.map((f) => [f.key, f]));
-  const vals = {};
-  if (byKey.prompt?.type === "choice") vals.promptPresetId = byKey.prompt.options[byKey.prompt.index];
-  if (byKey.customPrompt?.type === "text") vals.customPrompt = byKey.customPrompt.text;
-  if (byKey.challenger?.type === "choice") vals.challenger = byKey.challenger.options[byKey.challenger.index];
-  else if (byKey.challenger?.type === "readonly") vals.challenger = byKey.challenger.display;
-  if (byKey.out) vals.out = byKey.out.text;
-  if (byKey.incumbentModel?.type === "choice") vals.incumbentModel = byKey.incumbentModel.options[byKey.incumbentModel.index];
-  else if (byKey.incumbentModel?.type === "readonly") vals.incumbentModel = byKey.incumbentModel.display;
-  return vals;
+function focusedModelField(state) {
+  return state.modelFocus === 0
+    ? modelField("leftModel", "Model A", state.leftModel)
+    : modelField("rightModel", "Model B", state.rightModel);
 }
 
-/**
- * Pure reducer. `key` is a normalized token from the stdin shell:
- * "up" | "down" | "left" | "right" | "enter" | "backspace" | "escape" | "ctrlc"
- * or a single printable character string.
- *
- * @param {FormState} state
- * @param {string} key
- * @returns {FormState}
- */
 export function applyKey(state, key) {
+  const typingCustomPrompt = state.step === "game"
+    && PROMPT_OPTION_IDS[state.promptIndex] === CUSTOM_DEMO_PROMPT_ID;
+
   if (key === "ctrlc" || key === "escape") {
     return { ...state, quit: true };
   }
-  if (key === "enter") {
-    const customPrompt = customPromptRequiredButEmpty(state);
-    if (customPrompt) {
-      return { ...state, focus: customPrompt.index };
+  if (key === "q" && !typingCustomPrompt) {
+    return { ...state, quit: true };
+  }
+
+  if (state.step === "confirm") {
+    if (key === "b") {
+      return { ...state, step: "game", error: "" };
     }
-    return { ...state, done: true };
-  }
-
-  if (key === "up") {
-    return { ...state, focus: Math.max(0, state.focus - 1) };
-  }
-  if (key === "down") {
-    return { ...state, focus: Math.min(state.fields.length - 1, state.focus + 1) };
-  }
-
-  const field = state.fields[state.focus];
-  if (!field) {
+    if (key === "s") {
+      return markCustomIfModelsDrift(state, state.rightModel, state.leftModel);
+    }
+    if (key === "e") {
+      return { ...state, step: "matchup", focus: "presets", error: "" };
+    }
+    if (key === "enter") {
+      return tryFinish(state);
+    }
     return state;
   }
 
-  if (field.type === "choice") {
-    const len = field.options.length;
-    let newIndex = field.index;
+  if (key === "b" && state.step === "game" && !typingCustomPrompt) {
+    return { ...state, step: "matchup", focus: "presets", error: "" };
+  }
+
+  if (state.step === "matchup") {
+    if (state.focus === "presets") {
+      if (key === "down" || key === "tab") {
+        return { ...state, focus: "models", modelFocus: 0, error: "" };
+      }
+      if (key === "left") {
+        return applyMatchupPreset(state, (state.matchupIndex - 1 + MATCHUP_OPTION_IDS.length) % MATCHUP_OPTION_IDS.length);
+      }
+      if (key === "right") {
+        return applyMatchupPreset(state, (state.matchupIndex + 1) % MATCHUP_OPTION_IDS.length);
+      }
+      if (/^[1-9]$/.test(key)) {
+        const n = Number(key) - 1;
+        if (n < MATCHUP_OPTION_IDS.length) {
+          return applyMatchupPreset(state, n);
+        }
+        return state;
+      }
+      if (key === "enter") {
+        return advanceFromMatchup(state);
+      }
+      return state;
+    }
+
+    if (key === "up") {
+      if (state.modelFocus === 0) {
+        return { ...state, focus: "presets", error: "" };
+      }
+      return { ...state, modelFocus: 0, error: "" };
+    }
+    if (key === "down") {
+      return { ...state, modelFocus: 1, error: "" };
+    }
+    const field = focusedModelField(state);
+    if (field.type === "choice") {
+      if (key === "left") {
+        const index = (field.index - 1 + field.options.length) % field.options.length;
+        return patchModel(state, field.key, field.options[index]);
+      }
+      if (key === "right") {
+        const index = (field.index + 1) % field.options.length;
+        return patchModel(state, field.key, field.options[index]);
+      }
+      if (/^[1-9]$/.test(key)) {
+        const n = Number(key) - 1;
+        if (n < field.options.length) {
+          return patchModel(state, field.key, field.options[n]);
+        }
+      }
+    }
+    if (key === "enter") {
+      return advanceFromMatchup(state);
+    }
+    return state;
+  }
+
+  if (state.step === "game") {
     if (key === "left") {
-      newIndex = (field.index - 1 + len) % len;
-    } else if (key === "right") {
-      newIndex = (field.index + 1) % len;
-    } else if (/^[1-9]$/.test(key)) {
-      const n = Number(key);
-      if (n > len) return state;
-      newIndex = n - 1;
-    } else if (key === "q") {
-      // 'q' quits only when not typing into a text/number field.
-      return { ...state, quit: true };
-    } else {
+      return { ...state, promptIndex: (state.promptIndex - 1 + PROMPT_OPTION_IDS.length) % PROMPT_OPTION_IDS.length, error: "" };
+    }
+    if (key === "right") {
+      return { ...state, promptIndex: (state.promptIndex + 1) % PROMPT_OPTION_IDS.length, error: "" };
+    }
+    if (/^[1-9]$/.test(key)) {
+      const n = Number(key) - 1;
+      if (n < PROMPT_OPTION_IDS.length) {
+        return { ...state, promptIndex: n, error: "" };
+      }
       return state;
     }
-    if (newIndex === field.index) {
-      return state;
+    if (PROMPT_OPTION_IDS[state.promptIndex] === CUSTOM_DEMO_PROMPT_ID) {
+      if (key === "backspace") {
+        return { ...state, customPromptText: state.customPromptText.slice(0, -1), error: "" };
+      }
+      if (key.length === 1 && CUSTOM_PROMPT_ALLOWED.test(key) && state.customPromptText.length < 1000) {
+        return { ...state, customPromptText: state.customPromptText + key, error: "" };
+      }
     }
-    return patchField(state, { index: newIndex });
-  }
-
-  if (field.type === "number") {
-    if (key === "backspace") {
-      return patchField(state, { text: field.text.slice(0, -1) });
-    }
-    if (/^[0-9]$/.test(key) && field.text.length < 10) {
-      return patchField(state, { text: field.text + key });
-    }
-    return state;
-  }
-
-  if (field.type === "text") {
-    if (key === "backspace") {
-      return patchField(state, { text: field.text.slice(0, -1) });
-    }
-    const allowed = field.key === "customPrompt" ? CUSTOM_PROMPT_ALLOWED : OUT_ALLOWED;
-    const maxLen = field.key === "customPrompt" ? 1000 : 200;
-    if (key.length === 1 && allowed.test(key) && field.text.length < maxLen) {
-      return patchField(state, { text: field.text + key });
-    }
-    return state;
-  }
-
-  // readonly: 'q' quits; everything else is a no-op.
-  if (field.type === "readonly") {
-    if (key === "q") {
-      return { ...state, quit: true };
+    if (key === "enter") {
+      return advanceFromGame(state);
     }
     return state;
   }
@@ -255,302 +262,198 @@ export function applyKey(state, key) {
   return state;
 }
 
-/** @param {FormState} state @param {Partial<FormField>} changes @returns {FormState} */
-function patchField(state, changes) {
-  const fields = state.fields.slice();
-  fields[state.focus] = { ...fields[state.focus], ...changes };
-  return { ...state, fields };
-}
-
-function customPromptRequiredButEmpty(state) {
-  const promptIndex = state.fields.findIndex((f) => f.key === "prompt");
-  const customIndex = state.fields.findIndex((f) => f.key === "customPrompt");
-  const prompt = state.fields[promptIndex];
-  const custom = state.fields[customIndex];
-  if (prompt?.type !== "choice" || custom?.type !== "text") {
+export function estimateRaceCost(leftModel, rightModel, slotMapping = null) {
+  const leftRates = demoModelRates(leftModel, "fireworks", slotMapping);
+  const rightRates = demoModelRates(rightModel, "fireworks", slotMapping);
+  if (!leftRates || !rightRates) {
     return null;
   }
-  const selected = prompt.options[prompt.index];
-  if (selected !== CUSTOM_DEMO_PROMPT_ID) {
-    return null;
-  }
-  return custom.text.trim() ? null : { index: customIndex };
-}
-
-/**
- * Extract the form's finalized values for the orchestrator.
- * @param {FormState} state
- * @param {{ defaults: { promptSource: string, promptText?: string } }} ref
- * @returns {{ prompt: string, promptSource: "preset" | "literal" | "custom-empty", challenger: string, out: string, incumbentModel?: string }}
- */
-export function formResult(state, ref) {
-  const byKey = Object.fromEntries(state.fields.map((f) => [f.key, f]));
-  const promptField = byKey.prompt;
-  let prompt;
-  // Track how the prompt was chosen so the caller can route user-typed custom
-  // tasks as literals (a task whose text is exactly "custom" must not be
-  // mistaken for the empty-custom sentinel).
-  let promptSource;
-  if (promptField.type === "choice") {
-    const selected = promptField.options[promptField.index];
-    if (selected === CUSTOM_DEMO_PROMPT_ID) {
-      const text = byKey.customPrompt?.text?.trim() || "";
-      if (text) {
-        prompt = text;
-        promptSource = "literal";
-      } else {
-        prompt = CUSTOM_DEMO_PROMPT_ID;
-        promptSource = "custom-empty";
-      }
-    } else {
-      prompt = selected; // a preset id
-      promptSource = "preset";
-    }
-  } else {
-    prompt = ref.defaults.promptText ?? "";
-    promptSource = "literal";
-  }
-  const challengerField = byKey.challenger;
-  const challenger = challengerField.type === "choice"
-    ? challengerField.options[challengerField.index]
-    : challengerField.display;
-  const out = byKey.out.text.trim() ? byKey.out.text.trim() : "./fireconnect-demo";
-  const im = byKey.incumbentModel;
-  const incumbentModel = im?.type === "choice" ? im.options[im.index] : (im?.display ?? "opus");
-  return { prompt, promptSource, challenger, out, incumbentModel };
-}
-
-// ── rendering ────────────────────────────────────────────────────────────────
-
-/**
- * @param {FormState} state
- * @param {{ incumbent: { providerLabel: string, modelLabel: string, callMode: "live" }, cols?: number }} meta
- * @returns {string[]}
- */
-export function renderFormLines(state, meta) {
-  const cols = meta.cols ?? 80;
-  const labelWidth = 18;
-  const lines = [];
-  lines.push("");
-  lines.push(`  ${BOLD}${CYAN}FireConnect Demo — setup${RESET}`);
-  lines.push(`  ${DIM}Race Claude (your tool, on Anthropic) vs Fireworks on the same prompt.${RESET}`);
-  lines.push("");
-
-  for (let i = 0; i < state.fields.length; i += 1) {
-    const field = state.fields[i];
-    const focused = i === state.focus;
-    const marker = focused ? `${CYAN}❯${RESET} ` : "  ";
-    const label = padRight(`${field.label}:`, labelWidth);
-    // A focused choice field shows just the current selection on its header line;
-    // the full option list is rendered on the indented lines directly below, so
-    // every choice is visible at once instead of hidden behind ←/→ cycling.
-    const valuePart = (focused && field.type === "choice")
-      ? renderChoiceHeader(field)
-      : renderFieldValue(field, Math.max(20, cols - labelWidth - 6), focused);
-    lines.push(`  ${marker}${DIM}${label}${RESET}${valuePart}`);
-
-    if (focused && field.type === "choice") {
-      for (const optLine of renderChoiceOptions(field)) {
-        lines.push(`      ${optLine}`);
-      }
-    }
-
-    // A one-line explanation for the focused field, so each field is
-    // self-explanatory instead of a bare label.
-    if (focused) {
-      const help = fieldHelp(field);
-      if (help) {
-        lines.push(`      ${DIM}${help}${RESET}`);
-      }
-    }
-  }
-
-  // Comparison model — read-only row showing what the left side actually runs
-  // (Claude Code on Anthropic direct). Derived from the form's CURRENT "Your
-  // model" selection so it stays in sync as the user cycles the Anthropic alias,
-  // not a static snapshot passed at open time.
-  const incModelField = state.fields.find((f) => f.key === "incumbentModel");
-  const incAlias = incModelField?.type === "choice"
-    ? incModelField.options[incModelField.index]
-    : (incModelField?.display ?? "opus");
-  const incLabel = CURATED_ANTHROPIC_MODELS.find((m) => m.id === incAlias)?.label ?? incAlias;
-  lines.push(`    ${DIM}${padRight("Comparison model:", labelWidth)}Anthropic · ${incLabel} (live call)${RESET}`);
-  lines.push("");
-  lines.push(
-    `  ${DIM}↑/↓ move   ←/→ cycle   1-9 jump / type to edit   ⏎ race   q quit${RESET}`,
+  const sideCost = (rates) => (
+    (EST_INPUT_TOKENS * rates.inputPerMillion + EST_OUTPUT_TOKENS * rates.outputPerMillion) / 1_000_000
   );
+  const total = sideCost(leftRates) + sideCost(rightRates);
+  const low = total * 0.6;
+  const high = total * 1.8;
+  return { low, high, total };
+}
+
+export function formResult(state, ref) {
+  const promptId = PROMPT_OPTION_IDS[state.promptIndex];
+  let prompt;
+  let promptSource;
+  if (promptId === CUSTOM_DEMO_PROMPT_ID) {
+    const text = state.customPromptText.trim();
+    prompt = text || CUSTOM_DEMO_PROMPT_ID;
+    promptSource = text ? "literal" : "custom-empty";
+  } else {
+    prompt = promptId;
+    promptSource = "preset";
+  }
+  const matchupId = MATCHUP_OPTION_IDS[state.matchupIndex];
+  const out = ref.defaults.out?.trim() || "./fireconnect-demo";
+  return {
+    prompt,
+    promptSource,
+    leftModel: state.leftModel,
+    rightModel: state.rightModel,
+    challenger: state.rightModel,
+    incumbentModel: state.leftModel,
+    matchupPresetId: matchupId,
+    promptPresetId: promptId === CUSTOM_DEMO_PROMPT_ID ? "" : promptId,
+    out,
+  };
+}
+
+function matchupLabel(id) {
+  if (id === CUSTOM_MATCHUP_ID) {
+    return "Custom matchup";
+  }
+  return demoMatchupPreset(id)?.label ?? id;
+}
+
+function promptLabel(id) {
+  if (id === CUSTOM_DEMO_PROMPT_ID) {
+    return "Custom task";
+  }
+  return DEMO_PRESETS[id]?.title ?? id;
+}
+
+function stepLabel(stepNumber, title) {
+  return `${stepNumber}/${WIZARD_STEPS} · ${title}`;
+}
+
+function renderModelValue(field, slotMapping = null) {
+  if (field.type !== "choice") {
+    return `${DIM}${field.display}${RESET}`;
+  }
+  const cur = demoModelLabel(field.options[field.index]);
+  const head = `◂ ${REVERSE}${BOLD}${cur}${RESET} ▸ ${DIM}[${field.index + 1}/${field.options.length}]${RESET}`;
+  const rates = demoModelRates(field.options[field.index], "fireworks", slotMapping);
+  return rates
+    ? `${head}  ${DIM}$${rates.inputPerMillion} / $${rates.outputPerMillion} per Mtok${RESET}`
+    : head;
+}
+
+function renderMatchupStep(state, labelWidth) {
+  const lines = [];
+  lines.push(`  ${DIM}${padRight("Step:", labelWidth)}${RESET}${stepLabel(1, "Pick models")}`);
+  lines.push("");
+  for (let i = 0; i < MATCHUP_OPTION_IDS.length; i += 1) {
+    const optId = MATCHUP_OPTION_IDS[i];
+    const selected = i === state.matchupIndex;
+    const bullet = selected ? `${CYAN}●${RESET}` : `${DIM}○${RESET}`;
+    const preset = demoMatchupPreset(optId);
+    const title = selected ? `${BOLD}${CYAN}${matchupLabel(optId)}${RESET}` : `${DIM}${matchupLabel(optId)}${RESET}`;
+    let line = `  ${bullet} ${DIM}${i + 1}${RESET}  ${title}`;
+    if (preset) {
+      line += `  ${DIM}${demoModelLabel(preset.leftModel)} vs ${demoModelLabel(preset.rightModel)}${RESET}`;
+    }
+    lines.push(line);
+    if (selected && preset?.description) {
+      lines.push(`      ${DIM}${preset.description}${RESET}`);
+    }
+  }
+  lines.push("");
+  for (let i = 0; i < 2; i += 1) {
+    const key = i === 0 ? "leftModel" : "rightModel";
+    const label = i === 0 ? "Model A" : "Model B";
+    const active = state.focus === "models" && state.modelFocus === i;
+    const field = modelField(key, label, i === 0 ? state.leftModel : state.rightModel);
+    const marker = active ? `${CYAN}❯${RESET} ` : "  ";
+    lines.push(`  ${marker}${DIM}${padRight(`${label}:`, labelWidth)}${RESET}${renderModelValue(field, state.defaults?.slotMapping)}`);
+  }
+  lines.push("");
+  if (state.focus === "presets") {
+    lines.push(`  ${DIM}←/→ presets · ↓ models · 1-${MATCHUP_OPTION_IDS.length} jump · Enter next · q quit${RESET}`);
+  } else {
+    lines.push(`  ${DIM}←/→ browse · ↑/↓ switch side · ↑ presets · Enter next · q quit${RESET}`);
+  }
   return lines;
 }
 
-/**
- * @param {FormField} field
- * @param {number} width
- * @param {boolean} [focused] — whether this field is the focused one (adds a
- *   block cursor for text/number fields so the user sees where typing lands).
- */
-function renderFieldValue(field, width, focused) {
-  if (field.type === "choice") {
-    return renderChoice(field, width);
-  }
-  if (field.type === "number" || field.type === "text") {
-    const shown = field.text || "";
-    if (shown.length === 0) {
-      // No typed text: surface the fallback as the effective value in
-      // reverse-video (guaranteed contrast on any background) with a hint, so
-      // the default is visible at a glance instead of a dim "(empty → …)".
-      if (field.fallback) {
-        return `${REVERSE}${BOLD}${field.fallback}${RESET} ${DIM}(default — type to replace)${RESET}`;
-      }
-      return `${DIM}(empty)${RESET}`;
-    }
-    // Reverse-video for the value: guaranteed contrast on light and dark
-    // backgrounds (bare BOLD/BOLD-CYAN washes out on light themes — the same
-    // white-on-white bug fixed for choice chips). A focused field gets a
-    // trailing block cursor so it reads as the active edit target.
-    const cursor = focused ? `${REVERSE} ${RESET}` : "";
-    return `${REVERSE}${BOLD}${shown}${RESET}${cursor}`;
-  }
-  // readonly
-  return `${DIM}${field.display}${RESET}`;
-}
-
-/**
- * Compact one-line summary of a choice field's current selection, used on the
- * field's header line. The full option list lives on the lines below it.
- * @param {FormField} field
- */
-function renderChoiceHeader(field) {
-  const cur = optionLabel(field.key, field.options[field.index]);
-  const head = `◂ ${REVERSE}${BOLD}${cur}${RESET} ▸ ${DIM}[${field.index + 1}/${field.options.length}]${RESET}`;
-  if (field.key === "challenger") {
-    const p = lookupFireworksPricing(field.options[field.index]);
-    const price = p ? `  ${DIM}$${p.input} / $${p.output} per Mtok${RESET}` : "";
-    return `${head}${price}`;
-  }
-  return head;
-}
-
-/**
- * Inline numbered chips for an unfocused choice field. Falls back to the
- * compact header if the chips don't fit the available width.
- * @param {FormField} field @param {number} width
- */
-function renderChoice(field, width) {
-  const chips = field.options.map((opt, idx) => {
-    const selected = idx === field.index;
-    const num = `${idx + 1}`;
-    const name = optionLabel(field.key, opt);
-    const body = `${num} ${name}`;
-    // Reverse-video for the selected chip: guaranteed contrast on any terminal
-    // background (fixes white-on-white on light themes where bare BOLD → bright
-    // white). Unselected chips stay dim.
-    return selected ? `${REVERSE}${BOLD}${body}${RESET}` : `${DIM}${body}${RESET}`;
-  });
-  const chipsLine = chips.join("  ");
-  if (visibleWidth(chipsLine) <= width) {
-    return chipsLine;
-  }
-  return renderChoiceHeader(field);
-}
-
-/**
- * Full vertical option list for a focused choice field — one line per option,
- * so every selection is visible at once. The selected option is highlighted;
- * others are dim. Challenger rows also show per-Mtok pricing.
- * @param {FormField} field
- * @returns {string[]}
- */
-function renderChoiceOptions(field) {
-  return field.options.map((opt, idx) => {
-    const selected = idx === field.index;
+function renderGameStep(state, labelWidth) {
+  const lines = [];
+  const promptId = PROMPT_OPTION_IDS[state.promptIndex];
+  lines.push(`  ${DIM}${padRight("Step:", labelWidth)}${RESET}${stepLabel(2, "Pick a challenge")}`);
+  lines.push("");
+  for (let i = 0; i < PROMPT_OPTION_IDS.length; i += 1) {
+    const id = PROMPT_OPTION_IDS[i];
+    const selected = i === state.promptIndex;
     const bullet = selected ? `${CYAN}●${RESET}` : `${DIM}○${RESET}`;
-    const num = `${idx + 1}`;
-    const name = optionLabel(field.key, opt);
-    const nameStr = selected ? `${BOLD}${CYAN}${name}${RESET}` : `${DIM}${name}${RESET}`;
-    let line = `${bullet} ${DIM}${num}${RESET}  ${nameStr}`;
-    if (field.key === "challenger") {
-      const p = lookupFireworksPricing(opt);
-      if (p) {
-        const price = selected ? `${CYAN}$${p.input} / $${p.output} per Mtok${RESET}` : `${DIM}$${p.input} / $${p.output} per Mtok${RESET}`;
-        line += `  ${price}`;
-      }
+    const title = selected ? `${BOLD}${CYAN}${promptLabel(id)}${RESET}` : `${DIM}${promptLabel(id)}${RESET}`;
+    lines.push(`  ${bullet} ${DIM}${i + 1}${RESET}  ${title}`);
+    if (selected && DEMO_PRESET_HINTS[id]) {
+      lines.push(`      ${DIM}${DEMO_PRESET_HINTS[id]}${RESET}`);
     }
-    return line;
-  });
+  }
+  if (promptId === CUSTOM_DEMO_PROMPT_ID) {
+    const text = state.customPromptText;
+    const cursor = `${REVERSE} ${RESET}`;
+    lines.push("");
+    lines.push(`  ${DIM}Custom task:${RESET} ${text ? `${REVERSE}${BOLD}${text}${RESET}${cursor}` : `${DIM}(type your prompt)${RESET}`}`);
+  }
+  lines.push("");
+  lines.push(`  ${DIM}←/→ cycle · Enter next · b back · q quit${RESET}`);
+  lines.push(`    ${DIM}${padRight("Matchup:", labelWidth)}${demoModelLabel(state.leftModel)}  vs  ${demoModelLabel(state.rightModel)}${RESET}`);
+  return lines;
 }
 
-/** @param {string} key @param {string} id */
-function optionLabel(key, id) {
-  if (key === "prompt") {
-    if (id === CUSTOM_DEMO_PROMPT_ID) return "Custom task";
-    return DEMO_PRESETS[id]?.title ?? id;
+function renderConfirmStep(state, labelWidth) {
+  const lines = [];
+  const promptId = PROMPT_OPTION_IDS[state.promptIndex];
+  const est = estimateRaceCost(state.leftModel, state.rightModel, state.defaults?.slotMapping);
+  lines.push(`  ${DIM}${padRight("Step:", labelWidth)}${RESET}${stepLabel(3, "Confirm")}`);
+  lines.push("");
+  lines.push(`  ${DIM}Challenge:${RESET}  ${BOLD}${promptLabel(promptId)}${RESET}`);
+  lines.push(`  ${DIM}Model A:${RESET}   ${BOLD}${demoModelLabel(state.leftModel)}${RESET}`);
+  lines.push(`  ${DIM}Model B:${RESET}   ${BOLD}${demoModelLabel(state.rightModel)}${RESET}`);
+  lines.push("");
+  lines.push(`  ${DIM}Both sides use your FireConnect Claude setup. Only --model changes.${RESET}`);
+  if (est) {
+    lines.push(`  ${DIM}Est. cost:${RESET}   ~$${est.low.toFixed(2)}–$${est.high.toFixed(2)} · opens browser when done`);
+  } else {
+    lines.push(`  ${DIM}Opens browser comparison when the race finishes.${RESET}`);
   }
-  if (key === "challenger") {
-    return FIREWORKS_MODEL_SPECS[id]?.label ?? id;
-  }
-  return id;
+  lines.push("");
+  lines.push(`  ${BOLD}${CYAN}Enter${RESET} start race   ${DIM}s swap · e edit · b back · q quit${RESET}`);
+  return lines;
 }
 
-/**
- * One-line explanation for a focused field, so the form is self-documenting.
- * Returns null for fields with nothing useful to add.
- * @param {FormField} field
- * @returns {string | null}
- */
-function fieldHelp(field) {
-  if (field.type === "readonly") {
-    return "Set via CLI flag (read-only).";
+export function renderFormLines(state, meta) {
+  const labelWidth = 18;
+  const lines = [
+    "",
+    `  ${BOLD}${CYAN}FireConnect Demo${RESET}`,
+    `  ${DIM}Same prompt, two models — race and compare.${RESET}`,
+    "",
+  ];
+
+  if (state.step === "matchup") {
+    lines.push(...renderMatchupStep(state, labelWidth));
+  } else if (state.step === "game") {
+    lines.push(...renderGameStep(state, labelWidth));
+  } else if (state.step === "confirm") {
+    lines.push(...renderConfirmStep(state, labelWidth));
   }
-  if (field.key === "prompt") {
-    return "Pick a curated prompt, or choose Custom task and type your own standalone app request.";
+
+  if (state.error) {
+    lines.push("");
+    lines.push(`  ${RED}${state.error}${RESET}`);
   }
-  if (field.key === "customPrompt") {
-    return "Used only when Prompt is Custom task; output is forced to one complete HTML file.";
-  }
-  if (field.key === "incumbentModel") {
-    return "Anthropic model for your tool (Claude Code on Anthropic direct).";
-  }
-  if (field.key === "challenger") {
-    return "Fireworks model to race against your comparison model.";
-  }
-  if (field.key === "out") {
-    return "Directory the demo writes the HTML apps + logs into.";
-  }
-  return null;
+
+  lines.push("");
+  return lines;
 }
 
-// ── stdin shell ──────────────────────────────────────────────────────────────
-
-/**
- * Run the form against a real TTY. Resolves to the finalized values, or throws
- * on quit / Ctrl-C (no calls have been made).
- *
- * @param {{
- *   defaults: Parameters<typeof createFormState>[0]["defaults"],
- *   incumbent: { providerLabel: string, modelLabel: string, callMode: "live" },
- *   stdin?: NodeJS.ReadStream,
- *   stdout?: NodeJS.WriteStream,
- * }} args
- * @returns {Promise<{ prompt: string, challenger: string, out: string, incumbentModel: string }>}
- */
-export async function runSetupForm({ defaults, incumbent, stdin = process.stdin, stdout = process.stdout }) {
+export async function runSetupForm({ defaults, stdin = process.stdin, stdout = process.stdout }) {
   let state = createFormState({ defaults });
-  const cols = () => stdout.columns || 80;
-  // The form's height changes as the focused choice field expands/collapses its
-  // option list, so we must clear at least as many lines as we last drew,
-  // otherwise stale option lines linger at the bottom when focus moves.
-  let prevLineCount = 0;
 
+  let prevLineCount = 0;
   let firstDraw = true;
+
   const redraw = () => {
-    const lines = renderFormLines(state, { incumbent, cols: cols() });
+    const lines = renderFormLines(state, { cols: stdout.columns || 80 });
     const n = Math.max(prevLineCount, lines.length);
-    // On the first draw, clear the whole screen and home the cursor so the form
-    // starts on a clean canvas at the top of the viewport. Without this, drawing
-    // from HOME overwrites the previously-printed framing in place — leaving
-    // half-overwritten lines that read as "the form didn't finish rendering" —
-    // and on short terminals the form's bottom rows (seed/output) can land past
-    // the visible edge. A full clear guarantees every field is visible.
     let out = firstDraw ? `${CLEAR_SCREEN}${HOME_CURSOR}` : HOME_CURSOR;
     firstDraw = false;
     for (let i = 0; i < n; i += 1) {
@@ -565,16 +468,18 @@ export async function runSetupForm({ defaults, incumbent, stdin = process.stdin,
 
   return new Promise((resolve, reject) => {
     const wasRaw = stdin.isTTY ? stdin.isRaw : false;
+    let escTimer = null;
+    let buf = "";
+
     const cleanup = () => {
       clearTimeout(escTimer);
       stdin.removeListener("data", onData);
       stdin.pause();
-      if (stdin.isTTY) {
-        stdin.setRawMode(wasRaw);
+      if (typeof stdin.unref === "function") {
+        stdin.unref();
       }
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
       stdout.write(SHOW_CURSOR);
-      // Clear every line we ever drew so subsequent output starts clean — the
-      // expanded option list can push the form well past the old fixed height.
       stdout.write(`${HOME_CURSOR}${CLEAR_LINE}`);
       for (let i = 1; i < prevLineCount; i += 1) {
         stdout.write(`${moveTo(i + 1, 1)}${CLEAR_LINE}`);
@@ -582,14 +487,11 @@ export async function runSetupForm({ defaults, incumbent, stdin = process.stdin,
       stdout.write(HOME_CURSOR);
     };
 
-    let escTimer = null;
-    let buf = "";
-
     const emitKey = (key) => {
       state = applyKey(state, key);
       if (state.quit) {
         cleanup();
-        reject(new Error("Demo cancelled."));
+        reject(new Error(DEMO_CANCELLED_MSG));
         return;
       }
       if (state.done) {
@@ -600,7 +502,8 @@ export async function runSetupForm({ defaults, incumbent, stdin = process.stdin,
       redraw();
     };
 
-    const flushBuffer = () => {
+    const onData = (chunk) => {
+      buf += chunk.toString("latin1");
       while (buf.length > 0) {
         const ch = buf[0];
         if (ch === "\x1b") {
@@ -609,19 +512,15 @@ export async function runSetupForm({ defaults, incumbent, stdin = process.stdin,
             if (arrow) {
               buf = buf.slice(3);
               emitKey(arrow);
-              if (state.done || state.quit) return;
               continue;
             }
           }
           if (buf.length >= 2 && buf[1] !== "[") {
-            // Esc + something else: treat as Escape.
             buf = buf.slice(1);
             emitKey("escape");
-            if (state.done || state.quit) return;
             continue;
           }
           if (buf.length === 1) {
-            // Lone Esc; wait briefly in case an arrow sequence is still arriving.
             clearTimeout(escTimer);
             escTimer = setTimeout(() => {
               if (buf === "\x1b") {
@@ -631,43 +530,18 @@ export async function runSetupForm({ defaults, incumbent, stdin = process.stdin,
             }, 40);
             return;
           }
-          // `\x1b[` partial — wait for more bytes.
           return;
         }
-        if (ch === "\x7f" || ch === "\x08") {
-          buf = buf.slice(1);
-          emitKey("backspace");
-          if (state.done || state.quit) return;
-          continue;
-        }
-        if (ch === "\x03") {
-          buf = buf.slice(1);
-          emitKey("ctrlc");
-          if (state.done || state.quit) return;
-          continue;
-        }
-        if (ch === "\r" || ch === "\n") {
-          buf = buf.slice(1);
-          emitKey("enter");
-          if (state.done || state.quit) return;
-          continue;
-        }
-        // Printable (ASCII). Non-ASCII bytes are ignored by the reducer's
-        // allowed-char checks; consume one byte at a time.
+        if (ch === "\x7f" || ch === "\x08") { buf = buf.slice(1); emitKey("backspace"); continue; }
+        if (ch === "\x03") { buf = buf.slice(1); emitKey("ctrlc"); continue; }
+        if (ch === "\t") { buf = buf.slice(1); emitKey("tab"); continue; }
+        if (ch === "\r" || ch === "\n") { buf = buf.slice(1); emitKey("enter"); continue; }
         buf = buf.slice(1);
         emitKey(ch);
-        if (state.done || state.quit) return;
       }
     };
 
-    const onData = (chunk) => {
-      buf += chunk.toString("latin1");
-      flushBuffer();
-    };
-
-    if (stdin.isTTY) {
-      stdin.setRawMode(true);
-    }
+    if (stdin.isTTY) stdin.setRawMode(true);
     stdin.resume();
     stdin.setEncoding("latin1");
     stdin.on("data", onData);

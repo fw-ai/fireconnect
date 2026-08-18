@@ -17,7 +17,9 @@ import {
 import {
   claudeCodeModelId,
   applyClaudeCodeContextPolicy,
+  modelQualifiesForClaudeCode1mContext,
 } from "../../lib/harnesses/claude/code-context.mjs";
+import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
 import {
   fetchServerlessCatalog,
   filterCatalogForKeyType,
@@ -28,7 +30,6 @@ import {
   FIREPASS_ROUTER,
   GLM_FAST_LATEST,
   GLM_LATEST,
-  K2P7_FAST,
   KIMI_FAST_LATEST,
   mockServerlessModel,
 } from "../helpers.mjs";
@@ -113,13 +114,12 @@ describe("Fire Pass defaults", () => {
       { id: "accounts/fireworks/routers/glm-5p2-fast", shortId: "glm-5p2-fast" },
       { id: "accounts/fireworks/routers/kimi-fast-latest", shortId: KIMI_FAST_LATEST },
       { id: "accounts/fireworks/routers/kimi-k2p6-turbo", shortId: "kimi-k2p6-turbo" },
-      { id: "accounts/fireworks/routers/kimi-k2p7-code-fast", shortId: K2P7_FAST },
       { id: "accounts/fireworks/routers/kimi-latest", shortId: "kimi-latest" },
     ];
 
     assert.deepEqual(
       filterCatalogForKeyType(catalog, "firepass").map((entry) => entry.shortId),
-      [GLM_LATEST, GLM_FAST_LATEST, "glm-5p2-fast", KIMI_FAST_LATEST, K2P7_FAST],
+      [GLM_LATEST, GLM_FAST_LATEST, "glm-5p2-fast", KIMI_FAST_LATEST],
     );
   });
 
@@ -161,6 +161,15 @@ describe("Fire Pass defaults", () => {
     assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
   });
 
+  test("DeepSeek latest routers use Claude Code 1m context", () => {
+    assert.equal(claudeCodeModelId("deepseek-flash-latest"), "deepseek-flash-latest[1m]");
+    assert.equal(claudeCodeModelId("deepseek-pro-latest"), "deepseek-pro-latest[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-pro"), "accounts/fireworks/models/deepseek-v4-pro[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-flash"), "accounts/fireworks/models/deepseek-v4-flash[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-pro-0813"), "accounts/fireworks/models/deepseek-v4-pro-0813[1m]");
+    assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-flash-0731"), "accounts/fireworks/models/deepseek-v4-flash-0731[1m]");
+  });
+
   test("firerouter* model patterns use Claude Code 1m context", () => {
     assert.equal(claudeCodeModelId("firerouter"), "firerouter[1m]");
     assert.equal(claudeCodeModelId("firerouter[1m]"), "firerouter[1m]");
@@ -175,5 +184,40 @@ describe("Fire Pass defaults", () => {
       { main: "firerouter/x" },
     );
     assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
+  });
+
+  test("models below 1M context omit the Claude Code [1m] suffix", () => {
+    assert.equal(claudeCodeModelId("accounts/fireworks/models/gpt-oss-120b"), "accounts/fireworks/models/gpt-oss-120b");
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/minimax-latest"), "accounts/fireworks/routers/minimax-latest");
+    assert.equal(claudeCodeModelId("accounts/fireworks/routers/qwen-plus-latest"), "accounts/fireworks/routers/qwen-plus-latest");
+    assert.equal(claudeCodeModelId("kimi-k2p6-fast"), "kimi-k2p6-fast");
+    assert.equal(modelQualifiesForClaudeCode1mContext("gpt-oss-120b"), false);
+  });
+
+  test("deepseek-flash-latest qualifies via live router base context length", () => {
+    setServerlessCatalogSnapshot({
+      entries: [{
+        id: "accounts/fireworks/models/deepseek-v4-flash-0731",
+        shortId: "deepseek-v4-flash-0731",
+        displayName: "DeepSeek V4 Flash (0731)",
+        kind: "serverless",
+      }],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/deepseek-flash-latest", "accounts/fireworks/models/deepseek-v4-flash-0731"],
+      ]),
+      contextLengthById: new Map([
+        ["accounts/fireworks/models/deepseek-v4-flash-0731", 1_048_576],
+        ["accounts/fireworks/routers/deepseek-flash-latest", 1_048_576],
+      ]),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(modelQualifiesForClaudeCode1mContext("deepseek-flash-latest"), true);
+      assert.equal(claudeCodeModelId("deepseek-flash-latest"), "deepseek-flash-latest[1m]");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
   });
 });

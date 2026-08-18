@@ -82,6 +82,24 @@ describe("global-config", () => {
     assert.equal(config.harnesses.opencode.enabled, false);
   });
 
+  it("readGlobalConfig drops retired/unknown harness ids (e.g. deepagents)", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-roster-normalize-"));
+    // A legacy config carries a retired id (`deepagents`) alongside a current
+    // one; normalizeHarnessMap must keep the current roster and drop the rest.
+    await writeJson(globalConfigPath(home), {
+      apiKey: FIREWORKS_API_KEY_ENV_REF,
+      harnesses: {
+        claude: { enabled: true, provider: "fireworks" },
+        deepagents: { enabled: true, provider: "fireworks" },
+      },
+    });
+
+    const config = await readGlobalConfig(home);
+    assert.equal(config.harnesses.claude?.enabled, true);
+    assert.equal(config.harnesses.deepagents, undefined, "retired id should be dropped");
+    assert.deepEqual(Object.keys(config.harnesses), ["claude"]);
+  });
+
   it("setHarnessEnabled changes only harness state", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-legacy-migrate-"));
     const prevHome = process.env.HOME;

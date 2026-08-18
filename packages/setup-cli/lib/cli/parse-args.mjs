@@ -2,7 +2,7 @@ import process from "node:process";
 import { FIREWORKS_BASE_URL } from "../fireworks/model-id.mjs";
 import { ROUTING_PREFERENCE_LEVELS, normalizeRoutingPreference } from "../firerouter/core.mjs";
 import { HARNESSES } from "../harness/id.mjs";
-import { parseDemoArgs } from "../demo/parse-demo-args.mjs";
+import { parseDemoArgs, findDemoInvocation } from "../demo/parse-demo-args.mjs";
 import { withSuggestion } from "../ui.mjs";
 
 const GLOBAL_COMMANDS = new Set([
@@ -292,53 +292,17 @@ function parseHarnessRoute(harnessId, tokens) {
 }
 
 /**
- * Locate the command token (first positional), tolerating leading global flags
- * so `fireconnect --json demo` resolves the same as `fireconnect demo --json`.
- * Skips global value-flags via applyGlobalFlag (on a throwaway ctx) so a value
- * like `--home /x` isn't mistaken for the command. Returns index -1 when the
- * command can't be determined from the prefix (help/version/unknown flag) — the
- * normal parser then handles it.
- * @param {string[]} argv @returns {{ index: number, command: string|null }}
- */
-function findCommand(argv) {
-  const scratch = createBaseContext();
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === "--help" || arg === "-h" || arg === "--version" || arg === "-V") {
-      return { index: -1, command: null };
-    }
-    if (!arg.startsWith("-")) {
-      return { index: i, command: arg };
-    }
-    let consumed;
-    try {
-      consumed = applyGlobalFlag(scratch, arg, argv[i + 1]);
-    } catch (error) {
-      throw new Error(withContextualHelp(
-        error instanceof Error ? error.message : String(error),
-      ));
-    }
-    if (consumed === true) {
-      i += 1;
-    } else if (consumed === null) {
-      return { index: -1, command: null }; // unknown flag before any command
-    }
-  }
-  return { index: -1, command: null };
-}
-
-/**
  * @param {string[]} argv
  */
 export function parseCli(argv) {
-  // `demo` is a self-contained subcommand: its full flag grammar lives in the
-  // demo folder, so the shared parser never has to know about demo-only flags.
-  // Detect it as the first positional (not just argv[0]) so global flags may
-  // precede it, then hand off everything but the `demo` token.
-  const cmd = findCommand(argv);
-  if (cmd.command === "demo") {
-    const rest = argv.slice(0, cmd.index).concat(argv.slice(cmd.index + 1));
-    return parseDemoArgs(rest, createBaseContext());
+  // `claude demo` (and deprecated top-level `demo`) are self-contained: the full
+  // flag grammar lives in the demo folder. Detect either form with leading global
+  // flags allowed, then hand off the remainder to parseDemoArgs.
+  const demoInvocation = findDemoInvocation(argv);
+  if (demoInvocation) {
+    return parseDemoArgs(demoInvocation.rest, createBaseContext(), {
+      deprecated: demoInvocation.deprecated,
+    });
   }
 
   const { ctx, positional, help, helpTopic, version } = parseFlagsAndPositionals(argv);

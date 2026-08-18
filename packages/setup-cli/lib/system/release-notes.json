@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "0.9.3",
+      "highlights": [
+        "New Claude Code defaults: Sonnet on Anthropic's own model, Opus on `deepseek-pro-latest`, Haiku and subagents on `deepseek-flash-latest`. Change them with `fireconnect claude --interactive`.",
+        "Anthropic and Fireworks models both work once fireconnected — mix them freely.",
+        "`fireconnect claude demo` races two live Claude Code sessions side by side.",
+        "DeepSeek Harness replaces Deep Agents — `fireconnect deepseek on`."
+      ],
+      "improvements": [
+        "`fireconnect status` no longer reports \"All off\" while models are routed.",
+        "OpenCode shows per-model cost, and hides it for Fire Pass subscriptions."
+      ],
+      "footer": "Pinned `deepseek-v4-flash`? Your next `fireconnect claude on` moves it to `deepseek-flash-latest`."
+    },
+    {
       "version": "0.9.2",
       "highlights": [
         "Live session cost meter — watch Fireworks spend accumulate in a tmux split pane beside Claude Code, with a recent-session picker.",

@@ -1,4 +1,4 @@
-import { ensureIdeStopped, isIdeRunning } from "../../io/ide-running.mjs";
+import { ensureIdeStopped, isIdeRunning, quitInstruction } from "../../io/ide-running.mjs";
 import {
   applyItemTableWrites,
   deleteItemTableValue,
@@ -24,12 +24,19 @@ export const applyCursorWrites = applyItemTableWrites;
 
 const CURSOR_PROCESS_SPEC = {
   darwinPattern: "Cursor.app/Contents/MacOS/Cursor",
-  linuxPattern: "^cursor",
+  // Unanchored + trailing boundary so it matches the real cmdline paths
+  // (`/opt/cursor/cursor`, `/usr/share/cursor/cursor`, …) — the previous
+  // `^cursor` anchor only matched a bare `cursor` at position 0 and never
+  // detected Cursor on Linux, so `off`/`on` silently wrote while it was open.
+  linuxPattern: "[/]cursor([[:space:]]|$)",
+  // Ignore Electron helper/GPU/utility children (`--type=…`); only the main
+  // process owns the on-disk store. Mirrors the VS Code spec.
+  linuxCmdlineMatches: (cmdline) => !/\s--type=/.test(cmdline),
   windowsImage: "Cursor\\.exe",
 };
 
 const CURSOR_RUNNING_MESSAGE =
-  "Cursor is running. Quit it first (Cmd-Q / File > Quit) so the write isn't overwritten by Cursor's in-memory state, then rerun. Or pass --force to write anyway (not recommended).";
+  `Cursor is running. ${quitInstruction("Cursor")} so the write isn't overwritten by Cursor's in-memory state, then rerun. Or pass --force to write anyway (not recommended).`;
 
 /**
  * @returns {boolean} true if the Cursor GUI process is currently running.

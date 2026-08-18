@@ -28,6 +28,7 @@ import {
   readChatLanguageModels,
   readVscodeSecret,
   readVscodeStoredKey,
+  relocateLegacyVscodeBackups,
   vscodeAzureProviderStatus,
   vscodeStoredByokHeaders,
 } from "./core.mjs";
@@ -97,6 +98,7 @@ export default defineHarnessProfile({
       };
     },
     enable: async ({ ctx, paths, apiKey, baseUrl }) => {
+      await relocateLegacyVscodeBackups({ home: ctx.home, dataDir: paths.dataDir });
       await ensureVscodeStopped({ force: ctx.force });
       return enableVscodeAzure({
         vscodePath: paths.vscodePath,
@@ -126,14 +128,14 @@ export default defineHarnessProfile({
     telemetryHeaders,
     includeFirerouter,
   }) => {
-    // Register the preferred catalog; firerouter is workspace-BYOK-gated.
-    let catalogModelIds = [];
-    try {
-      ({ ids: catalogModelIds } = await loadRegisterableModels({
-        apiKey: effectiveKey,
-        includeFirerouter,
-      }));
-    } catch { /* offline / catalog unavailable — register just the active model */ }
+    // Register the preferred catalog; firerouter is workspace-BYOK-gated. A
+    // TTL-cached snapshot serves offline; a cold start with no network must
+    // fail the `on` rather than register from an empty model list.
+    const { ids: catalogModelIds } = await loadRegisterableModels({
+      apiKey: effectiveKey,
+      includeFirerouter,
+    });
+    await relocateLegacyVscodeBackups({ home: ctx.home, dataDir: paths.dataDir });
     await ensureVscodeStopped({ force: ctx.force });
     return enableVscodeFireworks({
       vscodePath: paths.vscodePath,
@@ -161,20 +163,36 @@ export default defineHarnessProfile({
   },
   restartHint: () => printRestartHint("Quit and relaunch VS Code, then select the model in Chat."),
 
-  // VS Code stores its key in a SQLite secret (no shell env hook), and must be
-  // stopped before writing.
+  // `on` and `off` both write state.vscdb (`on` stores the safeStorage
+  // secret; `off` deletes it), so the IDE must be stopped before either —
+  // gated in `enable` below and in `prepareOff`.
   envHookOff: false,
   prepareOff: (ctx) => ensureVscodeStopped({ force: ctx.force }),
-  disable: async ({ paths, wasEnabled }) => disableVscodeFireworks({
+  disable: async ({ ctx, paths, wasEnabled }) => {
+    await relocateLegacyVscodeBackups({ home: ctx.home, dataDir: paths.dataDir });
+    return disableVscodeFireworks({
     vscodePath: paths.vscodePath,
     dataDir: paths.dataDir,
     wasEnabled,
     stateDbPath: paths.stateDbPath,
-  }),
+  });
+  },
   restartHintOff: () => printRestartHint("Restart VS Code for the change to take effect."),
+  async providerStatus(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.VSCODE);
+    const paths = vscodePathsFor(ctx);
+    await relocateLegacyVscodeBackups({ home: ctx.home, dataDir: paths.dataDir });
+    const { vscodePath } = paths;
+    const arr = await readChatLanguageModels(vscodePath);
+    if (vscodeAzureProviderStatus(arr) === "azure") return "azure";
+    return fireworksProviderStatus(arr);
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.VSCODE);
-    const { vscodePath, stateDbPath } = vscodePathsFor(ctx);
+    const paths = vscodePathsFor(ctx);
+    await relocateLegacyVscodeBackups({ home: ctx.home, dataDir: paths.dataDir });
+    const { vscodePath, stateDbPath } = paths;
     const enabled = await isHarnessEnabled(ctx.home, HARNESS.VSCODE);
     const arr = await readChatLanguageModels(vscodePath);
 

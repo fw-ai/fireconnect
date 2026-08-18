@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { chmod, mkdir, unlink } from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import {
   defaultMainModel,
   fullFireworksResourceId,
@@ -669,6 +670,19 @@ function resolveCursorModelId(modelId, keyType) {
   return normalizeModelId(modelId || defaultModelIdFor(keyType));
 }
 
+export const CURSOR_DATA_RELATIVE_DIR = ".fireconnect/cursor";
+
+/**
+ * Cursor's FireConnect data dir (backup + state). Defaults to
+ * `~/.fireconnect/cursor` unless overridden via `--data-dir`.
+ * @param {string} home
+ * @param {string} [dataDir]
+ * @returns {string}
+ */
+export function cursorDataDir(home, dataDir = "") {
+  return dataDir || path.join(home, CURSOR_DATA_RELATIVE_DIR);
+}
+
 /** @param {string} dataDir @param {string} dbPath */
 export function cursorBackupPath(dataDir, dbPath) {
   const key = createHash("sha256").update(path.resolve(dbPath)).digest("hex").slice(0, 16);
@@ -683,6 +697,40 @@ export function cursorBackupPath(dataDir, dbPath) {
  */
 export async function readCursorBackup(dataDir, dbPath) {
   return readJsonIfExists(cursorBackupPath(dataDir, dbPath));
+}
+
+/**
+ * One-time relocation of Cursor backups from the legacy shared Claude data dir
+ * (`~/.fireconnect/claude`, where older releases wrote them because the
+ * Cursor harness reused Claude's `resolveDataDir`) into Cursor's own data dir.
+ * Idempotent; safe to call on every command. Leaves any claude-owned
+ * `provider-*` files untouched.
+ * @param {{ home: string, dataDir: string }} opts
+ */
+export async function relocateLegacyCursorBackups({ home, dataDir }) {
+  const newDir = cursorDataDir(home, dataDir);
+  const legacyDir = path.join(home, ".fireconnect/claude");
+  if (path.resolve(newDir) === path.resolve(legacyDir) || !existsSync(legacyDir)) {
+    return;
+  }
+  let entries;
+  try {
+    entries = await readdir(legacyDir);
+  } catch {
+    return; // legacy dir absent — nothing to relocate
+  }
+  await mkdir(newDir, { recursive: true, mode: 0o700 }).catch(() => {});
+  for (const name of entries) {
+    if (!name.startsWith("cursor-backup.")) continue;
+    const from = path.join(legacyDir, name);
+    const to = path.join(newDir, name);
+    if (existsSync(to)) continue; // already migrated or a new `on` wrote here
+    try {
+      await rename(from, to);
+    } catch {
+      /* dest appeared between check and move; leave the legacy file in place */
+    }
+  }
 }
 
 /**

@@ -18,7 +18,7 @@ const ANTHROPIC_KEY = "sk-ant-test-12345";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const LEGACY_FIREROUTER_MODEL = "accounts/fireworks/routers/firerouter[1m]";
 const DIRECT_MAIN_MODEL = "kimi-fast-latest[1m]";
-const DIRECT_ALIAS_MODEL = "glm-fast-latest[1m]";
+const DIRECT_ALIAS_MODEL = "deepseek-pro-latest[1m]";
 const KIMI_FABLE_MODEL = "kimi-fast-latest[1m]";
 const LEGACY_FIREROUTER_BASE_URL = "https://router.fireworks.ai";
 const LEGACY_DESKTOP_GUARD_COMMAND = "node /old/fireconnect-desktop-guard.mjs";
@@ -95,19 +95,21 @@ describe("Claude slot-level FireRouter", () => {
     assert.equal(result.code, 0, result.stderr);
 
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assertClaudeMainModel(settings, DIRECT_MAIN_MODEL);
+    assert.equal(settings.model, undefined);
+    assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
+    // Sonnet stays native, so its alias env key is never written.
     assert.equal(
       settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL,
-      "glm-fast-latest[1m]",
+      undefined,
     );
     assert.equal(
       settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL,
-      "deepseek-v4-flash",
+      "deepseek-flash-latest[1m]",
     );
     assert.equal(
       settings.env.CLAUDE_CODE_SUBAGENT_MODEL,
-      "deepseek-v4-flash",
+      "deepseek-flash-latest",
     );
     assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /X-Fireworks-Api-Key: fw_test_key_12345/);
     assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
@@ -172,7 +174,8 @@ describe("Claude slot-level FireRouter", () => {
     );
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assertClaudeMainModel(settings, DIRECT_MAIN_MODEL);
+    assert.equal(settings.model, undefined);
+    assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, FIREROUTER_MODEL);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "glm-latest[1m]");
@@ -198,7 +201,8 @@ describe("Claude slot-level FireRouter", () => {
     );
     assert.equal(preference.code, 0, preference.stderr);
     let settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assertClaudeMainModel(settings, DIRECT_MAIN_MODEL);
+    assert.equal(settings.model, undefined);
+    assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
     assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-routing-preference: 5/);
 
@@ -330,7 +334,7 @@ describe("Claude slot-level FireRouter", () => {
     assert.equal(await readFile(settingsPath, "utf8"), upgradedBackup.snapshot.raw);
   });
 
-  it("upgrades a v0.8 direct values backup while preserving its model mapping", async () => {
+  it("upgrades a v0.8 direct values backup, preserving its mapping and migrating legacy deepseek-v4-flash slots", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-v08-direct-upgrade-"));
     const settingsPath = userSettingsPath(home);
     const dataDir = path.join(home, ".fireconnect/claude");
@@ -347,9 +351,9 @@ describe("Claude slot-level FireRouter", () => {
       main: "glm-latest[1m]",
       opus: "glm-latest[1m]",
       sonnet: "glm-5p1",
-      haiku: "deepseek-v4-flash",
+      haiku: "deepseek-flash-latest[1m]",
       fable: "glm-latest[1m]",
-      subagent: "deepseek-v4-flash",
+      subagent: "deepseek-flash-latest",
     };
     await writeJson(settingsPath, {
       model: legacyMapping.main,

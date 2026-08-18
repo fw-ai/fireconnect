@@ -22,7 +22,7 @@ describe("opencode catalog model handling", () => {
     setModelsDevFireworksRegistry([
       "accounts/fireworks/models/deepseek-v4-flash",
       "accounts/fireworks/routers/glm-5p2-fast",
-      "accounts/fireworks/routers/kimi-k2p7-code-fast",
+      "accounts/fireworks/routers/kimi-k3-fast",
     ]);
     setServerlessCatalogSnapshot({
       entries: [{
@@ -55,7 +55,7 @@ describe("opencode catalog model handling", () => {
       }
       assert.equal(opencodeNeedsProviderModelOverride("accounts/fireworks/models/deepseek-v4-flash"), false);
       assert.equal(opencodeNeedsProviderModelOverride("accounts/fireworks/routers/glm-5p2-fast"), false);
-      assert.equal(opencodeNeedsProviderModelOverride("accounts/fireworks/routers/kimi-k2p7-code-fast"), false);
+      assert.equal(opencodeNeedsProviderModelOverride("accounts/fireworks/routers/kimi-k3-fast"), false);
       assert.equal(opencodeNeedsProviderModelOverride("accounts/fireworks/models/inkling"), true);
       assert.equal(opencodeNeedsProviderModelOverride("firerouter"), true);
     } finally {
@@ -187,6 +187,38 @@ describe("opencode catalog model handling", () => {
     assert.equal(models["deepseek-v4-flash"], undefined);
   });
 
+  it("firepass re-on drops metered cost inherited from a previous row", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-firepass-cost-"));
+    const configPath = path.join(home, "opencode.json");
+    const dataDir = path.join(home, "data");
+    await mkdir(dataDir, { recursive: true });
+
+    const catalogModelIds = ["accounts/fireworks/routers/glm-latest"];
+
+    await enableOpencodeFireworks({
+      configPath,
+      dataDir,
+      apiKey: "fw_test_key_12345",
+      effectiveApiKey: "fw_test_key_12345",
+      catalogModelIds,
+    });
+
+    const withCost = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
+    assert.ok(withCost?.cost?.input, "standard key registers metered cost");
+
+    await enableOpencodeFireworks({
+      configPath,
+      dataDir,
+      apiKey: "fpk_test_firepass_key",
+      effectiveApiKey: "fpk_test_firepass_key",
+      catalogModelIds,
+    });
+
+    const entry = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
+    assert.equal(entry.cost, undefined, "firepass row carries no metered cost");
+    assert.ok(entry.limit.context >= 1_000_000, "limits still resolved");
+  });
+
   it("offline re-on collapses legacy provider-prefixed provider.models keys", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-offline-legacy-"));
     const configPath = path.join(home, "opencode.json");
@@ -252,7 +284,7 @@ describe("opencode catalog model handling", () => {
     assert.equal(models["glm-fast-latest"].modalities, undefined);
     assert.equal(models["glm-fast-latest"].limit.context, 1_048_575);
     assert.equal(models["glm-fast-latest"].limit.output, 131_072);
-    assert.equal(models["kimi-latest"].limit.context, 262_000);
+    assert.equal(models["kimi-latest"].limit.context, 1_040_000);
   });
 
   it("requires inkling override when models.dev registry is unknown", () => {

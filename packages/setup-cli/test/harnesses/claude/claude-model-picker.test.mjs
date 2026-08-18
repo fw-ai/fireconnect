@@ -87,7 +87,9 @@ describe("Claude slot-aware model picker", () => {
     });
     assert.deepEqual(
       catalog.map((model) => model.slug).sort(),
-      ["deepseek-v4-pro", "glm-latest", "kimi-latest"],
+      // fw_ keys always get the native "Claude default" choice alongside the
+      // Fireworks fallbacks.
+      ["claude-default", "deepseek-v4-pro", "glm-latest", "kimi-latest"],
     );
     assert.ok(catalog.every((model) => !model.fast));
   });

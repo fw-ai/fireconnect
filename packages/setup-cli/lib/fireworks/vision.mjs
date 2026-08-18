@@ -1,9 +1,10 @@
-import { fireworksModelSlug, isFirerouterModel } from "./model-id.mjs";
+import { fireworksModelSlug, isGatewayAnthropicSlot, isFirerouterModel } from "./model-id.mjs";
 import { lookupFireworksModelLimits } from "./model-specs.mjs";
 
-/** Whether a Fireworks model/router accepts image input. FireRouter is excluded. */
+/** Whether a Fireworks model/router accepts image input. FireRouter and
+ * native Anthropic models (claude-*) are excluded from the catalog lookup. */
 export function modelSupportsVision(modelRef) {
-  if (!modelRef || isFirerouterModel(modelRef)) {
+  if (!modelRef || isFirerouterModel(modelRef) || isGatewayAnthropicSlot(modelRef)) {
     return true;
   }
   return lookupFireworksModelLimits(modelRef).vision;

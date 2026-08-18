@@ -53,7 +53,7 @@ export function createTheme(stream = process.stdout) {
     brand: ansi.hex(BRAND.purple),
     muted: ansi.dim,
     interactive: ansi.cyan,
-    success: ansi.green,
+    success: ansi.cyan,
     warn: ansi.yellow,
     error: ansi.red,
     heading: ansi.bold,

@@ -9,6 +9,7 @@ import { globalConfigPath } from "../../lib/config/global-config.mjs";
 import { OPENCODE_AZURE_PROVIDER_ID, opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
 import { codexConfigPath } from "../../lib/harnesses/codex/core.mjs";
 import { PI_AZURE_PROVIDER, piModelsPath, piSettingsPath } from "../../lib/harnesses/pi/core.mjs";
+import { seedOnCommandCatalog } from "../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "bin", "fireconnect.mjs");
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1/chat/completions";
@@ -17,6 +18,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
+    if (args.includes("on")) { seedOnCommandCatalog(env.HOME, args); }
     const child = spawn(process.execPath, [CLI, ...args], {
       env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],

@@ -1,7 +1,7 @@
 import claude from "../harnesses/claude/index.mjs";
 import codex from "../harnesses/codex/index.mjs";
 import cursor from "../harnesses/cursor/index.mjs";
-import deepagents from "../harnesses/deepagents/index.mjs";
+import deepseek from "../harnesses/deepseek/index.mjs";
 import opencode from "../harnesses/opencode/index.mjs";
 import pi from "../harnesses/pi/index.mjs";
 import vscode from "../harnesses/vscode/index.mjs";
@@ -10,7 +10,7 @@ import { HARNESSES } from "./id.mjs";
 /** @typedef {import("./types.mjs").HarnessAdapter} HarnessAdapter */
 
 const REGISTRY = new Map(
-  [claude, opencode, codex, pi, cursor, vscode, deepagents].map((adapter) => [adapter.id, adapter]),
+  [claude, opencode, codex, pi, cursor, vscode, deepseek].map((adapter) => [adapter.id, adapter]),
 );
 
 /**

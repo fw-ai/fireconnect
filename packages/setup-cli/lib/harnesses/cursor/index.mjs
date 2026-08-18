@@ -26,6 +26,7 @@ import {
   enableCursorFireworks,
   fireconnectRegisteredModels,
   readCursorState,
+  relocateLegacyCursorBackups,
 } from "./core.mjs";
 import { DEFAULT_AZURE_MODEL } from "../../fireworks/azure-core.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
@@ -135,6 +136,7 @@ export default defineHarnessProfile({
       if (isFirerouterModel(ctx.main)) {
         rejectCursorFirerouterAzure();
       }
+      await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
       await ensureCursorStopped({ force: ctx.force });
       return enableCursorAzure({
         dbPath: paths.dbPath,
@@ -147,19 +149,16 @@ export default defineHarnessProfile({
     restart: () => printRestartHint("Quit & reopen Cursor for the change to take effect."),
   },
   enable: async ({ ctx, paths, effectiveKey, keyType, modelId, includeFirerouter = false }) => {
-    // Register the preferred catalog; firerouter is workspace-BYOK-gated.
-    let extraModels = [];
-    let catalogUnavailable = false;
-    try {
-      ({ ids: extraModels } = await loadRegisterableModels({
-        apiKey: effectiveKey,
-        includeFirerouter,
-      }));
-    } catch {
-      // Offline / catalog unavailable — register just the active model, and
-      // tell enable not to prune/hide models a previous online run registered.
-      catalogUnavailable = true;
-    }
+    // Register the preferred catalog; firerouter is workspace-BYOK-gated. A
+    // TTL-cached snapshot serves offline; a cold start with no network must
+    // fail the `on` rather than register from an empty model list. When no
+    // catalog entries are available at all, treat it as unavailable so a
+    // previous online run's registered models are trusted instead of wiped.
+    const { ids: extraModels } = await loadRegisterableModels({
+      apiKey: effectiveKey,
+      includeFirerouter,
+    });
+    await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
     await ensureCursorStopped({ force: ctx.force });
     return enableCursorFireworks({
       dbPath: paths.dbPath,
@@ -168,7 +167,7 @@ export default defineHarnessProfile({
       modelId,
       keyType,
       extraModels,
-      catalogUnavailable,
+      catalogUnavailable: extraModels.length === 0,
     });
   },
   printConnected: ({ result }) => {
@@ -201,15 +200,28 @@ export default defineHarnessProfile({
   // stopped before writing.
   envHookOff: false,
   prepareOff: (ctx) => ensureCursorStopped({ force: ctx.force }),
-  disable: ({ paths, wasEnabled }) => disableCursorFireworks({
-    dbPath: paths.dbPath,
-    dataDir: paths.dataDir,
-    wasEnabled,
-  }),
+  disable: async ({ ctx, paths, wasEnabled }) => {
+    await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
+    return disableCursorFireworks({
+      dbPath: paths.dbPath,
+      dataDir: paths.dataDir,
+      wasEnabled,
+    });
+  },
   restartHintOff: () => printRestartHint("Quit & reopen Cursor for full effect."),
+  async providerStatus(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CURSOR);
+    const paths = cursorPathsFor(ctx);
+    await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
+    const { blob, openAIKey } = await readCursorState(paths.dbPath);
+    return cursorProviderStatus(blob, openAIKey);
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CURSOR);
-    const { dbPath } = cursorPathsFor(ctx);
+    const paths = cursorPathsFor(ctx);
+    await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
+    const { dbPath } = paths;
     const enabled = await isHarnessEnabled(ctx.home, HARNESS.CURSOR);
     const { blob, openAIKey } = await readCursorState(dbPath);
     const provider = cursorProviderStatus(blob, openAIKey);

@@ -118,15 +118,13 @@ export default defineHarnessProfile({
     telemetryHeaders,
     includeFirerouter,
   }) => {
-    // Register the preferred catalog; firerouter is workspace-BYOK-gated.
-    // Fail open offline — enableOpencodeFireworks then registers the active model.
-    let catalogModelIds = [];
-    try {
-      ({ ids: catalogModelIds } = await loadRegisterableModels({
-        apiKey: effectiveKey,
-        includeFirerouter,
-      }));
-    } catch { /* offline / catalog unavailable */ }
+    // Register the preferred catalog; firerouter is workspace-BYOK-gated. A
+    // TTL-cached snapshot serves offline; a cold start with no network must
+    // fail the `on` rather than register from an empty model list.
+    const { ids: catalogModelIds } = await loadRegisterableModels({
+      apiKey: effectiveKey,
+      includeFirerouter,
+    });
     return enableOpencodeFireworks({
       configPath: paths.configPath,
       dataDir: paths.dataDir,
@@ -147,6 +145,13 @@ export default defineHarnessProfile({
     dataDir: paths.dataDir,
     wasEnabled,
   }),
+  async providerStatus(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.OPENCODE);
+    const { configPath } = opencodePathsFor(ctx);
+    const config = await readJsonIfExists(configPath);
+    return opencodeProviderStatus(config);
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.OPENCODE);
     const { configPath } = opencodePathsFor(ctx);

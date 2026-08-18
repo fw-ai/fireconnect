@@ -71,7 +71,7 @@ describe("harness option validation", () => {
       );
       await rejects(
         home,
-        ["deepagents", "on", "--model", "firerouter", "--routing-preference", "balanced"],
+        ["deepseek", "on", "--model", "firerouter", "--routing-preference", "balanced"],
         /--routing-preference is not supported/,
       );
     });

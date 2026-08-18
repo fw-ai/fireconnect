@@ -39,7 +39,10 @@ import {
   FIREPASS_FALLBACK_ROUTERS,
   preferLatestAliases,
 } from "../../fireworks/models.mjs";
-import { setServerlessCatalogSnapshot } from "../../fireworks/serverless-catalog-cache.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  setServerlessCatalogSnapshot,
+} from "../../fireworks/serverless-catalog-cache.mjs";
 import {
   AZURE_API_KEY_ENV,
   AZURE_PROVIDER_LABEL,
@@ -374,7 +377,7 @@ export async function loadCodexCatalogBundle(apiKey, { includeFirerouter = false
   try {
     const rawModels = await fetchServerlessCatalogRaw(apiKey);
     const snapshot = buildServerlessCatalogSnapshot(rawModels);
-    setServerlessCatalogSnapshot(snapshot);
+    cacheServerlessCatalogSnapshot(snapshot);
     const entries = preferLatestAliases(filterCatalogForKeyType(snapshot.entries, keyType));
     if (includeFirerouter && !entries.some((entry) => entry.shortId === "firerouter")) {
       entries.unshift(firerouterCatalogEntry());

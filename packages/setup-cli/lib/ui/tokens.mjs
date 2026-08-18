@@ -10,7 +10,7 @@ export const BRAND = {
 /** Semantic terminal roles — mapped in theme.mjs to ANSI slots, not hex literals. */
 export const SEMANTIC = {
   interactive: "cyan",
-  success: "green",
+  success: "cyan",
   muted: "muted",
   spend: "orange",
 };

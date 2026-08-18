@@ -346,7 +346,7 @@ describe("upgrade fetch, compare, and reset ordering", () => {
     ]);
     assert.deepEqual(output, [
       "Upgrade complete. Your original Claude Code settings were restored.",
-      "To reconnect with FireConnect v1.0.0:\n  fireconnect claude on",
+      "To reconnect with FireConnect v1.0.0:\n  fireconnect claude",
     ]);
   });
 

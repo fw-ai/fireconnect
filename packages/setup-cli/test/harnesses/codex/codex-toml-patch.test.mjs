@@ -47,11 +47,11 @@ describe("codex-toml-patch", () => {
     const input = patchFireconnectRoutingRaw("", ROUTING);
     const updated = patchCodexModelRaw(
       input,
-      "kimi-k2p7-code-fast",
+      "kimi-k3-fast",
     );
-    assert.match(updated, /model = "kimi-k2p7-code-fast"/);
+    assert.match(updated, /model = "kimi-k3-fast"/);
     assert.match(updated, /model_provider = "fireworks-ai"/);
-    assert.equal(parseToml(updated).root.model, "kimi-k2p7-code-fast");
+    assert.equal(parseToml(updated).root.model, "kimi-k3-fast");
   });
 
   it("replaces existing root routing keys when enabling", () => {

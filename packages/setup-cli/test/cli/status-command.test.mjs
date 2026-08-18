@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { runCli, seedKeychainConfig, withTempHome } from "../helpers.mjs";
+import { runCli, runCliJson, seedKeychainConfig, withTempHome, writeClaudeSettings } from "../helpers.mjs";
 
 const VALID_KEY = "fw_status_test_key_0000000000000000";
 const REJECTED_KEY = "fw_status_rejected_key_0000000000";
@@ -155,6 +155,30 @@ describe("fireconnect status", () => {
       assert.match(help.stdout, /status\s+Show sign-in state, machine environment/);
       const topic = await runCli(["help", "status"], { home });
       assert.match(topic.stdout, /--json/);
+    });
+  });
+
+  it("lists a harness as on from ground truth even when the global enabled flag is stale", async () => {
+    // Simulate flag drift: Claude's real settings.json points at Fireworks,
+    // but the global ~/.fireconnect/config.json harnesses.claude.enabled flag
+    // was never flipped to true (the legacy condition this fix addresses).
+    // `status` must read the real config and list Claude as on regardless.
+    await withTempHome("status-groundtruth-", async (home) => {
+      await seedKeychainConfig(home, VALID_KEY);
+      await writeClaudeSettings(home, VALID_KEY, { fireworks: true });
+
+      const result = await runCli(["status"], { home, env: gatewayEnv });
+      assert.equal(result.code, 0);
+      assert.match(result.stdout, /Harnesses:/);
+      // The summary lists each harness with a plain on/off state (no key-source
+      // detail). Claude is on via ground truth despite the stale flag.
+      assert.match(result.stdout, /\bclaude\b\s+on\b/);
+      assert.doesNotMatch(result.stdout, /X-Fireworks-Api-Key header in settings\.json/);
+
+      // The --json path reports the same ground-truth `enabled: true`.
+      const json = await runCliJson(["status", "--json"], { home, env: gatewayEnv });
+      const claude = json.json.perHarness.find((h) => h.id === "claude");
+      assert.equal(claude?.enabled, true);
     });
   });
 });

@@ -139,6 +139,13 @@ export default defineHarnessProfile({
     wasEnabled,
   }),
   restartHintOff: () => printCodexRestartHint(),
+  async providerStatus(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CODEX);
+    const { configPath } = codexPathsFor(ctx);
+    const { doc } = await readCodexTomlIfExists(configPath);
+    return codexProviderStatus(doc);
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
     const { configPath, catalogPath } = codexPathsFor(ctx);

@@ -2,9 +2,10 @@ import { userSettingsPath } from "../harnesses/claude/core.mjs";
 import { refreshFirerouterClaudeKey } from "../harnesses/claude/firerouter.mjs";
 import { codexConfigPath, refreshCodexGatewayKey } from "../harnesses/codex/core.mjs";
 import {
-  deepagentsConfigPath,
-  refreshDeepagentsGatewayKey,
-} from "../harnesses/deepagents/core.mjs";
+  deepseekCredentialsPath,
+  deepseekSettingsPath,
+  refreshDeepseekGatewayKey,
+} from "../harnesses/deepseek/core.mjs";
 import { opencodeConfigPath, refreshOpencodeGatewayKey } from "../harnesses/opencode/core.mjs";
 import { piAuthPath, refreshPiGatewayKey } from "../harnesses/pi/core.mjs";
 import { migrateVscodeResponsesApiType } from "../harnesses/vscode/core.mjs";
@@ -52,12 +53,13 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
   const { harnesses } = await readGlobalConfig(home);
   const opencodeConfig = opencodeConfigPath(home, "");
   const codexConfig = codexConfigPath(home, "");
-  const deepagentsConfig = deepagentsConfigPath(home, "");
+  const deepseekSettings = deepseekSettingsPath(home, "");
+  const deepseekCredentials = deepseekCredentialsPath(home);
   const targets = [
     {
       id: HARNESS.CLAUDE,
       label: "Claude Code",
-      hint: "fireconnect claude on",
+      hint: "fireconnect claude",
       refresh: () => refreshFirerouterClaudeKey({ settingsPath: userSettingsPath(home), fireworksKey }),
     },
     {
@@ -79,10 +81,14 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       refresh: () => refreshOpencodeGatewayKey({ configPath: opencodeConfig, fireworksKey }),
     },
     {
-      id: HARNESS.DEEPAGENTS,
-      label: "Deep Agents",
-      hint: "fireconnect deepagents on",
-      refresh: () => refreshDeepagentsGatewayKey({ configPath: deepagentsConfig, fireworksKey }),
+      id: HARNESS.DEEPSEEK,
+      label: "DeepSeek Harness",
+      hint: "fireconnect deepseek on",
+      refresh: () => refreshDeepseekGatewayKey({
+        settingsPath: deepseekSettings,
+        credentialsPath: deepseekCredentials,
+        fireworksKey,
+      }),
     },
   ];
   const notes = [];

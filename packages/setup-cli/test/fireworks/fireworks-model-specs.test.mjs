@@ -1,16 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_VSCODE_MODEL_METADATA,
   FIREWORKS_MODEL_SPECS,
-  assumedModelsDevListed,
   isUsableCachedServerlessPricing,
   lookupFireworksModelCost,
   lookupFireworksModelLimits,
   lookupModelSpec,
-  lookupVscodeModelMetadata,
   pricingMatchesModelRefTier,
   requiresFastTierPricing,
+  resolveFireworksCatalog,
   resolveFireworksModelLabel,
   resolveRouterEntryDisplayName,
   resolveRouterSpecAliasTarget,
@@ -18,32 +16,24 @@ import {
   isFireworksRoutedModelRef,
 } from "../../lib/fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../lib/fireworks/pricing.mjs";
-import { buildServerlessCatalogSnapshot } from "../../lib/fireworks/models.mjs";
-import { PI_BUILTIN_FIREWORKS_CATALOG } from "../../lib/harnesses/pi/fireworks-models.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import { buildOpencodeModelEntry } from "../../lib/harnesses/opencode/core.mjs";
+import { buildPiCustomFireworksModelEntry } from "../../lib/harnesses/pi/fireworks-models.mjs";
+import { buildDeepseekFireworksModelEntry } from "../../lib/harnesses/deepseek/core.mjs";
+import { assumedModelsDevListed } from "../../lib/harnesses/opencode/catalog-policy.mjs";
 
 describe("fireworks-model-specs", () => {
-  it("every priced model has vscode metadata", () => {
+  it("every priced model has capabilities metadata", () => {
     for (const [slug, spec] of Object.entries(FIREWORKS_MODEL_SPECS)) {
       if (!spec.pricing) {
         continue;
       }
-      assert.ok(spec.vscode, `missing vscode metadata for ${slug}`);
-      assert.equal(typeof spec.vscode.maxInputTokens, "number");
-      assert.equal(typeof spec.vscode.maxOutputTokens, "number");
-      assert.equal(typeof spec.vscode.vision, "boolean");
-      assert.equal(typeof spec.vscode.toolCalling, "boolean");
+      assert.ok(spec.capabilities, `missing capabilities for ${slug}`);
+      assert.equal(typeof spec.capabilities.contextWindow, "number");
+      assert.equal(typeof spec.capabilities.maxOutputTokens, "number");
+      assert.equal(typeof spec.capabilities.vision, "boolean");
+      assert.equal(typeof spec.capabilities.toolCalling, "boolean");
     }
-  });
-
-  it("resolves router aliases for pricing and vscode metadata", () => {
-    const pricing = lookupFireworksPricing("accounts/fireworks/routers/glm-latest");
-    const vscode = lookupVscodeModelMetadata("accounts/fireworks/routers/glm-latest");
-    const limits = lookupFireworksModelLimits("accounts/fireworks/routers/glm-latest");
-    assert.equal(pricing?.slug, "glm-5p2");
-    assert.equal(vscode.maxInputTokens, limits.contextWindow);
-    assert.equal(vscode.maxOutputTokens, limits.maxTokens);
-    assert.equal(limits.contextWindow, 1_048_575);
   });
 
   it("does not append Fast to turbo router display names", () => {
@@ -215,6 +205,154 @@ describe("fireworks-model-specs", () => {
     setServerlessCatalogSnapshot(null);
     assert.equal(resolveRouterSpecAliasTarget("minimax-latest"), "minimax-m3");
     assert.equal(resolveRouterSpecAliasTarget("qwen-plus-latest"), "qwen3p7-plus");
+    assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
+    assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
+  });
+
+  it("maps deepseek-flash-latest to deepseek-v4-flash-0731 metadata", () => {
+    const flashPricing = {
+      slug: "deepseek-v4-flash-0731",
+      label: "DeepSeek V4 Flash (0731)",
+      input: 0.14,
+      cachedInput: 0.028,
+      output: 0.28,
+      tier: "standard",
+      source: "api",
+    };
+    setServerlessCatalogSnapshot({
+      entries: [{
+        id: "accounts/fireworks/models/deepseek-v4-flash-0731",
+        shortId: "deepseek-v4-flash-0731",
+        displayName: "DeepSeek V4 Flash (0731)",
+        kind: "serverless",
+      }],
+      pricingById: new Map([
+        ["accounts/fireworks/models/deepseek-v4-flash-0731", flashPricing],
+        ["accounts/fireworks/routers/deepseek-flash-latest", flashPricing],
+      ]),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/deepseek-flash-latest", "accounts/fireworks/models/deepseek-v4-flash-0731"],
+      ]),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveSpecSlug("deepseek-flash-latest"), "deepseek-v4-flash-0731");
+      assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
+      assert.equal(resolveFireworksModelLabel("deepseek-flash-latest"), "DeepSeek V4 Flash (0731) (Latest)");
+      const spec = lookupModelSpec("deepseek-flash-latest");
+      assert.equal(spec?.label, "DeepSeek V4 Flash (0731)");
+      // The dated pin carries the documented sibling rates as an offline
+      // fallback; live catalog pricing still wins below.
+      assert.deepEqual(spec?.pricing, { input: 0.14, cachedInput: 0.028, output: 0.28 });
+      assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.output, 0.28);
+      assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.source, "api");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+  });
+
+  it("maps deepseek-pro-latest to deepseek-v4-pro-0813 metadata", () => {
+    const proPricing = {
+      slug: "deepseek-v4-pro-0813",
+      label: "DeepSeek V4 Pro (0813)",
+      input: 1.32,
+      cachedInput: 0.044,
+      output: 3.96,
+      tier: "standard",
+      source: "api",
+    };
+    setServerlessCatalogSnapshot({
+      entries: [{
+        id: "accounts/fireworks/models/deepseek-v4-pro-0813",
+        shortId: "deepseek-v4-pro-0813",
+        displayName: "DeepSeek V4 Pro (0813)",
+        kind: "serverless",
+      }],
+      pricingById: new Map([
+        ["accounts/fireworks/models/deepseek-v4-pro-0813", proPricing],
+        ["accounts/fireworks/routers/deepseek-pro-latest", proPricing],
+      ]),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/deepseek-pro-latest", "accounts/fireworks/models/deepseek-v4-pro-0813"],
+      ]),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveSpecSlug("deepseek-pro-latest"), "deepseek-v4-pro-0813");
+      assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
+      assert.equal(resolveFireworksModelLabel("deepseek-pro-latest"), "DeepSeek V4 Pro (0813) (Latest)");
+      const spec = lookupModelSpec("deepseek-pro-latest");
+      assert.equal(spec?.label, "DeepSeek V4 Pro (0813)");
+      // The dated pin carries the documented sibling rates as an offline
+      // fallback; live catalog pricing still wins below.
+      assert.deepEqual(spec?.pricing, { input: 1.74, cachedInput: 0.145, output: 3.48 });
+      assert.equal(lookupFireworksPricing("deepseek-pro-latest")?.output, 3.96);
+      assert.equal(lookupFireworksPricing("deepseek-pro-latest")?.source, "api");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+  });
+
+  it("prefers deepseek-v4-pro-0813 over deepseek-v4-pro for deepseek-pro-latest", () => {
+    setServerlessCatalogSnapshot({
+      entries: [
+        {
+          id: "accounts/fireworks/models/deepseek-v4-pro",
+          shortId: "deepseek-v4-pro",
+          displayName: "DeepSeek V4 Pro",
+          kind: "serverless",
+        },
+        {
+          id: "accounts/fireworks/models/deepseek-v4-pro-0813",
+          shortId: "deepseek-v4-pro-0813",
+          displayName: "DeepSeek V4 Pro (0813)",
+          kind: "serverless",
+        },
+      ],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map(),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+  });
+
+  it("prefers deepseek-v4-flash-0731 over deepseek-v4-flash for deepseek-flash-latest", () => {
+    setServerlessCatalogSnapshot({
+      entries: [
+        {
+          id: "accounts/fireworks/models/deepseek-v4-flash",
+          shortId: "deepseek-v4-flash",
+          displayName: "DeepSeek V4 Flash",
+          kind: "serverless",
+        },
+        {
+          id: "accounts/fireworks/models/deepseek-v4-flash-0731",
+          shortId: "deepseek-v4-flash-0731",
+          displayName: "DeepSeek V4 Flash (0731)",
+          kind: "serverless",
+        },
+      ],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map(),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
   });
 
   it("ignores standard-tier cache on resolved fast slugs for fast-latest routers", () => {
@@ -372,20 +510,20 @@ describe("fireworks-model-specs", () => {
   it("resolves firerouter from the shared model spec like other routers", () => {
     const spec = lookupModelSpec("accounts/fireworks/routers/firerouter");
     assert.equal(spec?.label, "FireRouter");
-    assert.equal(spec?.vscode.vision, true);
-    assert.equal(lookupVscodeModelMetadata("firerouter").maxInputTokens, 1_048_575);
+    assert.equal(spec?.capabilities.vision, true);
+    assert.equal(lookupFireworksModelLimits("firerouter").contextWindow, 1_048_575);
   });
 
   it("shares firerouter spec metadata for firerouter* model ids", () => {
     const spec = lookupModelSpec("firerouter/x");
     assert.equal(spec?.label, "FireRouter");
-    assert.equal(spec?.vscode.vision, true);
+    assert.equal(spec?.capabilities.vision, true);
     const limits = lookupFireworksModelLimits("firerouter/x");
     assert.equal(limits.contextWindow, 1_048_575);
     assert.equal(limits.vision, true);
   });
 
-  it("exposes shared limits and cost helpers for non-VS Code harnesses", () => {
+  it("exposes shared limits and cost helpers", () => {
     const limits = lookupFireworksModelLimits("accounts/fireworks/routers/glm-5p2-fast");
     const cost = lookupFireworksModelCost("accounts/fireworks/routers/glm-5p2-fast");
     assert.equal(limits.contextWindow, 1_048_575);
@@ -393,59 +531,43 @@ describe("fireworks-model-specs", () => {
     assert.equal(cost.output, 6.6);
   });
 
-  it("matches Pi built-in catalog limits for shared models", () => {
-    for (const [modelId, catalog] of Object.entries(PI_BUILTIN_FIREWORKS_CATALOG)) {
-      const limits = lookupFireworksModelLimits(modelId);
-      assert.equal(limits.contextWindow, catalog.contextWindow, modelId);
-      assert.equal(limits.maxTokens, catalog.maxTokens, modelId);
-    }
+  it("resolveFireworksCatalog is the canonical merge of limits, cost, and input", () => {
+    const catalog = resolveFireworksCatalog("firerouter");
+    assert.equal(catalog.limits.contextWindow, 1_048_575);
+    assert.equal(catalog.limits.maxTokens, 131_072);
+    assert.equal(catalog.limits.vision, true);
+    assert.equal(catalog.toolCalling, true);
+    assert.deepEqual(catalog.input, ["text", "image"]);
+    assert.deepEqual(lookupFireworksModelLimits("firerouter"), catalog.limits);
+    assert.deepEqual(lookupFireworksModelCost("firerouter"), catalog.cost);
   });
 
-  it("resolves kimi vision models with image input enabled", () => {
-    const vscode = lookupVscodeModelMetadata("accounts/fireworks/routers/kimi-latest");
-    assert.equal(vscode.vision, true);
-    assert.equal(vscode.toolCalling, true);
-  });
-
-  it("enables vision for firerouter across shared metadata helpers", () => {
-    for (const modelRef of [
-      "accounts/fireworks/routers/firerouter",
-      "firerouter",
-      "accounts/fireworks/routers/firerouter[1m]",
-    ]) {
-      const vscode = lookupVscodeModelMetadata(modelRef);
-      const limits = lookupFireworksModelLimits(modelRef);
-      assert.equal(vscode.vision, true, modelRef);
-      assert.equal(limits.vision, true, modelRef);
-      assert.equal(vscode.maxInputTokens, 1_048_575, modelRef);
-      assert.equal(vscode.maxOutputTokens, 131_072, modelRef);
-      assert.equal(limits.contextWindow, 1_048_575, modelRef);
-      assert.equal(limits.maxTokens, 131_072, modelRef);
-    }
+  it("harness builders consume resolveFireworksCatalog locally", () => {
+    const catalog = resolveFireworksCatalog("firerouter");
+    const opencode = buildOpencodeModelEntry("firerouter");
+    const pi = buildPiCustomFireworksModelEntry("firerouter", "FireRouter");
+    const deepseek = buildDeepseekFireworksModelEntry("firerouter", "FireRouter");
+    assert.equal(opencode.limit.context, catalog.limits.contextWindow);
+    assert.equal(opencode.limit.output, catalog.limits.maxTokens);
+    assert.deepEqual(opencode.modalities?.input, catalog.input);
+    assert.equal(pi.contextWindow, catalog.limits.contextWindow);
+    assert.equal(pi.maxTokens, catalog.limits.maxTokens);
+    assert.equal(deepseek.contextWindow, catalog.limits.contextWindow);
+    assert.equal(deepseek.maxTokens, catalog.limits.maxTokens);
   });
 
   it("resolves inkling limits, pricing, and vision from the static spec", () => {
     const limits = lookupFireworksModelLimits("accounts/fireworks/models/inkling");
-    const vscode = lookupVscodeModelMetadata("accounts/fireworks/models/inkling");
     const cost = lookupFireworksModelCost("inkling");
     assert.equal(limits.contextWindow, 1_048_576);
     assert.equal(limits.maxTokens, 131_072);
     assert.equal(limits.vision, true);
-    assert.equal(vscode.maxInputTokens, 1_048_576);
-    assert.equal(vscode.maxOutputTokens, 131_072);
-    assert.equal(vscode.vision, true);
-    assert.equal(vscode.toolCalling, true);
     assert.equal(cost.input, 1.00);
     assert.equal(cost.output, 4.05);
     assert.equal(lookupModelSpec("inkling")?.label, "Inkling");
     assert.equal(lookupModelSpec("inkling")?.modelsDev, false);
     assert.equal(assumedModelsDevListed("inkling"), false);
     assert.equal(assumedModelsDevListed("glm-5p2"), true);
-  });
-
-  it("marks gpt-oss-20b as non-tool-calling", () => {
-    const vscode = lookupVscodeModelMetadata("accounts/fireworks/models/gpt-oss-20b");
-    assert.equal(vscode.toolCalling, false);
   });
 
   it("lookupFireworksModelCost ignores zero-rate cache and falls back to static spec", () => {
@@ -470,69 +592,6 @@ describe("fireworks-model-specs", () => {
     }
   });
 
-  it("warm cache without an API tool signal does not flip static toolCalling:false", () => {
-    // gpt-oss-20b has a static spec with toolCalling:false. The serverless API
-    // omits supports_tools for it, which must NOT be cached as `true`.
-    const snapshot = buildServerlessCatalogSnapshot([{
-      name: "accounts/fireworks/models/gpt-oss-20b",
-      displayName: "GPT-OSS 20B",
-      contextLength: 131_072,
-      serverlessModes: [],
-    }]);
-    setServerlessCatalogSnapshot(snapshot);
-    try {
-      const meta = lookupVscodeModelMetadata("accounts/fireworks/models/gpt-oss-20b");
-      assert.equal(meta.toolCalling, false, "omitted API tool signal must not override the static spec");
-      // Context still comes from the API cache.
-      assert.equal(meta.maxInputTokens, 131_072);
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("warm cache without an API modality signal does not flip static vision:true", () => {
-    // kimi-k2p7-code's static spec is vision:true. An API entry that omits both
-    // input_modalities and supportsImageInput must not be cached as text-only.
-    const snapshot = buildServerlessCatalogSnapshot([{
-      name: "accounts/fireworks/models/kimi-k2p7-code",
-      displayName: "Kimi K2.7 Code",
-      contextLength: 262_000,
-      serverlessModes: [],
-    }]);
-    setServerlessCatalogSnapshot(snapshot);
-    try {
-      const meta = lookupVscodeModelMetadata("accounts/fireworks/models/kimi-k2p7-code");
-      assert.equal(meta.vision, true, "omitted API modality signal must not override the static spec");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("explicit API supports_tools=false is honored as authoritative", () => {
-    const snapshot = buildServerlessCatalogSnapshot([{
-      name: "accounts/fireworks/models/some-new-model",
-      displayName: "Some New Model",
-      contextLength: 131_072,
-      supportsTools: false,
-      serverlessModes: [],
-    }]);
-    setServerlessCatalogSnapshot(snapshot);
-    try {
-      const meta = lookupVscodeModelMetadata("accounts/fireworks/models/some-new-model");
-      assert.equal(meta.toolCalling, false);
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("falls back to bool defaults for unknown models without token limits", () => {
-    assert.deepEqual(
-      lookupVscodeModelMetadata("accounts/fireworks/models/unknown-model"),
-      DEFAULT_VSCODE_MODEL_METADATA,
-    );
-    assert.equal(lookupModelSpec("accounts/fireworks/models/unknown-model"), null);
-  });
-
   it("resolves short router slugs against the warmed capability cache", () => {
     const canonical = "accounts/fireworks/routers/kimi-fast-latest";
     setServerlessCatalogSnapshot({
@@ -545,11 +604,8 @@ describe("fireworks-model-specs", () => {
     });
     try {
       const limits = lookupFireworksModelLimits("kimi-fast-latest");
-      const vscode = lookupVscodeModelMetadata("kimi-fast-latest");
       assert.equal(limits.contextWindow, 262_000);
       assert.equal(limits.vision, true);
-      assert.equal(vscode.maxInputTokens, 262_000);
-      assert.equal(vscode.vision, true);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -557,6 +613,8 @@ describe("fireworks-model-specs", () => {
 
   it("isFireworksRoutedModelRef resolves specs, routers, and full ids", () => {
     assert.equal(isFireworksRoutedModelRef("deepseek-v4-flash"), true);
+    assert.equal(isFireworksRoutedModelRef("deepseek-flash-latest"), true);
+    assert.equal(isFireworksRoutedModelRef("deepseek-pro-latest"), true);
     assert.equal(isFireworksRoutedModelRef("kimi-fast-latest"), true);
     assert.equal(isFireworksRoutedModelRef("accounts/fireworks/models/glm-5p2"), true);
     assert.equal(isFireworksRoutedModelRef("firerouter"), true);

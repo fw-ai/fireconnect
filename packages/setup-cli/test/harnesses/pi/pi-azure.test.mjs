@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import { PI_AZURE_PROVIDER, piSettingsPath, piModelsPath } from "../../../lib/harnesses/pi/core.mjs";
 import { lookupAzureFoundryModelLimits } from "../../../lib/fireworks/azure-core.mjs";
+import { seedOnCommandCatalog } from "../../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "fireconnect.mjs");
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
@@ -15,6 +16,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
+    if (args.includes("on")) { seedOnCommandCatalog(env.HOME, args); }
     const child = spawn(process.execPath, [CLI, ...args], {
       env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -96,6 +98,33 @@ describe("pi azure harness", () => {
       // no group/other access bits.
       const st = await stat(piModelsPath(home));
       assert.equal(st.mode & 0o077, 0o000, "models.json should be owner-only (0600) with a literal key");
+    });
+  });
+
+  it("switching from Fireworks to Azure clears the stale Fireworks enabledModels scope", async () => {
+    await withHome(async (home) => {
+      // Seed a Fireworks-on config, including the router-only picker scope
+      // FireConnect writes on a Fireworks `on`.
+      await writeFile(piSettingsPath(home), JSON.stringify({
+        defaultProvider: "fireworks",
+        defaultModel: "accounts/fireworks/routers/kimi-fast-latest",
+        enabledModels: ["fireworks/accounts/fireworks/routers/*"],
+      }));
+      await writeFile(piModelsPath(home), JSON.stringify({
+        providers: { fireworks: { models: [{ id: "accounts/fireworks/routers/kimi-fast-latest" }] } },
+      }));
+
+      const result = await runFireconnect(
+        ["pi", "on", "--azure", "--base-url", AZURE_ENDPOINT, "--api-key", AZURE_KEY, "--model", "FW-GLM-5.2"],
+        { HOME: home },
+      );
+      assert.equal(result.code, 0, result.stderr);
+
+      const settings = JSON.parse(await readFile(piSettingsPath(home), "utf8"));
+      assert.equal(settings.defaultProvider, PI_AZURE_PROVIDER);
+      // Azure is unscaffolded — a stale Fireworks enabledModels must be dropped so
+      // the picker isn't scoped to Fireworks routers (no auth in Azure mode).
+      assert.equal(settings.enabledModels, undefined, "stale Fireworks enabledModels cleared on Azure switch");
     });
   });
 

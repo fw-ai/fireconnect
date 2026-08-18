@@ -6,12 +6,19 @@ import {
   applyKey,
   formResult,
   curatedChallengers,
+  curatedDemoModels,
+  renderFormLines,
+  estimateRaceCost,
 } from "../../lib/demo/setup-form.mjs";
+import { CUSTOM_MATCHUP_ID } from "../../lib/demo/demo-matchups.mjs";
+import { CUSTOM_DEMO_PROMPT_ID } from "../../lib/demo/presets.mjs";
 
 const DEFAULTS = {
   promptSource: "preset",
   promptPresetId: "tetris",
-  challenger: "glm-5p2-fast",
+  leftModel: "opus",
+  rightModel: "glm-fast-latest",
+  matchupPresetId: "subscription-vs-fireworks",
   out: "./fireconnect-demo",
 };
 
@@ -19,191 +26,158 @@ function state(overrides = {}) {
   return createFormState({ defaults: { ...DEFAULTS, ...overrides.defaults } });
 }
 
-function focusOn(s, key) {
-  let cur = s;
-  const fieldIndex = cur.fields.findIndex((f) => f.key === key);
-  assert.ok(fieldIndex >= 0, `field ${key} should exist`);
-  while (cur.focus !== fieldIndex) {
-    cur = applyKey(cur, cur.focus < fieldIndex ? "down" : "up");
-  }
+function advanceToGame(s) {
+  let cur = applyKey(s, "enter");
   return cur;
 }
 
-function keys(s) {
-  return s.fields.map((f) => f.key);
+function advanceToConfirm(s) {
+  let cur = advanceToGame(s);
+  cur = applyKey(cur, "enter");
+  return cur;
 }
 
-test("createFormState: prompt is field[0]; layout includes custom task field", () => {
+test("createFormState: starts on matchup step", () => {
   const s = state();
-  assert.deepEqual(keys(s), ["prompt", "customPrompt", "incumbentModel", "challenger", "out"]);
-  assert.equal(s.fields[0].key, "prompt");
-  assert.equal(s.done, false);
-  assert.equal(s.quit, false);
+  assert.equal(s.step, "matchup");
+  assert.equal(s.leftModel, "opus");
 });
 
-test("applyKey: down/up moves focus and clamps", () => {
+test("applyKey: preset matchup enter advances to game step", () => {
+  const s = advanceToGame(state());
+  assert.equal(s.step, "game");
+  assert.equal(s.leftModel, "opus");
+  assert.equal(s.rightModel, "glm-fast-latest");
+});
+
+test("applyKey: custom matchup stays on step 1 with inline model pickers", () => {
   let s = state();
+  while (s.matchupIndex !== 3) {
+    s = applyKey(s, "right");
+  }
+  assert.equal(CUSTOM_MATCHUP_ID, "custom");
+  assert.equal(s.step, "matchup");
   s = applyKey(s, "down");
-  assert.equal(s.focus, 1);
-  s = applyKey(s, "down");
-  s = applyKey(s, "down");
-  s = applyKey(s, "down"); // last field (out) at index 4
-  assert.equal(s.focus, 4);
-  s = applyKey(s, "down"); // clamp
-  assert.equal(s.focus, 4);
-  s = applyKey(s, "up");
-  assert.equal(s.focus, 3);
-});
-
-test("applyKey: ←/→ cycle a choice field and wrap", () => {
-  let s = focusOn(state(), "prompt");
-  const opts = s.fields[s.focus].options;
+  assert.equal(s.focus, "models");
   s = applyKey(s, "right");
-  assert.equal(s.fields[s.focus].index, 1);
-  s = applyKey(s, "left");
-  s = applyKey(s, "left"); // wrap back past 0
-  assert.equal(s.fields[s.focus].index, opts.length - 1);
+  assert.equal(s.matchupIndex, 3);
 });
 
-test("applyKey: 1-9 jumps to the nth option on a choice field", () => {
-  let s = focusOn(state(), "challenger");
-  s = applyKey(s, "3");
-  assert.equal(s.fields[s.focus].index, 2);
-  // out-of-range digits are ignored
-  const len = s.fields[s.focus].options.length;
-  s = applyKey(s, String(len + 1));
-  assert.equal(s.fields[s.focus].index, 2);
-});
-
-test("applyKey: output dir accepts allowed chars, rejects others", () => {
-  let s = focusOn(state(), "out");
-  for (let i = 0; i < 20; i += 1) s = applyKey(s, "backspace");
-  assert.equal(s.fields[s.focus].text, "");
-  for (const ch of "/tmp") s = applyKey(s, ch);
-  assert.equal(s.fields[s.focus].text, "/tmp");
-  s = applyKey(s, " "); // space not allowed
-  assert.equal(s.fields[s.focus].text, "/tmp");
-});
-
-test("applyKey: enter confirms, q/escape/ctrlc quit", () => {
+test("applyKey: editing models switches preset to custom", () => {
   let s = state();
+  s = applyKey(s, "down");
+  s = applyKey(s, "right");
+  assert.equal(s.matchupIndex, 3);
+});
+
+test("applyKey: same model blocked on confirm", () => {
+  let s = advanceToConfirm(state());
+  s = { ...s, leftModel: "opus", rightModel: "opus" };
+  s = applyKey(s, "enter");
+  assert.equal(s.done, false);
+  assert.match(s.error, /different models/);
+});
+
+test("applyKey: s swaps models on confirm", () => {
+  let s = advanceToConfirm(state());
+  s = applyKey(s, "s");
+  assert.equal(s.leftModel, "glm-fast-latest");
+  assert.equal(s.rightModel, "opus");
+  assert.equal(s.matchupIndex, 3);
+  assert.equal(formResult(s, { defaults: DEFAULTS }).matchupPresetId, "custom");
+});
+
+test("applyKey: confirm b goes back to game step", () => {
+  let s = advanceToConfirm(state());
+  s = applyKey(s, "b");
+  assert.equal(s.step, "game");
+});
+
+test("applyKey: q inserts into custom prompt text", () => {
+  let s = advanceToGame(state());
+  while (s.promptIndex !== 4) {
+    s = applyKey(s, "right");
+  }
+  s = applyKey(s, "q");
+  assert.equal(s.quit, false);
+  assert.equal(s.customPromptText, "q");
+});
+
+test("formResult: custom matchup preset id preserved", () => {
+  let s = state({ defaults: { ...DEFAULTS, matchupPresetId: "custom" } });
+  s = applyKey(s, "enter");
+  s = applyKey(s, "enter");
+  s = applyKey(s, "enter");
+  const r = formResult(s, { defaults: DEFAULTS });
+  assert.equal(r.matchupPresetId, "custom");
+});
+
+test("applyKey: confirm enter finishes", () => {
+  let s = advanceToConfirm(state());
   s = applyKey(s, "enter");
   assert.equal(s.done, true);
-
-  s = applyKey(state(), "escape");
-  assert.equal(s.quit, true);
-
-  s = applyKey(state(), "ctrlc");
-  assert.equal(s.quit, true);
-
-  // 'q' quits on a choice field (focus starts on prompt, a choice)
-  s = applyKey(state(), "q");
-  assert.equal(s.quit, true);
-});
-
-test("formResult: returns prompt + challenger + out + incumbent model", () => {
-  let s = applyKey(state(), "enter");
   const r = formResult(s, { defaults: DEFAULTS });
   assert.equal(r.prompt, "tetris");
-  assert.equal(r.challenger, "glm-5p2-fast");
-  assert.equal(r.out, "./fireconnect-demo");
-  assert.equal(r.incumbentModel, "opus"); // default
-  assert.ok(!("seed" in r));
-  assert.ok(!("leftProvider" in r));
-  assert.ok(!("mode" in r));
+  assert.equal(r.leftModel, "opus");
+  assert.equal(r.matchupPresetId, "subscription-vs-fireworks");
 });
 
-test("formResult: returns the selected incumbent (Anthropic) model", () => {
-  let s = focusOn(state(), "incumbentModel"); // default opus
-  s = applyKey(s, "right"); // → sonnet
+test("applyKey: custom game requires text", () => {
+  let s = advanceToGame(state());
+  while (s.promptIndex !== 4) {
+    s = applyKey(s, "right");
+  }
+  s = applyKey(s, "enter");
+  assert.equal(s.step, "game");
+  assert.match(s.error, /custom task/i);
+});
+
+test("formResult: custom prompt preserved", () => {
+  let s = advanceToGame(state());
+  while (s.promptIndex !== 4) {
+    s = applyKey(s, "right");
+  }
+  for (const ch of "build timer") {
+    s = applyKey(s, ch);
+  }
+  s = applyKey(s, "enter");
   s = applyKey(s, "enter");
   const r = formResult(s, { defaults: DEFAULTS });
-  assert.equal(r.incumbentModel, "sonnet");
-});
-
-test("createFormState: incumbent model defaults to opus", () => {
-  const s = state();
-  const im = s.fields.find((f) => f.key === "incumbentModel");
-  assert.equal(im.type, "choice");
-  assert.equal(im.options[im.index], "opus");
-});
-
-test("formResult: custom (non-preset) prompt is preserved in the custom field", () => {
-  const customDefaults = {
-    ...DEFAULTS,
-    promptSource: "literal",
-    promptText: "build me a calculator",
-    promptTitle: "Custom prompt",
-  };
-  let s = createFormState({ defaults: customDefaults });
-  const promptField = s.fields.find((f) => f.key === "prompt");
-  assert.equal(promptField.type, "choice");
-  assert.equal(promptField.options[promptField.index], "custom");
-  const customField = s.fields.find((f) => f.key === "customPrompt");
-  assert.equal(customField.text, "build me a calculator");
-  s = applyKey(s, "enter");
-  const r = formResult(s, { defaults: customDefaults });
-  assert.equal(r.prompt, "build me a calculator");
-});
-
-test("formResult: selecting custom uses the editable custom task field", () => {
-  let s = focusOn(state(), "prompt");
-  const promptField = s.fields[s.focus];
-  const customIndex = promptField.options.indexOf("custom");
-  assert.ok(customIndex >= 0);
-  s = applyKey(s, String(customIndex + 1));
-  s = focusOn(s, "customPrompt");
-  for (const ch of "build a timer") s = applyKey(s, ch);
-  s = applyKey(s, "enter");
-  const r = formResult(s, { defaults: DEFAULTS });
-  assert.equal(r.prompt, "build a timer");
-});
-
-test("applyKey: empty custom task cannot submit and focuses the custom field", () => {
-  let s = focusOn(state(), "prompt");
-  const customIndex = s.fields[s.focus].options.indexOf("custom");
-  s = applyKey(s, String(customIndex + 1));
-  s = applyKey(s, "enter");
-  assert.equal(s.done, false);
-  assert.equal(s.fields[s.focus].key, "customPrompt");
-});
-
-test("formResult: empty custom task returns the custom sentinel, never a previous preset prompt", () => {
-  let s = focusOn(state(), "prompt");
-  const customIndex = s.fields[s.focus].options.indexOf("custom");
-  s = applyKey(s, String(customIndex + 1));
-  const r = formResult(s, { defaults: { ...DEFAULTS, promptText: "tetris prompt should not leak" } });
-  assert.equal(r.prompt, "custom");
-  assert.equal(r.promptSource, "custom-empty");
-});
-
-test("formResult: a literal 'custom' task is a literal source, not the sentinel", () => {
-  let s = focusOn(state(), "prompt");
-  const customIndex = s.fields[s.focus].options.indexOf("custom");
-  s = applyKey(s, String(customIndex + 1));
-  s = focusOn(s, "customPrompt");
-  for (const ch of "custom") s = applyKey(s, ch);
-  s = applyKey(s, "enter");
-  const r = formResult(s, { defaults: DEFAULTS });
-  assert.equal(r.prompt, "custom");
+  assert.equal(r.prompt, "build timer");
   assert.equal(r.promptSource, "literal");
 });
 
-test("formResult: non-curated challenger is read-only and preserved", () => {
-  const d = { ...DEFAULTS, challenger: "some-other-model" };
-  let s = createFormState({ defaults: d });
-  const ch = s.fields.find((f) => f.key === "challenger");
-  assert.equal(ch.type, "readonly");
-  s = applyKey(s, "enter");
-  const r = formResult(s, { defaults: d });
-  assert.equal(r.challenger, "some-other-model");
+test("renderFormLines: uses consistent 3-step numbering", () => {
+  const matchup = renderFormLines(state(), { cols: 100 }).join("\n");
+  assert.match(matchup, /1\/3 · Pick models/);
+  assert.match(matchup, /Model A:/);
+  const game = renderFormLines(advanceToGame(state()), { cols: 100 }).join("\n");
+  assert.match(game, /2\/3 · Pick a challenge/);
+  const confirm = renderFormLines(advanceToConfirm(state()), { cols: 100 }).join("\n");
+  assert.match(confirm, /3\/3 · Confirm/);
+  assert.match(confirm, /FireConnect Claude setup/);
 });
 
-test("curatedChallengers: every entry has a label", () => {
+test("estimateRaceCost: returns a bounded range", () => {
+  const est = estimateRaceCost("opus", "glm-fast-latest");
+  assert.ok(est);
+  assert.ok(est.low < est.high);
+});
+
+test("curatedDemoModels: includes Anthropic slots and latest Fireworks picks", () => {
+  const list = curatedDemoModels();
+  const ids = list.map((m) => m.id);
+  assert.ok(ids.includes("opus"));
+  assert.ok(ids.includes("firerouter"));
+  assert.ok(!ids.includes("glm-5p2-fast"));
+});
+
+test("curatedChallengers: excludes Anthropic subscription slots", () => {
   const list = curatedChallengers();
-  assert.ok(list.length >= 4);
-  for (const c of list) {
-    assert.ok(c.label, `${c.id} needs a label`);
-  }
-  assert.equal(list[0].id, "glm-5p2-fast");
+  assert.ok(!list.some((m) => m.id === "opus"));
+});
+
+test("applyKey: q quits from any step", () => {
+  assert.equal(applyKey(state(), "q").quit, true);
+  assert.equal(applyKey(advanceToGame(state()), "q").quit, true);
 });
