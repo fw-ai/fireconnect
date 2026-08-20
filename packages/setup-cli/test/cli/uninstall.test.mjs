@@ -10,6 +10,9 @@ import { patchCodexCatalogRefRaw } from "../../lib/harnesses/codex/toml-patch.mj
 import { globalConfigPath, writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import { writeJson } from "../../lib/io/json.mjs";
 import { runFireconnect } from "../helpers.mjs";
+import * as registry from "../../lib/harness/registry.mjs";
+import { HARNESS } from "../../lib/harness/id.mjs";
+import { runUninstallCommand } from "../../lib/cli/commands/global.mjs";
 
 async function pathExists(filePath) {
   try {
@@ -169,6 +172,357 @@ describe("uninstall", () => {
 
     const after = await readFile(settingsPath, "utf8");
     assert.equal(after, originalSettings);
+  });
+
+});
+
+describe("uninstall (interactive path)", () => {
+  // Drive runUninstallCommand in-process with a faked TTY so the interactive
+  // (per-harness, non-forced) branch runs. Stub the harness registry so we
+  // control each `off` outcome and can assert per-harness data-dir deletion
+  // ordering: a dir is removed only after its `off` succeeds; a failed harness
+  // keeps its dir so `off` stays recoverable.
+
+  function withFakedTTY(fn) {
+    const realStdin = process.stdin;
+    const realIsTTY = realStdin.isTTY;
+    Object.defineProperty(realStdin, "isTTY", { value: true, configurable: true });
+    return Promise.resolve(fn()).finally(() => {
+      Object.defineProperty(realStdin, "isTTY", { value: realIsTTY, configurable: true });
+    });
+  }
+
+  /** Run `fn` with HOME pointed at `home` (runUninstallCommand reads process.env.HOME). */
+  function withHome(home, fn) {
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    return Promise.resolve(fn()).finally(() => {
+      if (realHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = realHome;
+      }
+    });
+  }
+
+  /**
+   * Present a harness as routed (or not) and optionally stub its `off`.
+   *
+   * "On" is resolved from the harness's own config via `providerStatus`, not
+   * from FireConnect's `enabled` flag, so a test that wants a harness treated
+   * as on has to say so here — writing `enabled: true` into the global config
+   * is not enough and would silently test nothing.
+   *
+   * @returns {() => void} restores the adapter
+   */
+  function stubHarness(id, { routed = true, off } = {}) {
+    const adapter = registry.getHarness(id);
+    const orig = { off: adapter.off, providerStatus: adapter.providerStatus };
+    adapter.providerStatus = async () => (routed ? "fireworks" : "none");
+    if (off) {
+      adapter.off = off;
+    }
+    return () => {
+      adapter.off = orig.off;
+      adapter.providerStatus = orig.providerStatus;
+    };
+  }
+
+  it("deletes each harness data dir only after its off succeeds", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-interactive-"));
+    // Two registered harnesses with on-disk data dirs.
+    await writeGlobalConfig(home, { harnesses: { claude: { enabled: true }, opencode: { enabled: true } } });
+    await mkdir(path.join(home, ".fireconnect/claude"), { recursive: true });
+    await mkdir(path.join(home, ".fireconnect/opencode"), { recursive: true });
+    await writeFile(path.join(home, ".fireconnect/claude/marker"), "1");
+    await writeFile(path.join(home, ".fireconnect/opencode/marker"), "1");
+
+    let claudeOffCalls = 0;
+    let opencodeOffCalls = 0;
+    const restore = [
+      stubHarness(HARNESS.CLAUDE, { off: async () => { claudeOffCalls += 1; } }),
+      stubHarness(HARNESS.OPENCODE, {
+        off: async () => { opencodeOffCalls += 1; throw new Error("boom"); },
+      }),
+    ];
+
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      restore.forEach((fn) => fn());
+    }
+
+    assert.equal(claudeOffCalls, 1, "claude off ran once");
+    assert.equal(opencodeOffCalls, 1, "opencode off ran once");
+    // Succeeded harness: its data dir was removed right after off succeeded.
+    assert.equal(await pathExists(path.join(home, ".fireconnect/claude/marker")), false,
+      "claude data dir removed after successful off");
+    // Failed harness: its backup survives. Uninstall stops before the global
+    // cleanup precisely so this stays usable for a retry.
+    assert.equal(await pathExists(path.join(home, ".fireconnect/opencode/marker")), true,
+      "failed harness keeps its backup");
+    assert.notEqual(process.exitCode, 0, "non-zero exit on off failure");
+    process.exitCode = origExitCode;
+  });
+
+  it("interactive path does not force (lets the IDE guard run)", async () => {
+    // The interactive branch passes ctx.force (false) to off, not hardcoded
+    // true. Assert by capturing the force flag the adapter's off receives.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-interactive-force-"));
+    await writeGlobalConfig(home, { harnesses: { claude: { enabled: true } } });
+    await mkdir(path.join(home, ".fireconnect/claude"), { recursive: true });
+
+    let capturedForce;
+    const restore = stubHarness(HARNESS.CLAUDE, {
+      off: async (ctx) => { capturedForce = ctx.force; },
+    });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      restore();
+    }
+    assert.equal(capturedForce, false, "interactive path must not force");
+    process.exitCode = origExitCode;
+  });
+
+  it("omits harnesses that are not on from the checklist entirely", async () => {
+    // A harness that is not routed has nothing to restore. It must not be
+    // listed, and its `off` must not run — every harness in the config used to
+    // be listed, so ones that were off rendered as "wasn't connected".
+    // Note the config claims opencode is enabled: its real config says
+    // otherwise, and the harness's own config wins.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-onlyon-"));
+    await writeGlobalConfig(home, {
+      harnesses: { claude: { enabled: true }, opencode: { enabled: true } },
+    });
+    await mkdir(path.join(home, ".fireconnect/cli"), { recursive: true });
+
+    const ran = [];
+    const restore = [
+      stubHarness(HARNESS.CLAUDE, {
+        routed: true,
+        off: async () => { ran.push("claude"); return "restored"; },
+      }),
+      stubHarness(HARNESS.OPENCODE, {
+        routed: false,
+        off: async () => { ran.push("opencode"); return "restored"; },
+      }),
+    ];
+
+    let out = "";
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { out += String(chunk); return true; };
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      process.stdout.write = realWrite;
+      restore.forEach((fn) => fn());
+      process.exitCode = origExitCode;
+    }
+
+    assert.deepEqual(ran, ["claude"], "only the routed harness runs off");
+    assert.match(out, /Claude Code/);
+    assert.doesNotMatch(out, /OpenCode/, "an unrouted harness must not be listed");
+    assert.doesNotMatch(out, /wasn't connected/, "no not-connected noise");
+  });
+
+  it("restores a harness that is routed but missing from config", async () => {
+    // Regression: discovery used to read only config.harnesses, so a lost or
+    // reinstalled ~/.fireconnect meant no `off` ran at all — uninstall deleted
+    // the backup while leaving the harness pointed at Fireworks with its
+    // built-in models hidden, which is unrecoverable. providerStatus reads the
+    // harness's real config, so it catches what the config map misses.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-orphan-"));
+    // No config.json at all — just an installed CLI.
+    await mkdir(path.join(home, ".fireconnect/cli"), { recursive: true });
+
+    let offRan = false;
+    const restore = stubHarness(HARNESS.CURSOR, {
+      routed: true,
+      off: async () => { offRan = true; return "stripped"; },
+    });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      restore();
+      process.exitCode = origExitCode;
+    }
+    assert.equal(offRan, true, "a routed harness must be restored even without a config entry");
+  });
+
+  it("does not restore harnesses that are not routed", async () => {
+    // The discovery probe must not drag in every harness — only routed ones.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-notrouted-"));
+    await mkdir(path.join(home, ".fireconnect/cli"), { recursive: true });
+
+    let offRan = false;
+    const restore = stubHarness(HARNESS.CURSOR, {
+      routed: false,
+      off: async () => { offRan = true; },
+    });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      restore();
+      process.exitCode = origExitCode;
+    }
+    assert.equal(offRan, false, "an unrouted harness must be left alone");
+  });
+
+  it("aborts before cleanup when a restore fails, keeping FireConnect usable", async () => {
+    // Regression: a failed `off` leaves that harness routed through Fireworks,
+    // and its backup is the only way back. Uninstall must not remove the
+    // backup, the config, or the CLI needed to retry. The likely trigger is
+    // the user declining to quit Cursor — deleting their backup in response
+    // would be indefensible.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-abort-"));
+    await writeGlobalConfig(home, { harnesses: { cursor: { enabled: true } } });
+    await mkdir(path.join(home, ".fireconnect/cursor"), { recursive: true });
+    await writeFile(path.join(home, ".fireconnect/cursor/cursor-backup.json"), '{"snapshot":{}}');
+    await mkdir(path.join(home, ".fireconnect/cli"), { recursive: true });
+    await mkdir(path.join(home, ".local/bin"), { recursive: true });
+    await writeFile(path.join(home, ".local/bin/fireconnect"), "#!/bin/sh\n");
+
+    const restore = stubHarness(HARNESS.CURSOR, {
+      off: async () => { throw new Error("Cursor is running."); },
+    });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      restore();
+    }
+
+    assert.notEqual(process.exitCode, 0, "exits non-zero");
+    process.exitCode = origExitCode;
+    assert.equal(await pathExists(path.join(home, ".fireconnect/cursor/cursor-backup.json")), true,
+      "backup preserved for retry");
+    assert.equal(await pathExists(path.join(home, ".fireconnect/cli")), true,
+      "CLI preserved so the retry is runnable");
+    assert.equal(await pathExists(path.join(home, ".local/bin/fireconnect")), true,
+      "launcher preserved so the retry is runnable");
+    assert.equal(await pathExists(globalConfigPath(home)), true, "config preserved");
+  });
+
+  it("passes quiet to off so harness narration does not fight the checklist", async () => {
+    // Regression: engineOff (and claude's own off) print restored/restart lines
+    // to stdout during the off call. Uninstall prints its own checklist and a
+    // single restart reminder, so it must silence them.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-quiet-"));
+    await writeGlobalConfig(home, { harnesses: { claude: { enabled: true } } });
+    await mkdir(path.join(home, ".fireconnect/claude"), { recursive: true });
+
+    let capturedQuiet;
+    const restore = stubHarness(HARNESS.CLAUDE, {
+      off: async (ctx) => { capturedQuiet = ctx.quiet; return "restored"; },
+    });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      restore();
+      process.exitCode = origExitCode;
+    }
+    assert.equal(capturedQuiet, true, "interactive uninstall must pass quiet");
+  });
+
+  it("reports the real off outcome in the checklist", async () => {
+    // A harness that was never connected must not be reported as "restored".
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-outcome-"));
+    await writeGlobalConfig(home, { harnesses: { claude: { enabled: true } } });
+    await mkdir(path.join(home, ".fireconnect/claude"), { recursive: true });
+
+    // Routed, so it is listed — but `off` finds nothing to undo (state drift).
+    const restore = stubHarness(HARNESS.CLAUDE, { off: async () => "none" });
+    let out = "";
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { out += String(chunk); return true; };
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      process.stdout.write = realWrite;
+      restore();
+      process.exitCode = origExitCode;
+    }
+    assert.match(out, /wasn't connected/, "outcome 'none' must not claim a restore");
+    assert.doesNotMatch(out, /Your original settings are back/,
+      "nothing was restored, so the farewell must not claim otherwise");
+  });
+
+  it("still removes files when no harnesses are registered (installed CLI only)", async () => {
+    // Regression: an install with no `fci <harness> on` yet has an empty
+    // harnesses map but FireConnect files on disk. Uninstall must remove the
+    // files, not bail out with "FireConnect is not installed."
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-no-harnesses-"));
+    // No global config / no harnesses — but the CLI launcher + ~/.fireconnect exist.
+    await mkdir(path.join(home, ".fireconnect/cli"), { recursive: true });
+    await writeFile(path.join(home, ".fireconnect/cli/marker"), "1");
+    await mkdir(path.join(home, ".local/bin"), { recursive: true });
+    await writeFile(path.join(home, ".local/bin/fireconnect"), "#!/bin/sh\n");
+
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      process.exitCode = origExitCode;
+    }
+    assert.equal(await pathExists(path.join(home, ".fireconnect")), false,
+      "~/.fireconnect removed even with no harnesses");
+    assert.equal(await pathExists(path.join(home, ".local/bin/fireconnect")), false,
+      "launcher removed even with no harnesses");
+  });
+
+  it("says 'not installed' only when there are no harnesses and no files", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-truly-absent-"));
+    // Nothing on disk, no config.
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    let stdout = "";
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { stdout += String(chunk); return true; };
+    try {
+      await withHome(home, () => withFakedTTY(() => runUninstallCommand({ force: false })));
+    } finally {
+      process.stdout.write = realWrite;
+      process.exitCode = origExitCode;
+    }
+    assert.match(stdout, /FireConnect is not installed\./);
+  });
+
+  it("non-interactive --force path still forces every off", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-force-flag-"));
+    await writeGlobalConfig(home, { harnesses: { claude: { enabled: true } } });
+    await mkdir(path.join(home, ".fireconnect/claude"), { recursive: true });
+
+    let capturedForce;
+    const restore = stubHarness(HARNESS.CLAUDE, {
+      off: async (ctx) => { capturedForce = ctx.force; },
+    });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      // --force → ctx.force true → non-interactive branch forces.
+      await withHome(home, () => runUninstallCommand({ force: true }));
+    } finally {
+      restore();
+    }
+    assert.equal(capturedForce, true, "--force forces every off");
+    process.exitCode = origExitCode;
   });
 
 });

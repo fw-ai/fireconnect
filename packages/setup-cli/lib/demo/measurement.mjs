@@ -8,15 +8,39 @@
 
 /**
  * Cost in USD for one provider run.
- *   cost = (input_tokens / 1e6) * in_rate + (output_tokens / 1e6) * out_rate
- * Rates are USD per 1M tokens.
+ *   cost = (input_tokens / 1e6) * in_rate
+ *        + (cache_write_1h / 1e6) * write_1h_rate
+ *        + (cache_write_5m / 1e6) * write_5m_rate
+ *        + (cache_read / 1e6) * read_rate
+ *        + (output_tokens / 1e6) * out_rate
+ * Rates are USD per 1M tokens. Anthropic prompt-caching bills cache WRITES at a
+ * premium over base input (differing by 1h/5m TTL) and cache READS at a steep
+ * discount; real Anthropic runs cache most of the system+prompt, so usage.
+ * input_tokens is just the uncached remainder. Pricing all cached tokens at the
+ * cheap read rate (or ignoring them) understates cost; each bucket needs its
+ * own rate. Fireworks serverless models don't bill cache writes, so their write
+ * rate is 0 and only the read bucket (if any) contributes.
  *
- * @param {{ inputTokens: number, outputTokens: number, inputPerMillion: number, outputPerMillion: number }} run
+ * @param {{ inputTokens: number, cacheWrite1hTokens?: number, cacheWrite5mTokens?: number, cacheReadTokens?: number, outputTokens: number, inputPerMillion: number, cacheWrite1hPerMillion?: number, cacheWrite5mPerMillion?: number, cacheReadPerMillion?: number, outputPerMillion: number }} run
  * @returns {number}
  */
-export function runCost({ inputTokens, outputTokens, inputPerMillion, outputPerMillion }) {
+export function runCost({
+  inputTokens,
+  cacheWrite1hTokens = 0,
+  cacheWrite5mTokens = 0,
+  cacheReadTokens = 0,
+  outputTokens,
+  inputPerMillion,
+  cacheWrite1hPerMillion = 0,
+  cacheWrite5mPerMillion = 0,
+  cacheReadPerMillion = 0,
+  outputPerMillion,
+}) {
   return (
     (num(inputTokens) / 1e6) * num(inputPerMillion)
+    + (num(cacheWrite1hTokens) / 1e6) * num(cacheWrite1hPerMillion)
+    + (num(cacheWrite5mTokens) / 1e6) * num(cacheWrite5mPerMillion)
+    + (num(cacheReadTokens) / 1e6) * num(cacheReadPerMillion)
     + (num(outputTokens) / 1e6) * num(outputPerMillion)
   );
 }
@@ -84,10 +108,13 @@ export function costPerGenerations({ cost, generations = 1000 }) {
  * @property {string} modelId fully-qualified id where applicable
  * @property {"live"} callMode
  * @property {number} inputTokens
+ * @property {number} cacheWrite1hTokens 1h prompt-cache write tokens
+ * @property {number} cacheWrite5mTokens 5m prompt-cache write tokens
+ * @property {number} cacheReadTokens prompt-cache read/hit tokens
  * @property {number} outputTokens
  * @property {number} seconds wall-clock request-sent -> stream-complete
  * @property {number} cost USD
- * @property {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion?: number, tier?: string, source: string }} rates
+ * @property {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion?: number, cacheWrite1hPerMillion?: number, cacheWrite5mPerMillion?: number, cacheReadPerMillion?: number, tier?: string, source: string }} rates
  * @property {boolean} ok whether generation succeeded
  * @property {string} [error] failure message when !ok
  * @property {boolean} [appRunnable] whether the extracted HTML is parseable

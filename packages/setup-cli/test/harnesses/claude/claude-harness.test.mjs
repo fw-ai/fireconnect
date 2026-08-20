@@ -338,7 +338,7 @@ describe("claude harness integration", () => {
     assert.equal(enabled.apiKeyHelper, undefined);
     assert.match(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /X-Fireworks-Api-Key: fw_claude_harness_only_key123/);
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
-    assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, harnessKey);
+    assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
 
     const exportResult = await runFireconnect(["key", "export"], {
       HOME: home,

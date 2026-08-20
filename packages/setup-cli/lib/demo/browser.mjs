@@ -122,16 +122,29 @@ export function buildCompareHtml({
   .bar .metrics { display: flex; gap: 16px; margin-top: 4px; font-size: 12px; color: #8b949e; flex-wrap: wrap; }
   .bar .metrics b { color: #e6edf3; font-weight: 600; }
   .bar .badge { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: #21262d; color: #8b949e; margin-left: 8px; }
-  .stage { flex: 1; position: relative; background: #fff; min-height: 120px; }
+  /* Match the page rather than white: generated apps use a dark base (the
+     system prompt asks for one), so any area the app does not cover should
+     recede instead of flashing a bright strip. */
+  .stage { flex: 1; position: relative; background: #0d1117; min-height: 120px; }
   /* Absolute inset:0 fills the stage's actual rendered box — robust against the
      indefinite-height percentage collapse that left the iframe blank. */
-  .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+  .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; background: #0d1117; }
   .code { display: none; position: absolute; inset: 0; overflow: auto; background: #0d1117; color: #c9d1d9; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
   .code.show { display: block; }
   .note { padding: 8px 14px; font-size: 12px; color: #d29922; background: #211b00; border-top: 1px solid #30363d; flex: none; }
   .controls { padding: 6px 14px; background: #161b22; border-top: 1px solid #30363d; display: flex; gap: 8px; flex: none; }
   button { font: inherit; color: #e6edf3; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
   button:hover { background: #30363d; }
+  /* Per-side debug block: collapsed by default so it never competes with the
+     app, but one click from the session id / token breakdown when a number
+     needs explaining. */
+  .dbg { flex: none; border-top: 1px solid #30363d; background: #0d1117; font-size: 12px; }
+  .dbg > summary { padding: 6px 14px; cursor: pointer; color: #8b949e; user-select: none; }
+  .dbg > summary:hover { color: #e6edf3; }
+  .dbg table { width: 100%; border-collapse: collapse; margin: 0 0 8px; }
+  .dbg th, .dbg td { text-align: left; padding: 3px 14px; vertical-align: top; font-weight: 400; }
+  .dbg th { color: #8b949e; white-space: nowrap; width: 1%; }
+  .dbg td { color: #c9d1d9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
   .strip { padding: 14px 20px; border-top: 1px solid #30363d; background: #161b22; display: flex; gap: 24px; flex-wrap: wrap; align-items: center; flex: none; }
   .strip .item { font-size: 13px; }
   .strip .item b { color: #f78166; }
@@ -184,12 +197,146 @@ function panelHtml({ side, label, run, callMode, appHtml, runnable, fw }) {
     </div>
   </div>
   <div class="stage">
-    <iframe sandbox="allow-scripts" srcdoc="${escapeAttr(appHtml)}"></iframe>
+    <iframe sandbox="allow-scripts" srcdoc="${escapeAttr(fitToFrame(appHtml))}"></iframe>
     <div class="code ${codeShow}">${escapeHtml(appHtml)}</div>
   </div>
   ${note}
   <div class="controls"><button data-toggle="${side}">View code ▸</button></div>
+  ${debugHtml(run)}
 </section>`;
+}
+
+/**
+ * Collapsed per-side debug block: the session id and cwd locate this exact run's
+ * Claude Code transcript, and the token/rate breakdown explains the cost number
+ * without needing to re-run anything.
+ * @param {any} run
+ * @returns {string}
+ */
+function debugHtml(run) {
+  const d = run.debug ?? {};
+  const r = run.rates ?? {};
+  const transcript = d.sessionId && d.cwd
+    ? `~/.claude/projects/${String(d.cwd).replace(/[/.]/g, "-")}/${d.sessionId}.jsonl`
+    : "";
+  /** @type {[string, any][]} */
+  const rows = [
+    ["session id", d.sessionId],
+    ["transcript", transcript],
+    ["requested model", run.modelId],
+    ["model that ran", d.resolvedModel],
+    ["work dir", d.cwd],
+    // Cache state is the single biggest swing factor in cost (a cold Anthropic
+    // prefix bills at $10/Mtok vs $0.50 warm), so state it outright rather than
+    // leaving it to be inferred from the token rows below.
+    ["prompt cache", cacheState(run)],
+    ["input tokens", fmtNum(run.inputTokens)],
+    ["cache write 1h", fmtNum(run.cacheWrite1hTokens)],
+    ["cache write 5m", fmtNum(run.cacheWrite5mTokens)],
+    ["cache read", fmtNum(run.cacheReadTokens)],
+    ["output tokens", fmtNum(run.outputTokens)],
+    ["rate in / out", `$${r.inputPerMillion ?? 0} / $${r.outputPerMillion ?? 0} per Mtok`],
+    ["rate cache w1h / w5m / read", `$${r.cacheWrite1hPerMillion ?? 0} / $${r.cacheWrite5mPerMillion ?? 0} / $${r.cacheReadPerMillion ?? 0} per Mtok`],
+    ["estimated pricing", r.estimated ? "yes" : "no"],
+    ["cost", typeof run.cost === "number" ? `$${run.cost.toFixed(6)}` : ""],
+  ].filter(([, v]) => v !== undefined && v !== null && v !== "");
+  if (rows.length === 0) {
+    return "";
+  }
+  const body = rows
+    .map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(String(v))}</td></tr>`)
+    .join("");
+  return `<details class="dbg"><summary>Debug details</summary><table>${body}</table></details>`;
+}
+
+/**
+ * Warm vs cold prompt cache, in words.
+ *
+ * Judged by the SHARE of prompt tokens served from cache, not raw counts: a run
+ * with 50 cache reads against 61,886 fresh input tokens is cold, however
+ * non-zero the read count looks. This dominates cost — a cold Anthropic prefix
+ * bills as a cache WRITE ($10/Mtok on Opus) versus a READ ($0.50/Mtok) — so a
+ * race can appear close purely because one side got lucky.
+ * @param {any} run
+ * @returns {string}
+ */
+function cacheState(run) {
+  const reads = run.cacheReadTokens || 0;
+  const writes = (run.cacheWrite1hTokens || 0) + (run.cacheWrite5mTokens || 0);
+  const fresh = run.inputTokens || 0;
+  const total = reads + writes + fresh;
+  if (total === 0) {
+    return "";
+  }
+  if (reads === 0 && writes === 0) {
+    return `not used — ${fmtNum(fresh)} tokens at full input rate`;
+  }
+  const pct = Math.round((reads / total) * 100);
+  const detail = `${pct}% of ${fmtNum(total)} prompt tokens from cache`;
+  if (pct >= 80) {
+    return `WARM — ${detail} (cheap)`;
+  }
+  if (pct <= 20) {
+    return `COLD — ${detail}${writes ? `, ${fmtNum(writes)} written at premium rate` : ""}`;
+  }
+  return `partly warm — ${detail}`;
+}
+
+/** @param {any} n */
+function fmtNum(n) {
+  return typeof n === "number" ? n.toLocaleString("en-US") : "";
+}
+
+/**
+ * Generated apps almost always size themselves to the viewport and center
+ * vertically (`html,body{height:100%}` + `display:flex;align-items:center`).
+ * Inside a panel iframe that's shorter than the app, centering pushes the app's
+ * header ABOVE the frame's top edge — and because the body is pinned to 100%
+ * height there's nothing to scroll, so that top is permanently unreachable
+ * (the "game screen is not fully visible" symptom).
+ *
+ * Append an override that (a) lets the body grow past the frame height and
+ * scroll, and (b) switches vertical centering to top-aligned once the content
+ * is taller than the frame. Short apps still center normally, so nothing
+ * regresses for content that already fits.
+ *
+ * Injected before </head> when present so app styles (which come earlier) lose
+ * to it on equal specificity; otherwise prepended.
+ * @param {string} html
+ * @returns {string}
+ */
+function fitToFrame(html) {
+  const override = `<style>
+  /* Let the document grow and scroll; inherit the app's background so a short
+     app doesn't leave the frame's white default showing below its content. */
+  html {
+    height: auto !important;
+    min-height: 100% !important;
+    overflow-y: auto !important;
+    background: inherit;
+  }
+  body {
+    /* Neutralize viewport-pinned heights (height:100% / min-height:100vh) so a
+       tall app grows the document and the frame scrolls instead of clipping,
+       while min-height:100% still fills the frame for a short app. */
+    height: auto !important;
+    min-height: 100% !important;
+    overflow-y: visible !important;
+    /* Top-align: centering a too-tall app pushes its header off the top edge.
+       Only the cross axis is touched — justify-content (horizontal centering on
+       the default row direction) is left alone so apps stay centered L-R. */
+    align-items: flex-start !important;
+  }
+</style>`;
+  const src = String(html ?? "");
+  if (!src.trim()) {
+    return src;
+  }
+  const headClose = src.search(/<\/head\s*>/i);
+  if (headClose !== -1) {
+    return src.slice(0, headClose) + override + src.slice(headClose);
+  }
+  return override + src;
 }
 
 const VIEW_CODE_JS = `

@@ -35,11 +35,16 @@ describe("harness option validation", () => {
 
   it("requires explicit FireRouter before accepting routing-only options", async () => {
     await withTempHome("option-firerouter-", async (home) => {
+      // A bare `claude on` with an fw_ key now lands FireRouter on the Opus slot
+      // by default, so it satisfies this requirement on its own. Pin Opus to a
+      // concrete model to take FireRouter out of the mapping — that is the state
+      // the guard exists for.
       await rejects(
         home,
         [
           "claude", "on",
           "--api-key", "fw_test_key_12345",
+          "--opus", "deepseek-pro-latest",
           "--routing-preference", "balanced",
         ],
         /--routing-preference requires a Claude slot set to firerouter/,

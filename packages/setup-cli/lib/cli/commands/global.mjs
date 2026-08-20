@@ -22,10 +22,15 @@ import {
   PI_DATA_RELATIVE_DIR,
 } from "../../harnesses/pi/core.mjs";
 import {
-  discoverHarnessesForUninstall,
-  globalConfigPath,
-} from "../../config/global-config.mjs";
-import { getHarness } from "../../harness/registry.mjs";
+  CURSOR_DATA_RELATIVE_DIR,
+  CURSOR_FIREWORKS_ONLY_NOTE,
+} from "../../harnesses/cursor/core.mjs";
+import {
+  VSCODE_DATA_RELATIVE_DIR,
+} from "../../harnesses/vscode/core.mjs";
+import { globalConfigPath } from "../../config/global-config.mjs";
+import { isHarnessRouted } from "../../harness/engine.mjs";
+import { getHarness, listHarnesses } from "../../harness/registry.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import { runConfigureCommand } from "./configure.mjs";
 import { runGlobalModelListCommand } from "./model.mjs";
@@ -43,7 +48,23 @@ import {
   supportsAnthropicApiKeyFlag,
   supportsRoutingPreference,
 } from "../../firerouter/flag.mjs";
-import { CURSOR_FIREWORKS_ONLY_NOTE } from "../../harnesses/cursor/core.mjs";
+import { accent, check as checkGlyph, red, symbols } from "../../ui/style.mjs";
+
+/**
+ * Per-harness FireConnect data dir (`~/.fireconnect/<id>`), holding the
+ * snapshot/backup `off` needs to restore. Deleting a harness's dir only after
+ * its `off` succeeds keeps restore recoverable if a later step fails.
+ * @type {Record<string, string>}
+ */
+const HARNESS_DATA_DIR = {
+  [HARNESS.CLAUDE]: DEFAULT_DATA_DIR,
+  [HARNESS.OPENCODE]: OPENCODE_DATA_RELATIVE_DIR,
+  [HARNESS.CODEX]: CODEX_DATA_RELATIVE_DIR,
+  [HARNESS.PI]: PI_DATA_RELATIVE_DIR,
+  [HARNESS.DEEPSEEK]: DEEPSEEK_DATA_RELATIVE_DIR,
+  [HARNESS.CURSOR]: CURSOR_DATA_RELATIVE_DIR,
+  [HARNESS.VSCODE]: VSCODE_DATA_RELATIVE_DIR,
+};
 
 const CLI_NAME = "fireconnect";
 
@@ -633,73 +654,118 @@ async function removePath(pathToRemove) {
 }
 
 /**
+ * Which harnesses uninstall must restore: the ones that are actually on, and
+ * nothing else. A harness FireConnect never turned on has nothing to restore, so
+ * listing it would only add "wasn't connected" noise to the checklist and run a
+ * no-op `off`.
+ *
+ * "On" is decided by `isHarnessRouted` — the same check `<harness> off` uses to
+ * pick restore-vs-strip. It reads the harness's own config via `providerStatus`
+ * rather than trusting FireConnect's `enabled` flag, so a harness whose flag has
+ * drifted is still classified by what is actually in its config. That matters in
+ * both directions: a stale `true` must not put a harness that was never routed
+ * on the checklist, and a stale or missing `false` must not skip one that is
+ * routed — skipping it leaves its provider settings in place while the cleanup
+ * below deletes its backup, which is unrecoverable (a Cursor left pointed at the
+ * Fireworks base URL with its built-in models hidden and no snapshot left).
+ *
  * @param {import("../../harness/types.mjs").HarnessContext} ctx
+ * @param {string} home
+ * @returns {Promise<string[]>} harnesses that are on, in registry order
  */
-export async function runUninstallCommand(ctx) {
-  const home = process.env.HOME ?? "";
-  if (!home) {
-    throw new Error("HOME is not set; uninstall requires HOME to be set.");
-  }
-  if (ctx.home && ctx.home !== home) {
-    throw new Error("uninstall does not support --home");
-  }
-  if (ctx.settingsPath || ctx.configPath || ctx.dataDir) {
-    throw new Error("uninstall does not support path overrides");
-  }
-
-  const harnessIds = await discoverHarnessesForUninstall(home);
-
-  const offErrors = [];
-  for (const harnessId of harnessIds) {
-    const adapter = getHarness(harnessId);
-    const offCtx = {
+async function discoverHarnessesToRestore(ctx, home) {
+  const ids = [];
+  for (const adapter of listHarnesses()) {
+    const on = await isHarnessRouted(adapter, {
       ...ctx,
       home,
       settingsPath: "",
       configPath: "",
       dataDir: "",
-      // Uninstall is a destructive, user-initiated operation. Force writes
-      // past the "is the IDE running?" guard so uninstall completes even if
-      // Cursor is open — otherwise the backup files get deleted below while
-      // Fireworks settings remain in state.vscdb, making `off` unrecoverable.
-      force: true,
+    });
+    if (on) {
+      ids.push(adapter.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Restore one harness's pre-FireConnect config. Interactive uninstall calls
+ * this per harness (without `force`) so Cursor/VS Code get the interactive
+ * "quit the IDE" wait via their own `prepareOff`; non-interactive uninstall
+ * passes `force: true` to skip the wait (CI/scripts). Errors are collected,
+ * not thrown, so one harness failing doesn't abort the rest.
+ *
+ * `quiet` silences the harness's own restored/unchanged + restart-hint lines
+ * (see `engineOff`) so the interactive checklist is the only narration; the
+ * outcome is still returned so the checklist can say what actually happened.
+ *
+ * @param {import("../../harness/types.mjs").HarnessContext} ctx
+ * @param {string} home
+ * @param {string} harnessId
+ * @param {boolean} force
+ * @param {{ quiet?: boolean }} [opts]
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   outcome?: "restored" | "stripped" | "none",
+ *   error?: { harnessId: string, label: string, message: string },
+ * }>}
+ */
+async function restoreHarness(ctx, home, harnessId, force, { quiet = false } = {}) {
+  const adapter = getHarness(harnessId);
+  const offCtx = {
+    ...ctx,
+    home,
+    settingsPath: "",
+    configPath: "",
+    dataDir: "",
+    force,
+    quiet,
+  };
+  try {
+    const outcome = await adapter.off(offCtx);
+    return { ok: true, outcome };
+  } catch (error) {
+    return {
+      ok: false,
+      error: { harnessId, label: adapter.label, message: error.message },
     };
-    try {
-      await adapter.off(offCtx);
-    } catch (error) {
-      offErrors.push({ harnessId, label: adapter.label, message: error.message });
-      // Print restart hint even when off() fails — the harness config may be
-      // partially applied and the user needs to know to restart.
-      console.error(`Warning: failed to restore ${harnessId}: ${error.message}`);
-      console.error(`Restart ${adapter.label} manually to clear any Fireworks settings.`);
-    }
   }
+}
 
-  const codexOffFailed = offErrors.some((error) => error.harnessId === HARNESS.CODEX);
-  let removeCatalog = !codexOffFailed;
-  if (removeCatalog) {
-    try {
-      const raw = await readFile(codexConfigPath(home), "utf8");
-      if (snapshotReferencesFireworksCatalog(raw)) {
-        removeCatalog = false;
-      }
-    } catch (error) {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
+/**
+ * Shared tail: remove the shell env hook, stored secret, and the remaining
+ * top-level FireConnect files (config, CLI launcher, launcher symlink, the
+ * final `~/.fireconnect` sweep). Per-harness data dirs are deleted earlier in
+ * the interactive path; in the non-interactive path they're included here.
+ *
+ * @param {string} home
+ * @param {boolean} removeCatalog
+ * @param {{
+ *   skipPerHarnessDirs?: Set<string>,
+ *   reportStep?: (label: string) => Promise<void> | void,
+ * }} [opts]  `skipPerHarnessDirs`: harness dirs already removed by the
+ *   interactive path (the non-interactive path removes all). Interactive runs
+ *   only reach this function when every restore succeeded, so the skip set holds
+ *   the harnesses that were on; the unskipped entries clean up dirs left behind
+ *   by harnesses that were already off. `reportStep`: called after each
+ *   cleanup step so the interactive path can tick a checklist.
+ * @returns {Promise<{ path: string, message: string }[]>} removal failures
+ */
+async function removeFireConnectFiles(home, removeCatalog, { skipPerHarnessDirs, reportStep } = {}) {
   await removeShellEnvHook(home).catch(() => {});
+  await reportStep?.("Shell environment hook");
+
   await deleteSecret(home);
+  await reportStep?.("Stored API key");
+
+  const perHarnessDirs = Object.values(HARNESS_DATA_DIR)
+    .filter((dir) => !skipPerHarnessDirs?.has(dir));
 
   const pathsToRemove = [
-    path.join(home, DEFAULT_DATA_DIR),
-    path.join(home, OPENCODE_DATA_RELATIVE_DIR),
-    path.join(home, CODEX_DATA_RELATIVE_DIR),
+    ...perHarnessDirs.map((dir) => path.join(home, dir)),
     ...(removeCatalog ? [path.join(home, CODEX_CATALOG_RELATIVE_PATH)] : []),
-    path.join(home, PI_DATA_RELATIVE_DIR),
-    path.join(home, DEEPSEEK_DATA_RELATIVE_DIR),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),
     path.join(home, ".local/bin/fireconnect"),
@@ -717,21 +783,263 @@ export async function runUninstallCommand(ctx) {
       removalFailures.push(failure);
     }
   }
+  await reportStep?.("FireConnect files");
+  return removalFailures;
+}
 
+/**
+ * Uninstall is mostly instant, which makes the checklist flash past in one
+ * frame — the user can't tell what was restored. A short beat between steps
+ * makes it legible. Interactive runs only; skipped under FIRECONNECT_TEST so
+ * suites don't pay for it.
+ * @param {boolean} interactive
+ * @param {number} [ms]
+ */
+async function pace(interactive, ms = 220) {
+  if (!interactive || process.env.FIRECONNECT_TEST === "1") {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Reported when a harness could not be restored, so uninstall stopped before
+ * removing FireConnect. Harnesses restored earlier in the run stay restored —
+ * that is the desired end state for them — so the message says so rather than
+ * claiming nothing happened.
+ * @param {{ harnessId: string, label: string, message: string }[]} offErrors
+ * @param {string[]} restoredLabels  harnesses already restored in this run
+ */
+function printUninstallAborted(offErrors, restoredLabels) {
+  console.log("");
+  console.log("  Stopped before removing FireConnect.");
+  console.log("");
+  for (const { label, message } of offErrors) {
+    console.log(`  ${label} could not be restored:`);
+    console.log(`    ${message}`);
+  }
+  if (restoredLabels.length > 0) {
+    console.log("");
+    console.log(`  Already restored, and left that way: ${restoredLabels.join(", ")}.`);
+  }
+  console.log("");
+  console.log("  FireConnect is still installed and your backups are intact, so it");
+  console.log("  is safe to resolve the above and run the same command again:");
+  console.log(`    ${accent(`${CLI_NAME} uninstall`)}`);
+  console.log("");
+  console.log("  To remove FireConnect regardless, without waiting on an editor");
+  console.log("  (a running editor may overwrite the restore):");
+  console.log(`    ${accent(`${CLI_NAME} uninstall --force`)}`);
+  console.log("");
+}
+
+/**
+ * Parting message after a clean uninstall. FireConnect edits the user's tools,
+ * so the important line is "your originals are back" — the send-off is warm
+ * but the actionable facts (restart, how to come back) come first.
+ * @param {string[]} restoredLabels
+ */
+function printFarewell(restoredLabels) {
+  console.log("");
+  if (restoredLabels.length > 0) {
+    console.log(`  Your original settings are back in ${restoredLabels.join(", ")}.`);
+    console.log("  Restart anything still open to pick them up.");
+  } else {
+    console.log("  No tool settings were touched — nothing to restore.");
+  }
+  console.log("");
+  console.log("  Sad to see you go! If something pushed you away, we'd like to know:");
+  console.log(`    ${accent("https://github.com/fw-ai/fireconnect/issues")}`);
+  console.log("");
+  console.log("  Reinstall anytime:");
+  console.log(`    ${accent("curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash")}`);
+  console.log("");
+}
+
+/**
+ * Print the final uninstall summary.
+ * @param {{ offErrors: { harnessId: string, label: string, message: string }[], removalFailures: { path: string, message: string }[] }} state
+ */
+function printUninstallSummary({ offErrors, removalFailures }) {
   const hasErrors = offErrors.length > 0 || removalFailures.length > 0;
   if (!hasErrors) {
     console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, DeepSeek Harness) to fully apply.");
-  } else {
-    if (removalFailures.length > 0) {
-      console.error("FireConnect uninstall completed with file removal errors:");
-      for (const { path: failedPath, message } of removalFailures) {
-        console.error(`  ${failedPath}: ${message}`);
-      }
-    } else {
-      console.log("FireConnect files removed. Restart any running harnesses to fully apply.");
-    }
-    process.exitCode = 1;
+    return;
   }
+  for (const { harnessId, label, message } of offErrors) {
+    console.error(`Warning: failed to restore ${harnessId}: ${message}`);
+    console.error(`Restart ${label} manually to clear any Fireworks settings.`);
+  }
+  if (removalFailures.length > 0) {
+    console.error("FireConnect uninstall completed with file removal errors:");
+    for (const { path: failedPath, message } of removalFailures) {
+      console.error(`  ${failedPath}: ${message}`);
+    }
+  } else {
+    console.log("FireConnect files removed. Restart any running harnesses to fully apply.");
+  }
+  process.exitCode = 1;
+}
+
+/**
+ * Uninstall FireConnect: restore each enabled harness's pre-FireConnect
+ * config, then remove FireConnect's own files.
+ *
+ * Interactive (TTY, no --force): restore harnesses one by one as a checklist.
+ * Cursor/VS Code get the interactive "quit the IDE" wait (their `prepareOff`
+ * calls `ensureCursorStopped`/`ensureVscodeStopped`); file-based harnesses
+ * restore immediately. Each harness's data dir is deleted right after its
+ * `off` succeeds, so a later failure never leaves restore unrecoverable.
+ *
+ * Non-interactive (no TTY, or --force): force-restore every harness without
+ * waiting (CI/scripts), then batch-remove all files — the historical behavior.
+ *
+ * @param {import("../../harness/types.mjs").HarnessContext} ctx
+ */
+export async function runUninstallCommand(ctx) {
+  const home = process.env.HOME ?? "";
+  if (!home) {
+    throw new Error("HOME is not set; uninstall requires HOME to be set.");
+  }
+  if (ctx.home && ctx.home !== home) {
+    throw new Error("uninstall does not support --home");
+  }
+  if (ctx.settingsPath || ctx.configPath || ctx.dataDir) {
+    throw new Error("uninstall does not support path overrides");
+  }
+
+  const harnessIds = await discoverHarnessesToRestore(ctx, home);
+  // Interactive only when stdin is a TTY and the user didn't pass --force.
+  // This mirrors `ensureIdeStopped`'s own TTY gate, so the two stay consistent:
+  // a non-TTY (CI/pipe) keeps the historical force-restore-all behavior.
+  const interactive = Boolean(process.stdin.isTTY) && !ctx.force;
+
+  const offErrors = [];
+  const removedHarnessDirs = new Set();
+
+  const restoredLabels = [];
+
+  if (interactive) {
+    if (harnessIds.length === 0) {
+      // No harness is on, but FireConnect itself may still be
+      // installed (CLI launcher, ~/.fireconnect, stored key). Don't bail —
+      // fall through to file removal. Only say "not installed" when there
+      // are no harnesses AND no FireConnect files on disk.
+      if (!existsSync(path.join(home, ".fireconnect"))
+        && !existsSync(path.join(home, ".local/bin/fireconnect"))) {
+        console.log("FireConnect is not installed.");
+        return;
+      }
+    }
+
+    console.log("");
+    console.log(`  Uninstalling ${accent("FireConnect")}`);
+
+    if (harnessIds.length > 0) {
+      console.log("");
+      console.log("  Restoring your tools");
+      // Pad labels so the ✓ column lines up regardless of name length.
+      const width = Math.max(...harnessIds.map((id) => getHarness(id).label.length));
+
+      for (const harnessId of harnessIds) {
+        const adapter = getHarness(harnessId);
+        const label = adapter.label.padEnd(width);
+        // No spinner here. `off` narrates on stdout itself (and Cursor/VS Code
+        // may print an interactive "quit the IDE" prompt), and a spinner
+        // rewriting the current line collides with both. `quiet` silences the
+        // harness's own restored/restart lines so this checklist is the single
+        // source of narration; the prompt, which the user must see, still prints.
+        const result = await restoreHarness(ctx, home, harnessId, false, { quiet: true });
+
+        if (result.ok) {
+          const touched = result.outcome === "restored" || result.outcome === "stripped";
+          console.log(`    ${checkGlyph()} ${label}  ${touched ? "restored" : "wasn't connected"}`);
+          if (touched) {
+            restoredLabels.push(adapter.label);
+          }
+          // Delete this harness's data dir now that restore is confirmed, so
+          // the backup only goes away once `off` has succeeded.
+          const dir = HARNESS_DATA_DIR[harnessId];
+          if (dir) {
+            await removePath(path.join(home, dir));
+            removedHarnessDirs.add(dir);
+          }
+        } else {
+          offErrors.push(result.error);
+          // Data dir deliberately kept — see the abort below, which stops
+          // before any destructive cleanup so this backup stays usable.
+          console.log(`    ${red(symbols.fail)} ${label}  could not be restored — ${result.error.message}`);
+        }
+        await pace(interactive);
+      }
+    }
+  } else {
+    // Non-interactive: force-restore every harness without waiting.
+    for (const harnessId of harnessIds) {
+      const result = await restoreHarness(ctx, home, harnessId, true);
+      if (!result.ok) {
+        offErrors.push(result.error);
+        console.error(`Warning: failed to restore ${harnessId}: ${result.error.message}`);
+        console.error(`Restart ${result.error.label} manually to clear any Fireworks settings.`);
+      }
+    }
+  }
+
+  // A harness that failed to restore is still routed through Fireworks, and its
+  // backup under ~/.fireconnect/<id> is the only way back. Stop before any
+  // destructive cleanup so that backup — plus the config and the CLI needed to
+  // use it — survives for a retry. The most likely trigger is the user
+  // declining to quit Cursor; deleting their backup in response to "no" would
+  // be indefensible.
+  //
+  // Non-interactive runs keep the historical delete-everything behavior: they
+  // force past the IDE guard (so this rarely trips) and a script cannot act on
+  // a retry hint, whereas leaving a half-removed install would strand CI.
+  if (interactive && offErrors.length > 0) {
+    printUninstallAborted(offErrors, restoredLabels);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Codex catalog: keep it if codex `off` failed, or if the restored config
+  // still references the Fireworks catalog (otherwise `codex off` would 404).
+  const codexOffFailed = offErrors.some((error) => error.harnessId === HARNESS.CODEX);
+  let removeCatalog = !codexOffFailed;
+  if (removeCatalog) {
+    try {
+      const raw = await readFile(codexConfigPath(home), "utf8");
+      if (snapshotReferencesFireworksCatalog(raw)) {
+        removeCatalog = false;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  if (interactive) {
+    console.log("");
+    console.log("  Cleaning up");
+  }
+
+  const cleanupWidth = "Shell environment hook".length;
+  const removalFailures = await removeFireConnectFiles(home, removeCatalog, {
+    skipPerHarnessDirs: interactive ? removedHarnessDirs : undefined,
+    reportStep: interactive
+      ? async (label) => {
+        console.log(`    ${checkGlyph()} ${label.padEnd(cleanupWidth)}  removed`);
+        await pace(interactive, 160);
+      }
+      : undefined,
+  });
+
+  if (interactive && removalFailures.length === 0 && offErrors.length === 0) {
+    printFarewell(restoredLabels);
+    return;
+  }
+
+  printUninstallSummary({ offErrors, removalFailures });
 }
 
 /**

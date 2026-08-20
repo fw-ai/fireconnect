@@ -106,6 +106,50 @@ test("runCost: zero tokens is zero cost", () => {
   assert.equal(runCost({ inputTokens: 0, outputTokens: 0, inputPerMillion: 3, outputPerMillion: 15 }), 0);
 });
 
+test("runCost: prompt-cache writes billed at the write rate, reads at the read rate", () => {
+  // Real Anthropic runs cache most of the prompt via a 1h cache WRITE (billed at
+  // a premium over base input, e.g. $10/M for Opus vs $5 base) — NOT at the cheap
+  // cache-read rate. Pricing writes at the read rate (or ignoring them) understates
+  // cost and inverts the comparison. 2 in @ $5 + 87990 1h-write @ $10 + 2205 out @ $25.
+  assert.equal(
+    runCost({
+      inputTokens: 2,
+      cacheWrite1hTokens: 87990,
+      cacheReadTokens: 0,
+      outputTokens: 2205,
+      inputPerMillion: 5,
+      cacheWrite1hPerMillion: 10,
+      cacheReadPerMillion: 0.5,
+      outputPerMillion: 25,
+    }),
+    0.935035,
+  );
+  // Cache reads (hits) ARE billed at the cheap read rate.
+  assert.equal(
+    runCost({
+      inputTokens: 0,
+      cacheReadTokens: 100000,
+      outputTokens: 0,
+      inputPerMillion: 5,
+      cacheReadPerMillion: 0.5,
+      outputPerMillion: 25,
+    }),
+    0.05,
+  );
+  // Omitting the cache buckets (old behavior) would yield 0.055135 — wrong.
+  assert.notEqual(
+    runCost({ inputTokens: 2, outputTokens: 2205, inputPerMillion: 5, outputPerMillion: 25 }),
+    0.935035,
+  );
+});
+
+test("runCost: omitted cache fields default to 0 (back-compat with uncached runs)", () => {
+  assert.equal(
+    runCost({ inputTokens: 1000, outputTokens: 2000, inputPerMillion: 3, outputPerMillion: 15 }),
+    0.033,
+  );
+});
+
 test("speedRatio: incumbent 2x slower than fireworks", () => {
   assert.equal(speedRatio({ incumbentSeconds: 6, fireworksSeconds: 3 }), 2);
 });

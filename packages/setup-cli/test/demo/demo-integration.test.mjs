@@ -577,20 +577,23 @@ test("providerListPricing: known anthropic + openai models resolve real rates", 
   assert.equal(o.estimated, false);
 });
 
-test("providerListPricing: opus 4.x uses current $5/$25 rate, not legacy $15/$75", () => {
-  // Opus 4.5–4.8 are all $5/$25 per anthropic.com/pricing (verified 2026-07-06).
-  // The old $15/$75 was Opus 4.1 only; a stale table would inflate incumbent
-  // cost 3x and skew the demo's cost-saved fraction.
-  for (const id of ["claude-opus-4-8", "claude-opus-4-5", "claude-opus-4", "opus"]) {
+test("providerListPricing: opus 4.5+ uses current $5/$25 rate, not legacy $15/$75", () => {
+  // Opus 4.5–4.8 are all $5/$25 per platform.claude.com/pricing (verified
+  // 2026-08-19). The old $15/$75 was Opus 4.1 and Opus 4 (both retired legacy);
+  // a stale table would inflate incumbent cost 3x and skew the demo's cost-saved
+  // fraction.
+  for (const id of ["claude-opus-4-8", "claude-opus-4-5", "opus"]) {
     const r = providerListPricing({ provider: "anthropic", modelId: id });
     assert.equal(r.inputPerMillion, 5, `${id} input`);
     assert.equal(r.outputPerMillion, 25, `${id} output`);
     assert.equal(r.estimated, false, `${id} not estimated`);
   }
-  // Opus 4.1 keeps the legacy $15/$75 tier.
-  const legacy = providerListPricing({ provider: "anthropic", modelId: "claude-opus-4-1" });
-  assert.equal(legacy.inputPerMillion, 15);
-  assert.equal(legacy.outputPerMillion, 75);
+  // Opus 4 and 4.1 keep the legacy $15/$75 tier (retired, except on partners).
+  for (const id of ["claude-opus-4-1", "claude-opus-4"]) {
+    const legacy = providerListPricing({ provider: "anthropic", modelId: id });
+    assert.equal(legacy.inputPerMillion, 15, `${id} legacy input`);
+    assert.equal(legacy.outputPerMillion, 75, `${id} legacy output`);
+  }
 });
 
 test("providerListPricing: gpt-4o-mini does not match the gpt-4o tier", () => {

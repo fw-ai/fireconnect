@@ -16,7 +16,7 @@
 
 import { applyGlobalFlag, createBaseContext } from "../cli/parse-args.mjs";
 
-const DEMO_PROMPT_PRESETS = new Set(["tetris", "tictactoe", "snake", "clock", "custom"]);
+const DEMO_PROMPT_PRESETS = new Set(["tetris", "snake", "clock", "custom"]);
 
 function requireValue(flag, value) {
   if (!value || value.startsWith("--")) {

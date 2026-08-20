@@ -108,6 +108,7 @@ import {
   resolveClaudeActivationPlan,
 } from "./activation.mjs";
 import {
+  assertClaudeModelOverrides,
   defaultClaudeModelMapping,
   hasClaudeModelOverrides,
   inferClaudeActiveKeyType,
@@ -244,7 +245,6 @@ async function resolveClaudeNativeAuth({
   ctx,
   baseline,
   state,
-  hasClaudeOAuth,
 }) {
   const baselineEnv = baseline.env ?? {};
   const anthropicApiKey = isNativeClaudeCredential(baselineEnv.ANTHROPIC_API_KEY)
@@ -276,8 +276,7 @@ async function resolveClaudeNativeAuth({
       : (resolvedAnthropicKey || anthropicApiKey),
     anthropicAuthToken,
     nativeApiKeyHelper,
-    hasNativeAuth: hasClaudeOAuth
-      || Boolean(resolvedAnthropicKey)
+    hasNativeAuth: Boolean(resolvedAnthropicKey)
       || Boolean(nativeApiKeyHelper),
   };
 }
@@ -393,6 +392,7 @@ export default defineHarnessProfile({
           + "or pass --opus/--sonnet/--haiku/--fable/--subagent directly.",
       );
     }
+    assertClaudeModelOverrides(ctx);
     const snapshot = await readClaudeActivationSnapshot(ctx);
     const { settingsPath, dataDir } = snapshot;
     const fireworksKey = await claudeApiKeyForOn(ctx, snapshot);
@@ -417,15 +417,16 @@ export default defineHarnessProfile({
       ctx,
       baseline: nativeBaseline,
       state: snapshot.state,
-      hasClaudeOAuth: snapshot.hasClaudeOAuth,
     });
     const workspaceByokLookup = keyType === "firepass"
       ? null
       : await resolveWorkspaceByokStatus(fireworksKey);
     const hasWorkspaceByok = workspaceByokLookup?.enabled === true;
     const hasConfirmedFirerouterAuth = nativeAuth.hasNativeAuth || hasWorkspaceByok;
-    const canUseFirerouter = hasConfirmedFirerouterAuth
-      || workspaceByokLookup?.unavailable === true;
+    // Claude Code keeps its own OAuth/subscription login and attaches Anthropic
+    // auth at request time. FireConnect does not probe for that login — only
+    // Fire Pass is ineligible for FireRouter.
+    const canUseFirerouter = keyType !== "firepass";
     const activeToken = resolveClaudeAuthState(snapshot.settings, snapshot.state).token;
     const recordedKeyType = ["fireworks", "firepass"].includes(snapshot.state.keyType)
       ? snapshot.state.keyType
@@ -444,7 +445,7 @@ export default defineHarnessProfile({
       keyType,
       snapshot,
       activeKeyType,
-      automaticFirerouter: keyType !== "firepass" && hasConfirmedFirerouterAuth,
+      automaticFirerouter: canUseFirerouter,
     });
     const shouldRunOnboarding = (plan.firstSetup || onboardingMode === "prompt")
       && !plan.explicitOverrides
@@ -563,10 +564,6 @@ export default defineHarnessProfile({
       nativeApiKeyHelper: nativeAuth.nativeApiKeyHelper,
       routingPreference: usesFirerouter ? ctx.routingPreference : null,
       useApiKeySentinel: false,
-      // Workspace BYOK makes FireRouter eligible, but a logged-out Claude
-      // profile still needs native auth material to pass its client login gate.
-      useFireworksAuthTokenFallback: !nativeAuth.hasNativeAuth
-        && !anthropicKeyForFirerouter?.trim(),
     });
     await setHarnessState(ctx.home, HARNESS.CLAUDE, {
       enabled: true,
@@ -576,7 +573,11 @@ export default defineHarnessProfile({
     // Drop a legacy SessionStart desktop-guard hook if present (retired; CLI-only).
     await removeDesktopGuardHook(settingsPath);
     const hasAnthropicForFirerouter = Boolean(anthropicKeyForFirerouter?.trim());
-    const firerouterEligible = hasConfirmedFirerouterAuth || hasAnthropicForFirerouter;
+    // Eligibility for footnotes/status: FireRouter is allowed for any fw_ key.
+    // hasConfirmedFirerouterAuth still reflects BYOK/apiKeyHelper for messaging.
+    const firerouterEligible = canUseFirerouter
+      || hasConfirmedFirerouterAuth
+      || hasAnthropicForFirerouter;
     /** @type {Array<() => void>} */
     const footnotes = [];
     if (keyType !== "firepass" && !firerouterEligible && !usesFirerouter) {
@@ -638,16 +639,23 @@ export default defineHarnessProfile({
     // snapshot. Reuse the on-migration fallback so upgrade-triggered off still
     // restores its values backup or strips only FireConnect-owned settings.
     await prepareClaudeV09Baseline({ settingsPath, dataDir, intent });
+    const connected = wasEnabled || Boolean(intent);
     await disableFireworksProvider({
       settingsPath,
       dataDir,
-      wasEnabled: wasEnabled || Boolean(intent),
+      wasEnabled: connected,
     });
     await setHarnessEnabled(ctx.home, HARNESS.CLAUDE, false);
     await disableWebsearchMcp(ctx.home);
     await removeDesktopGuardHook(settingsPath);
-    printHarnessRestored("Claude Code");
-    printClaudeRestartHint();
+    // `ctx.quiet` (uninstall) silences the per-harness narration so the
+    // uninstall checklist is the only output; see `engineOff`, which gates the
+    // same lines for every other harness. Non-quiet output is unchanged.
+    if (!ctx.quiet) {
+      printHarnessRestored("Claude Code");
+      printClaudeRestartHint();
+    }
+    return connected ? "restored" : "none";
   },
 
   async providerStatus(ctx) {

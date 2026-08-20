@@ -5,13 +5,13 @@
 
 import process from "node:process";
 import path from "node:path";
-import { mkdtemp, rm, readdir, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 
 import { HARNESS } from "../harness/id.mjs";
 import { getHeadlessRunner, SUPPORTED_HARNESS_IDS } from "./harness-runners.mjs";
 import { extractHtml, looksRunnable } from "./html-extract.mjs";
-import { runCost, buildResult, formatSpeedRatio } from "./measurement.mjs";
+import { buildResult, runCost, formatSpeedRatio, formatUsd, formatSeconds } from "./measurement.mjs";
 import {
   prepareOutputDir, writeStreamLog, writeAppHtml, writeResultJson, writeCompareHtml,
   readBestHtmlFromDir,
@@ -19,12 +19,14 @@ import {
 import { SplitPaneRenderer, isTtyCapable } from "./tui.mjs";
 import { confirmYesNo, pressAnyKeyToExit } from "./key-prompt.mjs";
 import { buildCompareHtml, serveStatic, openInBrowser } from "./browser.mjs";
+import { GREEN, CYAN, YELLOW, BOLD, RESET } from "./ansi.mjs";
 import {
   demoModelLabel,
   demoSideDisplayLabel,
 } from "./demo-models.mjs";
 import { normalizeOptions, prepareDemoRun } from "./demo-prep.mjs";
 import { DEMO_CANCELLED_MSG } from "./demo-readiness.mjs";
+import { demoSystemPrompt } from "./presets.mjs";
 
 const DEFAULT_OUT_DIR = "./fireconnect-demo";
 
@@ -232,15 +234,28 @@ export async function runDemoCommand(ctx) {
     settingsPath: ctx.settingsPath,
   });
   cleanupFns.push(cleanupRoute);
+  // Each side runs in an isolated tmp dir, NOT inside the repo. This is load
+  // bearing: Claude Code derives context from its cwd, so a work dir inside a
+  // project pulls in that project's skills, MCP instructions, agent listings and
+  // git branch — none of which belong in a model-vs-model benchmark, and all of
+  // which inflate input tokens and make runs non-comparable. mkdtemp also keeps
+  // concurrent demos from colliding.
+  //
+  // Whatever the model writes is copied to <out>/work/<side> after the run (see
+  // collectWorkDir) so the artifacts are still there to inspect.
   incCwd = await mkdtemp(path.join(os.tmpdir(), "fc-demo-inc-"));
   fwCwd = await mkdtemp(path.join(os.tmpdir(), "fc-demo-fw-"));
   cleanupFns.push(async () => rm(incCwd, { recursive: true, force: true }).catch(() => {}));
   cleanupFns.push(async () => rm(fwCwd, { recursive: true, force: true }).catch(() => {}));
+  // ONE marker for the whole race: both sides must get the identical system
+  // prompt (a fair comparison), while each race differs from the last (so
+  // neither side can inherit a warm prompt cache and look artificially cheap).
+  const runSystemPrompt = demoSystemPrompt();
   leftRunner = (io) => runner.runSide({
-    cwd: incCwd, prompt: prompt.prompt, model: leftCliModel, ...io,
+    cwd: incCwd, prompt: prompt.prompt, model: leftCliModel, systemPrompt: runSystemPrompt, ...io,
   });
   rightRunner = (io) => runner.runSide({
-    cwd: fwCwd, prompt: prompt.prompt, model: rightCliModel, ...io,
+    cwd: fwCwd, prompt: prompt.prompt, model: rightCliModel, systemPrompt: runSystemPrompt, ...io,
   });
 
   let incResult = null;
@@ -256,6 +271,9 @@ export async function runDemoCommand(ctx) {
       ok: false,
       error: r.error,
       inputTokens: r.inputTokens ?? 0,
+      cacheWrite1hTokens: r.cacheWrite1hTokens ?? 0,
+      cacheWrite5mTokens: r.cacheWrite5mTokens ?? 0,
+      cacheReadTokens: r.cacheReadTokens ?? 0,
       outputTokens: r.outputTokens ?? 0,
       seconds: r.seconds ?? 0,
       cost: 0,
@@ -272,6 +290,7 @@ export async function runDemoCommand(ctx) {
       onTokens: (tok) => renderer.setTokens(side, tok),
       onError: onErr(side),
       onStatus: (t) => renderer.setStatus(side, t),
+      onResetOutput: () => renderer.resetOutput(side),
     }).then((r) => { renderer.freeze(side, r.ok); return r; });
     // try/finally so a thrown error (a runner rejects, finalizeBoth throws) can't
     // leave the 10Hz render interval running and pin the event loop on exit.
@@ -300,6 +319,11 @@ export async function runDemoCommand(ctx) {
       setIncHtml: (h) => { incumbentAppHtml = h; }, setFwHtml: (h) => { fireworksAppHtml = h; },
       incRunProto, fwRunProto, incCwd, fwCwd });
   }
+
+  // Preserve each side's scratch dir BEFORE runCleanup() removes the tmp dirs,
+  // so whatever the model wrote stays inspectable under <out>/work/<side>.
+  await collectWorkDir(incCwd, outDir, "incumbent");
+  await collectWorkDir(fwCwd, outDir, "fireworks");
 
   await runCleanup();
 
@@ -363,21 +387,30 @@ export async function runDemoCommand(ctx) {
     }
     if (handoffUrl) {
       const opened = openInBrowser(handoffUrl);
-      console.log(`\n  ${opened ? "Opening comparison in your browser…" : "Couldn't open a browser. View it at:"} ${DIM(handoffUrl)}`);
+      if (opened) {
+        console.log(`\n  ${GREEN}✓${RESET} ${BOLD}Opening comparison in your browser…${RESET}`);
+        console.log(`    ${CYAN}${handoffUrl}${RESET}`);
+      } else {
+        console.log(`\n  ${YELLOW}⚠${RESET} Couldn't open a browser. View it at:`);
+        console.log(`    ${CYAN}${handoffUrl}${RESET}`);
+      }
     } else {
       const fileUrl = `file://${path.join(outDir, "compare.html")}`;
-      openInBrowser(fileUrl);
-      console.log(`\n  Comparison page: ${fileUrl}`);
+      // Branch on the actual result, like the HTTP path does — a failed open
+      // must not print a green success line.
+      const openedFile = openInBrowser(fileUrl);
+      if (openedFile) {
+        console.log(`\n  ${GREEN}✓${RESET} ${BOLD}Opening comparison in your browser…${RESET}`);
+      } else {
+        console.log(`\n  ${YELLOW}⚠${RESET} Couldn't open a browser. View it at:`);
+      }
+      console.log(`    ${CYAN}${fileUrl}${RESET}`);
     }
-    console.log(`  On-disk copy:    ${path.join(outDir, "compare.html")}`);
+    console.log(`  ${DIM(`On-disk copy: ${path.join(outDir, "compare.html")}`)}`);
   } else if (useTui) {
     // TTY but --no-open: skip the browser, just point at the on-disk page.
-    console.log(`\n  Comparison page: ${path.join(outDir, "compare.html")}`);
-  }
-
-  // ── State 6: return + convert ─────────────────────────────────────────────
-  if (useTui) {
-    printConvert(outDir, HARNESS.CLAUDE, rightLabel);
+    console.log(`\n  ${BOLD}Comparison page${RESET}`);
+    console.log(`    ${CYAN}${path.join(outDir, "compare.html")}${RESET}`);
   }
 
   // ── json output ───────────────────────────────────────────────────────────
@@ -398,10 +431,38 @@ export async function runDemoCommand(ctx) {
       stdout: process.stdout,
       timeoutMs: 5 * 60_000,
       minHoldMs: 2_000,
-      message: `Press any key to exit — if the local URL expires, open ${path.join(outDir, "compare.html")}.`,
+      message: DIM(`Press any key to exit — if the local URL expires, open ${path.join(outDir, "compare.html")}`),
     });
     try { server.close(); } catch { /* noop */ }
   }
+}
+
+/**
+ * Copy whatever a side wrote in its isolated tmp cwd into <out>/work/<side> so
+ * the artifacts survive the run for inspection. Best-effort: a failure here must
+ * never fail the demo, since the comparison itself is already complete.
+ * @param {string} cwd  the side's tmp working dir
+ * @param {string} outDir
+ * @param {string} side "incumbent" | "fireworks"
+ */
+async function collectWorkDir(cwd, outDir, side) {
+  if (!cwd) {
+    return;
+  }
+  try {
+    // A model that returns the file as text (rather than calling Write) leaves
+    // an empty scratch dir — don't litter the output with empty work/ folders.
+    const entries = await readdir(cwd);
+    if (entries.length === 0) {
+      return;
+    }
+    const dest = path.join(outDir, "work", side);
+    // Clear any previous run's artifacts first: cp overwrites but never deletes,
+    // so leftovers would mix into this run's work dir and read as its output.
+    await rm(dest, { recursive: true, force: true });
+    await mkdir(path.dirname(dest), { recursive: true });
+    await cp(cwd, dest, { recursive: true, force: true });
+  } catch { /* artifacts are a nicety; never break the run over them */ }
 }
 
 function makeSideProto(side, modelId, rates) {
@@ -414,10 +475,14 @@ function makeSideProto(side, modelId, rates) {
     modelId,
     callMode: "live",
     inputTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWrite5mTokens: 0,
+    cacheReadTokens: 0,
     outputTokens: 0,
     seconds: 0,
     cost: 0,
     rates: rateShape(rates, provider),
+    debug: {},
     ok: false,
     appRunnable: false,
   };
@@ -433,6 +498,13 @@ async function finalizeSide(side, proto, result, rates, setHtml, { cwd = null } 
     proto.ok = false;
     proto.error = result?.error || "generation failed";
     proto.seconds = result?.seconds ?? 0;
+    // A failed race is exactly when the transcript pointer matters most, so the
+    // debug block is written on this path too, not only on success.
+    proto.debug = {
+      sessionId: result?.sessionId || "",
+      resolvedModel: result?.resolvedModel || "",
+      cwd: cwd || "",
+    };
     proto.inputTokens = result?.inputTokens ?? 0;
     proto.outputTokens = result?.outputTokens ?? 0;
     proto.cost = 0;
@@ -455,15 +527,54 @@ async function finalizeSide(side, proto, result, rates, setHtml, { cwd = null } 
   }
   proto.ok = true;
   proto.inputTokens = result.inputTokens ?? 0;
+  proto.cacheWrite1hTokens = result.cacheWrite1hTokens ?? 0;
+  proto.cacheWrite5mTokens = result.cacheWrite5mTokens ?? 0;
+  proto.cacheReadTokens = result.cacheReadTokens ?? 0;
   proto.outputTokens = result.outputTokens ?? 0;
   proto.seconds = result.seconds;
-  proto.cost = runCost({
+  // Cost comes from computeClaudeUsageCost (the same function `claude usage` /
+  // `claude live` use), NOT from Claude Code's total_cost_usd.
+  //
+  // Claude Code has no Fireworks price table: for a gateway-routed Fireworks
+  // model its modelUsage reports provider "firstParty" and it prices the run
+  // with its own ANTHROPIC rates. Measured, exactly: a glm-fast-latest run of
+  // 126360 in / 10861 cache-read / 2715 out was reported as $0.705106, which is
+  // that token mix at Opus rates ($5/$0.50/$25) to six decimals — 2.5x its real
+  // Fireworks cost of $0.285556. Trusting total_cost_usd therefore inflates the
+  // Fireworks side and inverts the comparison the demo exists to make.
+  //
+  // computeClaudeUsageCost resolves Fireworks pricing first and falls back to the
+  // Anthropic list table, so it is right for BOTH sides — and for a real
+  // Anthropic model it agrees with Claude Code exactly (claude-opus-5 measured
+  // at $0.880210 both ways). costUsd is kept only as a last resort.
+  // Final fallback: the estimate is only produced when the result event carried a
+  // `usage` block. When it doesn't, token totals still come from the per-message
+  // accumulators, so pricing them here keeps a successful run from reporting real
+  // tokens against a $0 cost.
+  const fromTokens = () => runCost({
     inputTokens: proto.inputTokens,
+    cacheWrite1hTokens: proto.cacheWrite1hTokens,
+    cacheWrite5mTokens: proto.cacheWrite5mTokens,
+    cacheReadTokens: proto.cacheReadTokens,
     outputTokens: proto.outputTokens,
     inputPerMillion: rates.inputPerMillion,
+    cacheWrite1hPerMillion: rates.cacheWrite1hPerMillion,
+    cacheWrite5mPerMillion: rates.cacheWrite5mPerMillion,
+    cacheReadPerMillion: rates.cacheReadPerMillion,
     outputPerMillion: rates.outputPerMillion,
   });
+  proto.cost = (typeof result.estimatedCostUsd === "number" && result.estimatedCostUsd > 0)
+    ? result.estimatedCostUsd
+    : (result.costUsd || fromTokens());
   proto.appRunnable = runnable;
+  // Session id + cwd locate this run's Claude Code transcript at
+  // ~/.claude/projects/<slugified-cwd>/<sessionId>.jsonl; resolvedModel records
+  // what actually served the request vs what was requested.
+  proto.debug = {
+    sessionId: result.sessionId || "",
+    resolvedModel: result.resolvedModel || "",
+    cwd: cwd || "",
+  };
   setHtml(html);
 }
 
@@ -471,6 +582,9 @@ function sideFinal(proto) {
   return {
     ok: proto.ok,
     inputTokens: proto.inputTokens,
+    cacheWrite1hTokens: proto.cacheWrite1hTokens,
+    cacheWrite5mTokens: proto.cacheWrite5mTokens,
+    cacheReadTokens: proto.cacheReadTokens,
     outputTokens: proto.outputTokens,
     seconds: proto.seconds,
     cost: proto.cost,
@@ -485,6 +599,9 @@ function rateShape(rates, providerLabel) {
     inputPerMillion: rates.inputPerMillion,
     outputPerMillion: rates.outputPerMillion,
     cachedInputPerMillion: rates.cachedInputPerMillion ?? 0,
+    cacheWrite1hPerMillion: rates.cacheWrite1hPerMillion ?? 0,
+    cacheWrite5mPerMillion: rates.cacheWrite5mPerMillion ?? 0,
+    cacheReadPerMillion: rates.cacheReadPerMillion ?? rates.cachedInputPerMillion ?? 0,
     tier: rates.tier,
     source: rates.source,
     label: rates.label ?? providerLabel,
@@ -497,7 +614,13 @@ function sideHeader(proto, rates, costLabel) {
     provider: proto.provider,
     model: proto.model,
     costLabel,
-    rates: { inputPerMillion: rates.inputPerMillion, outputPerMillion: rates.outputPerMillion },
+    rates: {
+      inputPerMillion: rates.inputPerMillion,
+      outputPerMillion: rates.outputPerMillion,
+      cacheWrite1hPerMillion: rates.cacheWrite1hPerMillion ?? 0,
+      cacheWrite5mPerMillion: rates.cacheWrite5mPerMillion ?? 0,
+      cacheReadPerMillion: rates.cacheReadPerMillion ?? 0,
+    },
   };
 }
 
@@ -513,22 +636,33 @@ function printFraming(leftLabel, rightLabel) {
   console.log("");
 }
 
+/** Shorten a side label for the verdict line: drop the " (Latest)" suffix so
+ *  "GLM 5.2 Fast (Latest)" reads "GLM 5.2 Fast". */
+function shortLabel(label) {
+  return String(label).replace(/\s*\(Latest\)\s*$/, "").trim();
+}
+
 function printVerdict(result, leftLabel, rightLabel) {
-  console.log("");
-  console.log("  " + "─".repeat(58));
-  const speedPart = verdictSpeed(result, leftLabel, rightLabel);
-  const costPart = verdictCost(result, leftLabel, rightLabel);
-  console.log(`  ${speedPart} · ${costPart}`);
+  const left = shortLabel(leftLabel);
+  const right = shortLabel(rightLabel);
+  const speedPart = verdictSpeed(result, left, right);
+  const costPart = verdictCost(result, left, right);
   const bothOk = result.incumbent.ok && result.fireworks.ok;
-  if (bothOk && result.incumbent.appRunnable && result.fireworks.appRunnable) {
-    console.log("  Both built a working app. See for yourself →");
+  const bothRunnable = bothOk && result.incumbent.appRunnable && result.fireworks.appRunnable;
+  console.log("");
+  console.log(`  ${CYAN}${"─".repeat(58)}${RESET}`);
+  // The headline verdict — bold, with the winning side's name in green.
+  console.log(`  ${BOLD}${speedPart} · ${costPart}${RESET}`);
+  if (bothRunnable) {
+    console.log(`  ${GREEN}✓${RESET} Both built a working app. ${DIM("See for yourself →")}`);
   } else if (!bothOk) {
-    const failed = !result.incumbent.ok ? leftLabel : rightLabel;
-    console.log(`  The run was incomplete (${failed} failed). No winner declared on a partial result.`);
+    const failed = !result.incumbent.ok ? left : right;
+    console.log(`  ${YELLOW}⚠${RESET} The run was incomplete (${failed} failed). No winner declared on a partial result.`);
   } else {
-    console.log("  One build didn't run. See for yourself →");
+    console.log(`  ${YELLOW}⚠${RESET} One build didn't run. ${DIM("See for yourself →")}`);
   }
-  console.log("  " + "─".repeat(58));
+  console.log(`  ${DIM("Costs are what Claude Code reported for each run, not estimates.")}`);
+  console.log(`  ${CYAN}${"─".repeat(58)}${RESET}`);
 }
 
 function verdictSpeed(result, leftLabel, rightLabel) {
@@ -537,13 +671,15 @@ function verdictSpeed(result, leftLabel, rightLabel) {
   if (!bothOk || !ratio || !Number.isFinite(ratio) || ratio <= 0) {
     return "speed not comparable";
   }
+  const incSec = result.incumbent.seconds;
+  const fwSec = result.fireworks.seconds;
   if (ratio > 1) {
-    return `${rightLabel} finished ${formatSpeedRatio(ratio)} faster`;
+    return `${rightLabel} ${formatSpeedRatio(ratio)} faster (${formatSeconds(fwSec)} vs ${formatSeconds(incSec)})`;
   }
   if (ratio < 1) {
-    return `${leftLabel} was ${(1 / ratio).toFixed(1)}× faster`;
+    return `${leftLabel} ${formatSpeedRatio(1 / ratio)} faster (${formatSeconds(incSec)} vs ${formatSeconds(fwSec)})`;
   }
-  return "a dead heat on speed";
+  return `a dead heat on speed (${formatSeconds(incSec)} each)`;
 }
 
 function verdictCost(result, leftLabel, rightLabel) {
@@ -555,62 +691,67 @@ function verdictCost(result, leftLabel, rightLabel) {
   if (!Number.isFinite(cf)) {
     return "cost not comparable";
   }
+  const incCost = result.incumbent.cost;
+  const fwCost = result.fireworks.cost;
   // Rebase to the more-expensive model's cost when the incumbent is cheaper so
   // the percentage matches the compare.html strip (same race, one number) —
   // costSavedFraction is incumbent-relative, so |(inc-fw)/inc| would inflate
   // the savings (2× cost → 100% instead of 50%).
   let frac = cf;
   let cheaperLabel = rightLabel;
+  let cheaperCost = fwCost;
+  let pricierCost = incCost;
   if (cf < 0) {
-    frac = result.fireworks.cost > 0
-      ? (result.fireworks.cost - result.incumbent.cost) / result.fireworks.cost
-      : Number.NaN;
+    frac = fwCost > 0 ? (fwCost - incCost) / fwCost : Number.NaN;
     cheaperLabel = leftLabel;
+    cheaperCost = incCost;
+    pricierCost = fwCost;
   }
   const pct = Math.round(frac * 100);
+  const costs = `${formatUsd(cheaperCost)} vs ${formatUsd(pricierCost)}`;
   if (pct > 0) {
-    return `${cheaperLabel} was ${pct}% cheaper`;
+    return `${cheaperLabel} ${pct}% cheaper (${costs})`;
   }
   if (pct < 0) {
-    return `${cheaperLabel} was ${Math.abs(pct)}% more expensive`;
+    return `${cheaperLabel} ${Math.abs(pct)}% more expensive (${costs})`;
   }
-  return "same cost";
-}
-
-function printConvert(outDir, harnessId, rightLabel) {
-  console.log("");
-  console.log(`  ✓ Demo complete. Outputs saved to ${outDir}`);
-  console.log("");
-  console.log(`  Liked ${rightLabel}? Point your tools at it:`);
-  console.log(`    fireconnect ${harnessId} on`);
-  console.log("");
-  console.log(`  Reversible anytime with  fireconnect ${harnessId} off.`);
-  console.log("");
+  return `same cost (${costs})`;
 }
 
 function buildCopySummary(result, leftLabel, rightLabel) {
+  const left = shortLabel(leftLabel);
+  const right = shortLabel(rightLabel);
   const bothOk = result.incumbent.ok && result.fireworks.ok;
   if (!bothOk) {
-    return `Raced ${leftLabel} vs ${rightLabel} on the ${result.promptTitle} prompt — one side didn't finish, so no comparison. Built with \`fireconnect claude demo\`.`;
+    return `Raced ${left} vs ${right} on the ${result.promptTitle} prompt — one side didn't finish, so no comparison. Built with \`fireconnect claude demo\`.`;
   }
-  const speedPart = verdictSpeedText(result, leftLabel, rightLabel);
+  const speedPart = verdictSpeedText(result, left, right);
   const cf = result.summary.costSavedFraction;
   // Rebase to match the compare.html strip and terminal verdict (same race,
   // one percentage) — incumbent-relative |costSavedFraction| inflates savings.
   let frac = cf;
-  let cheaperLabel = rightLabel;
+  let cheaperLabel = right;
+  let cheaperCost = result.fireworks.cost;
+  let pricierCost = result.incumbent.cost;
   if (Number.isFinite(cf) && cf < 0) {
     frac = result.fireworks.cost > 0
       ? (result.fireworks.cost - result.incumbent.cost) / result.fireworks.cost
       : Number.NaN;
-    cheaperLabel = leftLabel;
+    cheaperLabel = left;
+    cheaperCost = result.incumbent.cost;
+    pricierCost = result.fireworks.cost;
   }
   const pct = Number.isFinite(frac) ? Math.round(frac * 100) : 0;
-  const costPart = pct > 0 ? `${cheaperLabel} ${pct}% cheaper` : pct < 0 ? `${cheaperLabel} ${Math.abs(pct)}% more expensive` : "same cost";
+  const costs = `${formatUsd(cheaperCost)} vs ${formatUsd(pricierCost)}`;
+  const costPart = pct > 0
+    ? `${cheaperLabel} ${pct}% cheaper (${costs})`
+    : pct < 0
+      ? `${cheaperLabel} ${Math.abs(pct)}% more expensive (${costs})`
+      : `same cost (${costs})`;
   const bothRunnable = result.incumbent.appRunnable && result.fireworks.appRunnable;
   const appPart = bothRunnable ? ", working app" : ", one build didn't run";
   return (
-    `Raced ${leftLabel} vs ${rightLabel} on the same ${result.promptTitle} prompt. `
+    `Raced ${left} vs ${right} on the same ${result.promptTitle} prompt. `
     + `${speedPart}, ${costPart}${appPart}. Built with \`fireconnect claude demo\`.`
   );
 }

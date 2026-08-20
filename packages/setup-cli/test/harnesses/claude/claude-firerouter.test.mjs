@@ -122,8 +122,8 @@ describe("Claude slot-level FireRouter", () => {
     assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, undefined);
   });
 
-  it("rejects an explicit FireRouter slot without native auth on non-TTY", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-auth-required-"));
+  it("allows an explicit FireRouter slot without detecting native auth", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-auth-optional-"));
     const settingsPath = userSettingsPath(home);
     const dataDir = path.join(home, ".fireconnect/claude");
     await mkdir(path.dirname(settingsPath), { recursive: true });
@@ -135,10 +135,12 @@ describe("Claude slot-level FireRouter", () => {
       cliEnv(home),
     );
 
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /FireRouter requires Claude sign-in/);
-    assert.equal(await readFile(settingsPath, "utf8"), original);
-    assert.deepEqual(await readJsonIfExists(providerBackupPath(dataDir)), {});
+    assert.equal(result.code, 0, result.stderr);
+    const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
+    // Claude Code owns login; FireConnect never injects a Fireworks auth token.
+    assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
+    assert.notDeepEqual(await readJsonIfExists(providerBackupPath(dataDir)), {});
   });
 
   it("explicit firerouter with --anthropic-api-key does not use Fireworks token auth fallback", async () => {

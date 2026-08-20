@@ -687,7 +687,6 @@ export function buildFireworksProviderEnv(env, {
   anthropicAuthToken = "",
   routingPreference = null,
   useApiKeySentinel = true,
-  useFireworksAuthTokenFallback = false,
   telemetryHeaders = buildFireconnectTelemetryHeaders("claude"),
 }) {
   const resolvedPreset = keyType === "firepass" ? DEFAULT_FIREPASS_PRESET : preset;
@@ -733,11 +732,6 @@ export function buildFireworksProviderEnv(env, {
   }
   if (anthropicAuthToken?.trim()) {
     nextEnv.ANTHROPIC_AUTH_TOKEN = anthropicAuthToken.trim();
-  } else if (useFireworksAuthTokenFallback && apiKey?.trim()) {
-    // A fresh Claude profile otherwise stops at its login gate before custom
-    // gateway headers are sent. This is only a gate fallback; the gateway still
-    // authenticates with X-Fireworks-Api-Key.
-    nextEnv.ANTHROPIC_AUTH_TOKEN = apiKey.trim();
   }
   // Native Claude slots leave no pin behind: clear the slot's model + picker
   // label keys (including any pre-existing user values that survived the env
@@ -767,7 +761,6 @@ export function buildFireworksProviderEnv(env, {
  *   anthropicKey?: string,
  *   anthropicAuthToken?: string,
  *   useApiKeySentinel?: boolean,
- *   useFireworksAuthTokenFallback?: boolean,
  * }} [opts]
  * @returns {{ settings: Record<string, unknown>, token: string, keyType: "fireworks" | "firepass" }}
  */
@@ -781,7 +774,6 @@ export function buildFireworksSettings(settings, {
   anthropicAuthToken = "",
   routingPreference = null,
   useApiKeySentinel = true,
-  useFireworksAuthTokenFallback = false,
 } = {}) {
   const env = settings.env ?? {};
   const token = apiKey || claudeFireworksKeyFrom({ env }) || process.env.FIREWORKS_API_KEY || "";
@@ -805,7 +797,6 @@ export function buildFireworksSettings(settings, {
       anthropicAuthToken,
       routingPreference,
       useApiKeySentinel,
-      useFireworksAuthTokenFallback,
     }),
   };
   if (providerStatusFromEnv(next.env) === "fireworks") {
@@ -833,7 +824,6 @@ export async function enableFireworksProvider({
   nativeApiKeyHelper = null,
   routingPreference = null,
   useApiKeySentinel = true,
-  useFireworksAuthTokenFallback = false,
 }) {
  const backupPath = providerBackupPath(dataDir);
  const settings = await readJsonIfExists(settingsPath);
@@ -865,7 +855,6 @@ export async function enableFireworksProvider({
     anthropicAuthToken,
     routingPreference,
     useApiKeySentinel,
-    useFireworksAuthTokenFallback,
   });
   const token = built.token;
   const routed = nativeApiKeyHelper === null

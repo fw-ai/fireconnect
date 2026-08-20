@@ -99,8 +99,9 @@ export function isFirerouterModel(model) {
  * Whether a model reference is a real Anthropic model id (e.g. claude-sonnet-4-5).
  * Anthropic models are served on the Fireworks gateway even though they don't
  * appear in the public serverless catalog, so they're exempt from catalog
- * validation and treated as vision-capable. Bare "claude" is NOT matched — it
- * normalizes to {@link CLAUDE_NATIVE_MODEL_ID} instead.
+ * validation and treated as vision-capable. Bare "claude" is NOT matched: it
+ * names no concrete model, so it stays subject to catalog validation and is
+ * reported as unavailable rather than being guessed at.
  * @param {string} model
  * @returns {boolean}
  */
@@ -109,7 +110,7 @@ export function isAnthropicModelId(model) {
     return false;
   }
   const bare = stripContextSuffix(model.trim());
-  if (bare === CLAUDE_NATIVE_MODEL_ID) {
+  if (isClaudeNativeModel(bare)) {
     return false;
   }
   return /^claude-[a-z0-9.-]+(\[1m\])?$/i.test(bare);
@@ -123,12 +124,18 @@ export function isClaudeNativeSlotAlias(model) {
   return model.trim().toLowerCase() === CLAUDE_NATIVE_SLOT_ALIAS;
 }
 
-/** Whether a model reference is the reserved native-Claude slot value. */
+/**
+ * Whether a model reference is the reserved native-Claude slot value.
+ *
+ * Case-insensitive: {@link isAnthropicModelId} matches `claude-*` without regard
+ * to case, so a case-variant sentinel that isn't recognized here is classified as
+ * a real Anthropic model and written into the harness config verbatim.
+ */
 export function isClaudeNativeModel(model) {
   if (typeof model !== "string") {
     return false;
   }
-  return stripContextSuffix(model.trim()) === CLAUDE_NATIVE_MODEL_ID;
+  return stripContextSuffix(model.trim()).toLowerCase() === CLAUDE_NATIVE_MODEL_ID;
 }
 
 /** Native sentinel or concrete Anthropic id — served on the gateway, not the catalog. */
@@ -186,7 +193,7 @@ export function normalizeModelId(model) {
   if (isFirerouterModel(bare)) {
     return FIREROUTER_MODEL_ID;
   }
-  if (isClaudeNativeSlotAlias(bare)) {
+  if (isClaudeNativeSlotAlias(bare) || isClaudeNativeModel(bare)) {
     return CLAUDE_NATIVE_MODEL_ID;
   }
   if (bare.startsWith("accounts/fireworks/")) {

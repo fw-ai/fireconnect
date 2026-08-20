@@ -32,6 +32,7 @@ import { HARNESSES } from "./id.mjs";
  * @property {boolean} json
  * @property {string} [dbPath]   // cursor: explicit state.vscdb path
  * @property {boolean} [force]   // cursor/vscode: write even if the IDE is running
+ * @property {boolean} [quiet]   // uninstall: suppress per-harness off narration
  * @property {boolean} [storedOnly] // key export: prefer secret store; env only when nothing stored
  * @property {string} [vscodePath]      // vscode: explicit chatLanguageModels.json path
  */

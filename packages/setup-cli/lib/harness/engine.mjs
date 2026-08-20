@@ -267,30 +267,56 @@ async function resolveOnKey(profile, ctx, paths) {
 }
 
 /**
+ * Is this harness currently routed through Fireworks/Azure?
+ *
+ * The harness's own config is the source of truth: `providerStatus` reads it
+ * directly, so it reflects reality even when FireConnect's `enabled` flag has
+ * drifted (older CLI versions, adapters that didn't maintain it, a lost or
+ * reinstalled `~/.fireconnect`). The flag is only a fallback for when that
+ * config cannot be read at all.
+ *
+ * This is the single definition of "on" — `off` uses it to choose
+ * restore-vs-strip, and `uninstall` uses it to decide which harnesses to
+ * restore at all, so the two can never disagree about a harness's state.
+ *
+ * Named for the real condition rather than the flag: `isHarnessEnabled` reads
+ * the flag, this reads the config, and the gap between them is the whole point.
+ *
+ * @param {{ id: string, providerStatus?: (ctx: object) => Promise<string> }} target
+ *   a harness profile or adapter; both expose `id` and optional `providerStatus`.
+ * @param {import("./types.mjs").HarnessContext} ctx
+ * @returns {Promise<boolean>}
+ */
+export async function isHarnessRouted(target, ctx) {
+  if (typeof target.providerStatus === "function") {
+    try {
+      const provider = await target.providerStatus(ctx);
+      return provider === "fireworks" || provider === "azure";
+    } catch {
+      // Config unreadable (e.g. IDE DB locked): fall back to the flag below.
+    }
+  }
+  return isHarnessEnabled(ctx.home, target.id);
+}
+
+/**
  * Generic `<harness> off`: back out the provider config via the profile's
  * `disable` hook (which returns an outcome), flip the enabled flag, remove the
  * shell env hook (unless the harness opts out), and print restored/unchanged.
  * `prepareOff` (stop the IDE) and `restartHintOff` are optional.
+ *
+ * Pass `ctx.quiet` to suppress the restored/unchanged + restart-hint narration
+ * (see below); the outcome is returned either way so a caller that silences the
+ * narration can still report what happened.
  * @param {HarnessProfile} profile
  * @param {import("./types.mjs").HarnessContext} ctx
+ * @returns {Promise<"restored" | "stripped" | "none">}
  */
 export async function engineOff(profile, ctx) {
   ensureHomeForHarness(ctx, profile.id);
   const paths = profile.paths(ctx);
-  // `wasEnabled` drives restore-vs-strip in `profile.disable`. The global
-  // `enabled` flag can drift from ground truth (older CLI versions, adapters
-  // that didn't maintain it), so prefer the harness's real config when the
-  // profile exposes `providerStatus` — otherwise a stale `false` flag would
-  // make `off` skip restoring a harness that's actually routed through Fireworks.
-  let wasEnabled = await isHarnessEnabled(ctx.home, profile.id);
-  if (typeof profile.providerStatus === "function") {
-    try {
-      const provider = await profile.providerStatus(ctx);
-      wasEnabled = provider === "fireworks" || provider === "azure";
-    } catch {
-      // Config unreadable (e.g. IDE DB locked): keep the flag-based value.
-    }
-  }
+  // `wasEnabled` drives restore-vs-strip in `profile.disable`.
+  const wasEnabled = await isHarnessRouted(profile, ctx);
   if (profile.prepareOff) {
     await profile.prepareOff(ctx);
   }
@@ -302,14 +328,21 @@ export async function engineOff(profile, ctx) {
   if (profile.envHookOff !== false) {
     await reconcileShellEnvHook(ctx.home);
   }
-  if (outcome === "restored" || outcome === "stripped") {
-    printHarnessRestored(profile.id);
-  } else {
-    printHarnessUnchanged(profile.id);
+  // `ctx.quiet` suppresses the per-harness narration. Used by `uninstall`,
+  // which restores every harness in one run and prints its own checklist plus a
+  // single restart reminder — the per-harness lines would both duplicate that
+  // and interleave with it.
+  if (!ctx.quiet) {
+    if (outcome === "restored" || outcome === "stripped") {
+      printHarnessRestored(profile.id);
+    } else {
+      printHarnessUnchanged(profile.id);
+    }
+    if (profile.restartHintOff) {
+      profile.restartHintOff(outcome);
+    }
   }
-  if (profile.restartHintOff) {
-    profile.restartHintOff(outcome);
-  }
+  return outcome;
 }
 
 function assertProfileCapabilities(profile) {

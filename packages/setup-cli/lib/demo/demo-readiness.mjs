@@ -62,7 +62,7 @@ function renderReadinessLines(readiness) {
   const lines = [
     "",
     `  ${BOLD}${CYAN}FireConnect Demo — get ready${RESET}`,
-    `  ${DIM}Both sides use your FireConnect Claude profile. Only --model changes.${RESET}`,
+    `  ${DIM}Both sides use your FireConnect Claude setup. Anthropic slots run real Anthropic; only --model differs.${RESET}`,
     "",
     `  ${statusMark(readiness.claudeOn)}  ${BOLD}fireconnect claude${RESET}  ${DIM}(Fireworks routing)${RESET}`,
     `  ${statusMark(readiness.fireworksKey)}  ${BOLD}Fireworks API key${RESET}  ${DIM}(login or FIREWORKS_API_KEY)${RESET}`,

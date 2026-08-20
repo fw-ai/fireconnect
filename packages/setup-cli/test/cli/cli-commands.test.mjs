@@ -35,8 +35,8 @@ import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 
 const CLAUDE_STORED_MAIN_MODEL = `${KIMI_FAST_LATEST}[1m]`;
 const CLAUDE_STORED_GLM_MODEL = `${GLM_FAST_LATEST}[1m]`;
-const CLAUDE_STORED_DS_PRO_MODEL = "deepseek-pro-latest[1m]";
 const CLAUDE_STORED_DS_FLASH_MODEL = "deepseek-flash-latest[1m]";
+const CLAUDE_STORED_FIREROUTER_MODEL = "firerouter[1m]";
 const packageJsonPath = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../package.json",
@@ -218,21 +218,25 @@ describe("unexpected input guidance", () => {
 });
 
 describe("fireconnect claude on", () => {
-  test("fw_ leaves main and Sonnet native and pins the rest to Fireworks", async () => {
+  test("fw_ leaves main and Sonnet native, routes Opus via FireRouter, pins the rest", async () => {
     await withTempHome("on-fw", async (home) => {
       const result = await runCli(
         ["claude", "on", "--api-key", FW_CLAUDE_KEY],
         { home, env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /FireRouter off/);
+      // FireRouter is Opus-tier, so first setup with a regular fw_ key puts it on
+      // the Opus slot. FireConnect no longer probes for a Claude OAuth login —
+      // Claude Code attaches Anthropic auth at request time — so only Fire Pass
+      // is ineligible. See "drop OAuth detection; let Claude Code own auth".
+      assert.match(result.stdout, /FireRouter is on/);
 
       const settings = await readClaudeSettings(home);
       // Main is native (unpinned): no top-level model and no legacy main env.
       assert.equal(settings.model, undefined);
       assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_DS_PRO_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "DeepSeek V4 Pro (0813) (Latest)");
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_FIREROUTER_MODEL);
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "FireRouter");
       // Sonnet is native (unpinned): the alias env keys are never written.
       assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, undefined);
@@ -326,7 +330,7 @@ describe("fireconnect claude on", () => {
       assert.equal(settings.apiKeyHelper, undefined);
       assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Fireworks-Api-Key: ${FW_CLAUDE_KEY}`));
       assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
-      assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, FW_CLAUDE_KEY);
+      assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
     });
   });
 });
@@ -346,6 +350,9 @@ describe("fireconnect opencode on", () => {
         config.provider["fireworks-ai"].models[KIMI_FAST_LATEST],
         {
           ...expectedOpencodeLatestRouterEntry("Kimi K3 Fast (Latest)", 1_040_000, 131_072),
+          // Metered per-Mtok rates, so OpenCode can report spend. Fire Pass is a
+          // subscription and gets no cost block — see the fpk_ case below.
+          cost: { input: 6, output: 30, cache_read: 0.6 },
           modalities: { input: ["text", "image"] },
         },
       );
@@ -452,9 +459,13 @@ describe("fireconnect <harness> status", () => {
       assert.equal(json.defaults.main, KIMI_FAST_LATEST);
       assert.equal(json.defaults.opus, KIMI_FAST_LATEST);
 
+      // The text view reports connection/provider/auth; the per-slot defaults are
+      // asserted through --json above, which is the machine-readable contract.
       const text = await runCli(["claude", "status"], { home, env: NO_ENV_KEY });
       assert.equal(text.code, 0, text.stderr);
-      assert.match(text.stdout, /main\s+-> kimi-fast-latest/);
+      assert.match(text.stdout, /Connection: on/);
+      assert.match(text.stdout, /Provider: Fireworks/);
+      // Guard against a stale legacy default resurfacing in either view.
       assert.doesNotMatch(text.stdout, /kimi-k2p6-turbo/);
     });
   });

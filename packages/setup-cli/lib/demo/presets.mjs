@@ -11,17 +11,35 @@ import { readFile as fsReadFile } from "node:fs/promises";
 export const HTML_ONLY_SUFFIX =
   " Return only a single complete HTML file. No explanation, no markdown fences.";
 
+/**
+ * Per-run system prompt appended (via `claude -p --append-system-prompt`) to
+ * every demo run, so no two races send an identical system prompt.
+ *
+ * Only the per-run marker remains. The spec text that used to live here (layout
+ * sizing, design palette, "this run is timed") was removed: it added input
+ * tokens where the open model has the weaker position (GLM pays $2.10/M every
+ * run; warm-cached Opus pays $0.50/M), so padding the prompt biased the cost
+ * story the wrong way. The output contract ("Return only a single complete HTML
+ * file…") already lives in {@link HTML_ONLY_SUFFIX} on each preset.
+ *
+ * The marker does NOT force a cold cache and should not be relied on for
+ * reproducibility: Claude Code's own base system prompt is cached ahead of
+ * anything `--append-system-prompt` can reach (measured 0% / 93% / 93% of
+ * prompt tokens served from cache across three runs). It is kept because a
+ * unique prompt per run is correct benchmark hygiene. compare.html states each
+ * side's cache state outright; removing cache luck needs an average over races.
+ *
+ * @param {string} [runId] injectable for tests
+ * @returns {string}
+ */
+export function demoSystemPrompt(runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`) {
+  return `Run ${runId}. (Ignore this line; it only keeps runs comparable.)`;
+}
+
 const TETRIS = (
   "Build a complete, playable Tetris in a single HTML file. "
   + "Arrow keys to move, up to rotate, down to soft-drop. "
   + "Show score and next piece. Game-over screen with restart."
-  + HTML_ONLY_SUFFIX
-);
-
-const TICTACTOE = (
-  "Build a complete, playable two-player Tic-Tac-Toe in a single HTML file. "
-  + "Click to place X and O alternately. Detect and announce wins and draws. "
-  + "Provide a restart button."
   + HTML_ONLY_SUFFIX
 );
 
@@ -42,7 +60,6 @@ const CLOCK = (
 
 export const DEMO_PRESETS = Object.freeze({
   tetris: { id: "tetris", title: "Tetris", prompt: TETRIS },
-  tictactoe: { id: "tictactoe", title: "Tic-Tac-Toe", prompt: TICTACTOE },
   snake: { id: "snake", title: "Snake", prompt: SNAKE },
   clock: { id: "clock", title: "Analog Clock", prompt: CLOCK },
 });
@@ -53,7 +70,6 @@ export const CUSTOM_DEMO_PROMPT_ID = "custom";
 /** Short UX hints for the demo wizard game picker. */
 export const DEMO_PRESET_HINTS = Object.freeze({
   tetris: "~2–4 min · playable Tetris",
-  tictactoe: "~1–2 min · two-player board",
   snake: "~1–3 min · classic Snake",
   clock: "~1 min · animated analog clock",
   [CUSTOM_DEMO_PROMPT_ID]: "Describe any standalone HTML app",

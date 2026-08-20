@@ -428,10 +428,15 @@ ensure_dependencies() {
   fi
   install_progress "Installing dependencies..."
   local npm_loglevel=error
+  local npm_stdout="/dev/null"
   if [[ "${FIRECONNECT_INSTALL_VERBOSE:-}" == "1" ]]; then
     npm_loglevel=notice
+    npm_stdout="/dev/tty"
   fi
-  if ! (cd "${setup_dir}" && npm install --omit=dev --no-fund --no-audit --loglevel="${npm_loglevel}"); then
+  # npm's "added N packages in Xms" summary prints to stdout regardless of
+  # --loglevel, which clutters the install output with a stray line between our
+  # `→` steps. Discard stdout (errors still surface on stderr) unless verbose.
+  if ! (cd "${setup_dir}" && npm install --omit=dev --no-fund --no-audit --loglevel="${npm_loglevel}" 1>"${npm_stdout}"); then
     echo "Failed to install FireConnect dependencies." >&2
     exit 1
   fi
