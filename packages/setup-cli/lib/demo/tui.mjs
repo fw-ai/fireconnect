@@ -43,13 +43,16 @@ export function isTtyCapable() {
  * @property {string} provider
  * @property {string} model
  * @property {string} costLabel  "list price" | "serverless"
- * @property {{ inputPerMillion: number, outputPerMillion: number }} rates
+ * @property {{ inputPerMillion: number, outputPerMillion: number, cacheWrite1hPerMillion: number, cacheWrite5mPerMillion: number, cacheReadPerMillion: number }} rates
  */
 
 /**
  * @typedef {Object} SideFinal
  * @property {boolean} ok
  * @property {number | null} inputTokens
+ * @property {number | null} cacheWrite1hTokens
+ * @property {number | null} cacheWrite5mTokens
+ * @property {number | null} cacheReadTokens
  * @property {number | null} outputTokens
  * @property {number} seconds
  * @property {number} cost
@@ -100,6 +103,21 @@ export class SplitPaneRenderer {
     if (s.thinkingBuffer.length > 200_000) {
       s.thinkingBuffer = s.thinkingBuffer.slice(-100_000);
     }
+  }
+
+  /**
+   * Drop the streamed output buffer for a side. Used when a model writes the
+   * file with a tool and then echoes the same file as text: without this the
+   * pane would show the document twice.
+   * @param {"incumbent" | "fireworks"} side
+   */
+  resetOutput(side) {
+    const s = this.sides[side];
+    if (!s || s.done) {
+      return;
+    }
+    s.buffer = "";
+    s.chars = 0;
   }
 
   /** @param {"incumbent" | "fireworks"} side @param {string} text */
@@ -168,7 +186,7 @@ export class SplitPaneRenderer {
    * not a chars/4 estimate. The Fireworks side's cost is input-dominated, so
    * this is what makes its running cost actually move.
    * @param {"incumbent" | "fireworks"} side
-   * @param {{ inputTokens?: number, outputTokens?: number }} tokens
+   * @param {{ inputTokens?: number, cacheWrite1hTokens?: number, cacheWrite5mTokens?: number, cacheReadTokens?: number, outputTokens?: number }} tokens
    */
   setTokens(side, tokens) {
     const s = this.sides[side];
@@ -176,6 +194,9 @@ export class SplitPaneRenderer {
       return;
     }
     if (typeof tokens.inputTokens === "number") s.inputTokens = tokens.inputTokens;
+    if (typeof tokens.cacheWrite1hTokens === "number") s.cacheWrite1hTokens = tokens.cacheWrite1hTokens;
+    if (typeof tokens.cacheWrite5mTokens === "number") s.cacheWrite5mTokens = tokens.cacheWrite5mTokens;
+    if (typeof tokens.cacheReadTokens === "number") s.cacheReadTokens = tokens.cacheReadTokens;
     if (typeof tokens.outputTokens === "number") s.outputTokens = tokens.outputTokens;
   }
 
@@ -199,6 +220,9 @@ export class SplitPaneRenderer {
     // now if this side was never frozen (e.g. the non-race / direct-finish path).
     this.freezeClock(s);
     s.inputTokens = final.inputTokens;
+    s.cacheWrite1hTokens = final.cacheWrite1hTokens;
+    s.cacheWrite5mTokens = final.cacheWrite5mTokens;
+    s.cacheReadTokens = final.cacheReadTokens;
     s.outputTokens = final.outputTokens;
     s.cost = final.cost;
     s.costFinalized = true;
@@ -336,16 +360,31 @@ export class SplitPaneRenderer {
     // cost: real usage when done, else running estimate using real tokens if reported
     const inRate = s.header.rates.inputPerMillion;
     const outRate = s.header.rates.outputPerMillion;
+    const cacheWrite1hRate = s.header.rates.cacheWrite1hPerMillion ?? 0;
+    const cacheWrite5mRate = s.header.rates.cacheWrite5mPerMillion ?? 0;
+    const cacheReadRate = s.header.rates.cacheReadPerMillion ?? 0;
     let cost;
     const estIn = (s.inputTokens != null && s.inputTokens > 0)
       ? s.inputTokens
       : (Math.floor((s.header.promptChars ?? 0) / 4) || 0);
+    // Cache tokens are only known once the result event arrives (also when
+    // costFinalized flips), so the mid-stream estimate uses 0 for them until
+    // then — same as outputTokens falling back to chars/4. After finish, the
+    // authoritative cost (costUsd) is used, so the estimate never needs to
+    // guess cache tokens before they're reported.
+    const estCacheWrite1h = s.cacheWrite1hTokens ?? 0;
+    const estCacheWrite5m = s.cacheWrite5mTokens ?? 0;
+    const estCacheRead = s.cacheReadTokens ?? 0;
     if (s.costFinalized) {
       cost = s.cost;
     } else {
       // Keep estimating through freeze() — done is set when the runner resolves,
       // but finish() (reconciled cost) only runs after finalizeBoth().
-      cost = (estIn / 1e6) * inRate + (tokens / 1e6) * outRate;
+      cost = (estIn / 1e6) * inRate
+        + (estCacheWrite1h / 1e6) * cacheWrite1hRate
+        + (estCacheWrite5m / 1e6) * cacheWrite5mRate
+        + (estCacheRead / 1e6) * cacheReadRate
+        + (tokens / 1e6) * outRate;
     }
 
     const lines = [];
@@ -410,8 +449,14 @@ export class SplitPaneRenderer {
     );
     const tokStr = s.done && s.outputTokens == null ? "—" : formatTokens(tokens);
     const costStr = cost > 0 || s.done ? formatUsd(cost) : "—";
+    // Only call it "measured" once the run is reconciled. Mid-stream the figure
+    // is real money already incurred (Anthropic reports the whole cache write on
+    // message_start, so a 61k-token write shows ~$0.61 before any output) but it
+    // is NOT the final total — output is still accruing. Labelling that
+    // "measured" reads as a finished number for a run that is still going.
+    const costLabel = s.costFinalized ? s.header.costLabel : "so far";
     lines.push(
-      ` ${GREEN}↑${RESET} ${tokStr} tok  ${GREEN}${costStr}${RESET} ${DIM}${s.header.costLabel}${RESET}`,
+      ` ${GREEN}↑${RESET} ${tokStr} tok  ${GREEN}${costStr}${RESET} ${DIM}${costLabel}${RESET}`,
     );
     return lines;
   }
@@ -453,9 +498,6 @@ export class SplitPaneRenderer {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-/** Max thinking rows once code output has started — output tail always wins. */
-const MAX_THINKING_BODY_ROWS = 3;
-
 /**
  * Tail of the pane body: reasoning/thinking (dim) above streamed output when both
  * exist, but cap thinking so long traces cannot crowd out live code.
@@ -464,6 +506,8 @@ const MAX_THINKING_BODY_ROWS = 3;
  * @returns {{ text: string, thinking?: boolean }[]}
  */
 function paneBodyLines(s, bodyRows) {
+  // Phase 1 — reasoning only (no text/output yet): give the whole pane to the
+  // thinking trace so the user sees the model's reasoning as it streams.
   if (!s.buffer) {
     const thinkingLines = s.thinkingBuffer ? tailLines(s.thinkingBuffer, bodyRows) : [];
     const lines = thinkingLines.map((text) => ({ text, thinking: true }));
@@ -472,14 +516,17 @@ function paneBodyLines(s, bodyRows) {
     }
     return lines;
   }
-  const thinkRows = s.thinkingBuffer
-    ? Math.min(MAX_THINKING_BODY_ROWS, Math.max(0, bodyRows - 1))
-    : 0;
-  const outRows = bodyRows - thinkRows;
-  const thinkingLines = thinkRows > 0 ? tailLines(s.thinkingBuffer, thinkRows) : [];
-  const outputLines = tailLines(s.buffer, outRows);
-  const lines = thinkingLines.map((text) => ({ text, thinking: true }));
-  for (const text of outputLines) {
+  // Phase 2 — code/response has started appearing. Show the code as soon as it
+  // arrives by giving it the full pane; the reasoning trace recedes to a single
+  // dimmed indicator line so it's acknowledged but no longer eats rows the code
+  // needs. The thinking content is preserved in s.thinkingBuffer for the result
+  // transcript; only the live pane prioritizes the code once it exists.
+  const lines = [];
+  if (s.thinkingBuffer) {
+    lines.push({ text: "reasoning…", thinking: true });
+  }
+  const outRows = bodyRows - lines.length;
+  for (const text of tailLines(s.buffer, outRows)) {
     lines.push({ text });
   }
   while (lines.length < bodyRows) {
@@ -510,6 +557,9 @@ function makeSide(header) {
     firstDeltaMs: null,
     frozenMs: 0,
     inputTokens: null,
+    cacheWrite1hTokens: null,
+    cacheWrite5mTokens: null,
+    cacheReadTokens: null,
     outputTokens: null,
     cost: 0,
     costFinalized: false,

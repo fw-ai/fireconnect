@@ -6,13 +6,9 @@
  * `fireconnect claude` (same routing check as status).
  */
 
-import { defaultClaudeModelMapping } from "../harnesses/claude/model-profile.mjs";
-import { stripClaudeCodeContextSuffix } from "../harnesses/claude/code-context.mjs";
 import {
   FIREROUTER_ROUTER_ID,
-  isClaudeNativeModel,
   isFirerouterModel,
-  shortFireworksModelRef,
 } from "../fireworks/model-id.mjs";
 import {
   FIREWORKS_MODEL_SPECS,
@@ -36,11 +32,31 @@ import { prettyClaudeLabel, providerListPricing } from "./incumbent-detect.mjs";
 /** Claude Code subscription aliases — routed through Fireworks when fireconnected. */
 export const ANTHROPIC_SLOT_IDS = Object.freeze(["opus", "sonnet", "haiku", "fable"]);
 
+/**
+ * Concrete canonical Anthropic model ids for each slot — the Claude 5 family
+ * (mid-2026). The demo's incumbent side races REAL Anthropic by passing these to
+ * `claude -p --model`, which bypasses the `ANTHROPIC_DEFAULT_*_MODEL` alias
+ * expansion (so the user's fireconnect slot pin doesn't redirect the incumbent
+ * to a Fireworks backend). The request still routes through the Fireworks AI
+ * gateway via the live `ANTHROPIC_BASE_URL` + Fireworks key — the gateway serves
+ * real Anthropic models by concrete id, no separate Anthropic credential needed.
+ * Single source of truth for both `demoCliModel` (routing) and `demoModelRates`
+ * (pricing) so the cost estimate matches what actually runs.
+ */
+export const ANTHROPIC_SLOT_CONCRETE_IDS = Object.freeze({
+  opus: "claude-opus-5",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+  fable: "claude-fable-5",
+});
+
+// Labels include the version, matching the concrete id that actually runs
+// (claude-opus-5 etc.) so two different Anthropic sides are distinguishable.
 const ANTHROPIC_SLOT_LABELS = Object.freeze({
-  opus: "Claude Opus",
-  sonnet: "Claude Sonnet",
-  haiku: "Claude Haiku",
-  fable: "Claude Fable",
+  opus: "Claude Opus 5",
+  sonnet: "Claude Sonnet 5",
+  haiku: "Claude Haiku 4.5",
+  fable: "Claude Fable 5",
 });
 
 const DEFAULT_LEFT_MODEL = "opus";
@@ -201,59 +217,75 @@ function toDemoRateShape(pricing, { label, pricingRef, forceEstimated = false })
 }
 
 /**
+ * Resolve FireRouter pricing. FireRouter is a delegating router with no
+ * per-token price of its own, so it has no spec/catalog entry; fall back to a
+ * stable priced router (`glm-5p2-fast`) as an estimate when neither the live
+ * serverless catalog nor the static specs carry a rate for it.
+ *
+ * Shared by the top-level `firerouter` demo id and by Anthropic slots whose
+ * pinned backend is FireRouter (e.g. `opus` -> `firerouter[1m]`).
+ * @param {string} id
+ * @param {string} labelPrefix Optional "Claude Opus (via …)" prefix for slots.
+ * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, source: string, label: string, estimated?: boolean } | null}
+ */
+function firerouterRates(id, labelPrefix = null) {
+  const p = lookupFireworksPricing(id)
+    ?? lookupFireworksPricing(FIREROUTER_ROUTER_ID);
+  if (p) {
+    return toDemoRateShape(p, {
+      label: labelPrefix ? `${labelPrefix} (via ${p.label})` : p.label,
+      pricingRef: id,
+    });
+  }
+  const fallback = lookupFireworksPricing("glm-5p2-fast");
+  if (!fallback) {
+    return null;
+  }
+  return toDemoRateShape(fallback, {
+    label: labelPrefix
+      ? `${labelPrefix} (via ${demoModelLabel(id)}, estimate)`
+      : `${demoModelLabel(id)} (estimate)`,
+    pricingRef: "glm-5p2-fast",
+    forceEstimated: true,
+  });
+}
+
+/**
  * Rate table shape used by measurement / TUI.
  * @param {string} id
  * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, source: string, label: string, estimated?: boolean } | null}
  */
 export function demoModelRates(id, keyType = "fireworks", slotMapping = null) {
   if (isAnthropicSlotModel(id)) {
-    const defaults = defaultClaudeModelMapping(keyType);
-    const mapped = slotMapping?.[id];
-    const backendId = mapped
-      ? shortFireworksModelRef(stripClaudeCodeContextSuffix(String(mapped).trim()))
-      : defaults[id];
-    if (isClaudeNativeModel(backendId)) {
-      const list = providerListPricing({ provider: "anthropic", modelId: id });
-      return {
-        inputPerMillion: list.inputPerMillion,
-        outputPerMillion: list.outputPerMillion,
-        cachedInputPerMillion: list.cachedInputPerMillion,
-        tier: list.tier,
-        source: list.source,
-        // Parallel to the Fireworks branch's "Claude Opus (via DeepSeek V4 Pro)".
-        // Using list.label here renders "Claude Sonnet (Claude Sonnet)", since the
-        // Anthropic rate table labels the slot with the same name.
-        label: `${demoModelLabel(id)} (via Anthropic)`,
-        ...(list.estimated ? { estimated: true } : {}),
-      };
-    }
-    const p = backendId ? lookupFireworksPricing(backendId) : null;
-    if (!p) {
-      return null;
-    }
-    return toDemoRateShape(p, {
-      label: `${demoModelLabel(id)} (via ${p.label})`,
-      pricingRef: backendId,
-    });
+    // The incumbent side always runs the concrete canonical Anthropic id
+    // (ANTHROPIC_SLOT_CONCRETE_IDS) via `claude -p --model`, which bypasses the
+    // user's `ANTHROPIC_DEFAULT_*_MODEL` slot pin — so what runs is real
+    // Anthropic regardless of the live mapping. Price it off the Anthropic list
+    // table using that same concrete id, so the cost estimate matches reality.
+    const concreteId = ANTHROPIC_SLOT_CONCRETE_IDS[id];
+    const list = providerListPricing({ provider: "anthropic", modelId: concreteId });
+    const slotLabel = demoModelLabel(id);
+    return {
+      inputPerMillion: list.inputPerMillion,
+      outputPerMillion: list.outputPerMillion,
+      cachedInputPerMillion: list.cachedInputPerMillion,
+      // Anthropic prompt-cache rates (providerListPricing carries these via
+      // toRateShape); included so result.json/compare.html show real write/read
+      // rates, not $0, for the Anthropic incumbent.
+      cacheWrite1hPerMillion: list.cacheWrite1hPerMillion ?? 0,
+      cacheWrite5mPerMillion: list.cacheWrite5mPerMillion ?? 0,
+      cacheReadPerMillion: list.cacheReadPerMillion ?? list.cachedInputPerMillion ?? 0,
+      tier: list.tier,
+      source: list.source,
+      // "Claude Opus 5 (via Anthropic)" — parallel to the Fireworks branch's
+      // "Claude Opus (via DeepSeek V4 Pro)". Using list.label would render the
+      // slot name twice ("Claude Sonnet (Claude Sonnet)"), so use the slot label.
+      label: `${slotLabel} (via Anthropic)`,
+      ...(list.estimated ? { estimated: true } : {}),
+    };
   }
   if (id === "firerouter" || isFirerouterModel(id)) {
-    const p = lookupFireworksPricing(id)
-      ?? lookupFireworksPricing(FIREROUTER_ROUTER_ID);
-    if (p) {
-      return toDemoRateShape(p, {
-        label: p.label,
-        pricingRef: id,
-      });
-    }
-    const fallback = lookupFireworksPricing("glm-5p2-fast");
-    if (!fallback) {
-      return null;
-    }
-    return toDemoRateShape(fallback, {
-      label: `${demoModelLabel(id)} (estimate)`,
-      pricingRef: "glm-5p2-fast",
-      forceEstimated: true,
-    });
+    return firerouterRates(id);
   }
   const p = lookupFireworksPricing(id);
   if (!p) {

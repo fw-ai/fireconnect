@@ -21,7 +21,7 @@ then watch the split-pane race and open the browser comparison.
   same auth and routing as \`fireconnect claude\`. Only \`--model\` differs
   per side; ~/.claude/settings.json is never modified.
 
-Games: tetris (default), tictactoe, snake, clock, custom.
+Games: tetris (default), snake, clock, custom.
 
 Options:
   --prompt <preset|task>    Game preset or custom standalone HTML task.

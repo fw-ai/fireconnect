@@ -112,12 +112,11 @@ and the IDEs by removing only what FireConnect registered.
 
 | Slot / harness | Default |
 |----------------|---------|
-| Claude `main` | `claude-default` (native — Claude Code's own default model) |
 | Claude `opus` | `firerouter` on first connect when FireRouter auth is available; otherwise `kimi-fast-latest` |
 | Claude `sonnet` | `glm-fast-latest` |
 | Claude `fable` | `kimi-fast-latest` when FireRouter takes Opus; otherwise `deepseek-pro-latest` |
 | Claude `haiku` | `deepseek-flash-latest` |
-| Claude `subagent` | `claude-default` (native — Claude Code's own default subagent model) |
+| Claude `subagent` | `deepseek-flash-latest` |
 | OpenCode, Codex, Pi, Cursor, VS Code, DeepSeek Harness | `kimi-fast-latest` |
 | Fire Pass (`fpk_...`) | `kimi-fast-latest` everywhere |
 

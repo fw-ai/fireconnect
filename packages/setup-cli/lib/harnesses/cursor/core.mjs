@@ -561,6 +561,20 @@ export function setUseOpenAiKey(blob, enabled) {
 }
 
 /**
+ * Fields only FireConnect writes. Their presence is proof we applied config to
+ * this Cursor, independent of whether the API key is still readable.
+ * @param {object} blob
+ * @returns {boolean}
+ */
+export function cursorHasFireconnectMarkers(blob) {
+  const ai = blob?.aiSettings ?? {};
+  return (ai[FIRECONNECT_ADDED_FIELD]?.length > 0)
+    || (ai[FIRECONNECT_TOUCHED_MODES_FIELD]?.length > 0)
+    || (ai[FIRECONNECT_DISABLED_FIELD]?.length > 0)
+    || (ai[FIRECONNECT_TOGGLED_OFF_FIELD]?.length > 0);
+}
+
+/**
  * @param {object} blob
  * @param {string} openAIKey
  * @returns {"fireworks" | "azure" | "none"}
@@ -569,6 +583,19 @@ export function cursorProviderStatus(blob, openAIKey) {
   const using = blob?.useOpenAIKey === true;
   const key = openAIKey || "";
   if (!using || !key) {
+    // An unreadable key does not mean Cursor is unmanaged. A half-finished
+    // teardown clears the key cell but can leave the blob untouched — the base
+    // URL still points at us, our models are still registered, and the built-ins
+    // we hid are still hidden. Reporting "none" here made `off` a no-op and hid
+    // the harness from `uninstall`, so those built-ins could never come back.
+    // Our own markers settle it: if they are present, report where we pointed
+    // Cursor so the teardown can finish.
+    if (cursorHasFireconnectMarkers(blob)) {
+      const managedBase = typeof blob?.openAIBaseUrl === "string" ? blob.openAIBaseUrl : "";
+      if (managedBase) {
+        return managedBase === CURSOR_FIREWORKS_BASE_URL ? "fireworks" : "azure";
+      }
+    }
     return "none";
   }
   if (isFireworksShapedKey(key)) {
@@ -987,18 +1014,21 @@ export async function enableCursorAzure({ dbPath, dataDir, apiKey, baseUrl, mode
  * the applicationUser blob + OpenAI key cell byte-for-byte; otherwise strip
  * only what fireconnect owns (legacy/no-backup case).
  *
- * @param {{ dbPath: string, dataDir: string, wasEnabled?: boolean }} opts
+ * The strip path is gated on our ownership markers alone. It deliberately does
+ * not also require Cursor to look "active": a teardown that cleared the key cell
+ * without finishing the blob strip leaves no readable key, and requiring one made
+ * this a permanent no-op on exactly the state that most needs repairing.
+ *
+ * @param {{ dbPath: string, dataDir: string }} opts
  * @returns {Promise<"restored" | "stripped" | "none">}
  */
-export async function disableCursorFireworks({ dbPath, dataDir, wasEnabled = false }) {
+export async function disableCursorFireworks({ dbPath, dataDir }) {
   const backup = await readCursorBackup(dataDir, dbPath);
   const hasBackup = backup.snapshot !== undefined;
 
   const appUserRaw = await readCursorValue(dbPath, APPLICATION_USER_KEY);
   const blob = appUserRaw ? JSON.parse(appUserRaw) : {};
   normalizeAiSettingsInPlace(blob);
-  const priorKey = await readCursorOpenAiKey(dbPath);
-  const active = cursorProviderStatus(blob, priorKey) !== "none";
 
   if (hasBackup) {
     if (backup.dbPath !== undefined && backup.dbPath !== path.resolve(dbPath)) {
@@ -1033,22 +1063,22 @@ export async function disableCursorFireworks({ dbPath, dataDir, wasEnabled = fal
     return "restored";
   }
 
-  if (!wasEnabled && !active) {
-    return "none";
-  }
-
   // Only strip what fireconnect owns. If the user set up Fireworks routing
   // manually (no fireconnectAddedModels / fireconnectTouchedModes markers),
   // there's nothing for us to clean up — touching their config would destroy
   // a setup we didn't create.
-  const hasFireconnectMarkers =
-    (blob.aiSettings?.fireconnectAddedModels?.length > 0)
-    || (blob.aiSettings?.fireconnectTouchedModes?.length > 0)
-    || (blob.aiSettings?.fireconnectDisabledModels?.length > 0)
-    || (blob.aiSettings?.fireconnectToggledOffModels?.length > 0);
+  const hasFireconnectMarkers = cursorHasFireconnectMarkers(blob);
   if (!hasFireconnectMarkers) {
     return "none";
   }
+
+  // The markers above are the only gate. There used to be an additional
+  // "is Cursor actually active?" check here, which stranded a half-finished
+  // teardown: one that cleared the key cell without completing the blob strip
+  // leaves Cursor with no readable key (so it looks inactive) while still
+  // routed, our models registered, and its built-ins hidden. `off` then
+  // reported "nothing changed" on every run and the built-ins could not be
+  // recovered. Markers mean the config is ours and there is work to do.
 
   let next = removeFireconnectModels(blob);
   next = resetFireconnectModelConfig(next);

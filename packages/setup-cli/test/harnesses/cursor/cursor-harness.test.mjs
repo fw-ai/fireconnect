@@ -207,6 +207,43 @@ describe("cursor-core pure transforms", () => {
     assert.equal(cursorProviderStatus(fw, "sk-ant-abc"), "none");
   });
 
+  // Regression: a teardown that cleared the key cell without finishing the blob
+  // strip leaves Cursor routed with its built-ins hidden and no readable key.
+  // Reporting "none" for that made `off` a permanent no-op and hid the harness
+  // from `uninstall`, so the built-ins could never be restored. Seen in the
+  // wild: 9 models registered, 18 built-ins hidden, key cell empty.
+  it("cursorProviderStatus still reports managed when the key is gone", () => {
+    const stranded = baseBlob({
+      useOpenAIKey: true,
+      openAIBaseUrl: CURSOR_FIREWORKS_BASE_URL,
+      aiSettings: {
+        userAddedModels: ["kimi-fast-latest"],
+        modelOverrideEnabled: [],
+        modelOverrideDisabled: ["auto-smart"],
+        modelConfig: {},
+        fireconnectAddedModels: ["kimi-fast-latest"],
+        fireconnectDisabledModels: ["auto-smart"],
+      },
+    });
+    assert.equal(cursorProviderStatus(stranded, ""), "fireworks");
+    // Azure is distinguished by the base URL we pointed Cursor at.
+    assert.equal(
+      cursorProviderStatus({ ...stranded, openAIBaseUrl: "https://x.services.ai.azure.com" }, ""),
+      "azure",
+    );
+  });
+
+  it("cursorProviderStatus does not claim a keyless Cursor we never touched", () => {
+    // Same missing key, but no markers: this is the user's own config, so it
+    // must stay "none" or `off` would strip a setup FireConnect did not create.
+    const untouched = baseBlob({
+      useOpenAIKey: true,
+      openAIBaseUrl: "https://api.openai.com/v1",
+      aiSettings: { userAddedModels: ["gpt-4o"], modelOverrideEnabled: [], modelConfig: {} },
+    });
+    assert.equal(cursorProviderStatus(untouched, ""), "none");
+  });
+
   it("cursorCurrentModelId reads the active model for a mode", () => {
     let b = baseBlob();
     b = setModeModel(b, "composer", "glm-5p2");

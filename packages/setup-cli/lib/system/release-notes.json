@@ -1,6 +1,15 @@
 {
   "releases": [
     {
+      "version": "0.9.4",
+      "highlights": [
+        "`fireconnect claude demo`: improved cost calculation and racing experience.",
+        "`fireconnect cursor on/off`: more robust; uninstall now waits for Cursor to quit before restoring, preventing broken state.",
+        "`fireconnect uninstall`: paced, harness-by-harness checklist that waits for IDEs to quit."
+      ],
+      "footer": ""
+    },
+    {
       "version": "0.9.3",
       "highlights": [
         "New Claude Code defaults: Sonnet on Anthropic's own model, Opus on `deepseek-pro-latest`, Haiku and subagents on `deepseek-flash-latest`. Change them with `fireconnect claude --interactive`.",

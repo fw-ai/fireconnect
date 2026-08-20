@@ -21,6 +21,11 @@ async function loadNodeSqlite() {
   }
   nodeSqliteChecked = true;
   try {
+    // `node:sqlite` emits an ExperimentalWarning on import. It is filtered by
+    // the persistent handler installed in bin/fireconnect.mjs — suppressing it
+    // around this import does not work, because `process.emitWarning` defers
+    // to `process.nextTick`, so the warning fires after any local window here
+    // would have closed.
     const mod = await import("node:sqlite");
     NodeSqlite = mod.DatabaseSync;
   } catch {

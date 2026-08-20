@@ -13,3 +13,8 @@ node_modules/
 # fireconnect demo — generated output + local scratch (any dir, not just root)
 fireconnect-demo/
 debug.log
+
+# Local demo measurement output (not source)
+fc-measure/
+fireconnect-demo/
+fc-measure-run.sh

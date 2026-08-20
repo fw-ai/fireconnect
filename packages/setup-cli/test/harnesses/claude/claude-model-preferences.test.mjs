@@ -142,7 +142,7 @@ describe("Claude model preferences", () => {
     );
   });
 
-  it("rejects a stored FireRouter profile when native auth disappears", async () => {
+  it("keeps a stored FireRouter profile when native auth is undetectable", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-prefs-"));
     const settingsPath = userSettingsPath(home);
     const env = cliEnv(home);
@@ -157,14 +157,13 @@ describe("Claude model preferences", () => {
     assert.equal((await runFireconnect(["claude", "off"], env)).code, 0);
 
     await writeJson(settingsPath, { theme: "dark" });
-    const before = await readJsonIfExists(settingsPath);
-    const rejected = await runFireconnect(
+    const restored = await runFireconnect(
       ["claude", "on", "--non-interactive"],
       env,
     );
-    assert.notEqual(rejected.code, 0);
-    assert.match(rejected.stderr, /FireRouter requires Claude sign-in/);
-    assert.deepEqual(await readJsonIfExists(settingsPath), before);
+    assert.equal(restored.code, 0, restored.stderr);
+    const settings = await readJsonIfExists(settingsPath);
+    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
   });
 
   it("preserves live customizations when the managed key is temporarily unreadable", async () => {

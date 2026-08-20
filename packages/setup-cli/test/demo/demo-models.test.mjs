@@ -11,6 +11,7 @@ import {
   defaultLeftModel,
   defaultRightModel,
   demoSideDisplayLabel,
+  ANTHROPIC_SLOT_CONCRETE_IDS,
 } from "../../lib/demo/demo-models.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
 
@@ -68,23 +69,29 @@ test("demoModelRates: resolves pricing for Fireworks, FireRouter, and Anthropic 
   assert.ok(fr);
   const anth = demoModelRates("opus");
   assert.ok(anth);
-  assert.match(anth.label, /via /);
-  // Sonnet is native by default, so it prices off the Anthropic list table and
-  // reads "(via Anthropic)" rather than repeating the model name.
+  assert.match(anth.label, /via Anthropic/);
+  // Sonnet prices off the Anthropic list table: "(via Anthropic)".
   const sonnet = demoModelRates("sonnet");
   assert.ok(sonnet);
-  assert.equal(sonnet.label, "Claude Sonnet (via Anthropic)");
+  assert.equal(sonnet.label, "Claude Sonnet 5 (via Anthropic)");
   assert.equal(sonnet.inputPerMillion, 2);
   assert.equal(sonnet.outputPerMillion, 10);
 
-  // Every Anthropic slot must price, whatever the mapping — a null here makes
-  // resolveSideRates throw when that slot is picked in the demo.
+  // Every Anthropic slot prices at its concrete canonical id's Anthropic list
+  // rate — the incumbent always runs real Anthropic, so a null here (which makes
+  // resolveSideRates throw) must never happen, regardless of the live mapping.
+  const EXPECTED = {
+    opus: { in: 5, out: 25 },
+    sonnet: { in: 2, out: 10 },
+    haiku: { in: 1, out: 5 },
+    fable: { in: 10, out: 50 },
+  };
   for (const slot of ["opus", "sonnet", "haiku", "fable"]) {
-    const native = demoModelRates(slot, "fireworks", { [slot]: "claude-default" });
-    assert.ok(native, `${slot} mapped to claude-default must resolve rates`);
-    assert.ok(native.inputPerMillion > 0, `${slot} needs a real input rate`);
-    assert.ok(demoModelRates(slot), `${slot} default mapping must resolve rates`);
-    assert.ok(demoModelRates(slot, "firepass"), `${slot} firepass must resolve rates`);
+    const rates = demoModelRates(slot);
+    assert.ok(rates, `${slot} must resolve rates`);
+    assert.equal(rates.inputPerMillion, EXPECTED[slot].in, `${slot} input rate`);
+    assert.equal(rates.outputPerMillion, EXPECTED[slot].out, `${slot} output rate`);
+    assert.match(rates.label, /via Anthropic/);
   }
 });
 
@@ -128,12 +135,28 @@ test("demoModelRates: uses live serverless catalog when warmed", () => {
   }
 });
 
-test("demoModelRates: anthropic slot uses live mapping when provided", () => {
-  const defaultRates = demoModelRates("opus");
-  const mappedRates = demoModelRates("opus", "fireworks", { opus: "glm-fast-latest" });
-  assert.ok(defaultRates);
-  assert.ok(mappedRates);
-  assert.notEqual(mappedRates.label, defaultRates.label);
+test("demoModelRates: anthropic slot ignores the live slot mapping — always real Anthropic", () => {
+  // The incumbent side is pinned to a concrete Anthropic id via demoCliModel,
+  // bypassing the user's ANTHROPIC_DEFAULT_*_MODEL slot pin. So pricing must
+  // reflect real Anthropic at list price regardless of what the slot is pinned
+  // to in the live settings (firerouter, a Fireworks model, claude-default, or
+  // firepass) — never null, never the Fireworks backend's rate.
+  const baseline = demoModelRates("opus");
+  for (const mapping of [
+    { opus: "firerouter[1m]" },
+    { opus: "accounts/fireworks/routers/firerouter[1m]" },
+    { opus: "glm-fast-latest" },
+    { opus: "claude-default" },
+    { opus: "claude-opus-4-5" },
+  ]) {
+    const rates = demoModelRates("opus", "fireworks", mapping);
+    assert.ok(rates, `opus with mapping ${JSON.stringify(mapping)} must resolve`);
+    assert.equal(rates.inputPerMillion, baseline.inputPerMillion);
+    assert.equal(rates.outputPerMillion, baseline.outputPerMillion);
+    assert.equal(rates.label, "Claude Opus 5 (via Anthropic)");
+  }
+  // firepass key type likewise — the slot still races real Anthropic.
+  assert.ok(demoModelRates("opus", "firepass"));
 });
 
 test("defaults and display labels", () => {
@@ -141,6 +164,14 @@ test("defaults and display labels", () => {
   assert.equal(defaultRightModel(), "glm-fast-latest");
   assert.match(demoSideDisplayLabel("opus"), /^Anthropic · /);
   assert.match(demoSideDisplayLabel("glm-fast-latest"), /^Fireworks · /);
-  assert.equal(demoModelLabel("opus"), "Claude Opus");
+  assert.equal(demoModelLabel("opus"), "Claude Opus 5");
   assert.equal(isAnthropicSlotModel("fable"), true);
+  // Concrete canonical Anthropic ids for the Claude 5 family — single source of
+  // truth for both demoCliModel (routing) and demoModelRates (pricing).
+  assert.deepEqual(ANTHROPIC_SLOT_CONCRETE_IDS, {
+    opus: "claude-opus-5",
+    sonnet: "claude-sonnet-5",
+    haiku: "claude-haiku-4-5",
+    fable: "claude-fable-5",
+  });
 });

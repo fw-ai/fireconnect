@@ -408,7 +408,7 @@ function renderConfirmStep(state, labelWidth) {
   lines.push(`  ${DIM}Model A:${RESET}   ${BOLD}${demoModelLabel(state.leftModel)}${RESET}`);
   lines.push(`  ${DIM}Model B:${RESET}   ${BOLD}${demoModelLabel(state.rightModel)}${RESET}`);
   lines.push("");
-  lines.push(`  ${DIM}Both sides use your FireConnect Claude setup. Only --model changes.${RESET}`);
+  lines.push(`  ${DIM}Both sides use your FireConnect Claude setup. Anthropic slots run real Anthropic; only --model differs.${RESET}`);
   if (est) {
     lines.push(`  ${DIM}Est. cost:${RESET}   ~$${est.low.toFixed(2)}–$${est.high.toFixed(2)} · opens browser when done`);
   } else {

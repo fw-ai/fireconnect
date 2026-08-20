@@ -1,9 +1,11 @@
 import {
   CLAUDE_NATIVE_MODEL_ID,
+  CLAUDE_NATIVE_SLOT_ALIAS,
   DEFAULT_FIREPASS_MAIN_MODEL,
   defaultMainModel,
   fireworksModelSlug,
   isClaudeNativeModel,
+  isClaudeNativeSlotAlias,
   isFirerouterModel,
   normalizeModelId,
   validateModelId,
@@ -124,19 +126,48 @@ export function hasClaudeModelOverrides(ctx) {
   return Object.values(claudeModelOverridesFrom(ctx)).some(Boolean);
 }
 
+const CLAUDE_SLOT_FLAGS = Object.freeze({
+  main: "--model",
+  opus: "--opus",
+  sonnet: "--sonnet",
+  haiku: "--haiku",
+  fable: "--fable",
+  subagent: "--subagent",
+});
+
+/**
+ * Reject FireConnect's internal unpinned-slot sentinel when it arrives as a
+ * user-supplied slot value. `claude-default` names nothing Claude Code or the
+ * gateway can serve — inside FireConnect it only means "write no pin" — so
+ * accepting it as input is how it ends up back in settings.json as a model id.
+ * `native` is the spelling users are given for that intent.
+ *
+ * Persisted state is deliberately not checked here: a saved profile or a
+ * settings file written by an older release legitimately carries the sentinel,
+ * and {@link resolveClaudeModelMapping} canonicalizes those instead of failing.
+ */
+export function assertClaudeModelOverrides(ctx) {
+  for (const [slot, value] of Object.entries(claudeModelOverridesFrom(ctx))) {
+    if (!value || isClaudeNativeSlotAlias(value)) {
+      continue;
+    }
+    if (!isClaudeNativeModel(normalizeModelId(value))) {
+      continue;
+    }
+    const flag = CLAUDE_SLOT_FLAGS[slot];
+    throw new Error(
+      `${flag} ${value} is not a model id. Use \`${flag} ${CLAUDE_NATIVE_SLOT_ALIAS}\` `
+        + "to leave the slot on Claude Code's own default model.",
+    );
+  }
+}
+
 export function resolveClaudeModelMapping(overrides = {}, keyType = "fireworks") {
   const selected = mergeClaudeModelMappings(
     defaultClaudeModelMapping(keyType),
     overrides,
   );
-  for (const [slot, flag] of [
-    ["main", "--model"],
-    ["opus", "--opus"],
-    ["sonnet", "--sonnet"],
-    ["haiku", "--haiku"],
-    ["fable", "--fable"],
-    ["subagent", "--subagent"],
-  ]) {
+  for (const [slot, flag] of Object.entries(CLAUDE_SLOT_FLAGS)) {
     selected[slot] = normalizeModelId(selected[slot]);
     validateModelId(selected[slot], flag);
   }

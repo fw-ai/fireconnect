@@ -25,9 +25,15 @@ async function seedFireconnectedClaude(home) {
   );
 }
 
-test("demoCliModel: Anthropic slots pass through unchanged", () => {
-  assert.equal(demoCliModel("opus"), "opus");
-  assert.equal(demoCliModel("sonnet"), "sonnet");
+test("demoCliModel: Anthropic slots resolve to concrete canonical ids (real Anthropic)", () => {
+  // A concrete id bypasses ANTHROPIC_DEFAULT_*_MODEL alias expansion, so the
+  // incumbent runs real Anthropic instead of the user's fireconnect slot pin.
+  // claudeCodeModelId appends [1m] for 1M-context models; Haiku 4.5 is 200K,
+  // so it must NOT receive the [1m] suffix.
+  assert.equal(demoCliModel("opus"), "claude-opus-5[1m]");
+  assert.equal(demoCliModel("sonnet"), "claude-sonnet-5[1m]");
+  assert.equal(demoCliModel("haiku"), "claude-haiku-4-5");
+  assert.equal(demoCliModel("fable"), "claude-fable-5[1m]");
 });
 
 test("demoCliModel: Fireworks models get Claude Code context suffix when needed", () => {
@@ -44,7 +50,7 @@ test("prepareRouteSettings: resolves left/right cli models when claude is on", a
       rightModel: "glm-5p2-fast",
       home,
     });
-    assert.equal(result.leftCliModel, "opus");
+    assert.equal(result.leftCliModel, "claude-opus-5[1m]");
     assert.equal(result.rightCliModel, "glm-5p2-fast[1m]");
     assert.equal(typeof result.cleanup, "function");
   } finally {

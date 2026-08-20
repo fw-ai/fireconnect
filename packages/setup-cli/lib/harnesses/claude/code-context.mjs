@@ -1,5 +1,8 @@
 import {
+  CLAUDE_NATIVE_MODEL_ID,
   fireworksModelSlug,
+  isAnthropicModelId,
+  isClaudeNativeModel,
   isGatewayAnthropicSlot,
   isFirerouterGatewayPattern,
 } from "../../fireworks/model-id.mjs";
@@ -9,6 +12,25 @@ import { loadServerlessCatalog } from "../../fireworks/models.mjs";
 export const CLAUDE_CODE_1M_CONTEXT_THRESHOLD = 1_000_000;
 
 const CLAUDE_CODE_1M_SUFFIX = "[1m]";
+
+/**
+ * Concrete Anthropic model ids that support Claude Code's 1M context window.
+ * Per platform.claude.com/docs: Opus 5 / Sonnet 5 / Fable 5 ship 1M context;
+ * Haiku 4.5 is 200K, so it must NOT receive the `[1m]` suffix (the tag would
+ * request a context window the model doesn't have). The bare aliases (opus/
+ * sonnet/haiku/fable) resolve to these via ANTHROPIC_DEFAULT_*_MODEL, and a
+ * pinned slot could point at any id, so qualify on the concrete id — not the
+ * blanket `isGatewayAnthropicSlot` match.
+ */
+const ANTHROPIC_1M_CONTEXT_IDS = new Set([
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-opus-4-5",
+  "claude-sonnet-5",
+  "claude-fable-5",
+]);
 
 export function stripClaudeCodeContextSuffix(modelId) {
   if (typeof modelId !== "string") {
@@ -22,6 +44,25 @@ export function modelQualifiesForClaudeCode1mContext(modelId) {
     return false;
   }
   if (isGatewayAnthropicSlot(modelId)) {
+    // Concrete Anthropic ids served on the gateway: qualify only the ones that
+    // actually ship 1M context. Haiku 4.5 (200K) must NOT get the [1m] suffix.
+    // The bare aliases (opus/sonnet/haiku/fable) are handled by callers mapping
+    // them to a concrete id first (e.g. demoCliModel), so a bare alias reaching
+    // here is treated as qualifying (it expands to a 1M model by default).
+    const bare = stripClaudeCodeContextSuffix(modelId).toLowerCase();
+    if (bare === CLAUDE_NATIVE_MODEL_ID) {
+      // The native sentinel means "let Claude pick its own default", and those
+      // defaults (Opus 5 / Sonnet 5) DO have 1M context. It must therefore
+      // qualify here, because applyClaudeCodeContextPolicy uses this predicate to
+      // decide whether to set CLAUDE_CODE_DISABLE_1M_CONTEXT — answering "no"
+      // would switch 1M off for an all-native mapping. The separate question of
+      // whether to append the `[1m]` suffix is handled in claudeCodeModelId,
+      // which never tags the sentinel.
+      return true;
+    }
+    if (isAnthropicModelId(bare)) {
+      return ANTHROPIC_1M_CONTEXT_IDS.has(bare);
+    }
     return true;
   }
   if (isFirerouterGatewayPattern(modelId)) {
@@ -37,6 +78,11 @@ export function modelQualifiesForClaudeCode1mContext(modelId) {
 
 export function claudeCodeModelId(modelId) {
   if (!modelId || !modelQualifiesForClaudeCode1mContext(modelId)) {
+    return modelId;
+  }
+  // The native sentinel is not a real model id — tagging it would produce
+  // "claude-default[1m]". It qualifies for the 1M policy but never for a suffix.
+  if (isClaudeNativeModel(modelId)) {
     return modelId;
   }
   return `${stripClaudeCodeContextSuffix(modelId)}${CLAUDE_CODE_1M_SUFFIX}`;

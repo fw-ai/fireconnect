@@ -16,16 +16,13 @@ import {
   resolveClaudeModelMapping,
   savedClaudeModelMapping,
 } from "./model-profile.mjs";
-import { hasClaudeOAuthCredentials } from "./oauth.mjs";
-
 export async function readClaudeActivationSnapshot(ctx) {
   const paths = claudePathsFor(ctx);
-  const [settings, backup, state, globalConfig, hasClaudeOAuth] = await Promise.all([
+  const [settings, backup, state, globalConfig] = await Promise.all([
     readJsonIfExists(paths.settingsPath),
     readJsonIfExists(providerBackupPath(paths.dataDir)),
     readJsonIfExists(providerStatePath(paths.dataDir)),
     readGlobalConfig(ctx.home),
-    hasClaudeOAuthCredentials({ home: ctx.home, settingsPath: paths.settingsPath }),
   ]);
   const intent = claudeFireconnectIntent(settings, { backup, state });
   return {
@@ -33,7 +30,6 @@ export async function readClaudeActivationSnapshot(ctx) {
     settings,
     backup,
     state,
-    hasClaudeOAuth,
     intent,
     profiles: normalizeClaudeProfiles(
       globalConfig.harnesses[HARNESS.CLAUDE]?.profiles,

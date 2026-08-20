@@ -13,10 +13,7 @@ import { FIRECONNECT_REFERER, runFireconnect, withTempHome, assertClaudeMainMode
 
 const FIREWORKS_KEY = "fw_claude_matrix_key_000000000000";
 const ANTHROPIC_KEY = "sk-ant-claude-matrix-byok";
-const DIRECT_MAIN_MODEL = "kimi-fast-latest[1m]";
-const DIRECT_ALIAS_MODEL = "glm-fast-latest[1m]";
 const KIMI_FABLE_MODEL = "kimi-fast-latest[1m]";
-const DS_PRO_OPUS_MODEL = "deepseek-pro-latest[1m]";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const SUBSCRIPTION_SETTINGS = `${JSON.stringify({
   model: "sonnet",
@@ -111,13 +108,6 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
           ANTHROPIC_AUTH_TOKEN: "",
         };
         const enabled = await runFireconnect(args, env);
-        const hasNativeAuth = scenario.subscription || scenario.byok;
-        if (scenario.firerouter && !hasNativeAuth) {
-          assert.notEqual(enabled.code, 0);
-          assert.match(enabled.stderr, /FireRouter requires Claude sign-in/);
-          assert.equal(await pathExists(settingsPath), false);
-          return;
-        }
         assert.equal(enabled.code, 0, enabled.stderr);
 
         const settings = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -127,18 +117,13 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
           settings.env.ANTHROPIC_API_KEY,
           scenario.byok ? ANTHROPIC_KEY : undefined,
         );
-        assert.equal(
-          settings.env.ANTHROPIC_AUTH_TOKEN,
-          hasNativeAuth ? undefined : FIREWORKS_KEY,
-        );
+        assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
         // Main stays native (unpinned) in every scenario; FireRouter is Opus-tier
         // so it lands on Opus (explicitly or via the fresh-default auto-pin), not Main.
         const expectedMain = undefined;
-        // Opus is firerouter when native auth is present (explicit --opus firerouter
-        // or the fresh-default auto-pin); otherwise the DeepSeek V4 Pro default.
-        const expectedOpus = hasNativeAuth
-          ? FIREROUTER_MODEL
-          : DS_PRO_OPUS_MODEL;
+        // Opus is firerouter whenever the slot is requested or auto-pinned for
+        // fw_ keys (no longer gated on detecting OAuth/BYOK up front).
+        const expectedOpus = FIREROUTER_MODEL;
         assertClaudeMainModel(settings, expectedMain);
         assert.equal(
           settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL,
@@ -154,11 +139,8 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         assert.match(headers, /X-Title: Claude Code/);
         assert.ok(headers.includes(`HTTP-Referer: ${FIRECONNECT_REFERER}`), headers);
         assert.doesNotMatch(headers, /x-anthropic-api-key:/i);
-        if (!hasNativeAuth) {
-          assert.match(enabled.stdout, /FireRouter off/);
-          assert.match(enabled.stdout, /Sign in to Claude/);
-          assert.match(enabled.stdout, /--anthropic-api-key/);
-        }
+        assert.doesNotMatch(enabled.stdout, /FireRouter off/);
+        assert.doesNotMatch(enabled.stdout, /Sign in to Claude/);
 
         if (scenario.subscription) {
           assert.equal(await readFile(credentialsPath, "utf8"), SUBSCRIPTION_CREDENTIALS);
@@ -206,7 +188,7 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
         assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FABLE_MODEL);
         assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
-        assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, FIREWORKS_KEY);
+        assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
         assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
       });
     } finally {
