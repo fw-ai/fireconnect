@@ -3,7 +3,7 @@ import { dispatchHarnessCommand } from "../../harness/types.mjs";
 import { getHarness } from "../../harness/registry.mjs";
 import { persistGlobalAnthropicApiKey } from "../../config/global-config.mjs";
 import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
-import { isFirerouterModel, normalizeModelId, validateModelId } from "../../fireworks/model-id.mjs";
+import { isFirerouterGatewayPattern, normalizeModelId, validateModelId } from "../../fireworks/model-id.mjs";
 import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
 import { supportsAnthropicApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
 import {
@@ -31,8 +31,8 @@ function validateHarnessOptions(route, ctx) {
   const claudeAliases = [ctx.opus, ctx.sonnet, ctx.haiku, ctx.fable, ctx.subagent];
   const claudeModels = [ctx.main, ...claudeAliases];
   const firerouterRequested = harnessId === HARNESS.CLAUDE
-    ? claudeModels.some((modelId) => isFirerouterModel(modelId))
-    : isFirerouterModel(ctx.main);
+    ? claudeModels.some((modelId) => isFirerouterGatewayPattern(modelId))
+    : isFirerouterGatewayPattern(ctx.main);
 
   if (ctx.provider && !ctx.azure) {
     throw new Error(

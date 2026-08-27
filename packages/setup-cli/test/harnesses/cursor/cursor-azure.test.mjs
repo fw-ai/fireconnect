@@ -87,6 +87,26 @@ describe("cursor azure harness", () => {
     });
   });
 
+  itIfSqlite("compound firerouter/<primary>/<fallback> is rejected in Azure mode", async () => {
+    await withTempHome("cursor-azure-firerouter-compound-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+      // The compound gateway form must trigger the same Azure-reject guard as
+      // bare `firerouter`. Previously isFirerouterModel (last-segment match)
+      // missed it, so the compound id bypassed the guard and was persisted.
+      const result = await runCli(
+        [
+          "cursor", "on", "--azure", "--base-url", AZURE_ENDPOINT,
+          "--api-key", AZURE_KEY, "--model", "firerouter/claude-opus-5/glm-5p2",
+          "--db-path", dbPath, "--force",
+        ],
+        { home, env: AZURE_ENV },
+      );
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /FireRouter is not supported in Cursor Azure mode/);
+    });
+  });
+
   itIfSqlite("on --azure points the OpenAI override at Foundry and registers the deployment", async () => {
     await withTempHome("cursor-azure-on-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");

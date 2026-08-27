@@ -112,6 +112,13 @@ describe("firerouter routing plan", () => {
       mainModel: "accounts/fireworks/routers/firerouter",
       isFirerouter: true,
     });
+    // The compound gateway form (firerouter/<primary>/<fallback>) is FireRouter
+    // too: isFirerouter must be true, and mainModel preserved verbatim (not
+    // collapsed to bare `firerouter`, which would drop the primary/fallback spec).
+    assert.deepEqual(resolveFirerouterPlan({ main: "firerouter/claude-opus-5/glm-5p2" }), {
+      mainModel: "firerouter/claude-opus-5/glm-5p2",
+      isFirerouter: true,
+    });
   });
 
   it("resolveFirerouterPlan keeps an explicit non-firerouter model", () => {

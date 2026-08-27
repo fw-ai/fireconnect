@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { isFirerouterModel } from "../fireworks/model-id.mjs";
+import { isFirerouterGatewayPattern } from "../fireworks/model-id.mjs";
 import {
   isAccountFeatureFlagEnabled,
 } from "../config/feature-flags.mjs";
@@ -325,7 +325,12 @@ export function resolveFirerouterPlan(ctx, { keyType = "" } = {}) {
     return { mainModel: "", isFirerouter: false };
   }
   assertFirerouterKeyType(requested, keyType);
-  return { mainModel: requested, isFirerouter: isFirerouterModel(requested) };
+  // Recognize the compound gateway form (firerouter/<primary>/<fallback>) as
+  // FireRouter, not just the bare `firerouter` id. isFirerouterModel checks only
+  // the final path segment, so it misses the compound form; the gateway-pattern
+  // check matches any firerouter* segment. Id-transform call sites keep using
+  // isFirerouterModel so the compound spec is preserved verbatim when written.
+  return { mainModel: requested, isFirerouter: isFirerouterGatewayPattern(requested) };
 }
 
 /** FireRouter is only offered for standard Fireworks keys, not Fire Pass. */
@@ -339,7 +344,7 @@ export const FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE =
  * @param {string} keyType
  */
 export function assertFirerouterKeyType(model, keyType) {
-  if (isFirerouterModel(model) && keyType === "firepass") {
+  if (isFirerouterGatewayPattern(model) && keyType === "firepass") {
     throw new Error(FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE);
   }
 }

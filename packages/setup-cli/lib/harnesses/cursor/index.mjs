@@ -6,7 +6,7 @@ import {
 import {
   printStructuredHarnessStatus,
 } from "../../harness/status-display.mjs";
-import { isFirerouterModel } from "../../fireworks/model-id.mjs";
+import { isFirerouterGatewayPattern } from "../../fireworks/model-id.mjs";
 import {
   loadRegisterableModels,
 } from "../../fireworks/models.mjs";
@@ -97,7 +97,12 @@ async function isCursorAzureOnRequest(ctx) {
 }
 
 async function cursorResolveOnContext(ctx) {
-  if (!isFirerouterModel(ctx.main)) {
+  // Recognize the compound gateway form (firerouter/<primary>/<fallback>) as
+  // FireRouter, not just the bare `firerouter` id. isFirerouterModel checks only
+  // the final path segment, so it misses the compound form and would skip the
+  // Azure-reject + workspace-BYOK guards below — letting an unservable compound
+  // id get persisted. isFirerouterGatewayPattern matches any firerouter* segment.
+  if (!isFirerouterGatewayPattern(ctx.main)) {
     return ctx;
   }
   if (await isCursorAzureOnRequest(ctx)) {
@@ -133,7 +138,7 @@ export default defineHarnessProfile({
       };
     },
     enable: async ({ ctx, paths, apiKey, baseUrl }) => {
-      if (isFirerouterModel(ctx.main)) {
+      if (isFirerouterGatewayPattern(ctx.main)) {
         rejectCursorFirerouterAzure();
       }
       await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
