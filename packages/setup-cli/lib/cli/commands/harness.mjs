@@ -3,7 +3,7 @@ import { dispatchHarnessCommand } from "../../harness/types.mjs";
 import { getHarness } from "../../harness/registry.mjs";
 import { persistGlobalAnthropicApiKey } from "../../config/global-config.mjs";
 import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
-import { isFirerouterModel } from "../../fireworks/model-id.mjs";
+import { isFirerouterModel, normalizeModelId, validateModelId } from "../../fireworks/model-id.mjs";
 import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
 import { supportsAnthropicApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
 import {
@@ -58,6 +58,21 @@ function validateHarnessOptions(route, ctx) {
   }
   if (ctx.main && !isOn) {
     throw new Error("--model applies only to `<harness> on`.");
+  }
+  // Validate every supplied model id structurally before any key verification
+  // or config write, so a malformed id (e.g. a truncated "firerouter/…" prefix)
+  // fails fast with a clear message instead of being persisted verbatim into a
+  // harness config. assertRequestedModelServable alone can't catch this: it
+  // checks only the final path segment against the catalog, so a bad prefix
+  // whose tail is a real slug slips through and corrupts the IDE's selection.
+  // Claude's bespoke `on` re-validates each slot via resolveClaudeModelMapping;
+  // validating here too makes every harness fail at the same point.
+  if (isOn) {
+    for (const [value, flag] of [[ctx.main, "--model"], ...claudeAliases.map((v) => [v, "--opus/--sonnet/--haiku/--fable/--subagent"])]) {
+      if (value) {
+        validateModelId(normalizeModelId(value), flag);
+      }
+    }
   }
   if (ctx.search) {
     throw new Error("--search applies only to `fireconnect model list`.");

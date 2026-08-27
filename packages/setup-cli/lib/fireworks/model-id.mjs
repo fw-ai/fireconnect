@@ -208,7 +208,8 @@ export function normalizeModelId(model) {
 export function validateModelId(model, flag) {
   if (!model.startsWith("accounts/") && model.includes("/") && !isFirerouterGatewayPattern(model)) {
     throw new Error(
-      `${flag} must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest`,
+      `${flag} must be a Fireworks model id — a stable -latest router alias like glm-fast-latest, `
+        + "firerouter, or a specific id like glm-5p2. Run `fireconnect model list` to see options.",
     );
   }
 }

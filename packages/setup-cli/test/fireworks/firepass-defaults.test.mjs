@@ -126,7 +126,7 @@ describe("Fire Pass defaults", () => {
   test("model ID validation shows model and router examples", () => {
     assert.throws(
       () => validateModelId("bad/provider/path", "--model"),
-      /--model must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest/,
+      /--model must be a Fireworks model id — a stable -latest router alias like glm-fast-latest.*firerouter, or a specific id like glm-5p2/,
     );
   });
 
