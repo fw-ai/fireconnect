@@ -36,6 +36,7 @@ describe("usage folder layout", () => {
     assert.deepEqual(MODULES, [
       "agent-picker",
       "agents",
+      "cost",
       "display",
       "format",
       "live",
@@ -44,6 +45,7 @@ describe("usage folder layout", () => {
       "meter-render",
       "meter-style",
       "meter",
+      "pricing",
       "report",
       "session-picker",
     ].sort());
@@ -71,10 +73,12 @@ describe("cost meter module layering", () => {
   // Lower may not import higher. Written out rather than derived, so an import
   // that inverts the chain fails here instead of quietly working.
   const ALLOWED = {
+    cost: [],
+    pricing: [],
     "meter-style": [],
-    "meter-layout": ["format"],
-    "meter-model": ["report"],
-    "meter-render": ["meter-style", "meter-layout", "meter-model", "format"],
+    "meter-layout": ["cost", "format"],
+    "meter-model": ["pricing"],
+    "meter-render": ["cost", "meter-style", "meter-layout", "meter-model", "format"],
     meter: ["meter-style", "meter-layout", "meter-model", "meter-render", "report"],
   };
 
@@ -123,13 +127,14 @@ describe("cost meter module layering", () => {
   });
 
   it("prices in exactly one place", () => {
-    // Live figures and the one-shot snapshot must not be able to drift, so
-    // `computeClaudeUsageCost` has a single caller.
+    // The definition is isolated in pricing; live and snapshot consumers call
+    // it rather than implementing their own rate math. The demo imports the same
+    // module from outside this folder.
     const callers = MODULES.filter((m) => /computeClaudeUsageCost/.test(read(m)));
     assert.deepEqual(
       callers.sort(),
-      ["meter-model", "report"],
-      "only meter-model (live) and report (its definition) may price calls",
+      ["meter-model", "pricing", "report"],
+      "only the canonical module and its live/snapshot consumers may price calls",
     );
   });
 
@@ -161,6 +166,8 @@ describe("cost meter module layering", () => {
       "meter-model": 300,
       "meter-render": 350,
       meter: 700,
+      cost: 80,
+      pricing: 220,
       format: 150,
       live: 400,
       agents: 350,

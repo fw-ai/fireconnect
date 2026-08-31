@@ -42,21 +42,6 @@ function isPinnedMainSlot(modelId) {
   return Boolean(modelId && modelId !== CLAUDE_NATIVE_MODEL_ID);
 }
 
-/**
- * Apply a fast/non-fast mapping without discarding a deliberate `--model` pin.
- *
- * For fw_ keys both mode mappings leave main native, so applying one verbatim
- * would silently clear a pin the user asked for. Fire Pass mappings do pin main
- * (it has no Anthropic fallback) and it is a normal editable row there, so the
- * toggle must update it like every other slot.
- */
-function mappingForMode(target, current) {
-  if (isPinnedMainSlot(target.main) || !isPinnedMainSlot(current.main)) {
-    return { ...target };
-  }
-  return { ...target, main: current.main };
-}
-
 function onboardingSlotOrder(keyType, mapping = null) {
   if (keyType === "firepass") {
     return FIREPASS_SLOT_ORDER;
@@ -73,17 +58,6 @@ const SLOT_INTENT = Object.freeze({
   haiku: "low latency · low cost",
   fable: "lighter general work · vision",
   subagent: "fast · economical tool use",
-});
-
-// Non-fast counterparts of the defaults. Native slots stay native here too, so
-// toggling non-fast never pins a main model or replaces the native Sonnet.
-const STANDARD_MODELS = Object.freeze({
-  main: CLAUDE_NATIVE_MODEL_ID,
-  opus: "glm-latest",
-  sonnet: CLAUDE_NATIVE_MODEL_ID,
-  haiku: "deepseek-v4-pro",
-  fable: "kimi-latest",
-  subagent: "deepseek-v4-pro",
 });
 
 function profileChoiceName(label, detail, output) {
@@ -121,17 +95,6 @@ export function printClaudeModelMapping(mapping, output = process.stdout) {
   output.write("\n");
 }
 
-/**
- * The non-fast profile keeps aliases stable so future model upgrades can move
- * behind the aliases without changing persisted user preferences.
- */
-export function standardClaudeModelMapping(keyType = "fireworks") {
-  if (keyType === "firepass") {
-    return Object.fromEntries(CLAUDE_MODEL_SLOTS.map((slot) => [slot, "glm-latest"]));
-  }
-  return { ...STANDARD_MODELS };
-}
-
 function pickerChoice(model, options, output) {
   const badges = modelPickerBadges(model, options);
   const pricing = model.pricing?.display ?? "";
@@ -152,16 +115,12 @@ async function selectModelForSlot({
   mapping,
   recommended,
   catalog,
-  selectionMode,
   select,
   search,
   input,
   output,
 }) {
-  const compatibleCatalog = selectionMode === "non-fast"
-    ? catalog.filter((model) => !model.fast && !model.firerouter)
-    : catalog;
-  if (compatibleCatalog.length === 0) {
+  if (catalog.length === 0) {
     return null;
   }
   const options = {
@@ -169,8 +128,8 @@ async function selectModelForSlot({
     currentModel: mapping[slot],
     recommendedModel: recommended[slot],
   };
-  const ranked = rankClaudeModelsForSlot(compatibleCatalog, options);
-  const suitable = suitableClaudeModelsForSlot(compatibleCatalog, options);
+  const ranked = rankClaudeModelsForSlot(catalog, options);
+  const suitable = suitableClaudeModelsForSlot(catalog, options);
   const choices = suitable.map((model) => ({
     ...pickerChoice(model, options, output),
     value: { action: "model", model },
@@ -205,8 +164,6 @@ async function selectModelForSlot({
 export async function runClaudeMappingEditor({
   initialMapping,
   recommended,
-  fastMapping = recommended,
-  nonFastMapping,
   baselineLabel = "Recommended",
   slots = ONBOARDING_SLOT_ORDER,
   catalog = null,
@@ -218,17 +175,6 @@ export async function runClaudeMappingEditor({
 }) {
   let mapping = { ...initialMapping };
   let availableCatalog = catalog;
-  const nonFastChangesNothing = slots
-    .every((slot) => fastMapping[slot] === nonFastMapping[slot]);
-  // "Already non-fast" means the mapping the non-fast button would produce, not a
-  // raw comparison against nonFastMapping — otherwise a preserved main pin (which
-  // the toggle keeps) reads as a difference and the header claims fast mode while
-  // every editable slot is already non-fast.
-  const nonFastBaseline = mappingForMode(nonFastMapping, initialMapping);
-  const baselineSelectionMode = CLAUDE_MODEL_SLOTS.every(
-    (slot) => initialMapping[slot] === nonFastBaseline[slot],
-  ) ? "non-fast" : "all";
-  let selectionMode = baselineSelectionMode;
   let focus = slots.length;
   while (true) {
     const changed = CLAUDE_MODEL_SLOTS.some(
@@ -249,15 +195,6 @@ export async function runClaudeMappingEditor({
         value: { action: "save" },
         short: "Save mapping",
       },
-      {
-        name: profileChoiceName(
-          selectionMode === "non-fast" ? "Use fast models" : "Use non-fast models",
-          selectionMode === "non-fast" || nonFastChangesNothing ? "" : "all slots",
-          output,
-        ),
-        value: { action: selectionMode === "non-fast" ? "fast" : "non-fast" },
-        short: selectionMode === "non-fast" ? "Fast models" : "Non-fast models",
-      },
       ...(changed ? [{
         name: profileChoiceName(
           baselineLabel === "Current" ? "Discard edits" : "Reset to recommended",
@@ -269,9 +206,7 @@ export async function runClaudeMappingEditor({
       }] : []),
     ];
     const action = await select({
-      message: selectionMode === "non-fast"
-        ? "Claude model mapping · Non-fast mode · select a row to change it"
-        : "Claude model mapping · select a row to change it",
+      message: "Claude model mapping · select a row to change it",
       choices,
       initialIndex: focus,
       summary: false,
@@ -280,21 +215,8 @@ export async function runClaudeMappingEditor({
     });
     if (!action) return null;
     if (action.action === "save") return mapping;
-    if (action.action === "non-fast") {
-      mapping = mappingForMode(nonFastMapping, mapping);
-      selectionMode = "non-fast";
-      focus = slots.length;
-      continue;
-    }
-    if (action.action === "fast") {
-      mapping = mappingForMode(fastMapping, mapping);
-      selectionMode = "all";
-      focus = slots.length;
-      continue;
-    }
     if (action.action === "reset") {
       mapping = { ...initialMapping };
-      selectionMode = baselineSelectionMode;
       focus = slots.length;
       continue;
     }
@@ -302,9 +224,8 @@ export async function runClaudeMappingEditor({
     const model = await selectModelForSlot({
       slot: action.slot,
       mapping,
-      recommended: selectionMode === "non-fast" ? nonFastMapping : recommended,
+      recommended,
       catalog: availableCatalog,
-      selectionMode,
       select,
       search,
       input,
@@ -323,8 +244,8 @@ export async function runClaudeMappingEditor({
  * mostly-Anthropic mapping is one or two edits away from the same defaults.
  *
  * @param {{
- *   recommended: Record<string, string>,
- *   fastDefaults: Record<string, string>,
+ *   shownMapping: Record<string, string>,
+ *   badgeMapping?: Record<string, string>,
  *   mappingLabel?: "Recommended"|"Current",
  *   keyType?: string,
  *   input?: NodeJS.ReadStream,
@@ -335,8 +256,8 @@ export async function runClaudeMappingEditor({
  * }} args
  */
 export async function runClaudeModelOnboarding({
-  recommended,
-  fastDefaults,
+  shownMapping,
+  badgeMapping = shownMapping,
   mappingLabel = "Recommended",
   keyType = "fireworks",
   input = process.stdin,
@@ -345,22 +266,16 @@ export async function runClaudeModelOnboarding({
   search = promptSearch,
   loadCatalog = async () => [],
 }) {
-  const currentMapping = mappingLabel === "Current";
-  const initialMapping = recommended;
-  const fastMapping = fastDefaults;
-  const nonFastMapping = standardClaudeModelMapping(keyType);
   output.write(`\n${paint(
     ANSI.muted,
     "Set Claude Code model defaults (you can change these later with model flags).",
     output,
   )}\n`);
   return runClaudeMappingEditor({
-    initialMapping,
-    recommended: currentMapping ? fastMapping : initialMapping,
-    fastMapping,
-    nonFastMapping,
+    initialMapping: shownMapping,
+    recommended: badgeMapping,
     baselineLabel: mappingLabel,
-    slots: onboardingSlotOrder(keyType, initialMapping),
+    slots: onboardingSlotOrder(keyType, shownMapping),
     loadCatalog,
     select,
     search,

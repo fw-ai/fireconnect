@@ -13,16 +13,42 @@ import {
   dependencyInstalled,
   ensureCliDependencies,
   resolveSetupCliDir,
+  runtimeDependencyNames,
   runtimeDepsInstalled,
 } from "../../lib/system/ensure-cli-deps.mjs";
-import { resetSecretStoreForTests } from "../../lib/keys/secret-store.mjs";
+import {
+  FIRECONNECT_KEY_STORAGE_ENV,
+  resetSecretStoreForTests,
+} from "../../lib/keys/secret-store.mjs";
 
 describe("ensure-cli-deps", () => {
   it("resolveSetupCliDir points at packages/setup-cli", () => {
     assert.equal(path.basename(resolveSetupCliDir()), "setup-cli");
     assert.ok(runtimeDepsInstalled());
   });
+
+  it("tracks every package.json production dependency, including yaml", () => {
+    const names = runtimeDependencyNames();
+    assert.ok(names.includes("yaml"));
+    assert.ok(names.includes("smol-toml"));
+    assert.ok(names.includes("ansis"));
+    assert.ok(names.includes("cross-keychain"));
+  });
 });
+
+function fileBackendEnv(home) {
+  const env = {
+    ...process.env,
+    HOME: home,
+    XDG_DATA_HOME: path.join(home, "data"),
+    XDG_CONFIG_HOME: path.join(home, "cfg"),
+    [FIRECONNECT_KEY_STORAGE_ENV]: "file",
+    KEYRING_FILE_MASTER_KEY: "a".repeat(64),
+  };
+  delete env.FIRECONNECT_SECRET_STORE;
+  delete env.FIREWORKS_API_KEY;
+  return env;
+}
 
 describe("dep-less checkout configure", () => {
   let home;
@@ -64,15 +90,17 @@ describe("dep-less checkout configure", () => {
     assert.equal(dependencyInstalled("ansis", setupDir), true);
   });
 
-  itIfNpm("harness on succeeds from a dep-less checkout (auto npm install)", () => {
-    const env = {
-      ...process.env,
-      HOME: home,
-      XDG_DATA_HOME: path.join(home, "data"),
-      XDG_CONFIG_HOME: path.join(home, "cfg"),
-    };
-    delete env.FIRECONNECT_SECRET_STORE;
-    delete env.FIREWORKS_API_KEY;
+  itIfNpm("ensureCliDependencies repairs a partial install missing yaml", async () => {
+    assert.equal(ensureCliDependencies(setupDir), true);
+    await rm(path.join(setupDir, "node_modules", "yaml"), { recursive: true, force: true });
+    assert.equal(dependencyInstalled("yaml", setupDir), false);
+    assert.equal(runtimeDepsInstalled(setupDir), false);
+    assert.equal(ensureCliDependencies(setupDir), true);
+    assert.equal(dependencyInstalled("yaml", setupDir), true);
+  });
+
+  itIfNpm("harness on succeeds from a dep-less checkout (auto npm install)", async () => {
+    const env = fileBackendEnv(home);
 
     const res = spawnSync(
       process.execPath,
@@ -85,6 +113,7 @@ describe("dep-less checkout configure", () => {
       { env, encoding: "utf8", timeout: 120000 },
     );
     assert.equal(res.status, 0, `${res.stderr}\n${res.stdout}`);
+    await assert.doesNotReject(access(path.join(home, "data/keyring/secrets.json")));
     assert.doesNotMatch(
       `${res.stdout}\n${res.stderr}`,
       /cross-keychain secret module could not be loaded/,
@@ -122,14 +151,7 @@ describe("dep-less checkout configure", () => {
       { force: true },
     );
 
-    const env = {
-      ...process.env,
-      HOME: home,
-      XDG_DATA_HOME: path.join(home, "data"),
-      XDG_CONFIG_HOME: path.join(home, "cfg"),
-    };
-    delete env.FIRECONNECT_SECRET_STORE;
-    delete env.FIREWORKS_API_KEY;
+    const env = fileBackendEnv(home);
 
     const res = spawnSync(
       process.execPath,

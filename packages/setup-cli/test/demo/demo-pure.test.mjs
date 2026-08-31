@@ -166,8 +166,19 @@ test("costSavedFraction: fireworks more expensive yields negative (honestly)", (
   assert.equal(costSavedFraction({ incumbentCost: 0.05, fireworksCost: 0.10 }), -1);
 });
 
+test("costSavedFraction: unavailable cost is not comparable", () => {
+  assert.equal(
+    Number.isNaN(costSavedFraction({ incumbentCost: 0.05, fireworksCost: null })),
+    true,
+  );
+});
+
 test("costPerGenerations: linear extrapolation", () => {
   assert.equal(costPerGenerations({ cost: 0.01, generations: 1000 }), 10);
+});
+
+test("costPerGenerations: unavailable cost stays unavailable", () => {
+  assert.equal(costPerGenerations({ cost: null, generations: 1000 }), null);
 });
 
 test("buildResult: summary flags driven by real numbers", () => {

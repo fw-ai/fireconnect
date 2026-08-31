@@ -124,20 +124,22 @@ function loadPersistedSnapshot() {
 }
 
 function persistSnapshot(snapshot) {
+  const cachedAt = snapshot ? Date.now() : null;
   try {
     const file = cacheFilePath();
     if (!snapshot) {
       rmSync(file, { force: true });
-      return;
+      return cachedAt;
     }
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({
-      cachedAt: Date.now(),
+      cachedAt,
       snapshot: serializeSnapshot(snapshot),
     }));
   } catch {
     // Best-effort — a failed persist must never break catalog loading.
   }
+  return cachedAt;
 }
 
 /**
@@ -158,11 +160,12 @@ export function setServerlessCatalogSnapshot(snapshot) {
  * process can recover the last-known catalog (e.g. offline registration or
  * `off` cleanup). Only call with a freshly-fetched authoritative snapshot.
  * @param {ServerlessCatalogSnapshot | null} snapshot
+ * @returns {number | null} Snapshot time, or null when clearing.
  */
 export function cacheServerlessCatalogSnapshot(snapshot) {
   activeSnapshot = snapshot;
   snapshotResolved = true;
-  persistSnapshot(snapshot);
+  return persistSnapshot(snapshot);
 }
 
 export function getServerlessCatalogSnapshot() {
@@ -173,12 +176,16 @@ export function getServerlessCatalogSnapshot() {
   return activeSnapshot;
 }
 
+// Lookups lazy-load the persisted snapshot for short-lived consumers such as
+// the statusline helper. An explicit setServerlessCatalogSnapshot(null) still
+// wins because it marks the snapshot resolved.
+
 /**
  * @param {string} modelRef
  * @returns {ServerlessPricing | null}
  */
 export function lookupCachedServerlessPricing(modelRef) {
-  return activeSnapshot?.pricingById.get(modelRef) ?? null;
+  return getServerlessCatalogSnapshot()?.pricingById.get(modelRef) ?? null;
 }
 
 /**
@@ -186,7 +193,7 @@ export function lookupCachedServerlessPricing(modelRef) {
  * @returns {string[] | null}
  */
 export function lookupCachedInputModalities(modelRef) {
-  return activeSnapshot?.inputModalitiesById.get(modelRef) ?? null;
+  return getServerlessCatalogSnapshot()?.inputModalitiesById.get(modelRef) ?? null;
 }
 
 /**
@@ -194,7 +201,7 @@ export function lookupCachedInputModalities(modelRef) {
  * @returns {number | null}
  */
 export function lookupCachedContextLength(modelRef) {
-  return activeSnapshot?.contextLengthById.get(modelRef) ?? null;
+  return getServerlessCatalogSnapshot()?.contextLengthById.get(modelRef) ?? null;
 }
 
 /**
@@ -202,7 +209,7 @@ export function lookupCachedContextLength(modelRef) {
  * @returns {boolean | null}
  */
 export function lookupCachedSupportsTools(modelRef) {
-  const value = activeSnapshot?.supportsToolsById.get(modelRef);
+  const value = getServerlessCatalogSnapshot()?.supportsToolsById.get(modelRef);
   return value === undefined ? null : value;
 }
 
@@ -211,11 +218,12 @@ export function lookupCachedSupportsTools(modelRef) {
  * @returns {string | null}
  */
 export function lookupCachedRouterBaseModel(routerId) {
-  if (!activeSnapshot || !routerId) {
+  const snapshot = getServerlessCatalogSnapshot();
+  if (!snapshot || !routerId) {
     return null;
   }
   const normalized = routerId.replace(/\[1m\]$/i, "");
-  return activeSnapshot.routerBaseModelById.get(normalized) ?? null;
+  return snapshot.routerBaseModelById.get(normalized) ?? null;
 }
 
 /**
@@ -223,9 +231,10 @@ export function lookupCachedRouterBaseModel(routerId) {
  * @returns {import("./models.mjs").CatalogEntry | null}
  */
 export function lookupCatalogEntryById(modelId) {
-  if (!activeSnapshot || !modelId) {
+  const snapshot = getServerlessCatalogSnapshot();
+  if (!snapshot || !modelId) {
     return null;
   }
   const normalized = modelId.replace(/\[1m\]$/i, "");
-  return activeSnapshot.entries.find((entry) => entry.id === normalized) ?? null;
+  return snapshot.entries.find((entry) => entry.id === normalized) ?? null;
 }

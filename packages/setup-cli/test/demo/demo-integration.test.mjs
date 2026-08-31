@@ -33,6 +33,8 @@ function fakeStdout({ columns = 100, rows = 24 } = {}) {
 
 const header = (provider, model, costLabel, rates) => ({ provider, model, costLabel, rates });
 
+const plainText = (out) => out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
+
 // ── TUI ─────────────────────────────────────────────────────────────────────
 
 test("tui: split layout renders two columns with a divider and the right number of rows", () => {
@@ -134,40 +136,75 @@ test("tui: freeze() keeps a running cost estimate until finish() reconciles", ()
   r.stop();
 });
 
-test("tui: pushThinking renders reasoning above output in dim style", () => {
+test("tui: a router with no pre-run rate never shows a proxy dollar amount", () => {
   const out = fakeStdout({ columns: 100, rows: 24 });
   const r = new SplitPaneRenderer({
     incumbent: header("Anthropic", "Claude", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
-    fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
+    fireworks: header("Fireworks", "FireRouter", "measured", {
+      inputPerMillion: null,
+      outputPerMillion: null,
+      cacheWrite1hPerMillion: null,
+      cacheWrite5mPerMillion: null,
+      cacheReadPerMillion: null,
+    }),
     stdout: out,
   });
   r.start();
-  r.pushThinking("fireworks", "Plan the HTML layout first.");
-  r.pushDelta("fireworks", "<html><body>ok</body></html>");
+  r.setTokens("fireworks", { inputTokens: 10_000, outputTokens: 100 });
+  r.pushDelta("fireworks", "working");
   r.render();
-  const plain = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
-  const thinkingIdx = plain.indexOf("Plan the HTML layout first.");
-  const outputIdx = plain.indexOf("<html><body>ok</body></html>");
-  assert.ok(thinkingIdx >= 0, "thinking trace should render in the pane");
-  assert.ok(outputIdx >= 0, "output should render in the pane");
-  assert.ok(thinkingIdx < outputIdx, "thinking should appear before final output");
+  const running = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(running, /— so far/);
+
+  r.finish("fireworks", {
+    ok: true,
+    inputTokens: 10_000,
+    outputTokens: 100,
+    seconds: 1,
+    cost: null,
+  });
   r.stop();
+  const finished = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(finished, /— measured/);
 });
 
-test("tui: long thinking does not crowd out streaming code output", () => {
+test("tui: reasoning streams into the pane until output arrives, then recedes above it", (t) => {
   const out = fakeStdout({ columns: 100, rows: 24 });
   const r = new SplitPaneRenderer({
     incumbent: header("Anthropic", "Claude", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
     fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
     stdout: out,
   });
+  t.after(() => r.stop());
+  r.start();
+  r.pushThinking("fireworks", "Plan the HTML layout first.");
+  r.render();
+  assert.match(plainText(out), /Plan the HTML layout first\./, "reasoning-only pane shows the trace");
+
+  out._buf.out = "";
+  r.pushDelta("fireworks", "<html><body>ok</body></html>");
+  r.render();
+  const plain = plainText(out);
+  const reasoningIdx = plain.indexOf("reasoning…");
+  const outputIdx = plain.indexOf("<html><body>ok</body></html>");
+  assert.ok(reasoningIdx >= 0, "reasoning indicator should render once output exists");
+  assert.ok(outputIdx >= 0, "output should render in the pane");
+  assert.ok(reasoningIdx < outputIdx, "reasoning should appear above the output");
+});
+
+test("tui: long thinking does not crowd out streaming code output", (t) => {
+  const out = fakeStdout({ columns: 100, rows: 24 });
+  const r = new SplitPaneRenderer({
+    incumbent: header("Anthropic", "Claude", "list price", { inputPerMillion: 3, outputPerMillion: 15 }),
+    fireworks: header("Fireworks", "GLM 5.2 Fast", "serverless", { inputPerMillion: 2.1, outputPerMillion: 6.6 }),
+    stdout: out,
+  });
+  t.after(() => r.stop());
   r.start();
   r.pushThinking("fireworks", "x".repeat(5000));
   r.pushDelta("fireworks", "<html><body>visible code</body></html>");
   r.render();
-  const plain = out._buf.out.replace(/\x1b\[[0-9;]*m/g, "");
-  assert.match(plain, /visible code/, "code output must remain visible when thinking is long");
-  r.stop();
+  assert.match(plainText(out), /visible code/, "code output must remain visible when thinking is long");
 });
 
 test("tui: freeze(side, false) immediately shows failed ✗", () => {
@@ -374,6 +411,24 @@ test("browser: compare.html is self-contained and inlines both apps", () => {
   assert.match(html, /4×/);
 });
 
+test("browser: unavailable pricing is not rendered as a zero-cost comparison", () => {
+  const result = sampleResult();
+  result.fireworks.cost = null;
+  result.summary.costSavedFraction = Number.NaN;
+  const html = buildCompareHtml({
+    result,
+    incumbentAppHtml: "<html><body>INC</body></html>",
+    fireworksAppHtml: "<html><body>FW</body></html>",
+    incumbentRunnable: true,
+    fireworksRunnable: true,
+    incumbentLabel: "Claude Sonnet 5",
+    fireworksLabel: "FireRouter",
+    copySummary: "cost not comparable",
+  });
+  assert.match(html, /Cost: <b>not comparable<\/b> — pricing unavailable/);
+  assert.doesNotMatch(html, /At 1,000 generations: \$20\.2 → \$0/);
+});
+
 test("browser: cost strip attributes the win to the cheaper model with a rebased percent", () => {
   // Incumbent model is cheaper (costSavedFraction < 0). The strip must say
   // the incumbent model is X% cheaper — rebased to the fireworks cost so the
@@ -571,6 +626,10 @@ async function pathExistsForTest(p) {
 test("providerListPricing: known anthropic + openai models resolve real rates", () => {
   const a = providerListPricing({ provider: "anthropic", modelId: "claude-sonnet-5" });
   assert.equal(a.inputPerMillion, 2);
+  assert.equal(a.cacheWrite5mPerMillion, 2.5);
+  assert.equal(a.cacheWrite1hPerMillion, 4);
+  assert.equal(a.cacheReadPerMillion, 0.2);
+  assert.equal(a.outputPerMillion, 10);
   assert.equal(a.estimated, false);
   const o = providerListPricing({ provider: "openai", modelId: "gpt-4o" });
   assert.equal(o.inputPerMillion, 2.5);
@@ -579,7 +638,7 @@ test("providerListPricing: known anthropic + openai models resolve real rates", 
 
 test("providerListPricing: opus 4.5+ uses current $5/$25 rate, not legacy $15/$75", () => {
   // Opus 4.5–4.8 are all $5/$25 per platform.claude.com/pricing (verified
-  // 2026-08-19). The old $15/$75 was Opus 4.1 and Opus 4 (both retired legacy);
+  // 2026-08-30). The old $15/$75 was Opus 4.1 and Opus 4 (both retired legacy);
   // a stale table would inflate incumbent cost 3x and skew the demo's cost-saved
   // fraction.
   for (const id of ["claude-opus-4-8", "claude-opus-4-5", "opus"]) {
@@ -593,6 +652,17 @@ test("providerListPricing: opus 4.5+ uses current $5/$25 rate, not legacy $15/$7
     const legacy = providerListPricing({ provider: "anthropic", modelId: id });
     assert.equal(legacy.inputPerMillion, 15, `${id} legacy input`);
     assert.equal(legacy.outputPerMillion, 75, `${id} legacy output`);
+  }
+});
+
+test("providerListPricing: fast mode uses the published Opus 5/4.8 rate", () => {
+  for (const id of ["claude-opus-5", "claude-opus-4-8", "opus"]) {
+    const r = providerListPricing({ provider: "anthropic", modelId: id, speed: "fast" });
+    assert.equal(r.inputPerMillion, 10, `${id} fast input`);
+    assert.equal(r.cacheWrite5mPerMillion, 12.5, `${id} fast 5m write`);
+    assert.equal(r.cacheWrite1hPerMillion, 20, `${id} fast 1h write`);
+    assert.equal(r.cacheReadPerMillion, 1, `${id} fast cache read`);
+    assert.equal(r.outputPerMillion, 50, `${id} fast output`);
   }
 });
 

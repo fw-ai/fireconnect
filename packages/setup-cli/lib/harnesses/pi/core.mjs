@@ -36,7 +36,7 @@ import {
   cachedFireworksModelIds,
   managedPiFireworksModelIds,
   mergePiFireworksRouterModels,
-  PI_ENABLED_MODELS,
+  piEnabledModels,
 } from "./fireworks-models.mjs";
 import { stripFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
@@ -517,9 +517,9 @@ export async function enablePiFireworks({
     defaultModel: storedModel,
     // Scope Pi's picker to FireConnect's router rows only, hiding Pi's built-in
     // concrete Fireworks models (which surface because they share the fireworks
-    // provider auth). A concrete --model selection still works as defaultModel;
-    // it just isn't pickable. See PI_FIREWORKS_ROUTER_SCOPE.
-    enabledModels: PI_ENABLED_MODELS,
+    // provider auth), plus the active model when it sits outside that scope.
+    // See piEnabledModels.
+    enabledModels: piEnabledModels(storedModel),
   });
   await writeAuthFile(authPath, {
     ...auth,

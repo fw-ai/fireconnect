@@ -26,6 +26,20 @@ describe("model-servability isModelIdValidationApplicable", () => {
     assert.equal(isModelIdValidationApplicable("firerouter/balanced"), false);
   });
 
+  it("is false for the auto mix and auto-* variants", () => {
+    assert.equal(isModelIdValidationApplicable("auto"), false);
+    assert.equal(isModelIdValidationApplicable("Auto"), false);
+    assert.equal(isModelIdValidationApplicable("auto[1m]"), false);
+    assert.equal(isModelIdValidationApplicable("auto-instant"), false);
+    assert.equal(isModelIdValidationApplicable("auto-instant[1m]"), false);
+    assert.equal(isModelIdValidationApplicable("auto-smart"), true, "Cursor-native id still catalog-checked");
+    assert.equal(
+      isModelIdValidationApplicable("accounts/auto-corp/models/private-model"),
+      true,
+      "an auto-shaped account is not a gateway mix",
+    );
+  });
+
   it("is false for custom deployment ids", () => {
     assert.equal(
       isModelIdValidationApplicable("accounts/ahmadshahzad/deployments/ub9lvh50"),
@@ -110,6 +124,8 @@ describe("model-servability assertRequestedModelsServable", () => {
     globalThis.fetch = async () => { fetched = true; return { ok: true, json: async () => ({ models: [] }) }; };
     try {
       await assertRequestedModelServable("firerouter", { apiKey: "fw_test_key", keyType: "fireworks" });
+      await assertRequestedModelServable("auto", { apiKey: "fw_test_key", keyType: "fireworks" });
+      await assertRequestedModelServable("auto-instant", { apiKey: "fw_test_key", keyType: "fireworks" });
       await assertRequestedModelServable("accounts/u/deployments/x", { apiKey: "fw_test_key", keyType: "fireworks" });
       assert.equal(fetched, false);
     } finally {
@@ -160,7 +176,7 @@ describe("model-servability assertRequestedModelsServable", () => {
       // glm-5p2 + glm-latest are in the catalog; the bogus one must surface.
       await assert.rejects(
         () => assertRequestedModelsServable(
-          ["glm-5p2", "glm-latest", "firerouter", "", "not-a-real-model"],
+          ["glm-5p2", "glm-latest", "firerouter", "auto", "", "not-a-real-model"],
           { apiKey: "fw_test_key", keyType: "fireworks" },
         ),
         /not available on Fireworks/,

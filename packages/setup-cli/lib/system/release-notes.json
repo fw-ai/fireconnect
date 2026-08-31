@@ -1,6 +1,26 @@
 {
   "releases": [
     {
+      "version": "0.9.5",
+      "highlights": [
+        "Session costs in your Claude prompt. A new status line shows which models ran, what they cost at Fireworks rates, and cache savings. Your own status line is left alone — `fireconnect claude off` restores everything.",
+        "ChatGPT desktop app support. `fireconnect chatgpt` and `fireconnect codex` share one config, so you route both through Fireworks with a single command. Quit the app first so its model list refreshes.",
+        "Smart router mixes (preview): pin `auto` for the default mix or `auto-instant` for latency-first routing — for example, `fireconnect claude --sonnet auto-instant`. Every `auto-*` slug works the same way.",
+        "Simpler Claude model setup. The wizard lets you pick a model per slot instead of toggling fast profiles. New installs default to Sonnet on `deepseek-pro-latest`, Opus on `glm-latest`, and Fable on vision-capable `glm-flash-latest`. FireRouter still lands on Opus at first connect when your key supports it.",
+        "Faster `fireconnect model list`. Results are cached for an hour, work offline, show when they were last updated, and `--refresh` pulls the latest. Smart Routers lists `auto`, `auto-instant`, and FireRouter."
+      ],
+      "improvements": [
+        "MCP tool search works through the Fireworks gateway again — upgrade applies the fix automatically.",
+        "`fireconnect claude demo` and the status line use the same pricing, so their numbers always match.",
+        "`fireconnect upgrade` repairs missing dependencies; partial installs recover instead of crashing.",
+        "Linux SSH/WSL: keys store in an encrypted file with timeouts on keyring and network calls — no more hangs.",
+        "`fireconnect claude status` shows every slot, including defaults you never explicitly set.",
+        "GLM 5.3 and GLM 5.3 Flash added. Stale pins no longer hide newer releases; US-only pricing corrected.",
+        "Claude picker lists `auto` on every slot and `auto-instant` on Sonnet only."
+      ],
+      "footer": "Already on Claude? Upgrade keeps your slot picks — run `fireconnect claude --interactive` to adopt the new defaults. Legacy pins like `deepseek-v4-flash` move to `deepseek-flash-latest` on your next `fireconnect claude on`."
+    },
+    {
       "version": "0.9.4",
       "highlights": [
         "`fireconnect claude demo`: improved cost calculation and racing experience.",

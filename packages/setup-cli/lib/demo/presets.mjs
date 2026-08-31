@@ -67,6 +67,11 @@ export const DEMO_PRESETS = Object.freeze({
 export const DEFAULT_DEMO_PRESET = "tetris";
 export const CUSTOM_DEMO_PROMPT_ID = "custom";
 
+/** Wizard game-picker options, in display order. @returns {string[]} */
+export function demoPromptOptionIds() {
+  return [...Object.keys(DEMO_PRESETS), CUSTOM_DEMO_PROMPT_ID];
+}
+
 /** Short UX hints for the demo wizard game picker. */
 export const DEMO_PRESET_HINTS = Object.freeze({
   tetris: "~2–4 min · playable Tetris",

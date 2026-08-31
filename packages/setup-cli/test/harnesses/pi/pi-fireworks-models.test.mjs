@@ -6,6 +6,7 @@ import {
   managedPiFireworksModelIds,
   mergePiFireworksRouterModels,
   ONE_MILLION_CONTEXT,
+  piEnabledModels,
   resolvePiEffectiveFireworksModel,
 } from "../../../lib/harnesses/pi/fireworks-models.mjs";
 import {
@@ -99,7 +100,7 @@ describe("mergePiFireworksRouterModels", () => {
     );
     assert.ok(entry, "glm-latest re-registered");
     assert.equal(entry.cost, undefined, "firepass row carries no metered cost");
-    assert.equal(entry.contextWindow, 1_048_575, "limits still resolved");
+    assert.equal(entry.contextWindow, 1_048_576, "limits still resolved");
   });
 
   it("uses live catalog labels for -latest router picker names", () => {
@@ -152,7 +153,7 @@ describe("mergePiFireworksRouterModels", () => {
     const entry = merged.providers.fireworks.models.find((model) => model.id === GLM_LATEST);
 
     assert.ok(entry);
-    assert.equal(entry.contextWindow, 1_048_575);
+    assert.equal(entry.contextWindow, 1_048_576);
     assert.equal(entry.cost.input, 1.4);
     assert.equal(entry.cost.output, 4.4);
     assert.equal(merged.providers.fireworks.modelOverrides?.[GLM_LATEST], undefined);
@@ -238,7 +239,7 @@ describe("resolvePiEffectiveFireworksModel", () => {
   it("buildPiCustomFireworksModelEntry uses shared limits, not vscode field names", () => {
     const entry = buildPiCustomFireworksModelEntry(GLM_LATEST, "GLM Latest");
     assert.equal(entry.id, GLM_LATEST);
-    assert.equal(entry.contextWindow, 1_048_575);
+    assert.equal(entry.contextWindow, 1_048_576);
     assert.equal(entry.maxTokens, 131_072);
     assert.deepEqual(entry.input, ["text"]);
     assert.equal(entry.cost.output, 4.4);
@@ -260,6 +261,37 @@ describe("resolvePiEffectiveFireworksModel", () => {
     assert.deepEqual(entry.input, ["text", "image"]);
     assert.equal(entry.contextWindow, 1_048_575);
     assert.equal(entry.maxTokens, 131_072);
+  });
+
+  it("registers a selected auto model with its spec limits", () => {
+    const entry = buildPiCustomFireworksModelEntry("auto", "Auto");
+    assert.equal(entry.id, "auto");
+    assert.deepEqual(entry.input, ["text", "image"]);
+    assert.equal(entry.contextWindow, 1_048_575);
+    assert.equal(entry.maxTokens, 131_072);
+
+    const merged = mergePiFireworksRouterModels({}, "auto", {}, [
+      "accounts/fireworks/routers/glm-latest",
+    ]);
+    const ids = merged.providers.fireworks.models.map((model) => model.id);
+    assert.ok(ids.includes("auto"), "active auto model registered");
+    assert.ok(
+      piEnabledModels("auto").includes("fireworks/auto"),
+      "and enabled, so Pi doesn't swap in its own default",
+    );
+  });
+
+  it("registers a selected auto-* model with shared spec limits and keeps the slug", () => {
+    const entry = buildPiCustomFireworksModelEntry("auto-instant", "Auto Instant");
+    assert.equal(entry.id, "auto-instant");
+    assert.deepEqual(entry.input, ["text", "image"]);
+    assert.equal(entry.contextWindow, 1_048_575);
+
+    const merged = mergePiFireworksRouterModels({}, "auto-instant", {}, [
+      "accounts/fireworks/routers/glm-latest",
+    ]);
+    const ids = merged.providers.fireworks.models.map((model) => model.id);
+    assert.ok(ids.includes("auto-instant"), "active auto-instant model registered");
   });
 
   it("registers the router catalog alongside a selected firerouter* model", () => {
@@ -319,6 +351,21 @@ describe("fullFireworksResourceId router classification", () => {
     );
   });
 
+  it("expands documented US-only slugs to routers/", () => {
+    assert.equal(
+      fullFireworksResourceId("kimi-k3-us"),
+      "accounts/fireworks/routers/kimi-k3-us",
+    );
+    assert.equal(
+      fullFireworksResourceId("glm-5p2-fast-us"),
+      "accounts/fireworks/routers/glm-5p2-fast-us",
+    );
+    assert.equal(
+      fullFireworksResourceId("glm-5p3-flash-us"),
+      "accounts/fireworks/routers/glm-5p3-flash-us",
+    );
+  });
+
   it("classifies firerouter* variants as routers, not just the bare firerouter slug", () => {
     assert.equal(
       fullFireworksResourceId("firerouter"),
@@ -333,8 +380,15 @@ describe("fullFireworksResourceId router classification", () => {
       "accounts/fireworks/routers/firerouter-fast-latest",
     );
     // A slash-bearing firerouter gateway pattern passes through unchanged and is
-    // handled by isFirerouterGatewayPattern at the spec layer.
+    // handled by isFirerouterModelPattern at the spec layer.
     assert.equal(fullFireworksResourceId("firerouter/x"), "firerouter/x");
+  });
+
+  it("leaves the auto model id unexpanded (no accounts/fireworks path exists)", () => {
+    assert.equal(fullFireworksResourceId("auto"), "auto");
+    assert.equal(fullFireworksResourceId("Auto"), "auto");
+    assert.equal(fullFireworksResourceId("auto[1m]"), "auto");
+    assert.equal(fullFireworksResourceId("auto-instant"), "auto-instant");
   });
 
   it("registers a router-slug active model as a single canonical row (no duplicate)", () => {
@@ -388,6 +442,31 @@ describe("fullFireworksResourceId router classification", () => {
     } finally {
       setServerlessCatalogSnapshot(null);
     }
+  });
+
+  it("piEnabledModels scopes the picker and still enables an off-scope active model", () => {
+    // Pi substitutes its own (long-dead) built-in default for any defaultModel
+    // outside enabledModels, so the active model must join the scope.
+    assert.deepEqual(
+      piEnabledModels("accounts/fireworks/routers/glm-latest"),
+      ["fireworks/accounts/fireworks/routers/*"],
+    );
+    assert.deepEqual(
+      piEnabledModels("auto"),
+      ["fireworks/accounts/fireworks/routers/*", "fireworks/auto"],
+    );
+    assert.deepEqual(
+      piEnabledModels("glm-5p2"),
+      [
+        "fireworks/accounts/fireworks/routers/*",
+        "fireworks/accounts/fireworks/models/glm-5p2",
+      ],
+    );
+    assert.deepEqual(
+      piEnabledModels("accounts/me/deployments/abc"),
+      ["fireworks/accounts/fireworks/routers/*", "fireworks/accounts/me/deployments/abc"],
+    );
+    assert.deepEqual(piEnabledModels(""), ["fireworks/accounts/fireworks/routers/*"]);
   });
 
   it("registers a concrete --model selection even though it's hidden from the picker", () => {

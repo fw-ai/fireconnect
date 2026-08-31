@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import {
   deleteSecret,
+  detectSecretBackend,
   getSecret,
   hasSecret,
   resetSecretStoreForTests,
@@ -13,6 +14,37 @@ import {
 import { seedKeychainConfig, withTempHome } from "../helpers.mjs";
 
 describe("secret-store", () => {
+  it("never auto-selects the OS keychain in test context", async () => {
+    await withTempHome("secret-test-auto-", async (home) => {
+      const savedEnv = {
+        FIRECONNECT_SECRET_STORE: process.env.FIRECONNECT_SECRET_STORE,
+        FIRECONNECT_TEST: process.env.FIRECONNECT_TEST,
+        FIRECONNECT_KEY_STORAGE: process.env.FIRECONNECT_KEY_STORAGE,
+        XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      };
+      process.env.FIRECONNECT_TEST = "1";
+      process.env.XDG_DATA_HOME = path.join(home, "data");
+      process.env.XDG_CONFIG_HOME = path.join(home, "config");
+      delete process.env.FIRECONNECT_SECRET_STORE;
+      delete process.env.FIRECONNECT_KEY_STORAGE;
+      resetSecretStoreForTests();
+      try {
+        const backend = await detectSecretBackend(home);
+        assert.equal(backend.backend, "file");
+      } finally {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+        resetSecretStoreForTests();
+      }
+    });
+  });
+
   it("stores and retrieves secrets in memory mode", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-secret-mem-"));
     const prevHome = process.env.HOME;

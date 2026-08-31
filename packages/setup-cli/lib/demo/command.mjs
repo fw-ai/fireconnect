@@ -11,7 +11,7 @@ import os from "node:os";
 import { HARNESS } from "../harness/id.mjs";
 import { getHeadlessRunner, SUPPORTED_HARNESS_IDS } from "./harness-runners.mjs";
 import { extractHtml, looksRunnable } from "./html-extract.mjs";
-import { buildResult, runCost, formatSpeedRatio, formatUsd, formatSeconds } from "./measurement.mjs";
+import { buildResult, formatSpeedRatio, formatUsd, formatSeconds } from "./measurement.mjs";
 import {
   prepareOutputDir, writeStreamLog, writeAppHtml, writeResultJson, writeCompareHtml,
   readBestHtmlFromDir,
@@ -276,7 +276,7 @@ export async function runDemoCommand(ctx) {
       cacheReadTokens: r.cacheReadTokens ?? 0,
       outputTokens: r.outputTokens ?? 0,
       seconds: r.seconds ?? 0,
-      cost: 0,
+      cost: r.usagePricing?.cost ?? null,
     });
     // Freeze each side's clock the instant ITS OWN runner resolves — not after
     // both finish — so the faster side stops ticking at its real finish time and
@@ -300,7 +300,7 @@ export async function runDemoCommand(ctx) {
         raceSide(rightRunner, "fireworks"),
       ]);
       await finalizeBoth({
-        incResult, fwResult, incRates: leftRates, fwRates: rightRates,
+        incResult, fwResult,
         setIncHtml: (h) => { incumbentAppHtml = h; }, setFwHtml: (h) => { fireworksAppHtml = h; },
         incRunProto, fwRunProto, incCwd, fwCwd,
       });
@@ -315,7 +315,7 @@ export async function runDemoCommand(ctx) {
       leftRunner({ signal: abort.signal }),
       rightRunner({ signal: abort.signal }),
     ]);
-    await finalizeBoth({ incResult, fwResult, incRates: leftRates, fwRates: rightRates,
+    await finalizeBoth({ incResult, fwResult,
       setIncHtml: (h) => { incumbentAppHtml = h; }, setFwHtml: (h) => { fireworksAppHtml = h; },
       incRunProto, fwRunProto, incCwd, fwCwd });
   }
@@ -488,12 +488,12 @@ function makeSideProto(side, modelId, rates) {
   };
 }
 
-async function finalizeBoth({ incResult, fwResult, incRates, fwRates, setIncHtml, setFwHtml, incRunProto, fwRunProto, incCwd, fwCwd }) {
-  await finalizeSide("fireworks", fwRunProto, fwResult, fwRates, setFwHtml, { cwd: fwCwd });
-  await finalizeSide("incumbent", incRunProto, incResult, incRates, setIncHtml, { cwd: incCwd });
+async function finalizeBoth({ incResult, fwResult, setIncHtml, setFwHtml, incRunProto, fwRunProto, incCwd, fwCwd }) {
+  await finalizeSide(fwRunProto, fwResult, setFwHtml, { cwd: fwCwd });
+  await finalizeSide(incRunProto, incResult, setIncHtml, { cwd: incCwd });
 }
 
-async function finalizeSide(side, proto, result, rates, setHtml, { cwd = null } = {}) {
+async function finalizeSide(proto, result, setHtml, { cwd = null } = {}) {
   if (!result?.ok) {
     proto.ok = false;
     proto.error = result?.error || "generation failed";
@@ -503,11 +503,12 @@ async function finalizeSide(side, proto, result, rates, setHtml, { cwd = null } 
     proto.debug = {
       sessionId: result?.sessionId || "",
       resolvedModel: result?.resolvedModel || "",
+      pricedModel: result?.usagePricing?.model || "",
       cwd: cwd || "",
     };
     proto.inputTokens = result?.inputTokens ?? 0;
     proto.outputTokens = result?.outputTokens ?? 0;
-    proto.cost = 0;
+    proto.cost = result?.usagePricing?.cost ?? null;
     proto.appRunnable = false;
     setHtml(result?.text ? extractHtml(result.text).html : "");
     return;
@@ -532,40 +533,14 @@ async function finalizeSide(side, proto, result, rates, setHtml, { cwd = null } 
   proto.cacheReadTokens = result.cacheReadTokens ?? 0;
   proto.outputTokens = result.outputTokens ?? 0;
   proto.seconds = result.seconds;
-  // Cost comes from computeClaudeUsageCost (the same function `claude usage` /
-  // `claude live` use), NOT from Claude Code's total_cost_usd.
-  //
-  // Claude Code has no Fireworks price table: for a gateway-routed Fireworks
-  // model its modelUsage reports provider "firstParty" and it prices the run
-  // with its own ANTHROPIC rates. Measured, exactly: a glm-fast-latest run of
-  // 126360 in / 10861 cache-read / 2715 out was reported as $0.705106, which is
-  // that token mix at Opus rates ($5/$0.50/$25) to six decimals — 2.5x its real
-  // Fireworks cost of $0.285556. Trusting total_cost_usd therefore inflates the
-  // Fireworks side and inverts the comparison the demo exists to make.
-  //
-  // computeClaudeUsageCost resolves Fireworks pricing first and falls back to the
-  // Anthropic list table, so it is right for BOTH sides — and for a real
-  // Anthropic model it agrees with Claude Code exactly (claude-opus-5 measured
-  // at $0.880210 both ways). costUsd is kept only as a last resort.
-  // Final fallback: the estimate is only produced when the result event carried a
-  // `usage` block. When it doesn't, token totals still come from the per-message
-  // accumulators, so pricing them here keeps a successful run from reporting real
-  // tokens against a $0 cost.
-  const fromTokens = () => runCost({
-    inputTokens: proto.inputTokens,
-    cacheWrite1hTokens: proto.cacheWrite1hTokens,
-    cacheWrite5mTokens: proto.cacheWrite5mTokens,
-    cacheReadTokens: proto.cacheReadTokens,
-    outputTokens: proto.outputTokens,
-    inputPerMillion: rates.inputPerMillion,
-    cacheWrite1hPerMillion: rates.cacheWrite1hPerMillion,
-    cacheWrite5mPerMillion: rates.cacheWrite5mPerMillion,
-    cacheReadPerMillion: rates.cacheReadPerMillion,
-    outputPerMillion: rates.outputPerMillion,
-  });
-  proto.cost = (typeof result.estimatedCostUsd === "number" && result.estimatedCostUsd > 0)
-    ? result.estimatedCostUsd
-    : (result.costUsd || fromTokens());
+  // The runner already prices the authoritative result usage (or its final
+  // per-message aggregate) through the same canonical engine as statusline.
+  // Claude Code's own `costUsd` is diagnostic only: it applies Anthropic rates
+  // to Fireworks models whose cost basis it does not know.
+  proto.cost = result.usagePricing?.cost ?? null;
+  if (result.usagePricing?.rates) {
+    proto.rates = rateShape(result.usagePricing.rates, proto.provider);
+  }
   proto.appRunnable = runnable;
   // Session id + cwd locate this run's Claude Code transcript at
   // ~/.claude/projects/<slugified-cwd>/<sessionId>.jsonl; resolvedModel records
@@ -573,6 +548,7 @@ async function finalizeSide(side, proto, result, rates, setHtml, { cwd = null } 
   proto.debug = {
     sessionId: result.sessionId || "",
     resolvedModel: result.resolvedModel || "",
+    pricedModel: result.usagePricing?.model || "",
     cwd: cwd || "",
   };
   setHtml(html);
@@ -727,6 +703,14 @@ function buildCopySummary(result, leftLabel, rightLabel) {
   }
   const speedPart = verdictSpeedText(result, left, right);
   const cf = result.summary.costSavedFraction;
+  if (!Number.isFinite(cf)) {
+    const bothRunnable = result.incumbent.appRunnable && result.fireworks.appRunnable;
+    const appPart = bothRunnable ? ", working app" : ", one build didn't run";
+    return (
+      `Raced ${left} vs ${right} on the same ${result.promptTitle} prompt. `
+      + `${speedPart}, cost not comparable${appPart}. Built with \`fireconnect claude demo\`.`
+    );
+  }
   // Rebase to match the compare.html strip and terminal verdict (same race,
   // one percentage) — incumbent-relative |costSavedFraction| inflates savings.
   let frac = cf;
@@ -741,7 +725,7 @@ function buildCopySummary(result, leftLabel, rightLabel) {
     cheaperCost = result.incumbent.cost;
     pricierCost = result.fireworks.cost;
   }
-  const pct = Number.isFinite(frac) ? Math.round(frac * 100) : 0;
+  const pct = Math.round(frac * 100);
   const costs = `${formatUsd(cheaperCost)} vs ${formatUsd(pricierCost)}`;
   const costPart = pct > 0
     ? `${cheaperLabel} ${pct}% cheaper (${costs})`

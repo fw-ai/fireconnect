@@ -66,12 +66,15 @@ export function speedRatio({ incumbentSeconds, fireworksSeconds }) {
  *   1 - (fireworks_cost / incumbent_cost)
  * Returns a fraction (0.5 == 50% cheaper). >0 means Fireworks was cheaper.
  *
- * @param {{ incumbentCost: number, fireworksCost: number }} args
+ * @param {{ incumbentCost: number | null, fireworksCost: number | null }} args
  * @returns {number}
  */
 export function costSavedFraction({ incumbentCost, fireworksCost }) {
-  const inc = num(incumbentCost);
-  const fw = num(fireworksCost);
+  if (!Number.isFinite(incumbentCost) || !Number.isFinite(fireworksCost)) {
+    return Number.NaN;
+  }
+  const inc = incumbentCost;
+  const fw = fireworksCost;
   if (inc <= 0) {
     return 0;
   }
@@ -82,10 +85,13 @@ export function costSavedFraction({ incumbentCost, fireworksCost }) {
  * Linear extrapolation: cost per N generations (default 1000). Clearly linear;
  * the caller labels it as such.
  *
- * @param {{ cost: number, generations?: number }} args
- * @returns {number}
+ * @param {{ cost: number | null, generations?: number }} args
+ * @returns {number | null}
  */
 export function costPerGenerations({ cost, generations = 1000 }) {
+  if (!Number.isFinite(cost)) {
+    return null;
+  }
   return num(cost) * num(generations);
 }
 
@@ -113,7 +119,7 @@ export function costPerGenerations({ cost, generations = 1000 }) {
  * @property {number} cacheReadTokens prompt-cache read/hit tokens
  * @property {number} outputTokens
  * @property {number} seconds wall-clock request-sent -> stream-complete
- * @property {number} cost USD
+ * @property {number | null} cost USD, or null when no real rate is available
  * @property {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion?: number, cacheWrite1hPerMillion?: number, cacheWrite5mPerMillion?: number, cacheReadPerMillion?: number, tier?: string, source: string }} rates
  * @property {boolean} ok whether generation succeeded
  * @property {string} [error] failure message when !ok

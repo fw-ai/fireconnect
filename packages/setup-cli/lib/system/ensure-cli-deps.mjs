@@ -1,10 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
-
-/** Runtime npm dependencies the CLI imports at startup (via ui, secret store, etc.). */
-export const RUNTIME_DEPENDENCIES = ["cross-keychain", "ansis"];
 
 /**
  * Absolute path to packages/setup-cli (where package.json and node_modules live).
@@ -35,10 +33,26 @@ export function crossKeychainInstalled(setupDir = resolveSetupCliDir()) {
 
 /**
  * @param {string} [setupDir]
+ * @returns {string[] | null}
+ */
+export function runtimeDependencyNames(setupDir = resolveSetupCliDir()) {
+  const pkgPath = path.join(setupDir, "package.json");
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return Object.keys(pkg.dependencies ?? {});
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} [setupDir]
  * @returns {boolean}
  */
 export function runtimeDepsInstalled(setupDir = resolveSetupCliDir()) {
-  return RUNTIME_DEPENDENCIES.every((dep) => dependencyInstalled(dep, setupDir));
+  const dependencies = runtimeDependencyNames(setupDir);
+  return dependencies !== null
+    && dependencies.every((dep) => dependencyInstalled(dep, setupDir));
 }
 
 /**
@@ -69,7 +83,12 @@ export function ensureCliDependencies(setupDir = resolveSetupCliDir()) {
     execFileSync(
       npm,
       ["install", "--omit=dev", "--no-fund", "--no-audit"],
-      { cwd: setupDir, stdio: "pipe", encoding: "utf8" },
+      {
+        cwd: setupDir,
+        env: { ...process.env, FIRECONNECT_SKIP_POSTINSTALL_FINALIZE: "1" },
+        stdio: "pipe",
+        encoding: "utf8",
+      },
     );
   } catch {
     return false;

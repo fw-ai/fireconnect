@@ -4,7 +4,7 @@ import {
   isAnthropicModelId,
   isClaudeNativeModel,
   isGatewayAnthropicSlot,
-  isFirerouterGatewayPattern,
+  isFirerouterModelPattern,
 } from "../../fireworks/model-id.mjs";
 import { lookupFireworksModelLimits } from "../../fireworks/model-specs.mjs";
 import { loadServerlessCatalog } from "../../fireworks/models.mjs";
@@ -65,7 +65,7 @@ export function modelQualifiesForClaudeCode1mContext(modelId) {
     }
     return true;
   }
-  if (isFirerouterGatewayPattern(modelId)) {
+  if (isFirerouterModelPattern(modelId)) {
     return true;
   }
   const slug = fireworksModelSlug(modelId);
@@ -85,6 +85,9 @@ export function claudeCodeModelId(modelId) {
   if (isClaudeNativeModel(modelId)) {
     return modelId;
   }
+  // Like glm-latest and other 1M Fireworks models: tag with [1m] for Claude Code's
+  // context window. Claude Code strips the suffix before the gateway API call, so
+  // `auto[1m]` still reaches the gateway as bare `auto`.
   return `${stripClaudeCodeContextSuffix(modelId)}${CLAUDE_CODE_1M_SUFFIX}`;
 }
 

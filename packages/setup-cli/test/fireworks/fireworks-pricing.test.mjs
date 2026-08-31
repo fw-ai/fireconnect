@@ -79,6 +79,27 @@ describe("fireworks-pricing", () => {
     assert.equal(pricing.output, 6.60);
   });
 
+  it("uses documented US-only pricing instead of cached global base rates", () => {
+    const kimiUs = lookupFireworksPricing("kimi-k3-us");
+    assert.equal(kimiUs?.slug, "kimi-k3-us");
+    assert.equal(kimiUs?.input, 3.30);
+    assert.equal(kimiUs?.cachedInput, 0.33);
+    assert.equal(kimiUs?.output, 16.50);
+
+    const glmFastUs = lookupFireworksPricing("glm-5p2-fast-us");
+    assert.equal(glmFastUs?.slug, "glm-5p2-fast-us");
+    assert.equal(glmFastUs?.tier, "fast");
+    assert.equal(glmFastUs?.input, 2.10);
+    assert.equal(glmFastUs?.cachedInput, 0.21);
+    assert.equal(glmFastUs?.output, 6.60);
+
+    const glmFlashUs = lookupFireworksPricing("glm-5p3-flash-us");
+    assert.equal(glmFlashUs?.slug, "glm-5p3-flash-us");
+    assert.equal(glmFlashUs?.input, 0.225);
+    assert.equal(glmFlashUs?.cachedInput, 0.045);
+    assert.equal(glmFlashUs?.output, 0.75);
+  });
+
   it("formats compact in/out pricing for tables", () => {
     const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p2");
     assert.equal(formatPricingInOut(pricing), "$1.4 / $4.4");

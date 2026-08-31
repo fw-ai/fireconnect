@@ -100,7 +100,6 @@ import { printWebsearchOnStep } from "../../system/websearch-install-guide.mjs";
 import {
   printClaudeModelMapping,
   runClaudeModelOnboarding,
-  standardClaudeModelMapping,
 } from "./onboarding.mjs";
 import {
   canOnboardingSelectFirerouter,
@@ -112,7 +111,7 @@ import {
   defaultClaudeModelMapping,
   hasClaudeModelOverrides,
   inferClaudeActiveKeyType,
-  isClaudeMappingOverride,
+  mappingRequiresAnthropicKey,
   mappingUsesFirerouter,
   withSavedClaudeModelMapping,
 } from "./model-profile.mjs";
@@ -124,7 +123,7 @@ const CLAUDE_FIREROUTER = Object.freeze({
 });
 
 export const CLAUDE_FIREROUTER_FALLBACK_WARNING =
-  "FireRouter off · Sign in to Claude or pass --anthropic-api-key to enable automatic routing.";
+  "FireRouter off · Sign in to Claude or pass --anthropic-api-key to route between Claude and open models.";
 
 export const CLAUDE_FIREROUTER_AUTH_REQUIRED =
   "FireRouter requires Claude sign-in, workspace BYOK, or an Anthropic API key. "
@@ -465,8 +464,7 @@ export default defineHarnessProfile({
     ) {
       throw new Error("--routing-preference requires a Claude slot set to firerouter.");
     }
-    const fastDefaults = defaultClaudeModelMapping(keyType);
-    const nonFastDefaults = standardClaudeModelMapping(keyType);
+    const defaultMapping = defaultClaudeModelMapping(keyType);
     let pickerCatalogPromise;
     const loadPickerCatalog = () => {
       pickerCatalogPromise ??= loadClaudeModelPickerCatalog({
@@ -475,8 +473,7 @@ export default defineHarnessProfile({
         includeFirerouter: canUseFirerouter,
         extraModelIds: [
           ...Object.values(plan.mapping),
-          ...Object.values(fastDefaults),
-          ...Object.values(nonFastDefaults),
+          ...Object.values(defaultMapping),
         ],
       });
       return pickerCatalogPromise;
@@ -486,8 +483,8 @@ export default defineHarnessProfile({
     }
     if (shouldRunOnboarding) {
       const selected = await runClaudeModelOnboarding({
-        recommended: mapping,
-        fastDefaults,
+        shownMapping: mapping,
+        badgeMapping: plan.firstSetup ? mapping : defaultMapping,
         mappingLabel: plan.firstSetup ? "Recommended" : "Current",
         keyType,
         loadCatalog: loadPickerCatalog,
@@ -513,7 +510,8 @@ export default defineHarnessProfile({
       );
     }
     let anthropicKeyForFirerouter = nativeAuth.anthropicApiKey;
-    if (usesFirerouter && !canUseFirerouter) {
+    const firerouterNeedsAnthropicKey = mappingRequiresAnthropicKey(mapping);
+    if (usesFirerouter && firerouterNeedsAnthropicKey && !canUseFirerouter) {
       if (onboardingMode !== "skip") {
         const prompted = await resolveExplicitFirerouterCredential({
           firerouter: CLAUDE_FIREROUTER,
@@ -710,12 +708,6 @@ export default defineHarnessProfile({
       model: routed ? undefined : mainModel,
       mappingRows: routed
         ? Object.entries(payload.current)
-          .filter(([slot, modelId]) => isClaudeMappingOverride(
-            modelId,
-            slot,
-            payload.keyType,
-            payload.defaults,
-          ))
           .map(([slot, modelId]) => {
             const resolved = modelId || payload.defaults[slot] || "";
             const detailParts = [
@@ -724,7 +716,9 @@ export default defineHarnessProfile({
             ].filter(Boolean);
             return {
               slot,
-              value: shortModelId(resolved),
+              value: isClaudeNativeModel(resolved)
+                ? "Using Anthropic"
+                : shortModelId(resolved),
               detail: detailParts.join(" · "),
             };
           })

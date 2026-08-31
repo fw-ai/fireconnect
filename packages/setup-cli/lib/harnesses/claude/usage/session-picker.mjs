@@ -15,7 +15,8 @@ import { colorsEnabled } from "../../../ui/color.mjs";
 import { METER } from "../../../ui/palette.mjs";
 import { promptSelect } from "../../../ui/prompt.mjs";
 import { sanitize } from "../../../ui/sanitize.mjs";
-import { formatLiveCostTotal } from "./format.mjs";
+import { formatUsageCost } from "./format.mjs";
+import { COST_COL } from "./meter-layout.mjs";
 import {
   findClaudeSessionLogs,
   readClaudeUsage,
@@ -60,14 +61,17 @@ export function formatClaudeUsageSessionChoice(entry, now = Date.now(), opts = {
 
   const id = path.basename(entry.filePath, ".jsonl");
   const shortId = `${id.slice(0, 8)}…`;
-  const costValue = entry.report.grandTotals?.cost ?? entry.report.totals?.cost ?? 0;
+  const grandCost = entry.report.grandTotals?.cost;
+  const totalCost = entry.report.totals?.cost;
+  const costValue = grandCost !== undefined
+    ? grandCost
+    : (totalCost !== undefined ? totalCost : 0);
   const calls = entry.report.grandRequests ?? entry.report.requests ?? 0;
   const name = typeof entry.report.sessionName === "string"
     ? sanitize(entry.report.sessionName).replace(/\s+/g, " ").trim()
     : "";
   const age = formatSessionAge(entry.mtimeMs, now);
-  // A whole session's spend is a total, so 2 decimals.
-  const costText = formatLiveCostTotal(costValue).padStart(8);
+  const costText = formatUsageCost(costValue).padStart(COST_COL);
   const callsText = `${String(calls).padStart(3)} calls`;
 
   if (!useColor) {

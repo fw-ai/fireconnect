@@ -13,7 +13,6 @@ import {
 import {
   buildClaudeCustomHeaders,
   fireworksKeyFromCustomHeaders,
-  LEGACY_FIREROUTER_FIREWORKS_HEADER,
   setFireworksKeyInCustomHeaders,
   stripFireworksKeyFromCustomHeaders,
   stripFirerouterOwnedEnv,
@@ -21,15 +20,16 @@ import {
 } from "../../firerouter/core.mjs";
 import { lookupModelSpec, FIREWORKS_PRICING_DOCS_URL, resolveFireworksModelLabel, appendLatestRouterSuffix } from "../../fireworks/model-specs.mjs";
 import { formatPricingDescription, lookupFireworksPricing } from "../../fireworks/pricing.mjs";
-import { prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
+import { autoDisplayName, prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
 import {
   CLAUDE_NATIVE_MODEL_ID,
   DEEPSEEK_FLASH_LATEST_ROUTER_ID,
   DEEPSEEK_PRO_LATEST_ROUTER_ID,
   FIREWORKS_BASE_URL,
-  FIREROUTER_ROUTER_ID,
   GLM_FAST_LATEST_ROUTER_ID,
   KIMI_FAST_LATEST_ROUTER_ID,
+  isAutoModelId,
+  isClaudeModelAlias,
   isClaudeNativeModel,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
@@ -45,14 +45,13 @@ import {
   stripFireconnectTelemetryHeaderLines,
 } from "../../telemetry/request-headers.mjs";
 import {
-  CLAUDE_MODEL_SLOTS,
   mappingUsesFirerouter,
   resolveClaudeModelMapping,
 } from "./model-profile.mjs";
+import { stripClaudeStatusLine, withClaudeStatusLine } from "./statusline.mjs";
 
 export const DEFAULT_DATA_DIR = ".fireconnect/claude";
 export const USER_SETTINGS_RELATIVE_PATH = ".claude/settings.json";
-const LEGACY_FIREROUTER_HOSTNAME = "router.fireworks.ai";
 
 /** Legacy main-default env keys stripped when writing FireConnect-managed settings. */
 const LEGACY_ANTHROPIC_MAIN_ENV_KEYS = ["ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"];
@@ -131,6 +130,10 @@ export const CLAUDE_CODE_BEHAVIOR_ENV = {
   DISABLE_TELEMETRY: "1",
   DO_NOT_TRACK: "1",
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  // Claude Code disables MCP tool search when ANTHROPIC_BASE_URL is not
+  // api.anthropic.com. Force it on so deferred tool_reference loading still
+  // works through the Fireworks gateway.
+  ENABLE_TOOL_SEARCH: "true",
 };
 
 export const DEFAULT_FIREWORKS_PRESET = {
@@ -190,6 +193,11 @@ export function mappingFromSettings(settings = {}) {
   const mainFromModel = typeof settings.model === "string" && settings.model.trim()
     ? stripMappedModelId(settings.model.trim())
     : null;
+  // A bare Claude Code `/model` picker alias (opus/sonnet/haiku/fable) names no
+  // concrete model: it resolves at request time through the alias's own env slot,
+  // which the slot rows below already report. Treat it as unpinned (native) main
+  // instead of misreading the user's picker choice as a FireConnect model pin.
+  const mainAliasPicked = isClaudeModelAlias(mainFromModel);
   const mainFromEnv = env.ANTHROPIC_MODEL
     ? stripMappedModelId(env.ANTHROPIC_MODEL)
     : null;
@@ -204,7 +212,7 @@ export function mappingFromSettings(settings = {}) {
   ) || env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || "";
   const firepass = routed && detectApiKeyType(gatewayKey) === "firepass";
   const native = routed && !firepass ? CLAUDE_NATIVE_MODEL_ID : null;
-  const resolvedMain = mainFromModel || mainFromEnv;
+  const resolvedMain = (mainFromModel && !mainAliasPicked ? mainFromModel : null) || mainFromEnv;
   return {
     main: resolvedMain || native,
     opus: stripMappedModelId(env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? null) || native,
@@ -254,22 +262,10 @@ export function fireworksHostnameFromBaseUrl(baseUrl) {
   }
 }
 
-function customHeadersContain(value, headerName) {
-  if (typeof value !== "string") {
-    return false;
-  }
-  const wanted = headerName.toLowerCase();
-  return value.split("\n").some((line) => {
-    const colon = line.indexOf(":");
-    return colon !== -1 && line.slice(0, colon).trim().toLowerCase() === wanted;
-  });
-}
-
 /**
- * Recover the active FireConnect intent from settings written by either the
- * current CLI or a legacy router.fireworks.ai release. A Fireworks hostname is
- * not sufficient by itself: backup/state, a managed helper/header, telemetry,
- * or FireConnect's model/preset wiring must also identify ownership.
+ * Recover active FireConnect intent from current settings. A Fireworks
+ * hostname is not sufficient by itself: backup/state, a managed helper/header,
+ * telemetry, or FireConnect's model mapping must also identify ownership.
  */
 export function claudeFireconnectIntent(settings, { backup = {}, state = {} } = {}) {
   const env = settings.env ?? {};
@@ -281,37 +277,26 @@ export function claudeFireconnectIntent(settings, { backup = {}, state = {} } = 
   const mapping = mappingFromSettings(settings);
   const headers = env.ANTHROPIC_CUSTOM_HEADERS;
   const hasFireworksMapping = Object.values(mapping).some(Boolean);
-  const hasManagedPreset = env.CLAUDE_CODE_ATTRIBUTION_HEADER === "0"
-    && env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING === "1";
-  const hasLegacyHeader = customHeadersContain(
-    headers,
-    LEGACY_FIREROUTER_FIREWORKS_HEADER,
-  );
   const hasTelemetry = typeof headers === "string"
     && stripFireconnectTelemetryHeaderLines(headers) !== headers;
   const hasCurrentManagedHeader = isFireworksShapedKey(
     fireworksKeyFromCustomHeaders(headers),
-  ) && (hasFireworksMapping || hasManagedPreset);
+  ) && hasFireworksMapping;
   const hasManagedEvidence = backup.snapshot !== undefined
     || backup.values !== undefined
     || Boolean(state.authMode || state.managedApiKeyHelper)
     || stripManagedApiKeyHelper(settings, state).changed
     || env.ANTHROPIC_API_KEY === "fireconnect"
-    || hasLegacyHeader
     || hasTelemetry
-    || hasCurrentManagedHeader
-    || (hasFireworksMapping && hasManagedPreset);
+    || hasCurrentManagedHeader;
   if (!hasManagedEvidence) {
     return null;
   }
 
-  const legacyFullRouter = hostname === LEGACY_FIREROUTER_HOSTNAME;
   return {
     hostname,
-    mode: legacyFullRouter ? "router" : "direct",
-    mapping: legacyFullRouter
-      ? Object.fromEntries(CLAUDE_MODEL_SLOTS.map((slot) => [slot, FIREROUTER_ROUTER_ID]))
-      : mapping,
+    mode: "direct",
+    mapping,
     needsUpgrade: backup.snapshot === undefined,
   };
 }
@@ -467,6 +452,7 @@ export function stripFireconnectManagedClaudeSettings(settings, state = {}) {
 
   let nextSettings = { ...settings, env: nextEnv };
   nextSettings = clearFireworksTopLevelWithoutBackup(nextSettings);
+  nextSettings = stripClaudeStatusLine(nextSettings).settings;
   return stripManagedApiKeyHelper(nextSettings, state).settings;
 }
 
@@ -541,6 +527,9 @@ export function stripModelMappingEnv(env) {
  * @returns {string}
  */
 export function fireworksModelPickerName(modelId) {
+  if (isAutoModelId(modelId)) {
+    return autoDisplayName(modelId);
+  }
   const liveLabel = resolveFireworksModelLabel(modelId);
   if (liveLabel) {
     return stripViaFireworksSuffix(liveLabel);
@@ -699,7 +688,6 @@ export function buildFireworksProviderEnv(env, {
   });
   delete nextEnv.ANTHROPIC_API_KEY;
   delete nextEnv.ANTHROPIC_AUTH_TOKEN;
-  delete nextEnv.ENABLE_TOOL_SEARCH;
   // Let Claude Code emit its normal attribution block. The Fireworks gateway
   // strips that synthetic block before inference, while disabling it client-side
   // breaks Claude Code's classifier/auto-mode behavior.
@@ -807,6 +795,10 @@ export function buildFireworksSettings(settings, {
     } else {
       next.model = shortFireworksModelRef(claudeCodeModelId(mapping.main));
     }
+    // Claude Code prices the routed model against Anthropic's list, so its own
+    // status line reports a cost the user is never billed. Ours reads the
+    // transcript at Fireworks rates. A user's existing statusLine is left as-is.
+    return { settings: withClaudeStatusLine(next), token, keyType: resolvedKeyType };
   }
   return { settings: next, token, keyType: resolvedKeyType };
 }
@@ -939,6 +931,9 @@ export async function disableFireworksProvider({ settingsPath, dataDir, wasEnabl
       nextSettings = clearFireworksTopLevelWithoutBackup(nextSettings);
     }
     nextSettings = stripManagedApiKeyHelper(nextSettings, state).settings;
+    // This legacy backup predates the managed status line, so it cannot restore
+    // its absence — strip it explicitly (a user's own statusLine is untouched).
+    nextSettings = stripClaudeStatusLine(nextSettings).settings;
 
     await writeJson(settingsPath, nextSettings);
     await writeJson(statePath, {
@@ -962,7 +957,10 @@ export async function disableFireworksProvider({ settingsPath, dataDir, wasEnabl
   const { settings: clearedSettings, changed: helperChanged } = stripManagedApiKeyHelper(nextSettings, state);
   nextSettings = clearedSettings;
 
-  if (envChanged || clearedTopLevel || helperChanged) {
+  const { settings: withoutStatusLine, changed: statusLineChanged } = stripClaudeStatusLine(nextSettings);
+  nextSettings = withoutStatusLine;
+
+  if (envChanged || clearedTopLevel || helperChanged || statusLineChanged) {
     await writeJson(settingsPath, nextSettings);
   }
 

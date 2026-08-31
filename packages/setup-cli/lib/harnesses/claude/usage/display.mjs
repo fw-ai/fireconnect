@@ -2,6 +2,12 @@ import process, { stdin, stdout } from "node:process";
 import path from "node:path";
 import { colorEnabled, bold, accent } from "../../../ui/term.mjs";
 import { ANSI } from "../../../ui/palette.mjs";
+import {
+  UNPRICED_TEXT,
+  addUsage,
+  sumUsage,
+} from "./cost.mjs";
+import { usageCostDigits } from "./format.mjs";
 
 const ANTHROPIC_PRICING_DOCS_URL = "https://platform.claude.com/docs/en/about-claude/pricing";
 
@@ -23,6 +29,7 @@ const CLEAR_LINE = ANSI.clearLine;
 const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 const PENDING_ESCAPE_MS = 25;
 const FALLBACK_PRICING_NOTE = "Some rows used fallback pricing for unrecognized model ids.";
+const UNPRICED_NOTE = `Some calls have no rate available; their cost reads ${UNPRICED_TEXT} and is left out of totals.`;
 
 export function formatCostEstimateNote() {
   return [
@@ -89,9 +96,10 @@ function wrapPlainLine(text, width) {
   return wrapped;
 }
 
-function formatInteractiveEstimateNote(width, stream = stdout, { estimated = false } = {}) {
+function formatInteractiveEstimateNote(width, stream = stdout, { estimated = false, unpriced = 0 } = {}) {
   const lines = formatCostEstimateNote();
   if (estimated) lines.push(FALLBACK_PRICING_NOTE);
+  if (unpriced) lines.push(UNPRICED_NOTE);
   return lines
     .flatMap((line) => wrapPlainLine(line, width))
     .map((line) => dim(line, stream));
@@ -112,14 +120,18 @@ function fmtCompact(value) {
   return fmtInt(value);
 }
 
+// An unpriced call has `cost: null` (see report.mjs) — a rate we could not look
+// up, not a free call — so every cost cell here renders it as `n/a` and every
+// total that contains one is null too.
 function fmtCost(value) {
-  return value < 0.01
-    ? value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")
-    : value.toFixed(2);
+  if (value == null) {
+    return UNPRICED_TEXT;
+  }
+  return usageCostDigits(value);
 }
 
 function fmtCostUsd(value) {
-  return `$${fmtCost(value)}`;
+  return value == null ? UNPRICED_TEXT : `$${fmtCost(value)}`;
 }
 
 function displayModelName(model) {
@@ -219,12 +231,11 @@ function summarizeRows(report) {
       cacheRead: 0,
       cost: 0,
     };
-    current.calls += 1;
-    current.input += row.input;
-    current.output += row.output;
-    current.cacheRead += row.cacheRead;
-    current.cost += row.cost;
-    byModelAndAgent.set(key, current);
+    byModelAndAgent.set(key, {
+      ...current,
+      ...addUsage(current, row),
+      calls: current.calls + 1,
+    });
   };
 
   for (const row of report.rows) ingest(row);
@@ -247,15 +258,14 @@ function aggregateModels(reports) {
         cacheRead: 0,
         cost: 0,
       };
-      current.calls += row.calls;
-      current.input += row.input;
-      current.output += row.output;
-      current.cacheRead += row.cacheRead;
-      current.cost += row.cost;
-      byModel.set(row.model, current);
+      byModel.set(row.model, {
+        ...current,
+        ...addUsage(current, row),
+        calls: current.calls + row.calls,
+      });
     }
   }
-  return [...byModel.values()].sort((a, b) => b.cost - a.cost || a.displayModel.localeCompare(b.displayModel));
+  return [...byModel.values()].sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0) || a.displayModel.localeCompare(b.displayModel));
 }
 
 function formatHero({ totals, calls, sessions }, width, stream = stdout) {
@@ -336,7 +346,9 @@ function formatSessionSummaryRow(report, maxCost, totalCost, width, stream = std
 }
 
 function formatInteractiveSessionRow({ report, maxCost, totalCost, width, selected, expanded }, stream = stdout) {
-  const costWidth = 8;
+  // 9, like every other cost column: four decimals make `$116.9562` the widest
+  // realistic cell, and a narrower slot would push the bar out of alignment.
+  const costWidth = 9;
   const percentWidth = 5;
   const marker = dim(expanded ? "▾" : "▸", stream);
   const reserved = 2 + 1 + costWidth + 1 + 4 + 1 + percentWidth;
@@ -422,14 +434,7 @@ function clamp(value, min, max) {
 }
 
 function totalsForRequestItems(items) {
-  return items.reduce((totals, item) => ({
-    input: totals.input + (item.row.input ?? 0),
-    cacheWrite5m: totals.cacheWrite5m + (item.row.cacheWrite5m ?? 0),
-    cacheWrite1h: totals.cacheWrite1h + (item.row.cacheWrite1h ?? 0),
-    cacheRead: totals.cacheRead + (item.row.cacheRead ?? 0),
-    output: totals.output + (item.row.output ?? 0),
-    cost: totals.cost + (item.row.cost ?? 0),
-  }), { input: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 0, cost: 0 });
+  return sumUsage(items.map((item) => item.row));
 }
 
 function sourceModelRows(report) {
@@ -448,14 +453,11 @@ function sourceModelRows(report) {
       output: 0,
       cost: 0,
     };
-    current.calls += 1;
-    current.input += row.input;
-    current.cacheWrite5m += row.cacheWrite5m ?? 0;
-    current.cacheWrite1h += row.cacheWrite1h ?? 0;
-    current.cacheRead += row.cacheRead ?? 0;
-    current.output += row.output;
-    current.cost += row.cost;
-    bySourceAndModel.set(key, current);
+    bySourceAndModel.set(key, {
+      ...current,
+      ...addUsage(current, row),
+      calls: current.calls + 1,
+    });
   };
 
   for (const row of report.rows) ingest("parent", row);
@@ -566,6 +568,7 @@ function usageGroupFromInput(input) {
     totals,
     calls,
     estimated: input?.estimated ?? false,
+    unpriced: input?.unpriced ?? 0,
   };
 }
 
@@ -602,7 +605,7 @@ function layerTableLimit(input, state, stream = stdout) {
 
   const width = lineWidth(stream);
   const heroRows = formatHero({ totals: group.totals, calls: group.calls, sessions: sessions.length }, width, stream).length;
-  const estimateRows = formatInteractiveEstimateNote(width, stream, { estimated: group.estimated }).length;
+  const estimateRows = formatInteractiveEstimateNote(width, stream, { estimated: group.estimated, unpriced: group.unpriced }).length;
   const modelRows = formatInteractiveModelBreakdown(report, width, stream).length;
   const nameRows = formatSessionNameLines(report, width, stream).length > 0 ? 2 : 0;
   const fixedRows = 1 + 1 + estimateRows + 1 + heroRows + 1 + 1 + 1
@@ -627,7 +630,7 @@ export function formatClaudeUsageInteractiveFrame(input, state = {}, { stream = 
   const lines = [
     dim(title, stream),
     "",
-    ...formatInteractiveEstimateNote(width, stream, { estimated: group.estimated }),
+    ...formatInteractiveEstimateNote(width, stream, { estimated: group.estimated, unpriced: group.unpriced }),
     "",
     ...formatHero({ totals: group.totals, calls: group.calls, sessions: sessions.length }, width, stream),
     "",
@@ -980,7 +983,7 @@ export async function runClaudeUsageInteractiveDisplay(input, { stdin: in_ = std
   return true;
 }
 
-function formatEstimateFooter({ estimated }, stream = stdout) {
+function formatEstimateFooter({ estimated, unpriced = 0 }, stream = stdout) {
   const lines = [
     "",
     ...formatCostEstimateNote().map((line) => dim(line, stream)),
@@ -988,6 +991,9 @@ function formatEstimateFooter({ estimated }, stream = stdout) {
   ];
   if (estimated) {
     lines.push(dim(FALLBACK_PRICING_NOTE, stream));
+  }
+  if (unpriced) {
+    lines.push(dim(UNPRICED_NOTE, stream));
   }
   return lines;
 }
@@ -1013,7 +1019,7 @@ function formatSessionDetail(report, title, width, stream = stdout) {
   return lines;
 }
 
-function formatSummary({ sessions, totals, calls, estimated }, stream = stdout) {
+function formatSummary({ sessions, totals, calls, estimated, unpriced = 0 }, stream = stdout) {
   const width = lineWidth(stream);
   const lines = [];
   const hasNames = sessions.some((report) => Boolean(sessionName(report)));
@@ -1045,7 +1051,7 @@ function formatSummary({ sessions, totals, calls, estimated }, stream = stdout) 
     }
   }
 
-  lines.push(...formatEstimateFooter({ estimated }, stream));
+  lines.push(...formatEstimateFooter({ estimated, unpriced }, stream));
   return lines.join("\n");
 }
 
@@ -1086,6 +1092,7 @@ export function formatClaudeUsageSummaryDisplay(report, { stream = stdout } = {}
     totals: report.grandTotals,
     calls: report.grandRequests,
     estimated: report.estimated,
+    unpriced: report.unpriced,
   }, stream);
 }
 
@@ -1097,5 +1104,6 @@ export function formatClaudeUsageReportsSummaryDisplay(reportGroup, { stream = s
     totals: reportGroup.grandTotals,
     calls: reportGroup.grandRequests,
     estimated: reportGroup.estimated,
+    unpriced: reportGroup.unpriced,
   }, stream);
 }

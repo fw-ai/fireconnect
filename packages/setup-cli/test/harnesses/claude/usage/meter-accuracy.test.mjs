@@ -21,6 +21,10 @@ import {
   formatUsageCachePct,
   roundCachePct,
 } from "../../../../lib/harnesses/claude/usage/format.mjs";
+import {
+  COST_COL,
+  money,
+} from "../../../../lib/harnesses/claude/usage/meter-layout.mjs";
 
 /** Render `entries` (raw JSONL records) through the meter and return the frame. */
 async function render(entries, { columns = 130, readPeers, agentLabel = "Main" } = {}) {
@@ -99,6 +103,11 @@ const assistant = (id, usage, model = "accounts/fireworks/models/glm-5p2") => ({
 const money0Width = "$0.0018".length;
 
 describe("live meter billing accuracy", () => {
+  it("keeps four-decimal totals through $9999 inside the cost column", () => {
+    assert.equal(COST_COL, "$1234.5678".length);
+    assert.equal(money(1234.5678), "$1234.5678");
+  });
+
   it("prices a call from its richest payload, not the first all-zero block", async () => {
     // Claude Code repeats a message.id across content blocks and attaches usage
     // to the last one. Counting the first billed real work at $0.00.
@@ -330,6 +339,43 @@ describe("live meter billing accuracy", () => {
       Math.abs(sessionCost - (ownCost + 0.5)) <= 0.01,
       `${sessionCost} != ${ownCost} + 0.5`,
     );
+  });
+
+  it("shows n/a when the tracked agent or a peer has an unpriced call", async () => {
+    const unpricedTracked = await render([
+      { type: "user", message: { content: "go" } },
+      assistant("msg_1", { input_tokens: 1_000, output_tokens: 100 }, "accounts/fireworks/models/unknown"),
+    ]);
+    assert.match(unpricedTracked, /TOTAL COST\s+n\/a/);
+
+    const unpricedPeer = await render(
+      [
+        { type: "user", message: { content: "go" } },
+        assistant("msg_1", { input_tokens: 1_000, output_tokens: 100 }),
+      ],
+      { readPeers: async () => ({ count: 1, calls: 1, cost: null }) },
+    );
+    assert.match(unpricedPeer, /1 subagent · 1 call\s+n\/a/);
+    assert.match(unpricedPeer, /SESSION COST\s+n\/a/);
+    assert.doesNotMatch(unpricedPeer, /SESSION COST\s+\$0\.00/);
+
+    const unpricedMain = await render(
+      [
+        { type: "user", message: { content: "go" } },
+        assistant("msg_1", { input_tokens: 1_000, output_tokens: 100 }),
+      ],
+      {
+        agentLabel: "Explore",
+        readPeers: async () => ({
+          count: 1,
+          calls: 1,
+          cost: 0.25,
+          main: { label: "Main", calls: 1, cost: null },
+        }),
+      },
+    );
+    assert.match(unpricedMain, /Main · 1 call\s+n\/a/);
+    assert.match(unpricedMain, /SESSION COST\s+n\/a/);
   });
 
   it("reports Main on its own row rather than as a subagent", async () => {

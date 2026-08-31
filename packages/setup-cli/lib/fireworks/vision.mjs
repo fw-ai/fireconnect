@@ -1,10 +1,10 @@
-import { fireworksModelSlug, isGatewayAnthropicSlot, isFirerouterModel } from "./model-id.mjs";
+import { fireworksModelSlug, isFirerouterModelPattern, isGatewayAnthropicSlot } from "./model-id.mjs";
 import { lookupFireworksModelLimits } from "./model-specs.mjs";
 
 /** Whether a Fireworks model/router accepts image input. FireRouter and
  * native Anthropic models (claude-*) are excluded from the catalog lookup. */
 export function modelSupportsVision(modelRef) {
-  if (!modelRef || isFirerouterModel(modelRef) || isGatewayAnthropicSlot(modelRef)) {
+  if (!modelRef || isFirerouterModelPattern(modelRef) || isGatewayAnthropicSlot(modelRef)) {
     return true;
   }
   return lookupFireworksModelLimits(modelRef).vision;
@@ -14,7 +14,7 @@ export function modelSupportsVision(modelRef) {
 export function uniqueNonVisionModelShortIds(modelRefs) {
   return [...new Set(
     [...modelRefs]
-      .filter((modelRef) => modelRef && !isFirerouterModel(modelRef))
+      .filter((modelRef) => modelRef && !isFirerouterModelPattern(modelRef))
       .filter((modelRef) => !modelSupportsVision(modelRef))
       .map((modelRef) => fireworksModelSlug(modelRef))
       .filter(Boolean),
@@ -31,7 +31,7 @@ export function formatNonVisionModelsWarning(shortIds) {
 
 /** Compact label for status and catalog output. */
 export function visionCapabilityLabel(modelRef) {
-  if (!modelRef || isFirerouterModel(modelRef)) {
+  if (!modelRef || isFirerouterModelPattern(modelRef)) {
     return "";
   }
   return modelSupportsVision(modelRef) ? "vision" : "text-only";

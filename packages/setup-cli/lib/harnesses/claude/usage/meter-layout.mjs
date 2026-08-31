@@ -8,34 +8,16 @@
  * that had to agree, and didn't.
  */
 
-import { roundCachePct, usageCacheHitRatio } from "./format.mjs";
+import { formatUsageCost, roundCachePct, usageCacheHitRatio } from "./format.mjs";
 
 // ── value formatting ─────────────────────────────────────────────────────────
 
 /**
- * One call's cost, right-aligned so the `$` sits against the digits.
- *
- * 4 decimals: a single cheap GLM call really is worth $0.0018, and rounding it
- * to cents would erase the row.
+ * A cost — one call or a total — right-aligned so the `$` sits against the
+ * digits. `formatUsageCost` is the CLI-wide rule (4 decimals, `n/a` when there
+ * is no rate); all this adds is the column width.
  */
-export const money = (v, w = 8) => `$${v.toFixed(4)}`.padStart(w);
-
-/**
- * A TOTAL, at 2 decimals — the precision you'd actually quote.
- *
- * Nobody reads the fourth decimal of a $116.9562 session, and the extra digits
- * make a column of totals harder to scan.
- *
- * `<$0.01` rather than `$0.00` for a small nonzero total: rounding a real charge
- * down to zero is the one thing 2 decimals could get actively wrong, and a
- * subagent that cost $0.0072 did cost something. Padded to `money`'s width so
- * both keep the cost column aligned.
- */
-export const moneyTotal = (v, w = 8) => {
-  const n = Number(v) || 0;
-  if (n > 0 && n < 0.005) return "<$0.01".padStart(w);
-  return `$${n.toFixed(2)}`.padStart(w);
-};
+export const money = (v, w = COST_COL) => formatUsageCost(v).padStart(w);
 
 /** Token count as a short magnitude: 1234 -> "1.2k", 2.3e6 -> "2.3M". */
 export function tok(n) {
@@ -105,7 +87,7 @@ export const TOKEN_COLUMNS_WIDTH = TOKEN_COLUMNS.reduce((n, c) => n + c.width, 0
 export const MODEL_COL = 8;
 
 /** Cost column — wide enough for "$1234.5678". */
-export const COST_COL = 8;
+export const COST_COL = 10;
 
 /** Turn-number column, e.g. " 7" or "28". */
 export const TURN_NO_WIDTH = 2;

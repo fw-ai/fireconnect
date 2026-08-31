@@ -1,6 +1,12 @@
 import { resolveModelDisplayMetadata } from "../../fireworks/model-display.mjs";
-import { FIREWORKS_MODEL_SPECS, ROUTER_SPEC_ALIASES } from "../../fireworks/model-specs.mjs";
 import {
+  AUTO_INSTANT_MODEL_ID,
+  FIREWORKS_MODEL_SPECS,
+  isAutoModelId,
+  ROUTER_SPEC_ALIASES,
+} from "../../fireworks/model-specs.mjs";
+import {
+  autoCatalogEntry,
   catalogWithAutomaticFirerouter,
   FIREPASS_FALLBACK_ROUTERS,
   loadServerlessCatalog,
@@ -15,15 +21,36 @@ import {
   isClaudeNativeModel,
 } from "../../fireworks/model-id.mjs";
 import { attachPricing } from "../../fireworks/pricing.mjs";
+import { CLAUDE_FIREWORKS_PINNED_DEFAULTS } from "./model-profile.mjs";
 
-const SLOT_RECOMMENDATIONS = Object.freeze({
-  main: ["kimi-fast-latest", "firerouter", "glm-fast-latest", "glm-latest"],
-  opus: ["glm-fast-latest", "glm-latest", "deepseek-v4-pro", "firerouter"],
-  sonnet: ["glm-fast-latest", "kimi-fast-latest", "glm-latest", "deepseek-flash-latest"],
-  haiku: ["deepseek-flash-latest", "kimi-fast-latest", "gpt-oss-120b", "minimax-latest"],
-  fable: ["kimi-fast-latest", "kimi-latest", "qwen-plus-latest", "minimax-latest"],
-  subagent: ["deepseek-flash-latest", "kimi-fast-latest", "gpt-oss-120b", "glm-fast-latest"],
+// Wizard picker alternates follow each slot default (see CLAUDE_FIREWORKS_PINNED_DEFAULTS).
+// minimax-latest is last in every slot — discoverable, never a default.
+const MAIN_PICKER_HEAD = "kimi-latest";
+
+const SLOT_PICKER_ALTERNATIVES = Object.freeze({
+  main: ["firerouter", "auto", "glm-latest", "glm-flash-latest", "minimax-latest"],
+  opus: ["kimi-latest", "deepseek-pro-latest", "firerouter", "auto", "minimax-latest"],
+  sonnet: ["glm-latest", "kimi-latest", "auto", "auto-instant", "glm-flash-latest", "deepseek-flash-latest", "minimax-latest"],
+  haiku: ["auto", "gpt-oss-120b", "glm-flash-latest", "qwen-plus-latest", "minimax-latest"],
+  fable: ["auto", "kimi-latest", "qwen-plus-latest", "glm-latest", "minimax-latest"],
+  subagent: ["auto", "gpt-oss-120b", "glm-flash-latest", "kimi-latest", "minimax-latest"],
 });
+
+export function slotPickerRecommendations(slot) {
+  const head = slot === "main"
+    ? MAIN_PICKER_HEAD
+    : CLAUDE_FIREWORKS_PINNED_DEFAULTS[slot];
+  const ordered = [];
+  const seen = new Set();
+  for (const slug of [head, ...(SLOT_PICKER_ALTERNATIVES[slot] ?? [])]) {
+    if (!slug || seen.has(slug)) {
+      continue;
+    }
+    seen.add(slug);
+    ordered.push(slug);
+  }
+  return ordered;
+}
 
 const STATIC_MODEL_SLUGS = [
   ...Object.keys(ROUTER_SPEC_ALIASES),
@@ -44,8 +71,8 @@ function syntheticEntry(modelId) {
 /**
  * The "Claude default" slot choice. Selecting it means "don't pin
  * this slot — use Claude's own default Anthropic model for the role" (served via
- * the Fireworks gateway). Keep it out of the Fireworks-only fast/non-fast tiers;
- * it's a first-class choice with no pricing/limits in the FW catalog.
+ * the Fireworks gateway). It's a first-class choice with no pricing/limits in
+ * the FW catalog.
  */
 function claudeNativePickerEntry() {
   const id = fullFireworksResourceId(CLAUDE_NATIVE_MODEL_ID);
@@ -77,14 +104,33 @@ function enrichEntry(entry) {
     id: entry.id,
     slug: entry.shortId,
     label: stripViaFireworksSuffix(entry.displayName || prettyModelName(entry.shortId)),
-    fast: pricing?.tier === "fast" || /(?:-fast|-turbo|-flash)(?:-|$)/i.test(entry.shortId),
+    fast: pricing?.tier === "fast",
     contextWindow: metadata.maxInputTokens ?? 128_000,
     vision: metadata.vision === true,
     tools: metadata.toolCalling !== false,
     pricing,
     router: entry.id.includes("/routers/"),
     firerouter: entry.shortId === "firerouter",
+    auto: isAutoModelId(entry.shortId),
   };
+}
+
+/** Standard-key catalogs: inject synthesized `auto` rows the serverless API omits. */
+function injectAutoMixCatalogRows(catalog, keyType) {
+  if (keyType === "firepass") {
+    return catalog;
+  }
+  const present = new Set(
+    catalog.map((entry) => entry.shortId).filter(Boolean),
+  );
+  const injected = [];
+  if (!present.has("auto")) {
+    injected.push(autoCatalogEntry());
+  }
+  if (!present.has(AUTO_INSTANT_MODEL_ID)) {
+    injected.push(autoCatalogEntry(AUTO_INSTANT_MODEL_ID));
+  }
+  return injected.length ? [...injected, ...catalog] : catalog;
 }
 
 export async function loadClaudeModelPickerCatalog({
@@ -105,11 +151,12 @@ export async function loadClaudeModelPickerCatalog({
     keyType,
     { includeFirerouter },
   );
+  const withAuto = injectAutoMixCatalogRows(withRouter, keyType);
   const extras = extraModelIds
     .filter((modelId) => includeFirerouter || modelId !== "firerouter")
     .map(syntheticEntry);
   const bySlug = new Map(
-    [...withRouter, ...extras]
+    [...withAuto, ...extras]
       .map(enrichEntry)
       .filter((model) => model.tools)
       .map((model) => [model.slug, model]),
@@ -126,14 +173,11 @@ export function rankClaudeModelsForSlot(models, {
   currentModel,
   recommendedModel,
 }) {
-  const recommendations = SLOT_RECOMMENDATIONS[slot] ?? [];
+  const recommendations = slotPickerRecommendations(slot);
   const rank = (model) => {
     if (model.slug === currentModel) return -300;
     if (model.slug === recommendedModel) return -200;
     if (model.slug === CLAUDE_NATIVE_MODEL_ID) {
-      // Always keep "Claude default" in the visible top slice — in non-fast mode
-      // too, where the slot's recommendation is a Fireworks alias and the native
-      // entry would otherwise rank off the end of the list.
       return isClaudeNativeModel(currentModel) || isClaudeNativeModel(recommendedModel)
         ? -250
         : -150;
@@ -148,8 +192,18 @@ export function rankClaudeModelsForSlot(models, {
   ));
 }
 
-export function suitableClaudeModelsForSlot(models, options, limit = 5) {
-  return rankClaudeModelsForSlot(models, options).slice(0, limit);
+function wizardVisibleSlugs({ slot, currentModel, recommendedModel }) {
+  return new Set([
+    currentModel,
+    recommendedModel,
+    CLAUDE_NATIVE_MODEL_ID,
+    ...slotPickerRecommendations(slot),
+  ].filter(Boolean));
+}
+
+export function suitableClaudeModelsForSlot(models, options) {
+  const visible = wizardVisibleSlugs(options);
+  return rankClaudeModelsForSlot(models, options).filter((model) => visible.has(model.slug));
 }
 
 export function formatContextWindow(tokens) {
@@ -169,9 +223,9 @@ export function modelPickerBadges(model, {
     model.slug === currentModel ? "Current" : "",
     model.slug === recommendedModel ? "Recommended" : "",
     isClaudeNativeModel(model.slug) ? CLAUDE_NATIVE_SLOT_LABEL : "",
-    model.firerouter ? "Automatic routing" : (model.fast ? "Fast" : "Standard"),
+    model.firerouter ? "Claude + open models" : (model.auto ? "Open-model mix" : (model.fast ? "Fast" : "Standard")),
     formatContextWindow(model.contextWindow),
-    model.firerouter ? "" : (model.vision ? "Vision" : "Text-only"),
+    model.firerouter || model.auto ? "" : (model.vision ? "Vision" : "Text-only"),
     model.pricing?.display ?? "",
   ].filter(Boolean);
 }

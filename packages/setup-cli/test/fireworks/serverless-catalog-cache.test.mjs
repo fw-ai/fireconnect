@@ -17,6 +17,15 @@ const CACHE_MODULE = fileURLToPath(
   new URL("../../lib/fireworks/serverless-catalog-cache.mjs", import.meta.url),
 );
 
+const PRICING_MODULE = fileURLToPath(
+  new URL("../../lib/fireworks/pricing.mjs", import.meta.url),
+);
+
+// This spec is about the HOME-based default cache path, so it opts out of the
+// FIRECONNECT_CACHE_DIR override global-setup applies to every test process.
+// Isolation still holds: each case runs under its own temp HOME.
+delete process.env.FIRECONNECT_CACHE_DIR;
+
 function sampleSnapshot() {
   return {
     entries: [
@@ -85,6 +94,41 @@ describe("serverless-catalog-cache disk persistence", () => {
       assert.equal(loaded.pricing, 1.4);
       assert.equal(loaded.context, 1048576);
       assert.equal(loaded.tools, true);
+    });
+  });
+
+  it("prices from the persisted cache in a process that never loaded the catalog", () => {
+    // The status line helper is spawned per assistant message and makes no
+    // network calls, so the disk snapshot is the only live pricing it can see.
+    // Reading the module's in-memory binding instead of lazy-loading left it
+    // pricing from the static spec table alone — stale rates for a model whose
+    // published price moved, and reference rates for one the table lacks.
+    withTempHome(() => {
+      cacheServerlessCatalogSnapshot({
+        ...sampleSnapshot(),
+        pricingById: new Map([
+          ["accounts/fireworks/models/brand-new-model", {
+            slug: "brand-new-model",
+            label: "Brand New Model",
+            input: 0.7,
+            cachedInput: 0.07,
+            output: 2.1,
+            tier: "standard",
+            source: "",
+          }],
+        ]),
+      });
+
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import { lookupFireworksPricing } from ${JSON.stringify(`file://${PRICING_MODULE}`)};
+        console.log(JSON.stringify(lookupFireworksPricing("accounts/fireworks/models/brand-new-model")));
+      `], { env: { ...process.env, HOME: process.env.HOME }, encoding: "utf8" });
+      assert.equal(child.status, 0, child.stderr);
+
+      const pricing = JSON.parse(child.stdout.trim());
+      assert.equal(pricing?.input, 0.7);
+      assert.equal(pricing?.output, 2.1);
+      assert.equal(pricing?.label, "Brand New Model");
     });
   });
 

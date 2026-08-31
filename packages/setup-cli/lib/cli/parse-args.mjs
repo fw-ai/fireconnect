@@ -1,7 +1,7 @@
 import process from "node:process";
 import { FIREWORKS_BASE_URL } from "../fireworks/model-id.mjs";
 import { ROUTING_PREFERENCE_LEVELS, normalizeRoutingPreference } from "../firerouter/core.mjs";
-import { HARNESSES } from "../harness/id.mjs";
+import { HARNESSES, HARNESS_ALIASES, resolveHarnessAlias } from "../harness/id.mjs";
 import { parseDemoArgs, findDemoInvocation } from "../demo/parse-demo-args.mjs";
 import { withSuggestion } from "../ui.mjs";
 
@@ -36,7 +36,7 @@ const KNOWN_FLAGS = [
   "--help", "--version", "--json", "--home", "--settings-path", "--config-path",
   "--data-dir", "--api-key", "--base-url", "--azure", "--provider",
   "--anthropic-api-key", "--model", "--opus",
-  "--sonnet", "--haiku", "--fable", "--subagent", "--search",
+  "--sonnet", "--haiku", "--fable", "--subagent", "--search", "--refresh",
   "--db-path", "--vscode-path", "--force", "--stored-only",
   "--last-n", "--plain", "--verbose", "--routing-preference", "--session", "--days",
   "--account", "--anthropic", "--paste", "--revoke", "--with-token",
@@ -53,8 +53,11 @@ function withContextualHelp(message, positionals = []) {
   if (message.includes("Run: fireconnect")) {
     return message;
   }
-  const harnessId = HARNESSES.includes(positionals[0]) ? positionals[0] : "";
-  return `${message} ${helpHint(harnessId)}`;
+  // Echo the typed name (e.g. `chatgpt`) for the help hint when it is a harness
+  // or a known alias of one, so alias errors route to the right harness help.
+  const token = positionals[0] ?? "";
+  const isHarnessOrAlias = HARNESSES.includes(token) || resolveHarnessAlias(token) !== token;
+  return `${message} ${helpHint(isHarnessOrAlias ? token : "")}`;
 }
 
 /**
@@ -87,6 +90,7 @@ export function createBaseContext() {
     fable: "",
     subagent: "",
     search: "",
+    refresh: false,
     session: "",
     days: 0,
     lastN: "",
@@ -193,6 +197,7 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--fable": ctx.fable = requireValue(arg, next); return true;
     case "--subagent": ctx.subagent = requireValue(arg, next); return true;
     case "--search": ctx.search = requireValue(arg, next); return true;
+    case "--refresh": ctx.refresh = true; return false;
     case "--session": ctx.session = requireValue(arg, next); return true;
     case "--days": ctx.days = requireDays(arg, next); return true;
     case "--last-n": ctx.lastN = requireValue(arg, next); return true;
@@ -312,6 +317,8 @@ export function parseCli(argv) {
   }
 
   if (help) {
+    // Keep the raw typed token (e.g. `chatgpt`) so per-harness help echoes the
+    // name the user typed; printHelp resolves aliases to the canonical help.
     return { kind: "global", command: "help", ctx, helpTopic };
   }
 
@@ -325,7 +332,7 @@ export function parseCli(argv) {
     return { kind: "global", command: "launcher", ctx };
   }
 
-  const first = positional[0];
+  const first = resolveHarnessAlias(positional[0]);
   const rest = positional.slice(1);
 
   if (first === "help") {
@@ -371,7 +378,8 @@ export function parseCli(argv) {
 
   if (HARNESSES.includes(first)) {
     if (rest[0] === "help") {
-      return { kind: "global", command: "help", ctx, helpTopic: first };
+      // Echo the typed name (e.g. `chatgpt`) in the help, not the canonical id.
+      return { kind: "global", command: "help", ctx, helpTopic: positional[0] };
     }
     return { kind: "harness", route: parseHarnessRoute(first, rest), ctx };
   }
@@ -379,6 +387,8 @@ export function parseCli(argv) {
   throw new Error(`${withSuggestion(
     `Unknown command: ${first}.`,
     first,
-    [...GLOBAL_COMMANDS, ...HARNESSES],
+    // Aliases are advertised in help as top-level commands, so typo recovery
+    // must know them too (`chatgtp` -> `chatgpt`).
+    [...GLOBAL_COMMANDS, ...HARNESSES, ...Object.keys(HARNESS_ALIASES)],
   )} ${helpHint()}`);
 }

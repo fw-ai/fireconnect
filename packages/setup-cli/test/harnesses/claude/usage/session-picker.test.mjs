@@ -105,11 +105,38 @@ describe("formatSessionAge / choice labels", () => {
         grandTotals: { cost: 0.0751 },
       },
     });
-    assert.match(label, /\$0\.08/);
+    assert.match(label, /\$0\.0751/);
     assert.match(label, /4 calls/);
     assert.match(label, /aaaaaaaa…/);
     assert.match(label, /FireRouter demo/);
     assert.match(label, /2m ago/);
+  });
+
+  it("reserves enough room for four-decimal totals over $100", () => {
+    const label = formatClaudeUsageSessionChoice({
+      filePath: "/tmp/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa.jsonl",
+      mtimeMs: Date.now(),
+      report: {
+        grandRequests: 1,
+        grandTotals: { cost: 116.9562 },
+      },
+    });
+    assert.match(label, /^\s\$116\.9562 ·/);
+  });
+
+  it("shows n/a rather than zero for an unpriced session", () => {
+    const label = formatClaudeUsageSessionChoice({
+      filePath: "/tmp/aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa.jsonl",
+      mtimeMs: Date.now(),
+      report: {
+        requests: 1,
+        grandRequests: 1,
+        totals: { cost: null },
+        grandTotals: { cost: null },
+      },
+    });
+    assert.match(label, /^\s*n\/a ·/);
+    assert.doesNotMatch(label, /\$0\.00/);
   });
 
   it("strips CSI/OSC escapes from session names", () => {

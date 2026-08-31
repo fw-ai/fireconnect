@@ -25,4 +25,17 @@ describe("vscode request headers", () => {
     assert.equal(model.anthropic_api_key, undefined);
     assert.equal(model.requestHeaders?.["x-anthropic-api-key"], undefined);
   });
+
+  it("attaches routing-preference for a pure-Fireworks firerouter selection, without Anthropic BYOK", () => {
+    // A pure-Fireworks selection (firerouter/kimi-k3) needs no Anthropic key, so
+    // the BYOK header/body field must be dropped — but the routing-preference
+    // header still attaches because it applies to any FireRouter route.
+    const model = withFireconnectRequestHeaders(
+      { id: "firerouter/kimi-k3", name: "FireRouter · Kimi K3", url: "https://api.fireworks.ai/inference" },
+      { byokHeaders: { "x-routing-preference": "3", "x-anthropic-api-key": "sk-ant-byok" } },
+    );
+    assert.equal(model.requestHeaders["x-routing-preference"], "3");
+    assert.equal(model.requestHeaders?.["x-anthropic-api-key"], undefined);
+    assert.equal(model.anthropic_api_key, undefined);
+  });
 });

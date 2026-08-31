@@ -9,6 +9,7 @@ import {
   liveMeterKeyHint,
   runClaudeUsageLive,
   shouldRunClaudeUsageLive,
+  summarizePeerAgents,
 } from "../../../../lib/harnesses/claude/usage/live.mjs";
 import { METER } from "../../../../lib/ui/palette.mjs";
 import { runFireconnect } from "../../../helpers.mjs";
@@ -47,6 +48,33 @@ function collectStream() {
     },
   };
 }
+
+describe("summarizePeerAgents", () => {
+  it("propagates an unpriced peer cost instead of coercing it to zero", () => {
+    const summary = summarizePeerAgents([
+      {
+        kind: "subagent",
+        label: "Priced",
+        report: { requests: 2, totals: { cost: 0.25 } },
+      },
+      {
+        kind: "subagent",
+        label: "Unpriced",
+        report: { requests: 1, totals: { cost: null } },
+      },
+      {
+        kind: "main",
+        label: "Main",
+        report: { requests: 3, totals: { cost: null } },
+      },
+    ]);
+
+    assert.equal(summary.count, 2);
+    assert.equal(summary.calls, 3);
+    assert.equal(summary.cost, null);
+    assert.equal(summary.main.cost, null);
+  });
+});
 
 describe("shouldRunClaudeUsageLive", () => {
   it("watches on a TTY", () => {

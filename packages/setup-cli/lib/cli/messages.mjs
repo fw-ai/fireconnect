@@ -6,6 +6,7 @@ import {
   routingPreferenceOptionsList,
 } from "../firerouter/core.mjs";
 import { supportsRoutingPreference } from "../firerouter/flag.mjs";
+import { isFirerouterModelPattern, isFirerouterModel } from "../fireworks/model-id.mjs";
 
 export const FIREROUTER_DOCS_URL =
   "https://docs.fireworks.ai/ecosystem/firerouter/overview";
@@ -17,9 +18,15 @@ const FIREROUTER_HARNESS_LABELS = {
 };
 
 function displayModel(model) {
-  return typeof model === "string"
-    ? model.replace(/\[1m\]$/, "").split("/").at(-1)
-    : "";
+  if (typeof model !== "string") {
+    return "";
+  }
+  const stripped = model.replace(/\[1m\]$/, "");
+  // Keep the firerouter/... routing prefix for compound slugs; collapse others to last segment.
+  if (isFirerouterModelPattern(stripped) && !isFirerouterModel(stripped)) {
+    return stripped.replace(/^accounts\/fireworks\/(?:models|routers)\//i, "");
+  }
+  return stripped.split("/").at(-1);
 }
 
 function firerouterOnCommand(harnessId) {
@@ -322,8 +329,27 @@ export function printClaudeModelActivationHint() {
   printSessionRestartHint("Claude Code");
 }
 
-export function printCodexRestartHint() {
-  printSessionRestartHint("Codex");
+export function printCodexRestartHint({ resume = true, providerId = "fireworks-ai", providerLabel = "Fireworks" } = {}) {
+  // The app caches the model catalog at boot (see codex/ide-running.mjs); reopen
+  // it to pick up the new provider/models. `on`/`off` block while it runs, so
+  // this is the matching "reopen it now" nudge. Applies to both on and off.
+  printRestartHint("Quit & reopen the ChatGPT app (if you use it) for the change to take effect in its model dropdown.");
+
+  // `codex resume` resolves a session's recorded `model_provider` against the
+  // live config.toml; the rollout only stores the provider name, not its
+  // definition. The provider table only exists while FireConnect routes that
+  // provider, so resuming without forcing the provider falls back to OpenAI
+  // (or 400s if the session used a ChatGPT account). The resume command only
+  // applies after an `on` for that provider; after `off` the table is gone, so
+  // that path prints a plain restart hint instead.
+  if (!resume) {
+    printSessionRestartHint("Codex");
+    return;
+  }
+  printRestartHint(
+    `To resume existing Codex sessions with ${providerLabel}:\n`
+      + `  codex resume <id> -c model_provider="${providerId}"`,
+  );
 }
 
 export function printPiRestartHint() {

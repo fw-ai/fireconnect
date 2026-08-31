@@ -6,7 +6,7 @@ import {
   printHarnessOnFootnotes,
   printHarnessOnSuccess,
 } from "../cli/messages.mjs";
-import { isFirerouterModel } from "../fireworks/model-id.mjs";
+import { isFirerouterModelPattern } from "../fireworks/model-id.mjs";
 import { assertRequestedModelServable } from "../fireworks/model-servability.mjs";
 import { detectApiKeyType } from "../keys/key-type.mjs";
 import { resolveAzureBaseUrl, resolveAzureOnApiKey } from "../fireworks/azure-core.mjs";
@@ -133,7 +133,7 @@ export async function engineOn(profile, ctx) {
     const settingsEnv = profile.readByokEnv ? await profile.readByokEnv(ctx, paths) : {};
     // Direct Fireworks gateway `on` only (Azure returns above). Fire Pass cannot
     // use FireRouter; assertFirerouterKeyType throws on explicit firerouter + fpk_.
-    if (isFirerouterRequested && firerouterCredentialsApplyOnGateway(keyType)) {
+    if (plan.requiresAnthropicKey && firerouterCredentialsApplyOnGateway(keyType)) {
       ({ anthropicKey: preResolvedAnthropicKey } = await resolveExplicitFirerouterCredential({
         firerouter: profile.firerouter,
         availability: automaticFirerouter,
@@ -184,7 +184,7 @@ export async function engineOn(profile, ctx) {
 
   const modelsAdded = result.modelsAdded ?? [result.model];
   const firerouterIncluded = Boolean(
-    profile.firerouter && isFirerouterModel(result.model),
+    profile.firerouter && isFirerouterModelPattern(result.model),
   );
   const footnotes = buildFirerouterOnFootnotes({
     harnessId: profile.id,

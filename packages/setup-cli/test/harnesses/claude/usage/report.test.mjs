@@ -15,6 +15,7 @@ import {
   readClaudeUsage,
   readClaudeUsages,
   snapshotLiveSessionLogs,
+  usageReportFromText,
   waitForLiveSessionLog,
   waitForNewSessionLog,
 } from "../../../../lib/harnesses/claude/usage/report.mjs";
@@ -199,8 +200,87 @@ describe("claude usage", () => {
     });
     assert.equal(row.displayModel, "deepseek-v4-flash");
     assert.equal(row.fireworks, true);
-    assert.equal(row.cost, 0.14);
+    assert.equal(row.cost, 0.22);
     assert.equal(row.estimated, false);
+  });
+
+  it("reports no cost at all for a model it has no rate for", () => {
+    // providerListPricing answers for any id — an unknown one gets an estimated
+    // Sonnet reference — so the Anthropic table must only be consulted for ids
+    // that actually name an Anthropic model. With no rate anywhere the call is
+    // unpriced: null, never a reference figure and never a free-looking 0.
+    const row = computeClaudeUsageCost("accounts/fireworks/models/some-unlisted-model", {
+      input_tokens: 1_000_000,
+      cache_creation_input_tokens: 1_000_000,
+    });
+    assert.equal(row.cost, null);
+    assert.equal(row.priced, false);
+    assert.equal(row.rates, null);
+    assert.equal(row.estimated, false);
+    // The tokens are still real and still reported.
+    assert.equal(row.input, 1_000_000);
+  });
+
+  it("leaves a total unknown when any call in it is unpriced", () => {
+    // Summing an unknown as 0 would hand back a number that reads complete while
+    // silently omitting part of the session.
+    const text = jsonl([
+      { type: "assistant", message: { id: "m1", model: "accounts/fireworks/models/deepseek-v4-flash", usage: { input_tokens: 1_000_000 } } },
+      { type: "assistant", message: { id: "m2", model: "accounts/fireworks/models/some-unlisted-model", usage: { input_tokens: 1_000_000 } } },
+    ]);
+    const report = usageReportFromText("/tmp/session.jsonl", text);
+    assert.equal(report.rows.length, 2);
+    assert.equal(report.unpriced, 1);
+    assert.equal(report.totals.cost, null);
+  });
+
+  it("names the unpriced models in the report instead of printing a cost", () => {
+    const text = jsonl([
+      { type: "assistant", message: { id: "m1", model: "accounts/fireworks/models/some-unlisted-model", usage: { input_tokens: 1_000 } } },
+    ]);
+    const report = {
+      ...usageReportFromText("/tmp/session.jsonl", text),
+      subagents: [],
+      grandRequests: 1,
+    };
+    report.grandTotals = report.totals;
+    const verbose = formatClaudeUsageReport(report, { verbose: true });
+    assert.match(verbose, /Grand total cost: n\/a/, verbose);
+    assert.match(verbose, /no rate available/, verbose);
+    assert.match(verbose, /some-unlisted-model/, verbose);
+    assert.doesNotMatch(verbose, /Grand total cost: \$/, verbose);
+  });
+
+  it("still prices Anthropic models from the Anthropic list", () => {
+    const row = computeClaudeUsageCost("claude-sonnet-5", { input_tokens: 1_000_000 });
+    assert.equal(row.fireworks, false);
+    assert.equal(row.estimated, false);
+    assert.equal(row.cost, 2);
+  });
+
+  it("uses exact published cache rates for Anthropic fast mode", () => {
+    const row = computeClaudeUsageCost("claude-opus-5", {
+      speed: "fast",
+      input_tokens: 100,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 200,
+        ephemeral_1h_input_tokens: 300,
+      },
+      cache_read_input_tokens: 400,
+      output_tokens: 500,
+    });
+    const expected = (100 * 10 + 200 * 12.5 + 300 * 20 + 400 * 1 + 500 * 50) / 1_000_000;
+    assert.equal(row.cost, expected);
+    assert.deepEqual(
+      {
+        input: row.rates.inputPerMillion,
+        write5m: row.rates.cacheWrite5mPerMillion,
+        write1h: row.rates.cacheWrite1hPerMillion,
+        read: row.rates.cacheReadPerMillion,
+        output: row.rates.outputPerMillion,
+      },
+      { input: 10, write5m: 12.5, write1h: 20, read: 1, output: 50 },
+    );
   });
 
   it("computes Anthropic cache write, cache read, geo, batch, and web-search costs", () => {

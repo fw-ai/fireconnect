@@ -105,6 +105,27 @@ describe("opencode model entries", () => {
     assert.equal(opencodeNeedsProviderModelOverride("firerouter/x"), true);
   });
 
+  it("requires a provider override for auto and keeps its bare slug", () => {
+    // `auto` is absent from models.dev, so OpenCode can only resolve it from a
+    // provider entry keyed by the same slug the infer command passes
+    // (fireworks-ai/auto).
+    assert.equal(opencodeNeedsProviderModelOverride("auto"), true);
+    assert.equal(opencodeConfigModelRef("auto"), "auto");
+    const entry = buildOpencodeModelEntry("auto");
+    assert.equal(entry.name, "Auto");
+    assert.deepEqual(entry.modalities, { input: ["text", "image"] });
+    assert.equal(entry.limit.context, 1_048_575);
+  });
+
+  it("requires a provider override for auto-* and keeps the variant slug", () => {
+    assert.equal(opencodeNeedsProviderModelOverride("auto-instant"), true);
+    assert.equal(opencodeConfigModelRef("auto-instant"), "auto-instant");
+    const entry = buildOpencodeModelEntry("auto-instant");
+    assert.equal(entry.name, "Auto Instant");
+    assert.deepEqual(entry.modalities, { input: ["text", "image"] });
+    assert.equal(entry.limit.context, 1_048_575);
+  });
+
   it("adds image modalities for vision serverless models", () => {
     const entry = buildOpencodeModelEntry("accounts/fireworks/models/kimi-k2p7-code");
     assert.deepEqual(entry.modalities, { input: ["text", "image"] });

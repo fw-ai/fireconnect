@@ -203,6 +203,33 @@ export async function withTempHome(prefix, fn) {
 }
 
 /**
+ * Run a test callback with Linux SSH env markers set (no-op on other platforms).
+ *
+ * @template T
+ * @param {(platformIsLinux: boolean) => T | Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+export async function withLinuxSshEnv(fn) {
+  if (process.platform !== "linux") {
+    return fn(false);
+  }
+  const prev = {
+    SSH_CONNECTION: process.env.SSH_CONNECTION,
+    FIRECONNECT_KEY_STORAGE: process.env.FIRECONNECT_KEY_STORAGE,
+  };
+  process.env.SSH_CONNECTION = "203.0.113.1 12345 198.51.100.2 22";
+  delete process.env.FIRECONNECT_KEY_STORAGE;
+  try {
+    return await fn(true);
+  } finally {
+    if (prev.SSH_CONNECTION === undefined) delete process.env.SSH_CONNECTION;
+    else process.env.SSH_CONNECTION = prev.SSH_CONNECTION;
+    if (prev.FIRECONNECT_KEY_STORAGE === undefined) delete process.env.FIRECONNECT_KEY_STORAGE;
+    else process.env.FIRECONNECT_KEY_STORAGE = prev.FIRECONNECT_KEY_STORAGE;
+  }
+}
+
+/**
  * Remove a temp dir, tolerating a transient ENOTEMPTY/EBUSY from a just-exited
  * subprocess still flushing files. Cleanup must never fail a test whose
  * assertions already passed — the OS reaps leftover temp dirs regardless.
@@ -222,12 +249,25 @@ async function removeTempDir(dir) {
   }
 }
 
+/**
+ * Codex `on`/`off` block while the ChatGPT app is running (mirrors
+ * Cursor/VS Code). Tests spawn non-TTY children, so the guard would throw
+ * "ChatGPT app is running" whenever the app is open on the dev machine.
+ * Append `--force` to bypass it, the way Cursor/VS Code tests pass `--force`
+ * per call. Shared so the bypass lives in one place.
+ */
+export function codexOnOffArgs(args) {
+  return args[0] === "codex" && (args[1] === "on" || args[1] === "off") && !args.includes("--force")
+    ? [...args, "--force"]
+    : args;
+}
+
 export function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     if (args.includes("on")) {
       seedOnCommandCatalog(env.HOME, args);
     }
-    const child = spawn(process.execPath, [CLI, ...args], {
+    const child = spawn(process.execPath, [CLI, ...codexOnOffArgs(args)], {
       env: {
         ...process.env,
         ...TEST_SECRET_STORE_ENV,
@@ -276,7 +316,7 @@ export async function runCli(args, { home, env = {} } = {}) {
     if (args.includes("on")) {
       seedOnCommandCatalog(home, args);
     }
-    const child = spawn(process.execPath, [CLI, ...args], {
+    const child = spawn(process.execPath, [CLI, ...codexOnOffArgs(args)], {
       env: {
         ...process.env,
         ...TEST_SECRET_STORE_ENV,

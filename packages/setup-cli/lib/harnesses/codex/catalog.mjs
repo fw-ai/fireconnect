@@ -2,11 +2,15 @@ import {
   FIREROUTER_TAGLINE,
 } from "../../firerouter/core.mjs";
 import { MODEL_API_OVERRIDES as MODEL_OVERRIDES, lookupModelSpec, resolveFireworksModelLabel } from "../../fireworks/model-specs.mjs";
-import { buildServerlessCatalogSnapshot, prettyModelName } from "../../fireworks/models.mjs";
+import { autoDisplayName, buildServerlessCatalogSnapshot, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import {
+  AUTO_INSTANT_MODEL_ID,
+  AUTO_MODEL_ID,
   FIREROUTER_ROUTER_ID,
+  canonicalAutoModelId,
   fireworksModelSlug,
-  isFirerouterGatewayPattern,
+  isAutoModelId,
+  isFirerouterModelPattern,
   isFirerouterModel,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
@@ -42,53 +46,94 @@ function reasoningLevel(effort) {
   return { effort, description: REASONING_DESCRIPTIONS[effort] };
 }
 
+/** Standard ladder: every reasoning model offers at least these three tiers. */
+const STANDARD_LEVELS = [reasoningLevel("low"), reasoningLevel("medium"), reasoningLevel("high")];
+/** Ladder for models that also expose the deepest tier. */
+const MAX_LEVELS = [...STANDARD_LEVELS, reasoningLevel("max")];
+
+/*
+ * Per-model reasoning tiers offered in the Codex/ChatGPT app effort picker.
+ *
+ * The app only renders a selectable Effort row when a model advertises more than
+ * one tier, so every entry exposes the full low/medium/high ladder (the Fireworks
+ * API accepts these values for reasoning models) and adds `max` only where the
+ * docs confirm it (GLM 5.2, DeepSeek V4 Pro/Flash). Some models may treat the
+ * lower tiers as a no-op; the tier is still selectable rather than absent.
+ *
+ * `default` stays `high` for every model.
+ */
 export const MODEL_REASONING = {
   "accounts/fireworks/models/glm-5p2": {
-    default: "max",
-    levels: [reasoningLevel("high"), reasoningLevel("max")],
+    default: "high",
+    levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/deepseek-v4-flash": {
     default: "high",
-    levels: [reasoningLevel("high"), reasoningLevel("max")],
+    levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/deepseek-v4-pro": {
     default: "high",
-    levels: [reasoningLevel("high"), reasoningLevel("max")],
+    levels: MAX_LEVELS,
   },
   "accounts/fireworks/models/kimi-k2p6": {
     default: "high",
-    levels: [reasoningLevel("high")],
+    levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/kimi-k2p7-code": {
     default: "high",
-    levels: [reasoningLevel("high")],
+    levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/minimax-m2p7": {
-    default: "medium",
-    levels: [reasoningLevel("low"), reasoningLevel("medium"), reasoningLevel("high")],
+    default: "high",
+    levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/minimax-m3": {
     default: "high",
-    levels: [reasoningLevel("high")],
+    levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/gpt-oss-120b": {
-    default: "medium",
-    levels: [reasoningLevel("low"), reasoningLevel("medium"), reasoningLevel("high")],
+    default: "high",
+    levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/nemotron-3-ultra-nvfp4": {
     default: "high",
-    levels: [reasoningLevel("high")],
+    levels: STANDARD_LEVELS,
   },
   "accounts/fireworks/models/qwen3p7-plus": {
-    default: "medium",
-    levels: [reasoningLevel("low"), reasoningLevel("medium"), reasoningLevel("high")],
+    default: "high",
+    levels: STANDARD_LEVELS,
+  },
+  // Kimi K3 / K3 Fast (current Kimi generation; supersedes kimi-k2p6 / kimi-k2p7-code).
+  "accounts/fireworks/models/kimi-k3": {
+    default: "high",
+    levels: STANDARD_LEVELS,
   },
 };
 
 const DEFAULT_REASONING = {
   default: "high",
-  levels: [reasoningLevel("high")],
+  levels: STANDARD_LEVELS,
 };
+
+/**
+ * Resolve the reasoning config for a model. Tries the exact full ref, then —
+ * because the live serverless catalog returns versioned slugs (e.g.
+ * `deepseek-v4-flash-0731`) while {@link MODEL_REASONING} is keyed by the
+ * unversioned base ref (`deepseek-v4-flash`) — strips a trailing pure-numeric
+ * version suffix and retries. Falls back to {@link DEFAULT_REASONING}.
+ * @param {string} modelRef full model ref, e.g. `accounts/fireworks/models/deepseek-v4-flash-0731`
+ * @returns {{ default: string, levels: object[] }}
+ */
+function reasoningConfigFor(modelRef) {
+  if (MODEL_REASONING[modelRef]) {
+    return MODEL_REASONING[modelRef];
+  }
+  const baseRef = modelRef.replace(/-\d+$/, "");
+  if (baseRef !== modelRef && MODEL_REASONING[baseRef]) {
+    return MODEL_REASONING[baseRef];
+  }
+  return DEFAULT_REASONING;
+}
 
 export const DEPRECATED_MODELS = new Set([
   "accounts/fireworks/models/glm-5p1",
@@ -137,7 +182,7 @@ function effectiveModelFields(model) {
 export function buildCodexCatalogEntry(model) {
   const { contextLength, supportsImageInput, supportsTools } = effectiveModelFields(model);
 
-  const reasoning = MODEL_REASONING[model.name] ?? DEFAULT_REASONING;
+  const reasoning = reasoningConfigFor(model.name);
   const reasoningSummaryFormat = reasoning.levels.length > 1 ? "experimental" : "none";
 
   return {
@@ -177,7 +222,7 @@ export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID)
   return {
     ...buildCodexCatalogEntry({
       name: FIREROUTER_ROUTER_ID,
-      displayName: exact ? (spec?.label ?? "FireRouter") : prettyModelName(stored),
+      displayName: exact ? (spec?.label ?? "FireRouter") : firerouterDisplayName(stored),
       description: FIREROUTER_TAGLINE,
       contextLength: spec?.capabilities.contextWindow ?? 0,
       supportsImageInput: spec?.capabilities.vision ?? false,
@@ -188,17 +233,45 @@ export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID)
   };
 }
 
+export const AUTO_TAGLINE = "Routes each request across Fireworks open models.";
+export const AUTO_INSTANT_TAGLINE =
+  "Routes each request across the fastest Fireworks open models.";
+
+/** Codex catalog row for `auto` / `auto-*`, built from that mix's spec. */
+export function buildCodexAutoCatalogEntry(modelId = AUTO_MODEL_ID) {
+  const spec = lookupModelSpec(modelId);
+  const stored = canonicalAutoModelId(modelId) || shortFireworksModelRef(modelId);
+  return {
+    ...buildCodexCatalogEntry({
+      name: stored,
+      displayName: autoDisplayName(stored),
+      description: stored === AUTO_INSTANT_MODEL_ID ? AUTO_INSTANT_TAGLINE : AUTO_TAGLINE,
+      contextLength: spec?.capabilities.contextWindow ?? 0,
+      supportsImageInput: spec?.capabilities.vision ?? false,
+      supportsTools: spec?.capabilities.toolCalling ?? true,
+    }),
+    slug: stored,
+  };
+}
+
 /**
- * When the active model is a firerouter* pattern missing from the catalog,
- * append a FireRouter-equivalent metadata row so Codex can resolve context.
+ * Models the gateway serves without a serverless catalog row (`firerouter*`
+ * patterns, `auto` / `auto-*`) get a spec-derived metadata row appended so Codex can
+ * resolve their context window.
  */
-export function ensureCodexFirerouterPatternEntry(catalog, modelId) {
-  if (!isFirerouterGatewayPattern(modelId) || codexCatalogContainsModel(catalog, modelId)) {
+export function ensureCodexOffCatalogEntry(catalog, modelId) {
+  if (codexCatalogContainsModel(catalog, modelId)) {
+    return catalog;
+  }
+  const entry = isFirerouterModelPattern(modelId)
+    ? buildCodexFirerouterCatalogEntry(modelId)
+    : (isAutoModelId(modelId) ? buildCodexAutoCatalogEntry(modelId) : null);
+  if (!entry) {
     return catalog;
   }
   return {
     ...(catalog ?? {}),
-    models: [...(catalog?.models ?? []), buildCodexFirerouterCatalogEntry(modelId)],
+    models: [...(catalog?.models ?? []), entry],
   };
 }
 

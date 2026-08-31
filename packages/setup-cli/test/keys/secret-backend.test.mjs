@@ -25,7 +25,7 @@ import { plaintextMode } from "../../lib/harnesses/vscode/safestorage.mjs";
 import { shellHookBlock } from "../../lib/io/shell-env-hook.mjs";
 import { verifyKeyExportWorks } from "../../lib/keys/selfcheck.mjs";
 import { resolveHarnessOnApiKey } from "../../lib/keys/harness-api-key.mjs";
-import { withoutEnvFireworksKey } from "../helpers.mjs";
+import { withoutEnvFireworksKey, withLinuxSshEnv } from "../helpers.mjs";
 
 const CLI = path.resolve("bin/fireconnect.mjs");
 const KEY = "fw_backend_test_key_000000000000";
@@ -100,6 +100,30 @@ describe("secret backend detection + file backend", () => {
     assert.match(backend.label, /Encrypted file/);
     assert.equal(backend.location, path.join(home, "data", "keyring", "secrets.json"));
     assert.equal(backend.forced, true);
+  });
+
+  it("detectSecretBackend reports file on Linux SSH even when libsecret is present", async () => {
+    await withLinuxSshEnv(async (isLinux) => {
+      if (!isLinux) {
+        return;
+      }
+      const prevStorage = process.env[FIRECONNECT_KEY_STORAGE_ENV];
+      delete process.env[FIRECONNECT_KEY_STORAGE_ENV];
+      resetSecretStoreForTests();
+      try {
+        const backend = await detectSecretBackend(home);
+        assert.equal(backend.backend, "file");
+        assert.match(backend.label, /Encrypted file/);
+      } finally {
+        if (prevStorage === undefined) {
+          delete process.env[FIRECONNECT_KEY_STORAGE_ENV];
+        } else {
+          process.env[FIRECONNECT_KEY_STORAGE_ENV] = prevStorage;
+        }
+        process.env[FIRECONNECT_KEY_STORAGE_ENV] = "file";
+        resetSecretStoreForTests();
+      }
+    });
   });
 
   it("round-trips a key through the encrypted file backend with no plaintext on disk", async () => {

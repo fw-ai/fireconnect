@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { readLocalVersion } from "./version.mjs";
+import { shouldPreferFileBackendOnLinux, remoteSecretStorageDetail } from "../config/secret-storage-policy.mjs";
 
 /**
  * Detect the host environment (OS, distro/WSL, Node, shell, secret-storage
@@ -105,6 +106,13 @@ export function detectSecretStorage() {
   }
   if (platform === "win32") {
     return { backend: "windows-credential-manager", strong: true };
+  }
+  if (shouldPreferFileBackendOnLinux()) {
+    return {
+      backend: "file",
+      strong: true,
+      detail: remoteSecretStorageDetail(),
+    };
   }
   if (binaryAvailable("secret-tool", ["--version"])) {
     return { backend: "secret-service", strong: true };

@@ -17,7 +17,8 @@ import {
   listSessionAgents,
 } from "./agents.mjs";
 import { agentPaneWorthShowing } from "./meter.mjs";
-import { formatLiveCostTotal } from "./format.mjs";
+import { formatUsageCost } from "./format.mjs";
+import { COST_COL } from "./meter-layout.mjs";
 
 /** Returned when ←/Esc should resume the previous live meter without switching. */
 export const CLAUDE_USAGE_AGENT_RESUME = Object.freeze({ resume: true });
@@ -47,8 +48,10 @@ export function formatClaudeUsageAgentChoice(agent, opts = {}) {
   const active = opts.active !== false;
 
   const totals = agent.report?.totals ?? {};
-  // An agent's spend is a total, so 2 decimals.
-  const costText = formatLiveCostTotal(totals.cost ?? 0).padStart(8);
+  // Preserve null: it means at least one call has no rate, not a free agent.
+  const costText = formatUsageCost(
+    totals.cost === undefined ? 0 : totals.cost,
+  ).padStart(COST_COL);
   const cacheText = formatUsageCachePct(totals).padStart(4);
   const callsText = String(agent.report?.requests ?? 0).padStart(3);
 

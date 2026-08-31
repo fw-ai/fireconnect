@@ -36,7 +36,7 @@ const CURSOR_PROCESS_SPEC = {
 };
 
 const CURSOR_RUNNING_MESSAGE =
-  `Cursor is running. ${quitInstruction("Cursor")} so the write isn't overwritten by Cursor's in-memory state, then rerun. Or pass --force to write anyway (not recommended).`;
+  `Cursor IDE is running. ${quitInstruction("Cursor IDE")} so the write isn't overwritten by Cursor's in-memory state, then rerun. Or pass --force to write anyway (not recommended).`;
 
 /**
  * @returns {boolean} true if the Cursor GUI process is currently running.

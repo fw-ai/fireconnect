@@ -5,6 +5,7 @@ import process from "node:process";
 import { reconcileHarnessConfigOnUpgrade } from "../keys/sync.mjs";
 import { reprobeKeyStorage } from "../keys/secret-store.mjs";
 import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs";
+import { runHarnessForwardMigrations } from "./forward-migrations.mjs";
 
 /**
  * Shared post-bootstrap repair for `install.sh` and `fireconnect upgrade`.
@@ -13,7 +14,7 @@ import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs
  * after the CLI bits are on disk goes through this path:
  *   1. ensure runtime npm deps
  *   2. re-probe secret storage / migrate plaintext → secure
- *   3. reconcile harness configs (rebake keys, VS Code apiType, shell hook)
+ *   3. run key-independent harness migrations, then rebake keys / shell hook
  *
  * Never throws for reconcile/shell failures (best-effort). Dep install and
  * key-storage probe may throw only if callers choose to surface them — this
@@ -26,6 +27,7 @@ import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs
  *   log?: (...args: unknown[]) => void,
  *   ensureDeps?: typeof ensureCliDependencies,
  *   reprobe?: typeof reprobeKeyStorage,
+ *   migrate?: typeof runHarnessForwardMigrations,
  *   reconcile?: typeof reconcileHarnessConfigOnUpgrade,
  * }} [options]
  * @returns {Promise<{ notes: string[], migrated: boolean, setupDir: string }>}
@@ -37,6 +39,7 @@ export async function finalizeInstallOrUpgrade({
   log = console.log,
   ensureDeps = ensureCliDependencies,
   reprobe = reprobeKeyStorage,
+  migrate = runHarnessForwardMigrations,
   reconcile = reconcileHarnessConfigOnUpgrade,
 } = {}) {
   const notes = [];
@@ -67,6 +70,15 @@ export async function finalizeInstallOrUpgrade({
       }
     } catch {
       // Best-effort: install/upgrade must not abort after the CLI is already on disk.
+    }
+
+    try {
+      for (const note of await migrate(home)) {
+        log(note);
+        notes.push(note);
+      }
+    } catch {
+      // Best-effort forward migrations.
     }
 
     try {

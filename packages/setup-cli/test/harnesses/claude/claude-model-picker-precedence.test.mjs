@@ -96,6 +96,35 @@ describe("mappingFromSettings", () => {
     assert.equal(mapping.subagent, "deepseek-v4-flash");
   });
 
+  // A bare `/model` picker alias (opus/sonnet/haiku/fable) is the user's own
+  // picker choice — it resolves at request time through the alias's env slot,
+  // which the slot rows report separately. It is NOT a FireConnect model pin,
+  // so it must read as native (unpinned) main, never as a Fireworks model id
+  // that `claude status` would surface as a bogus "main -> opus" override row.
+  for (const alias of ["opus", "sonnet", "haiku", "fable"]) {
+    it(`treats bare /model alias ${alias} as unpinned native main`, () => {
+      const mapping = mappingFromSettings({
+        model: `${alias}[1m]`,
+        env: {
+          ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "firerouter[1m]",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-flash-latest[1m]",
+        },
+      });
+      assert.equal(mapping.main, "claude-default");
+      assert.equal(mapping.opus, "firerouter");
+      assert.equal(mapping.haiku, "deepseek-flash-latest");
+    });
+  }
+
+  it("still reads a concrete top-level model (not an alias) as main", () => {
+    const mapping = mappingFromSettings({
+      model: "kimi-fast-latest[1m]",
+      env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "firerouter[1m]" },
+    });
+    assert.equal(mapping.main, "kimi-fast-latest");
+  });
+
   it("detects legacy main env on Fireworks-routed settings", () => {
     assert.equal(hasLegacyAnthropicMainEnv({
       model: "kimi-fast-latest[1m]",

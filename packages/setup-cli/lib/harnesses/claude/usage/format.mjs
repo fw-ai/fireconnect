@@ -3,38 +3,53 @@
  * Matches the meter’s cost columns and cache-hit share (PR #230).
  */
 
+import { UNPRICED_TEXT } from "./cost.mjs";
+
 /**
- * A single call's cost, at 4 decimals.
+ * Digits for a cost, without a currency sign: always four decimals.
  *
- * A cheap GLM call really is worth $0.0018, so rounding to cents would erase the
- * row entirely. Only per-call figures want this precision — see
- * `formatLiveCostTotal` for anything summed.
+ * Two decimals is the wrong scale for this product. At Fireworks rates a whole
+ * session is routinely worth less than a cent, so the digits that carry the
+ * information sit past the cents column: $0.006891 quoted as `$0.01` is 45%
+ * high, and $0.075436 as `$0.08` is 6% high. Four decimals hold the error under
+ * a hundredth of a cent at every magnitude, and the fixed width keeps a column
+ * of costs aligned without any trimming rules.
+ *
+ * Three outcomes are deliberately distinct, because they mean different things:
+ * exactly `0` is free and reads `0` with no decimals to imply a measurement;
+ * a positive amount too small for four decimals reads as an exponent
+ * (`4.0e-5`), never `0`, because that call did cost something; everything else
+ * reads at four decimals.
  *
  * @param {number} cost
  * @returns {string}
  */
-export function formatLiveCost(cost) {
-  if (!Number.isFinite(cost) || cost <= 0) return "$0.0000";
-  if (cost < 0.0001) return `$${cost.toExponential(1)}`;
-  return `$${cost.toFixed(4)}`;
+export function usageCostDigits(cost) {
+  if (cost <= 0) return "0";
+  return cost < 0.0001 ? cost.toExponential(1) : cost.toFixed(4);
 }
 
 /**
- * A summed cost, at 2 decimals — the precision you'd actually quote.
+ * A cost with its currency sign — one call, one model, or a whole session.
  *
- * Nobody reads the fourth decimal of a $116.9562 session; the extra digits just
- * make a column of totals harder to scan. But a real charge must not round to
- * nothing, so anything under half a cent reads `<$0.01` instead of `$0.00` —
- * a subagent that cost $0.0072 did cost something.
+ * One function for all three on purpose: a single-call session's total has to
+ * read exactly like the call it sums, and the live meter, the status line, the
+ * pickers and the `claude usage` report all quote the same figures. Splitting
+ * "per call" from "per total" is what let those surfaces disagree, with the
+ * report printing $0.0069 where the status line printed $0.01.
  *
- * @param {number} cost
+ * `null` means no rate could be looked up. That reads `n/a`, never `$0`: a call
+ * we cannot price is not a free call. A free call is `$0`, matching the demo's
+ * `formatUsd`.
+ *
+ * @param {number | null} cost
  * @returns {string}
  */
-export function formatLiveCostTotal(cost) {
+export function formatUsageCost(cost) {
+  if (cost == null) return UNPRICED_TEXT;
   const n = Number(cost);
-  if (!Number.isFinite(n) || n <= 0) return "$0.00";
-  if (n < 0.005) return "<$0.01";
-  return `$${n.toFixed(2)}`;
+  if (!Number.isFinite(n)) return "$0";
+  return `$${usageCostDigits(n)}`;
 }
 
 /**

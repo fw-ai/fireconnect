@@ -21,6 +21,10 @@ describe("finalizeInstallOrUpgrade", () => {
           calls.push(["reprobe", h]);
           return { migrated: true, backend: { backend: "keychain" } };
         },
+        migrate: async (h) => {
+          calls.push(["migrate", h]);
+          return ["Enabled MCP tool search for Claude Code (ENABLE_TOOL_SEARCH) — restart Claude Code to pick it up."];
+        },
         reconcile: async (h) => {
           calls.push(["reconcile", h]);
           return ["Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up."];
@@ -29,13 +33,15 @@ describe("finalizeInstallOrUpgrade", () => {
 
       assert.equal(result.migrated, true);
       assert.deepEqual(result.notes, [
+        "Enabled MCP tool search for Claude Code (ENABLE_TOOL_SEARCH) — restart Claude Code to pick it up.",
         "Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up.",
       ]);
       assert.deepEqual(
         calls.filter(([name]) => name !== "log").map(([name]) => name),
-        ["reprobe", "reconcile"],
+        ["reprobe", "migrate", "reconcile"],
       );
       assert.ok(calls.some(([name, msg]) => name === "log" && /Moved Fireworks API key/.test(String(msg))));
+      assert.ok(calls.some(([name, msg]) => name === "log" && /ENABLE_TOOL_SEARCH/.test(String(msg))));
       assert.ok(calls.some(([name, msg]) => name === "log" && /websearch MCP/.test(String(msg))));
     });
   });
@@ -49,6 +55,9 @@ describe("finalizeInstallOrUpgrade", () => {
         ensureDeps: () => true,
         reprobe: async () => {
           throw new Error("probe boom");
+        },
+        migrate: async () => {
+          throw new Error("migrate boom");
         },
         reconcile: async () => {
           throw new Error("reconcile boom");
@@ -73,6 +82,10 @@ describe("finalizeInstallOrUpgrade", () => {
       reprobe: async () => {
         calls.push("reprobe");
         return { migrated: false, backend: { backend: "plaintext" } };
+      },
+      migrate: async () => {
+        calls.push("migrate");
+        return ["should-not-run"];
       },
       reconcile: async () => {
         calls.push("reconcile");

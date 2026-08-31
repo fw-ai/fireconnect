@@ -22,8 +22,8 @@ import { runClaudeUsageLive } from "../../../../lib/harnesses/claude/usage/live.
 import { Dashboard, ModelIndex } from "../../../../lib/harnesses/claude/usage/meter.mjs";
 import { METER } from "../../../../lib/ui/palette.mjs";
 import {
-  formatLiveCost,
-  formatLiveCostTotal,
+  formatUsageCost,
+  usageCostDigits,
 } from "../../../../lib/harnesses/claude/usage/format.mjs";
 
 const temps = [];
@@ -110,11 +110,38 @@ describe("formatUsageCachePct / agent choice labels", () => {
         totals: { cost: 0.0563, input: 1000, cacheRead: 9000, cacheWrite5m: 0, cacheWrite1h: 0 },
       },
     });
-    assert.match(label, /\$0\.06/);
+    assert.match(label, /\$0\.0563/);
     assert.match(label, /90% cache/);
     assert.match(label, /4 calls/);
     assert.match(label, /Main/);
     assert.match(label, /FireRouter demo/);
+  });
+
+  it("reserves enough room for four-decimal totals over $100", () => {
+    const label = formatClaudeUsageAgentChoice({
+      kind: "main",
+      id: "main",
+      label: "Main",
+      report: {
+        requests: 1,
+        totals: { cost: 116.9562 },
+      },
+    });
+    assert.match(label, /^\s\$116\.9562 ·/);
+  });
+
+  it("shows n/a for an agent whose total includes an unpriced call", () => {
+    const label = formatClaudeUsageAgentChoice({
+      kind: "subagent",
+      id: "unknown-cost",
+      label: "Explore",
+      report: {
+        requests: 2,
+        totals: { cost: null, input: 1000, cacheRead: 0 },
+      },
+    });
+    assert.match(label, /^\s*n\/a ·/);
+    assert.doesNotMatch(label, /\$0\.00/);
   });
 
   it("strips escapes from session names on Main", () => {
@@ -165,9 +192,12 @@ describe("formatUsageCachePct / agent choice labels", () => {
       }, { stream: { isTTY: true }, color: true, active: true });
       assert.ok(label.includes(METER.gold), `expected gold in ${JSON.stringify(label)}`);
       assert.ok(label.includes(METER.ghost), `expected ghost in ${JSON.stringify(label)}`);
-      // Per-call keeps 4 decimals; the picker row is a total, so 2.
-      assert.equal(formatLiveCost(0.0563), "$0.0563");
-      assert.equal(formatLiveCostTotal(0.0563), "$0.06");
+      // A total reads exactly like the call it sums — 4 decimals, one rule.
+      assert.equal(formatUsageCost(0.0563), "$0.0563");
+      // Free is `$0`; a real cost too small for 4 decimals is not.
+      assert.equal(formatUsageCost(0), "$0");
+      assert.equal(usageCostDigits(0), "0");
+      assert.equal(formatUsageCost(0.00004), "$4.0e-5");
     } finally {
       if (prevForce === undefined) delete process.env.FORCE_COLOR;
       else process.env.FORCE_COLOR = prevForce;

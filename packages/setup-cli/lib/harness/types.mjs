@@ -24,6 +24,7 @@ import { HARNESSES } from "./id.mjs";
  * @property {string} fable
  * @property {string} subagent
  * @property {string} search
+ * @property {boolean} [refresh] // model list: drop the 1h catalog cache and refetch
  * @property {string} [session] // claude usage: session id prefix or explicit .jsonl path
  * @property {string} [lastN]   // claude usage: latest N parent sessions
  * @property {boolean} [verbose]

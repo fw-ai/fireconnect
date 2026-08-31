@@ -1,7 +1,77 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseStreamJson } from "../../lib/demo/claude-runner.mjs";
+import {
+  parseStreamJson,
+  priceClaudeUsage,
+} from "../../lib/demo/claude-runner.mjs";
+import { computeClaudeUsageCost } from "../../lib/harnesses/claude/usage/pricing.mjs";
+import {
+  getServerlessCatalogSnapshot,
+  setServerlessCatalogSnapshot,
+} from "../../lib/fireworks/serverless-catalog-cache.mjs";
+
+test("demo and transcript/statusline pricing use the same serverless rates", () => {
+  const usage = {
+    input_tokens: 17_319,
+    cache_read_input_tokens: 0,
+    output_tokens: 11,
+  };
+  const demo = priceClaudeUsage({
+    model: "glm-5p3[1m]",
+    resolvedModel: "accounts/fireworks/models/glm-5p3",
+    usage,
+  });
+  const transcript = computeClaudeUsageCost("accounts/fireworks/models/glm-5p3", usage);
+
+  assert.equal(demo.cost, 0.024295);
+  assert.equal(demo.cost, transcript.cost);
+  assert.deepEqual(demo.rates, transcript.rates);
+});
+
+test("demo returns no price when neither selected nor resolved model has a rate", () => {
+  const pricing = priceClaudeUsage({
+    model: "firerouter",
+    resolvedModel: "accounts/fireworks/models/not-in-the-catalog",
+    usage: { input_tokens: 10_000, output_tokens: 100 },
+  });
+  assert.equal(pricing.cost, null);
+  assert.equal(pricing.rates, null);
+});
+
+test("demo prices FireRouter from its served backend even if the router has a catalog rate", () => {
+  const previousSnapshot = getServerlessCatalogSnapshot();
+  setServerlessCatalogSnapshot({
+    entries: [],
+    pricingById: new Map([[
+      "accounts/fireworks/routers/firerouter",
+      {
+        slug: "firerouter",
+        label: "FireRouter",
+        input: 99,
+        cachedInput: 99,
+        output: 99,
+        tier: "standard",
+        source: "test",
+      },
+    ]]),
+    inputModalitiesById: new Map(),
+    routerBaseModelById: new Map(),
+    contextLengthById: new Map(),
+    supportsToolsById: new Map(),
+  });
+  try {
+    const pricing = priceClaudeUsage({
+      model: "firerouter[1m]",
+      resolvedModel: "accounts/fireworks/models/glm-5p3",
+      usage: { input_tokens: 1_000_000, output_tokens: 0 },
+    });
+    assert.equal(pricing.cost, 1.4);
+    assert.equal(pricing.rates.label, "GLM 5.3");
+  } finally {
+    setServerlessCatalogSnapshot(previousSnapshot);
+  }
+});
 
 test("parseStreamJson: text_delta yields a delta", () => {
   const out = parseStreamJson({
@@ -86,11 +156,10 @@ test("parseStreamJson: result event usage under total_usage shape", () => {
   assert.equal(out.outputTokens, 9);
 });
 
-test("parseStreamJson: result event carries Claude Code's authoritative costUsd", () => {
+test("parseStreamJson: result event preserves Claude Code's diagnostic costUsd", () => {
   // Claude Code reports its own cost via total_cost_usd (and a per-model
-  // modelUsage breakdown). This is authoritative — esp. for firerouter, where
-  // the underlying routed model is opaque so our rate-table estimate would only
-  // be a static guess. Prefer total_cost_usd; fall back to summing modelUsage.
+  // modelUsage breakdown). Keep it for diagnostics, but the demo must price the
+  // result usage through the resolved model's provider rates instead.
   const out = parseStreamJson({
     type: "result",
     result: "done",

@@ -64,14 +64,17 @@ describe("harness option validation", () => {
 
   it("rejects FireRouter options a harness cannot forward", async () => {
     await withTempHome("option-firerouter-capability-", async (home) => {
+      // Bare firerouter routes to an Anthropic primary; Cursor can't forward a
+      // local Anthropic key, so it's refused with the Anthropic-key message
+      // (which also points to workspace BYOK as the remedy).
       await rejects(
         home,
         ["cursor", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
-        /Ask the Fireworks team to enable FireRouter for your account/,
+        /Anthropic API key Cursor can't forward/,
       );
       await rejects(
         home,
-        ["cursor", "on", "--model", "firerouter", "--anthropic-api-key", "sk-ant-test"],
+        ["cursor", "on", "--model", "firerouter/kimi-k3", "--anthropic-api-key", "sk-ant-test"],
         /--anthropic-api-key is not supported by this harness/,
       );
       await rejects(
@@ -157,6 +160,7 @@ describe("harness option validation", () => {
     await withTempHome("option-command-scope-", async (home) => {
       await rejects(home, ["pi", "status", "--session", "abc"], /applies only to .*claude usage/);
       await rejects(home, ["opencode", "on", "--json"], /--json is supported by/);
+      await rejects(home, ["claude", "on", "--refresh"], /--refresh applies only to .*model list/);
       await rejects(home, ["codex", "status", "--db-path", "/tmp/state.vscdb"], /--db-path is supported only by Cursor/);
       await rejects(home, ["cursor", "status", "--config-path", "/tmp/config"], /--config-path is supported only by/);
       await rejects(home, ["vscode", "status", "--settings-path", "/tmp/settings"], /--settings-path is supported only by/);

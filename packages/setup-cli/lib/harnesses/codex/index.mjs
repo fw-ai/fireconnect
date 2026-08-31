@@ -24,7 +24,7 @@ import {
   printCodexRestartHint,
   readCodexTomlIfExists,
 } from "./core.mjs";
-import { DEFAULT_AZURE_MODEL } from "../../fireworks/azure-core.mjs";
+import { DEFAULT_AZURE_MODEL, AZURE_PROVIDER_LABEL } from "../../fireworks/azure-core.mjs";
 import { isFireworksKey } from "../../keys/key-type.mjs";
 import { finishEnvHarnessOn } from "../../harness/env-hook.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
@@ -33,6 +33,7 @@ import {
   ensureHomeForHarness,
 } from "../../harness/context.mjs";
 import { codexModelExclusionReason } from "./catalog.mjs";
+import { ensureChatGptStopped } from "./ide-running.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import { harnessStatusKeySource } from "../../keys/api-key.mjs";
 import { existsSync } from "node:fs";
@@ -70,15 +71,22 @@ export default defineHarnessProfile({
         storedBaseUrl: typeof table?.base_url === "string" ? table.base_url : "",
       };
     },
-    enable: ({ ctx, paths, apiKey, apiKeyFromFlag, baseUrl }) => enableCodexAzure({
-      configPath: paths.configPath,
-      dataDir: paths.dataDir,
-      apiKey,
-      apiKeyFromFlag,
-      baseUrl,
-      modelId: ctx.main,
+    enable: async ({ ctx, paths, apiKey, apiKeyFromFlag, baseUrl }) => {
+      await ensureChatGptStopped({ force: ctx.force });
+      return enableCodexAzure({
+        configPath: paths.configPath,
+        dataDir: paths.dataDir,
+        apiKey,
+        apiKeyFromFlag,
+        baseUrl,
+        modelId: ctx.main,
+      });
+    },
+    restart: () => printCodexRestartHint({
+      resume: true,
+      providerId: CODEX_AZURE_PROVIDER_ID,
+      providerLabel: AZURE_PROVIDER_LABEL,
     }),
-    restart: () => printCodexRestartHint(),
   },
   getExistingHarnessKey: async (_ctx, paths) => {
     const { doc } = await readCodexTomlIfExists(paths.configPath);
@@ -97,6 +105,7 @@ export default defineHarnessProfile({
   },
   // Codex reads keys from the environment (env_key/env_http_headers).
   enable: async ({
+    ctx,
     paths,
     apiKeyRef,
     effectiveKey,
@@ -106,6 +115,7 @@ export default defineHarnessProfile({
     telemetryHeaders,
     includeFirerouter,
   }) => {
+    await ensureChatGptStopped({ force: ctx.force });
     const exclusionReason = codexModelExclusionReason(modelId);
     if (exclusionReason) {
       throw new Error(exclusionReason);
@@ -132,13 +142,16 @@ export default defineHarnessProfile({
   },
   restartHint: () => printCodexRestartHint(),
 
+  // Stop the app before `off` rewrites config.toml/removes the catalog — it
+  // caches the model list at boot. Mirrors Cursor/VS Code's `prepareOff`.
+  prepareOff: (ctx) => ensureChatGptStopped({ force: ctx.force }),
   disable: async ({ paths, wasEnabled }) => disableCodexFireworks({
     configPath: paths.configPath,
     dataDir: paths.dataDir,
     catalogPath: paths.catalogPath,
     wasEnabled,
   }),
-  restartHintOff: () => printCodexRestartHint(),
+  restartHintOff: () => printCodexRestartHint({ resume: false }),
   async providerStatus(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
     const { configPath } = codexPathsFor(ctx);

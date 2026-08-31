@@ -6,7 +6,10 @@ import {
 import {
   printStructuredHarnessStatus,
 } from "../../harness/status-display.mjs";
-import { isFirerouterModel } from "../../fireworks/model-id.mjs";
+import {
+  firerouterRequiresAnthropicKey,
+  isFirerouterModelPattern,
+} from "../../fireworks/model-id.mjs";
 import {
   loadRegisterableModels,
 } from "../../fireworks/models.mjs";
@@ -51,6 +54,13 @@ import {
 const CURSOR_FIREROUTER_AZURE_UNSUPPORTED =
   "FireRouter is not supported in Cursor Azure mode.";
 
+// Cursor can't forward a local Anthropic BYOK key (byok: "none"), so an
+// Anthropic-requiring firerouter selection is refused up front.
+const CURSOR_FIREROUTER_ANTHROPIC_REQUIRED_MESSAGE =
+  "This FireRouter selection routes to an Anthropic model, which needs an "
+  + "Anthropic API key Cursor can't forward. Anthropic BYOK support on the "
+  + "Fireworks platform is coming soon.";
+
 function rejectCursorFirerouterWorkspaceByok() {
   throw new Error(FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE);
 }
@@ -59,18 +69,29 @@ function rejectCursorFirerouterAzure() {
   throw new Error(CURSOR_FIREROUTER_AZURE_UNSUPPORTED);
 }
 
-async function ensureCursorFirerouterAllowed(apiKey) {
+function rejectCursorFirerouterAnthropicKey() {
+  throw new Error(CURSOR_FIREROUTER_ANTHROPIC_REQUIRED_MESSAGE);
+}
+
+/**
+ * Resolve whether Cursor may use FireRouter for this key. Workspace BYOK can
+ * provision provider keys server-side (including Anthropic). Fails open when
+ * the control-plane probe is unavailable — except for Anthropic-requiring
+ * selections with no key, which are refused (Cursor can't forward a local key).
+ * @param {string} apiKey
+ * @param {boolean} requiresAnthropicKey
+ * @returns {Promise<{enabled: boolean, unavailable: boolean}>}
+ */
+async function cursorFirerouterAllowed(apiKey, requiresAnthropicKey) {
   const key = apiKey?.trim() ?? "";
   if (!key) {
-    return;
+    return { enabled: !requiresAnthropicKey, unavailable: true };
   }
   const lookup = await resolveWorkspaceByokStatus(key);
   if (lookup.unavailable) {
-    return;
+    return { enabled: true, unavailable: true };
   }
-  if (!lookup.enabled) {
-    rejectCursorFirerouterWorkspaceByok();
-  }
+  return { enabled: lookup.enabled, unavailable: false };
 }
 
 /**
@@ -97,14 +118,22 @@ async function isCursorAzureOnRequest(ctx) {
 }
 
 async function cursorResolveOnContext(ctx) {
-  if (!isFirerouterModel(ctx.main)) {
+  if (!isFirerouterModelPattern(ctx.main)) {
     return ctx;
   }
   if (await isCursorAzureOnRequest(ctx)) {
     rejectCursorFirerouterAzure();
   }
+  const requiresAnthropicKey = firerouterRequiresAnthropicKey(ctx.main);
   const apiKey = await harnessFullKey(ctx, cursorResolveKey);
-  await ensureCursorFirerouterAllowed(apiKey);
+  const allowed = await cursorFirerouterAllowed(apiKey, requiresAnthropicKey);
+  if (allowed.enabled) {
+    return ctx;
+  }
+  if (requiresAnthropicKey) {
+    rejectCursorFirerouterAnthropicKey();
+  }
+  rejectCursorFirerouterWorkspaceByok();
   return ctx;
 }
 
@@ -133,7 +162,7 @@ export default defineHarnessProfile({
       };
     },
     enable: async ({ ctx, paths, apiKey, baseUrl }) => {
-      if (isFirerouterModel(ctx.main)) {
+      if (isFirerouterModelPattern(ctx.main)) {
         rejectCursorFirerouterAzure();
       }
       await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
@@ -146,7 +175,7 @@ export default defineHarnessProfile({
         modelId: ctx.main,
       });
     },
-    restart: () => printRestartHint("Quit & reopen Cursor for the change to take effect."),
+    restart: () => printRestartHint("Quit & reopen Cursor IDE for the change to take effect."),
   },
   enable: async ({ ctx, paths, effectiveKey, keyType, modelId, includeFirerouter = false }) => {
     // Register the preferred catalog; firerouter is workspace-BYOK-gated. A
@@ -194,7 +223,7 @@ export default defineHarnessProfile({
       printNote(`Warning: ${secretEncryptionUnavailableMessage("cursor")}`);
     }
   },
-  restartHint: () => printRestartHint("Quit & reopen Cursor for the change to take effect."),
+  restartHint: () => printRestartHint("Quit & reopen Cursor IDE for the change to take effect."),
 
   // Cursor stores its key in a SQLite secret (no shell env hook), and must be
   // stopped before writing.
@@ -208,7 +237,7 @@ export default defineHarnessProfile({
       wasEnabled,
     });
   },
-  restartHintOff: () => printRestartHint("Quit & reopen Cursor for full effect."),
+  restartHintOff: () => printRestartHint("Quit & reopen Cursor IDE for full effect."),
   async providerStatus(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CURSOR);
     const paths = cursorPathsFor(ctx);

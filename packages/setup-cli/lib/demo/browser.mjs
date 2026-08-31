@@ -83,10 +83,13 @@ export function buildCompareHtml({
   // were rebased above).
   // Only a run where both sides finished yields an honest comparison. On a
   // partial run, the strip states what happened instead of asserting a winner.
+  const costComparison = Number.isFinite(costFraction)
+    ? `<div class="item">Cost: <b>${delta}</b> on ${costSide}</div>
+  <div class="item extrap">At 1,000 generations: ${formatUsd(inc1k)} → ${formatUsd(fw1k)} <span class="badge" style="margin-left:6px">linear extrapolation</span></div>`
+    : `<div class="item">Cost: <b>not comparable</b> — pricing unavailable</div>`;
   const stripInner = bothOk
     ? `<div class="item">Speed: <b>${ratio}</b> on ${speedSide}</div>
-  <div class="item">Cost: <b>${delta}</b> on ${costSide}</div>
-  <div class="item extrap">At 1,000 generations: ${formatUsd(inc1k)} → ${formatUsd(fw1k)} <span class="badge" style="margin-left:6px">linear extrapolation</span></div>`
+  ${costComparison}`
     : `<div class="item">Run incomplete — ${escapeHtml(!inc.ok ? incumbentLabel : fireworksLabel)} didn't finish, so no speed/cost comparison is shown.</div>`;
 
   const payload = {
@@ -235,7 +238,9 @@ function debugHtml(run) {
     ["cache write 5m", fmtNum(run.cacheWrite5mTokens)],
     ["cache read", fmtNum(run.cacheReadTokens)],
     ["output tokens", fmtNum(run.outputTokens)],
-    ["rate in / out", `$${r.inputPerMillion ?? 0} / $${r.outputPerMillion ?? 0} per Mtok`],
+    ["rate in / out", Number.isFinite(r.inputPerMillion) && Number.isFinite(r.outputPerMillion)
+      ? `$${r.inputPerMillion} / $${r.outputPerMillion} per Mtok`
+      : "n/a (priced from resolved model after run)"],
     ["rate cache w1h / w5m / read", `$${r.cacheWrite1hPerMillion ?? 0} / $${r.cacheWrite5mPerMillion ?? 0} / $${r.cacheReadPerMillion ?? 0} per Mtok`],
     ["estimated pricing", r.estimated ? "yes" : "no"],
     ["cost", typeof run.cost === "number" ? `$${run.cost.toFixed(6)}` : ""],

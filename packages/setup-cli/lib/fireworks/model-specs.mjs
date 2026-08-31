@@ -14,23 +14,46 @@ export const FIREWORKS_PRICING_DOCS_URL = "https://docs.fireworks.ai/serverless/
 export const FIREWORKS_MODEL_SPECS = {
   "deepseek-v4-pro": {
     label: "DeepSeek V4 Pro",
-    pricing: { input: 1.74, cachedInput: 0.145, output: 3.48 },
+    pricing: { input: 1.32, cachedInput: 0.044, output: 3.96 },
     capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
   },
   "deepseek-v4-pro-0813": {
     label: "DeepSeek V4 Pro (0813)",
-    pricing: { input: 1.74, cachedInput: 0.145, output: 3.48 },
+    pricing: { input: 1.32, cachedInput: 0.044, output: 3.96 },
     capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
   },
   "deepseek-v4-flash": {
     label: "DeepSeek V4 Flash",
-    pricing: { input: 0.14, cachedInput: 0.028, output: 0.28 },
+    pricing: { input: 0.22, cachedInput: 0.007, output: 0.66 },
     capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
   },
   "deepseek-v4-flash-0731": {
     label: "DeepSeek V4 Flash (0731)",
-    pricing: { input: 0.14, cachedInput: 0.028, output: 0.28 },
+    pricing: { input: 0.22, cachedInput: 0.007, output: 0.66 },
     capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
+  },
+  "glm-5p3": {
+    label: "GLM 5.3",
+    pricing: { input: 1.40, cachedInput: 0.26, output: 4.40 },
+    capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+  },
+  // GLM 5.3 Flash is a distinct cheaper model, not the fast tier of GLM 5.3 —
+  // `glm-flash-latest` names it, while `glm-fast-latest` is the GLM fast tier.
+  // It is also the first vision-capable GLM.
+  "glm-5p3-flash": {
+    label: "GLM 5.3 Flash",
+    pricing: { input: 0.15, cachedInput: 0.03, output: 0.50 },
+    capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+    api: { contextLength: 1_048_576, supportsImageInput: true },
+  },
+  // US-only Serverless rates are per-model, not a uniform uplift: models
+  // launched from 2026-09-01 carry a 50% premium over the matching global row,
+  // while earlier US routers keep the rates they launched with.
+  "glm-5p3-flash-us": {
+    label: "GLM 5.3 Flash (US)",
+    pricing: { input: 0.225, cachedInput: 0.045, output: 0.75 },
+    capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+    api: { contextLength: 1_048_576, supportsImageInput: true },
   },
   "glm-5p2": {
     label: "GLM 5.2",
@@ -52,14 +75,26 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
     capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
+  // Priced at parity with the global GLM 5.2 Fast row, with no US premium.
+  "glm-5p2-fast-us": {
+    label: "GLM 5.2 Fast (US)",
+    pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
+    capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+  },
   "kimi-k3": {
     label: "Kimi K3",
     pricing: { input: 3.00, cachedInput: 0.30, output: 15.00 },
     capabilities: { contextWindow: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
+  // Launched before the 50% premium, at a 10% premium over the global row.
+  "kimi-k3-us": {
+    label: "Kimi K3 (US)",
+    pricing: { input: 3.30, cachedInput: 0.33, output: 16.50 },
+    capabilities: { contextWindow: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
+  },
   "kimi-k3-fast": {
     label: "Kimi K3 Fast",
-    pricing: { input: 6.00, cachedInput: 0.60, output: 30.00, tier: "fast" },
+    pricing: { input: 4.50, cachedInput: 0.45, output: 22.50, tier: "fast" },
     capabilities: { contextWindow: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
   "kimi-k2p7-code": {
@@ -143,10 +178,75 @@ export const FIREWORKS_MODEL_SPECS = {
       toolCalling: true,
     },
   },
+  // Fireworks-managed mix of open models, served on the gateway but absent from
+  // the public serverless catalog.
+  auto: {
+    label: "Auto",
+    capabilities: {
+      contextWindow: 1_048_575,
+      maxOutputTokens: 131_072,
+      vision: true,
+      toolCalling: true,
+    },
+  },
 };
 
+/**
+ * Bare gateway slug for the default auto mix. Variants (`auto-instant`) share
+ * the same no-resource-path rule: the gateway serves them under the slug, not
+ * `accounts/fireworks/...`.
+ */
+export const AUTO_MODEL_ID = "auto";
+
+/** Latency-first auto mix (`--model auto-instant`). */
+export const AUTO_INSTANT_MODEL_ID = "auto-instant";
+
+/**
+ * Auto mixes to synthesize in `model list`. Acceptance is wider ({@link
+ * canonicalAutoModelId} matches any `auto-*`); this list only controls which
+ * names get a discoverable row when the serverless API omits them.
+ */
+export const KNOWN_AUTO_MODEL_IDS = [AUTO_MODEL_ID, AUTO_INSTANT_MODEL_ID];
+
+/** Cursor's built-in picker — not a Fireworks auto mix. */
+const NON_GATEWAY_AUTO_IDS = new Set(["auto-smart"]);
+
+/**
+ * Canonical short slug for an auto mix (`auto`, `auto-instant`). Empty when
+ * the ref is not an auto mix.
+ *
+ * Matched on the whole ref, never per path segment: a slash means the ref names
+ * something else that merely contains an auto-shaped part (a custom
+ * `accounts/auto-corp/...` resource, a `firerouter/auto-instant` selection), and
+ * collapsing it to a bare mix slug would send the gateway the wrong model.
+ * @param {string} model
+ * @returns {string}
+ */
+export function canonicalAutoModelId(model) {
+  if (typeof model !== "string") {
+    return "";
+  }
+  const slug = model.replace(/\[1m\]$/i, "").trim().toLowerCase();
+  if (!slug || slug.includes("/") || NON_GATEWAY_AUTO_IDS.has(slug)) {
+    return "";
+  }
+  return slug === AUTO_MODEL_ID || slug.startsWith(`${AUTO_MODEL_ID}-`) ? slug : "";
+}
+
+/**
+ * Whether a model reference is the `auto` mix or an `auto-*` variant
+ * (`auto-instant`). Unrelated to `firerouter*`: these route open models only
+ * and never need an Anthropic credential. Cursor-native `auto-smart` is not
+ * matched.
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function isAutoModelId(model) {
+  return canonicalAutoModelId(model) !== "";
+}
+
 /** True when any path segment matches the `firerouter*` prefix. */
-export function isFirerouterGatewayPattern(model) {
+export function isFirerouterModelPattern(model) {
   if (typeof model !== "string") {
     return false;
   }
@@ -160,14 +260,20 @@ export function isFirerouterGatewayPattern(model) {
 export const ROUTER_SPEC_ALIASES = {
   "deepseek-flash-latest": "deepseek-v4-flash-0731",
   "deepseek-pro-latest": "deepseek-v4-pro-0813",
-  "glm-latest": "glm-5p2",
+  "glm-latest": "glm-5p3",
   "glm-fast-latest": "glm-5p2-fast",
+  "glm-flash-latest": "glm-5p3-flash",
+  "glm-5p2-fast-us": "glm-5p2",
+  "glm-5p3-flash-us": "glm-5p3-flash",
   "kimi-latest": "kimi-k3",
   "kimi-fast-latest": "kimi-k3-fast",
+  "kimi-k3-us": "kimi-k3",
   "minimax-latest": "minimax-m3",
   "qwen-plus-latest": "qwen3p7-plus",
 };
 
+const GLM_LATEST_BASE_CANDIDATES = ["glm-5p3", "glm-5p2"];
+const GLM_FLASH_LATEST_BASE_CANDIDATES = ["glm-5p3-flash"];
 const DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES = ["deepseek-v4-flash-0731", "deepseek-v4-flash"];
 const DEEPSEEK_PRO_LATEST_BASE_CANDIDATES = ["deepseek-v4-pro-0813", "deepseek-v4-pro"];
 const KIMI_LATEST_BASE_CANDIDATES = ["kimi-k3", "kimi-k2p8-code", "kimi-k2p7-code"];
@@ -215,6 +321,16 @@ export function resolveRouterSpecAliasTarget(alias, entryIds = null) {
       return fastSpecSlugForBase(base, alias);
     }
     return ROUTER_SPEC_ALIASES[alias] ?? null;
+  }
+  if (alias === "glm-latest") {
+    return resolveFirstCatalogCandidate(catalogCheck, GLM_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
+  }
+  if (alias === "glm-flash-latest") {
+    return resolveFirstCatalogCandidate(catalogCheck, GLM_FLASH_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
   }
   if (alias === "minimax-latest") {
     return resolveFirstCatalogCandidate(catalogCheck, MINIMAX_LATEST_BASE_CANDIDATES)
@@ -344,6 +460,9 @@ function fastSpecSlugForBase(baseSlug, routerShortId) {
 
 export function resolveSpecSlug(modelRef) {
   const shortId = specShortIdFromModelRef(modelRef);
+  if (FIREWORKS_MODEL_SPECS[shortId]) {
+    return shortId;
+  }
   const baseModelId = resolveLiveRouterBaseModelId(modelRef);
   if (baseModelId) {
     const baseSlug = specShortIdFromModelRef(baseModelId);
@@ -366,7 +485,7 @@ export function isFireworksRoutedModelRef(modelRef) {
     return true;
   }
   const shortId = specShortIdFromModelRef(ref);
-  if (isFirerouterGatewayPattern(ref)) {
+  if (isFirerouterModelPattern(ref) || isAutoModelId(ref)) {
     return true;
   }
   if (ROUTER_SPEC_ALIASES[shortId]) {
@@ -383,7 +502,7 @@ export function isFireworksRoutedModelRef(modelRef) {
 export function resolveFireworksModelLabel(modelRef) {
   const shortId = specShortIdFromModelRef(modelRef);
   const routerSpec = FIREWORKS_MODEL_SPECS[shortId];
-  if (shortId.endsWith("-turbo") && routerSpec?.label) {
+  if ((shortId.endsWith("-turbo") || shortId.endsWith("-us")) && routerSpec?.label) {
     return routerSpec.label;
   }
   const baseModelId = resolveLiveRouterBaseModelId(modelRef);
@@ -422,8 +541,12 @@ export function resolveFireworksModelLabel(modelRef) {
 
 export function lookupModelSpec(modelRef) {
   // firerouter* IDs share the static firerouter catalog metadata (1M context, vision).
-  if (isFirerouterGatewayPattern(modelRef)) {
+  if (isFirerouterModelPattern(modelRef)) {
     return FIREWORKS_MODEL_SPECS.firerouter;
+  }
+  // auto / auto-* share the static auto mix metadata (1M context, vision).
+  if (isAutoModelId(modelRef)) {
+    return FIREWORKS_MODEL_SPECS.auto;
   }
   const slug = resolveSpecSlug(modelRef);
   const shortId = specShortIdFromModelRef(modelRef);
@@ -456,7 +579,7 @@ export function isRouterShortId(shortId) {
     return false;
   }
   // `firerouter*` prefix (not just the bare slug) mirrors
-  // isFirerouterGatewayPattern, so firerouter variants classify as routers too.
+  // isFirerouterModelPattern, so firerouter variants classify as routers too.
   return shortId.startsWith("firerouter")
     || Boolean(ROUTER_SPEC_ALIASES[shortId])
     || shortId.endsWith("-latest")
@@ -487,6 +610,7 @@ export function requiresFastTierPricing(modelRef) {
   const shortId = specShortIdFromModelRef(modelRef);
   return shortId.endsWith("-fast-latest")
     || shortId.endsWith("-fast")
+    || shortId.endsWith("-fast-us")
     || shortId.endsWith("-turbo");
 }
 
@@ -523,7 +647,7 @@ export function catalogCacheCandidates(modelRef) {
   }
   const shortId = specShortIdFromModelRef(modelRef);
   const aliasSlug = resolveRouterSpecAliasTarget(shortId);
-  if (aliasSlug) {
+  if (aliasSlug && !FIREWORKS_MODEL_SPECS[shortId]) {
     candidates.push(`accounts/fireworks/models/${aliasSlug}`);
     candidates.push(`accounts/fireworks/routers/${aliasSlug}`);
   }
