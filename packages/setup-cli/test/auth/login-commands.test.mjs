@@ -279,14 +279,14 @@ describe("fireconnect login / logout", () => {
   it("login re-points the key baked into Claude's Fireworks settings", async () => {
     await withTempHome("login-router-refresh-", async (home) => {
       // A router-mode settings file from before this sign-in: stale key,
-      // legacy header name (pre-rename), plus lines that must survive.
+      // plus lines that must survive.
       const settingsPath = path.join(home, ".claude", "settings.json");
       await mkdir(path.dirname(settingsPath), { recursive: true });
       await writeFile(settingsPath, JSON.stringify({
         env: {
           ANTHROPIC_BASE_URL: "https://api.fireworks.ai/inference",
           ANTHROPIC_MODEL: "accounts/fireworks/routers/firerouter[1m]",
-          ANTHROPIC_CUSTOM_HEADERS: "X-FireRouter-Fireworks-Key: fw_stale_key_000000000000000000\nx-routing-preference: 3",
+          ANTHROPIC_CUSTOM_HEADERS: "X-Fireworks-Api-Key: fw_stale_key_000000000000000000\nx-routing-preference: 3",
           ANTHROPIC_AUTH_TOKEN: "sk-ant-keep",
         },
       }));

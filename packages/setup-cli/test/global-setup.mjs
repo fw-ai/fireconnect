@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -8,6 +10,17 @@ import { fileURLToPath } from "node:url";
 // inject ANSI escape sequences even though spawned stdout is piped.
 process.env.FORCE_COLOR = "0";
 process.env.NO_COLOR = "1";
+
+// Default every test process to the isolated secret store. Individual
+// secret-backend specs explicitly unset these and force file/null storage.
+process.env.FIRECONNECT_TEST ??= "1";
+process.env.FIRECONNECT_SECRET_STORE ??= "memory";
+
+// Point the persisted catalog cache at a throwaway dir for EVERY test process,
+// not just the ones that import test/helpers.mjs. Catalog lookups lazy-load this
+// file, so without it a spec that never touches the cache would read (and price
+// from) the developer's own ~/.fireconnect snapshot.
+process.env.FIRECONNECT_CACHE_DIR ??= mkdtempSync(path.join(os.tmpdir(), "fc-cache-global-"));
 
 // Preloaded via `--import` for every test process (see package.json `test`).
 //

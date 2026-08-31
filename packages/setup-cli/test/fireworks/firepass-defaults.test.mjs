@@ -85,11 +85,26 @@ describe("Fire Pass defaults", () => {
     assert.equal(normalizeModelId("kimi-latest"), "kimi-latest");
     assert.equal(normalizeModelId("minimax-latest"), "minimax-latest");
     assert.equal(normalizeModelId("qwen-plus-latest"), "qwen-plus-latest");
+    assert.equal(normalizeModelId("auto"), "auto");
+    assert.equal(normalizeModelId("Auto"), "auto");
+    assert.equal(normalizeModelId("auto[1m]"), "auto");
+    // Each mix keeps its own slug — normalizing to `auto` would silently swap a
+    // latency-first pin for the slower default mix.
+    assert.equal(normalizeModelId("auto-instant"), "auto-instant");
+    assert.equal(normalizeModelId("Auto-Instant[1m]"), "auto-instant");
+    // Refs that only contain an auto-shaped segment keep their full path.
+    assert.equal(
+      normalizeModelId("accounts/auto-corp/models/private-model"),
+      "accounts/auto-corp/models/private-model",
+    );
+    assert.equal(normalizeModelId("firerouter/auto-instant"), "firerouter/auto-instant");
   });
 
   test("fullFireworksResourceId expands slugs for catalog lookups", () => {
     assert.equal(fullFireworksResourceId("glm-fast-latest"), "accounts/fireworks/routers/glm-fast-latest");
     assert.equal(fullFireworksResourceId("deepseek-v4-flash"), "accounts/fireworks/models/deepseek-v4-flash");
+    assert.equal(fullFireworksResourceId("auto"), "auto");
+    assert.equal(fullFireworksResourceId("auto-instant"), "auto-instant");
     assert.equal(shortFireworksModelRef(`${fullFireworksResourceId("glm-fast-latest")}[1m]`), "glm-fast-latest[1m]");
     assert.equal(fireworksModelSlug("glm-fast-latest[1m]"), "glm-fast-latest");
     assert.equal(
@@ -103,6 +118,10 @@ describe("Fire Pass defaults", () => {
     assert.equal(isFireworksModelId("glm-fast-latest[1m]"), true);
     assert.equal(isFireworksModelId("deepseek-v4-flash"), true);
     assert.equal(isFireworksModelId("minimax-latest"), true);
+    assert.equal(isFireworksModelId("auto"), true);
+    assert.equal(isFireworksModelId("auto[1m]"), true);
+    assert.equal(isFireworksModelId("auto-instant"), true);
+    assert.equal(isFireworksModelId("auto-smart"), false);
     assert.equal(isFireworksModelId("claude-sonnet-5"), false);
     assert.equal(isFireworksModelId("unknown-user-model"), false);
   });
@@ -175,6 +194,13 @@ describe("Fire Pass defaults", () => {
     assert.equal(claudeCodeModelId("firerouter[1m]"), "firerouter[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/firerouter"), "accounts/fireworks/routers/firerouter[1m]");
     assert.equal(claudeCodeModelId("firerouter/x"), "firerouter/x[1m]");
+    // `auto` uses the same [1m] tag as other 1M Fireworks models; Claude Code
+    // strips the suffix before the gateway API call (bare `auto` on the wire).
+    assert.equal(claudeCodeModelId("auto"), "auto[1m]");
+    assert.equal(claudeCodeModelId("auto[1m]"), "auto[1m]");
+    assert.equal(modelQualifiesForClaudeCode1mContext("auto"), true);
+    assert.equal(claudeCodeModelId("auto-instant"), "auto-instant[1m]");
+    assert.equal(modelQualifiesForClaudeCode1mContext("auto-instant"), true);
     assert.equal(claudeCodeModelId("firerouter/x[1m]"), "firerouter/x[1m]");
     assert.equal(claudeCodeModelId("FireRouter/x"), "FireRouter/x[1m]");
     assert.equal(claudeCodeModelId("firerouterx"), "firerouterx[1m]");

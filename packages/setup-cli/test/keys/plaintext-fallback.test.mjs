@@ -56,8 +56,12 @@ describe("plaintext secret fallback", () => {
       XDG_DATA_HOME: process.env.XDG_DATA_HOME,
       XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
       [FIRECONNECT_KEY_STORAGE_ENV]: process.env[FIRECONNECT_KEY_STORAGE_ENV],
+      FIRECONNECT_SECRET_STORE: process.env.FIRECONNECT_SECRET_STORE,
+      FIRECONNECT_TEST: process.env.FIRECONNECT_TEST,
     };
     process.env.HOME = home;
+    delete process.env.FIRECONNECT_SECRET_STORE;
+    delete process.env.FIRECONNECT_TEST;
     await blockSecureKeyStorage(home);
   });
 

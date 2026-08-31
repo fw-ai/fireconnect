@@ -7,7 +7,7 @@ import {
   defaultMainModel,
   fullFireworksResourceId,
   isFireworksModelId,
-  isFirerouterModel,
+  isFirerouterModelPattern,
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
@@ -866,7 +866,7 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
     && (!previousKeyType || previousKeyType === resolvedKeyType)
     && currentModel
     && currentModel !== "default"
-    && !isFirerouterModel(currentModel)
+    && !isFirerouterModelPattern(currentModel)
     && servable(currentModel);
   const resolvedModel = shortFireworksModelRef(
     preserveModeSelections

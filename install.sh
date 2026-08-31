@@ -275,8 +275,6 @@ const isFireworksModelMapping = (value) => {
 const hasFireworksMapping = mappingKeys.some(
   (key) => isFireworksModelMapping(env[key]),
 );
-const hasManagedPreset = env.CLAUDE_CODE_ATTRIBUTION_HEADER === "0"
-  && env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING === "1";
 const fireworksHeader = header("x-fireworks-api-key");
 const currentHelper = typeof settings.apiKeyHelper === "string" ? settings.apiKeyHelper : "";
 const hasManagedHelper = (
@@ -295,9 +293,8 @@ const hasManagedEvidence = Object.hasOwn(backup, "snapshot")
   || hasTelemetry
   || (
     (fireworksHeader.startsWith("fw_") || fireworksHeader.startsWith("fpk_"))
-    && (hasFireworksMapping || hasManagedPreset)
-  )
-  || (hasFireworksMapping && hasManagedPreset);
+    && hasFireworksMapping
+  );
 
 process.exit(hasManagedEvidence ? 0 : 1);
 NODE
@@ -436,7 +433,8 @@ ensure_dependencies() {
   # npm's "added N packages in Xms" summary prints to stdout regardless of
   # --loglevel, which clutters the install output with a stray line between our
   # `→` steps. Discard stdout (errors still surface on stderr) unless verbose.
-  if ! (cd "${setup_dir}" && npm install --omit=dev --no-fund --no-audit --loglevel="${npm_loglevel}" 1>"${npm_stdout}"); then
+  if ! (cd "${setup_dir}" && FIRECONNECT_SKIP_POSTINSTALL_FINALIZE=1 \
+    npm install --omit=dev --no-fund --no-audit --loglevel="${npm_loglevel}" 1>"${npm_stdout}"); then
     echo "Failed to install FireConnect dependencies." >&2
     exit 1
   fi

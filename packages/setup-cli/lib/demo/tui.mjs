@@ -43,7 +43,7 @@ export function isTtyCapable() {
  * @property {string} provider
  * @property {string} model
  * @property {string} costLabel  "list price" | "serverless"
- * @property {{ inputPerMillion: number, outputPerMillion: number, cacheWrite1hPerMillion: number, cacheWrite5mPerMillion: number, cacheReadPerMillion: number }} rates
+ * @property {{ inputPerMillion: number | null, outputPerMillion: number | null, cacheWrite1hPerMillion: number | null, cacheWrite5mPerMillion: number | null, cacheReadPerMillion: number | null }} rates
  */
 
 /**
@@ -91,6 +91,10 @@ export class SplitPaneRenderer {
     this.stdout.write(HIDE_CURSOR);
     this.render();
     this.timer = setInterval(() => this.render(), RENDER_INTERVAL_MS);
+    // Redrawing is never a reason to keep the process alive — the race is. An
+    // unref'd timer means a renderer that is never stopped (a thrown error
+    // between start() and stop()) surfaces that error instead of hanging.
+    this.timer.unref?.();
   }
 
   /** @param {"incumbent" | "fireworks"} side @param {string} text */
@@ -370,13 +374,17 @@ export class SplitPaneRenderer {
     // Cache tokens are only known once the result event arrives (also when
     // costFinalized flips), so the mid-stream estimate uses 0 for them until
     // then — same as outputTokens falling back to chars/4. After finish, the
-    // authoritative cost (costUsd) is used, so the estimate never needs to
+    // canonical provider-priced cost is used, so the estimate never needs to
     // guess cache tokens before they're reported.
     const estCacheWrite1h = s.cacheWrite1hTokens ?? 0;
     const estCacheWrite5m = s.cacheWrite5mTokens ?? 0;
     const estCacheRead = s.cacheReadTokens ?? 0;
     if (s.costFinalized) {
       cost = s.cost;
+    } else if (!Number.isFinite(inRate) || !Number.isFinite(outRate)) {
+      // A delegating router has no honest pre-run rate. Wait for the result's
+      // resolved backend model rather than drawing a proxy dollar amount.
+      cost = null;
     } else {
       // Keep estimating through freeze() — done is set when the runner resolves,
       // but finish() (reconciled cost) only runs after finalizeBoth().

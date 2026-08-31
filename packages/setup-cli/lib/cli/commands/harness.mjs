@@ -3,7 +3,7 @@ import { dispatchHarnessCommand } from "../../harness/types.mjs";
 import { getHarness } from "../../harness/registry.mjs";
 import { persistGlobalAnthropicApiKey } from "../../config/global-config.mjs";
 import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
-import { isFirerouterModel } from "../../fireworks/model-id.mjs";
+import { isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
 import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
 import { supportsAnthropicApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
 import {
@@ -14,8 +14,9 @@ import {
   persistApiKeyFromFlag,
   persistApiKeyToKeychain,
 } from "../../keys/api-key.mjs";
+import { shouldSkipEnvKeyAutoPersist } from "../../config/secret-storage-policy.mjs";
 
-const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE]);
+const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE, HARNESS.CODEX]);
 
 /**
  * Fail on parsed flags the selected harness/command cannot use. The parser is
@@ -31,8 +32,8 @@ function validateHarnessOptions(route, ctx) {
   const claudeAliases = [ctx.opus, ctx.sonnet, ctx.haiku, ctx.fable, ctx.subagent];
   const claudeModels = [ctx.main, ...claudeAliases];
   const firerouterRequested = harnessId === HARNESS.CLAUDE
-    ? claudeModels.some((modelId) => isFirerouterModel(modelId))
-    : isFirerouterModel(ctx.main);
+    ? claudeModels.some((modelId) => isFirerouterModelPattern(modelId))
+    : isFirerouterModelPattern(ctx.main);
 
   if (ctx.provider && !ctx.azure) {
     throw new Error(
@@ -47,7 +48,7 @@ function validateHarnessOptions(route, ctx) {
     throw new Error("--base-url on this harness requires --azure.");
   }
   if (ctx.force && !IDE_HARNESSES.has(harnessId)) {
-    throw new Error("--force is only supported for Cursor and VS Code.");
+    throw new Error("--force is only supported for Cursor, VS Code, and Codex.");
   }
   if (onboardingMode !== "auto" && !(harnessId === HARNESS.CLAUDE && isOn)) {
     const flag = onboardingMode === "prompt" ? "--interactive" : "--non-interactive";
@@ -61,6 +62,9 @@ function validateHarnessOptions(route, ctx) {
   }
   if (ctx.search) {
     throw new Error("--search applies only to `fireconnect model list`.");
+  }
+  if (ctx.refresh) {
+    throw new Error("--refresh applies only to `fireconnect model list`.");
   }
   // `--session` is shared by `claude usage` (report) and `claude live` (resume +
   // meter that session in the split); the report-only flags stay usage-only.
@@ -195,7 +199,11 @@ export async function runHarnessCommand(route, ctx) {
       }
     } else if (!azureMode && process.env.FIREWORKS_API_KEY?.trim()) {
       const envKey = assertFireworksKeyShape(process.env.FIREWORKS_API_KEY);
-      if (FILE_CONFIG_HARNESS_SET.has(route.harnessId) && await canPersistApiKeyToKeychain(home)) {
+      if (
+        FILE_CONFIG_HARNESS_SET.has(route.harnessId)
+        && await canPersistApiKeyToKeychain(home)
+        && !shouldSkipEnvKeyAutoPersist()
+      ) {
         await persistApiKeyToKeychain(home, envKey);
       }
     }

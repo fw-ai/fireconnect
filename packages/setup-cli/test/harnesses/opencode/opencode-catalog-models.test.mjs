@@ -138,6 +138,29 @@ describe("opencode catalog model handling", () => {
     assert.equal(models["firerouter/x"].limit.context, 1_048_575);
   });
 
+  it("writes an explicit auto override so OpenCode doesn't fall back to 128K", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-auto-"));
+    const configPath = path.join(home, "opencode.json");
+    const dataDir = path.join(home, "data");
+    await mkdir(dataDir, { recursive: true });
+
+    await enableOpencodeFireworks({
+      configPath,
+      dataDir,
+      apiKey: "fw_test_key_12345",
+      effectiveApiKey: "fw_test_key_12345",
+      modelId: "auto",
+      catalogModelIds: ["accounts/fireworks/routers/glm-latest"],
+    });
+
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(config.model, "fireworks-ai/auto");
+    const entry = config.provider?.["fireworks-ai"]?.models?.auto;
+    assert.ok(entry, "auto is absent from models.dev, so it needs an explicit override");
+    assert.equal(entry.limit.context, 1_048_575);
+    assert.equal(entry.limit.output, 131_072);
+  });
+
   it("re-on with catalog rebuilds idempotently and drops duplicate legacy keys", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-reon-idempotent-"));
     const configPath = path.join(home, "opencode.json");

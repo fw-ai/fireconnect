@@ -15,9 +15,12 @@ The harness (`../index.mjs`) uses two, depending on the flags:
 
 **Shared**
 
-- `report.mjs` — parses session JSONL and prices it. `computeClaudeUsageCost`
-  lives here and is the only place cost is computed, so the live meter and the
-  one-shot snapshot cannot disagree.
+- `pricing.mjs` — canonical provider-rate lookup and call pricing. Snapshot,
+  live meter, statusline, and demo all call `computeClaudeUsageCost` here.
+- `cost.mjs` — nullable cost representation (`null` means unavailable) and
+  null-propagating total arithmetic.
+- `report.mjs` — parses session JSONL, aggregates priced rows, and orchestrates
+  snapshot output.
 - `format.mjs` — cost and cache-percentage strings shared by the meter and both
   pickers.
 - `agents.mjs` — discovers subagent logs and labels them from the `.meta.json`

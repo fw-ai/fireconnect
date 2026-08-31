@@ -10,7 +10,7 @@
 import { providerListPricing } from "../../../demo/incumbent-detect.mjs";
 import { fireworksModelSlug } from "../../../fireworks/model-id.mjs";
 import { sanitize } from "../../../ui/sanitize.mjs";
-import { computeClaudeUsageCost } from "./report.mjs";
+import { computeClaudeUsageCost } from "./pricing.mjs";
 
 // ── pricing one call ─────────────────────────────────────────────────────────
 
@@ -21,18 +21,21 @@ import { computeClaudeUsageCost } from "./report.mjs";
  * 5m/1h cache-write breakdown — `computeClaudeUsageCost` already does that,
  * including the flat-total fallback for older logs that lack `cache_creation`.
  *
- * `estimated` is the CLI's own "this id matched no known model, here's a default
- * rate" flag. The meter treats that as unpriced and excludes it: a
+ * `estimated` is the CLI's own "this id matched no known model, here's a
+ * reference rate" flag. The meter treats that as unpriced and excludes it: a
  * plausible-looking wrong number during a demo is worse than a visible gap.
+ * `cost: null` is the engine saying the same thing outright — it found no rate
+ * at all — and is excluded on the same grounds.
  *
  * @param {string} model
  * @param {object} usage
  */
 export function priceCall(model, usage) {
   const r = computeClaudeUsageCost(model, usage);
+  const unpriced = r.estimated || r.cost == null;
   return {
-    cost: r.estimated ? 0 : r.cost,
-    priced: !r.estimated,
+    cost: unpriced ? 0 : r.cost,
+    priced: !unpriced,
     label: labelFor(model, r),
     input: r.input,
     cacheRead: r.cacheRead,

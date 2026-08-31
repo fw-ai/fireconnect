@@ -67,6 +67,9 @@ test("demoModelRates: resolves pricing for Fireworks, FireRouter, and Anthropic 
   assert.ok(fw.inputPerMillion > 0);
   const fr = demoModelRates("firerouter");
   assert.ok(fr);
+  assert.equal(fr.inputPerMillion, null);
+  assert.equal(fr.outputPerMillion, null);
+  assert.equal(fr.estimated, true);
   const anth = demoModelRates("opus");
   assert.ok(anth);
   assert.match(anth.label, /via Anthropic/);

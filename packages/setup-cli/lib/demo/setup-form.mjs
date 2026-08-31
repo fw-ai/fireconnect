@@ -7,11 +7,17 @@ import {
   HIDE_CURSOR, SHOW_CURSOR, HOME_CURSOR, CLEAR_SCREEN, moveTo, CLEAR_LINE,
   padRight,
 } from "./ansi.mjs";
-import { CUSTOM_DEMO_PROMPT_ID, DEMO_PRESETS, DEMO_PRESET_HINTS } from "./presets.mjs";
+import {
+  CUSTOM_DEMO_PROMPT_ID,
+  DEMO_PRESETS,
+  DEMO_PRESET_HINTS,
+  demoPromptOptionIds,
+} from "./presets.mjs";
 import {
   demoModelCatalog,
   demoModelLabel,
   demoModelRates,
+  hasDemoTokenRates,
 } from "./demo-models.mjs";
 import {
   CUSTOM_MATCHUP_ID,
@@ -20,7 +26,7 @@ import {
 } from "./demo-matchups.mjs";
 import { DEMO_CANCELLED_MSG } from "./demo-readiness.mjs";
 
-const PROMPT_OPTION_IDS = [...Object.keys(DEMO_PRESETS), CUSTOM_DEMO_PROMPT_ID];
+const PROMPT_OPTION_IDS = demoPromptOptionIds();
 const MATCHUP_OPTION_IDS = demoMatchupOptionIds();
 const CUSTOM_PROMPT_ALLOWED = /[\x20-\x7e]/;
 const WIZARD_STEPS = 3;
@@ -265,7 +271,7 @@ export function applyKey(state, key) {
 export function estimateRaceCost(leftModel, rightModel, slotMapping = null) {
   const leftRates = demoModelRates(leftModel, "fireworks", slotMapping);
   const rightRates = demoModelRates(rightModel, "fireworks", slotMapping);
-  if (!leftRates || !rightRates) {
+  if (!hasDemoTokenRates(leftRates) || !hasDemoTokenRates(rightRates)) {
     return null;
   }
   const sideCost = (rates) => (
@@ -329,9 +335,9 @@ function renderModelValue(field, slotMapping = null) {
   const cur = demoModelLabel(field.options[field.index]);
   const head = `◂ ${REVERSE}${BOLD}${cur}${RESET} ▸ ${DIM}[${field.index + 1}/${field.options.length}]${RESET}`;
   const rates = demoModelRates(field.options[field.index], "fireworks", slotMapping);
-  return rates
+  return hasDemoTokenRates(rates)
     ? `${head}  ${DIM}$${rates.inputPerMillion} / $${rates.outputPerMillion} per Mtok${RESET}`
-    : head;
+    : `${head}  ${DIM}pricing after route${RESET}`;
 }
 
 function renderMatchupStep(state, labelWidth) {

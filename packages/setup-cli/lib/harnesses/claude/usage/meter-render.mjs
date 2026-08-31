@@ -12,6 +12,7 @@
  */
 
 import { sanitize } from "../../../ui/sanitize.mjs";
+import { sumCosts } from "./cost.mjs";
 import {
   BAR_MAX,
   COST_COL,
@@ -19,7 +20,6 @@ import {
   LABEL_BLOCK,
   MODEL_COL,
   money,
-  moneyTotal,
   SHARE_COL,
   TOKEN_COLUMNS_WIDTH,
   tokenCells,
@@ -159,8 +159,7 @@ export function renderAgentPane(pane, width) {
     const on = focused && start + i === cursor;
     const tracked = pane.trackingId && agent.id === pane.trackingId;
     const totals = agent.report?.totals ?? {};
-    // An agent row is a total, not a single call.
-    const cost = moneyTotal(totals.cost ?? 0);
+    const cost = money(totals.cost === undefined ? 0 : totals.cost);
     const calls = String(agent.report?.requests ?? 0).padStart(3);
     const cache = formatUsageCachePct(totals).padStart(4);
     // The tracked agent gets the gold dot; the cursor gets the pointer. They
@@ -187,7 +186,7 @@ export function renderAgentPane(pane, width) {
  * @param {{
  *   totals: Map<string, any>,
  *   unpriced: Set<string>,
- *   peers: { count: number, calls: number, cost: number, main?: any } | null,
+ *   peers: { count: number, calls: number, cost: number | null, main?: any } | null,
  *   agentLabel: string,
  *   colorOf: (key: string) => string,
  *   width: number,
@@ -196,6 +195,7 @@ export function renderAgentPane(pane, width) {
 export function renderFooter({ totals, unpriced, peers, agentLabel, colorOf, width }) {
   let grand = 0;
   for (const t of totals.values()) grand += t.cost;
+  const trackedCost = unpriced.size ? null : grand;
 
   // The share bar is the one elastic column, so it absorbs a narrow pane and
   // drops out entirely rather than forcing every line to wrap. The launcher gives
@@ -216,19 +216,19 @@ export function renderFooter({ totals, unpriced, peers, agentLabel, colorOf, wid
     const label = key.slice(0, MODEL_COL).padEnd(LABEL_BLOCK - FOOTER_LABEL_INDENT);
     lines.push(
       `  ${c}●${R} ${label}${D}${tokenCells(t)}${R} `
-      + `${bar}${GHOST}${share}${R} ${GOLD}${moneyTotal(t.cost)}${R}`,
+      + `${bar}${GHOST}${share}${R} ${GOLD}${money(t.cost)}${R}`,
     );
   }
   if (!lines.length) lines.push(`  ${GHOST}no priced turns yet${R}`);
 
   // Summary rows carry no numeric columns, so right-align their cost against
   // where a model row's cost cell ends. Padding the label instead would drift,
-  // because `moneyTotal` is variable width ("$0.87" vs "$20.37"). Measured off a
+  // because `money` is variable width ("$0.8700" vs "$20.3700"). Measured off a
   // rendered row rather than re-summing the terms, which is one place for the
   // arithmetic to go wrong instead of two.
   const modelRowEnd = totals.size ? vislen(lines[0]) : fixedRow + (barw ? barw + 1 : 0);
   const summary = (label, value, { bold: strong = false, ghost = false } = {}) => {
-    const cost = moneyTotal(value);
+    const cost = money(value);
     const room = Math.max(1, modelRowEnd - 2 - cost.length);
     const text = clip(label, room);
     const style = strong ? B : (ghost ? GHOST : "");
@@ -247,7 +247,7 @@ export function renderFooter({ totals, unpriced, peers, agentLabel, colorOf, wid
   const subCount = peers?.count ?? 0;
   if (peers && (subCount > 0 || peerMain)) {
     const callWord = (n) => (n === 1 ? "call" : "calls");
-    lines.push(summary(agentLabel || "Main", grand));
+    lines.push(summary(agentLabel || "Main", trackedCost));
     if (peerMain) {
       lines.push(summary(
         `${peerMain.label} · ${peerMain.calls} ${callWord(peerMain.calls)}`,
@@ -262,9 +262,12 @@ export function renderFooter({ totals, unpriced, peers, agentLabel, colorOf, wid
         { ghost: true },
       ));
     }
-    lines.push(summary("SESSION COST", grand + peers.cost + (peerMain?.cost ?? 0), { bold: true }));
+    const sessionCosts = [trackedCost, peers.cost];
+    if (peerMain) sessionCosts.push(peerMain.cost);
+    const sessionCost = sumCosts(sessionCosts);
+    lines.push(summary("SESSION COST", sessionCost, { bold: true }));
   } else {
-    lines.push(summary("TOTAL COST", grand, { bold: true }));
+    lines.push(summary("TOTAL COST", trackedCost, { bold: true }));
   }
 
   if (unpriced.size) {

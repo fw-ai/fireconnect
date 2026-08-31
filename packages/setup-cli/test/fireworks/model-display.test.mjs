@@ -21,7 +21,7 @@ describe("model-display", () => {
     const catalog = resolveFireworksCatalog("accounts/fireworks/routers/glm-latest");
     assert.equal(display.maxInputTokens, catalog.limits.contextWindow);
     assert.equal(display.maxOutputTokens, catalog.limits.maxTokens);
-    assert.equal(catalog.limits.contextWindow, 1_048_575);
+    assert.equal(catalog.limits.contextWindow, 1_048_576);
   });
 
   it("resolves kimi vision models with image input enabled", () => {

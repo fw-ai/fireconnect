@@ -5,34 +5,25 @@ import {
   printClaudeModelMapping,
   runClaudeMappingEditor,
   runClaudeModelOnboarding,
-  standardClaudeModelMapping,
 } from "../../../lib/harnesses/claude/onboarding.mjs";
 import {
   defaultClaudeModelMapping,
   mergeClaudeModelMappings,
 } from "../../../lib/harnesses/claude/model-profile.mjs";
 
-// Mirrors defaultClaudeModelMapping(): main is never pinned and Sonnet stays
-// native, so neither is written by `claude on`.
-const FAST = {
-  main: "claude-default",
-  opus: "deepseek-pro-latest",
-  sonnet: "claude-default",
-  haiku: "deepseek-flash-latest",
-  fable: "kimi-fast-latest",
-  subagent: "deepseek-flash-latest",
-};
+// Baseline mapping from defaultClaudeModelMapping() for wizard tests.
+const DEFAULTS = defaultClaudeModelMapping();
 
 function catalogModel(slug, overrides = {}) {
   return {
     id: `accounts/fireworks/routers/${slug}`,
     slug,
     label: slug,
-    fast: slug.includes("fast") || slug.includes("flash"),
+    fast: slug.includes("fast") || slug.includes("turbo"),
     contextWindow: 1_000_000,
     vision: slug.includes("kimi"),
     tools: true,
-    pricing: { display: "$1 in / $2 out" },
+    pricing: { display: "$1 in / $2 out", tier: slug.includes("fast") ? "fast" : "standard" },
     router: true,
     firerouter: slug === "firerouter",
     ...overrides,
@@ -42,9 +33,11 @@ function catalogModel(slug, overrides = {}) {
 const CATALOG = [
   catalogModel("kimi-fast-latest"),
   catalogModel("glm-fast-latest"),
+  catalogModel("glm-flash-latest", { fast: false, vision: true }),
   catalogModel("glm-latest", { fast: false }),
   catalogModel("deepseek-v4-flash"),
   catalogModel("deepseek-v4-pro", { fast: false }),
+  catalogModel("deepseek-pro-latest", { fast: false }),
   catalogModel("gpt-oss-120b", { fast: false }),
   catalogModel("qwen-plus-latest", { fast: false, vision: true }),
   catalogModel("minimax-latest", { fast: false, vision: true }),
@@ -66,13 +59,13 @@ describe("Claude model onboarding", () => {
   it("merges defaults, stored, live, and flags from lowest to highest", () => {
     assert.deepEqual(
       mergeClaudeModelMappings(
-        FAST,
+        DEFAULTS,
         { opus: "stored-opus", sonnet: "stored-sonnet" },
         { sonnet: "live-sonnet", haiku: "live-haiku" },
         { opus: "flag-opus", subagent: "" },
       ),
       {
-        ...FAST,
+        ...DEFAULTS,
         opus: "flag-opus",
         sonnet: "live-sonnet",
         haiku: "live-haiku",
@@ -83,8 +76,7 @@ describe("Claude model onboarding", () => {
   it("keeps the recommended mapping on the one-step default path", async () => {
     const output = outputBuffer();
     const mapping = await runClaudeModelOnboarding({
-      recommended: FAST,
-      fastDefaults: FAST,
+      shownMapping: DEFAULTS,
       output,
       select: async ({ message, choices, initialIndex }) => {
         assert.match(message, /Claude model mapping/);
@@ -92,23 +84,23 @@ describe("Claude model onboarding", () => {
         assert.equal(initialIndex, 5);
         assert.ok(choices[0].name.includes("Fable"));
         assert.ok(!choices.some((choice) => choice.value.slot === "main"));
-        for (const model of Object.values(FAST)) {
-          // Native slots are rendered as the "Claude default" label, not the slug.
-          const label = model === "claude-default" ? "Claude default" : model;
-          assert.ok(choices.some((choice) => choice.name.includes(label)));
+        assert.ok(!choices.some((choice) => choice.value.action === "non-fast"));
+        assert.ok(!choices.some((choice) => choice.value.action === "fast"));
+        for (const model of Object.values(DEFAULTS)) {
+          if (model === "claude-default") continue;
+          assert.ok(choices.some((choice) => choice.name.includes(model)));
         }
         return choices.find((choice) => choice.value.action === "save").value;
       },
     });
 
-    assert.deepEqual(mapping, FAST);
+    assert.deepEqual(mapping, DEFAULTS);
     assert.match(output.text(), /Set Claude Code model defaults/);
   });
 
   it("returns an explicit cancellation instead of the baseline mapping", async () => {
     const mapping = await runClaudeModelOnboarding({
-      recommended: FAST,
-      fastDefaults: FAST,
+      shownMapping: DEFAULTS,
       output: outputBuffer(),
       select: async () => null,
     });
@@ -117,105 +109,58 @@ describe("Claude model onboarding", () => {
 
   it("prints one Fable-first final mapping without an unpinned Main", () => {
     const output = outputBuffer();
-    printClaudeModelMapping(FAST, output);
+    printClaudeModelMapping(DEFAULTS, output);
     const text = output.text();
     assert.equal((text.match(/Model mapping/g) ?? []).length, 1);
     assert.ok(text.indexOf("Fable") < text.indexOf("Opus"));
     // Main is unpinned here, so it has nothing to report.
     assert.ok(!text.includes("Main"));
-    for (const [slot, model] of Object.entries(FAST)) {
-      if (slot === "main") continue;
-      // Native slots are rendered as the "Claude default" label, not the slug.
-      assert.ok(text.includes(model === "claude-default" ? "Claude default" : model));
+    for (const [slot, model] of Object.entries(DEFAULTS)) {
+      if (slot === "main" || model === "claude-default") continue;
+      assert.ok(text.includes(model));
     }
   });
 
   it("prints a pinned Main row when one is set", () => {
     const output = outputBuffer();
-    printClaudeModelMapping({ ...FAST, main: "glm-latest" }, output);
+    printClaudeModelMapping({ ...DEFAULTS, main: "glm-latest" }, output);
     const text = output.text();
     assert.ok(text.includes("Main"));
     assert.ok(text.indexOf("Main") < text.indexOf("Fable"));
   });
 
-  it("shows a pinned Main row in the editor and preserves it across mode toggles", async () => {
-    const pinned = { ...FAST, main: "glm-latest" };
-    let visits = 0;
+  it("shows a pinned Main row in the editor", async () => {
+    const pinned = { ...DEFAULTS, main: "glm-latest" };
     const mapping = await runClaudeModelOnboarding({
-      recommended: pinned,
-      fastDefaults: FAST,
+      shownMapping: pinned,
+      badgeMapping: DEFAULTS,
       mappingLabel: "Current",
       output: outputBuffer(),
-      select: async ({ message, choices, initialIndex }) => {
-        visits += 1;
-        if (visits === 1) {
-          assert.equal(initialIndex, 6);
-          assert.ok(choices.some((choice) => choice.value.slot === "main"));
-          assert.ok(choices[0].name.includes("Main"));
-          return choices.find((choice) => choice.value.action === "non-fast").value;
-        }
-        if (visits === 2) {
-          assert.match(message, /Non-fast mode/);
-          assert.ok(choices.some((choice) => choice.name.includes("Main")));
-          assert.ok(choices.some((choice) => choice.name.includes("glm-latest")));
-          return choices.find((choice) => choice.value.action === "save").value;
-        }
-        throw new Error("unexpected select");
+      select: async ({ choices, initialIndex }) => {
+        assert.equal(initialIndex, 6);
+        assert.ok(choices.some((choice) => choice.value.slot === "main"));
+        assert.ok(choices[0].name.includes("Main"));
+        assert.ok(choices.some((choice) => choice.name.includes("glm-latest")));
+        return choices.find((choice) => choice.value.action === "save").value;
       },
     });
 
-    assert.deepEqual(mapping, {
-      ...standardClaudeModelMapping(),
-      main: "glm-latest",
-    });
-    assert.equal(visits, 2);
+    assert.deepEqual(mapping, pinned);
   });
 
-  it("lets the mode toggle update Main on Fire Pass, where it is a normal slot", async () => {
-    // Fire Pass has no Anthropic fallback, so both mode mappings pin main and it
-    // is an editable row. The toggle must move it like every other slot instead
-    // of treating the previous value as a deliberate --model pin.
-    const fastFirepass = defaultClaudeModelMapping("firepass");
-    const nonFastFirepass = standardClaudeModelMapping("firepass");
-    assert.notEqual(fastFirepass.main, nonFastFirepass.main);
-    let visits = 0;
+  it("includes Main as an editable row on Fire Pass", async () => {
+    const firepass = defaultClaudeModelMapping("firepass");
     const mapping = await runClaudeModelOnboarding({
-      recommended: fastFirepass,
-      fastDefaults: fastFirepass,
+      shownMapping: firepass,
       keyType: "firepass",
       output: outputBuffer(),
       select: async ({ choices }) => {
-        visits += 1;
-        if (visits === 1) {
-          assert.ok(choices.some((choice) => choice.value.slot === "main"));
-          return choices.find((choice) => choice.value.action === "non-fast").value;
-        }
+        assert.ok(choices.some((choice) => choice.value.slot === "main"));
         return choices.find((choice) => choice.value.action === "save").value;
       },
     });
 
-    assert.deepEqual(mapping, nonFastFirepass);
-    assert.equal(mapping.main, nonFastFirepass.main);
-  });
-
-  it("reports non-fast mode when a preserved Main pin is the only difference", async () => {
-    // The toggle keeps a pinned main, so a saved mapping that is otherwise the
-    // non-fast set is already in non-fast mode — the header must say so instead
-    // of offering a switch that would change nothing visible.
-    const nonFast = standardClaudeModelMapping();
-    const saved = { ...nonFast, main: "kimi-latest" };
-    let seen = null;
-    await runClaudeModelOnboarding({
-      recommended: saved,
-      fastDefaults: FAST,
-      mappingLabel: "Current",
-      output: outputBuffer(),
-      select: async ({ message, choices }) => {
-        seen ??= message;
-        return choices.find((choice) => choice.value.action === "save").value;
-      },
-    });
-    assert.match(seen, /Non-fast mode/);
+    assert.deepEqual(mapping, firepass);
   });
 
   it("uses the shared brand styles for the mapping and profile choices", async () => {
@@ -224,12 +169,11 @@ describe("Claude model onboarding", () => {
     try {
       const output = outputBuffer();
       await runClaudeModelOnboarding({
-        recommended: FAST,
-        fastDefaults: FAST,
+        shownMapping: DEFAULTS,
         output,
         select: async ({ choices }) => {
           assert.match(choices[0].name, /\x1b\[1mFable/);
-          assert.match(choices[0].name, /\x1b\[36mkimi-fast-latest/);
+          assert.match(choices[0].name, /\x1b\[36mglm-flash-latest/);
           const save = choices.find((choice) => choice.value.action === "save");
           assert.match(save.name, /\x1b\[1mSave mapping/);
           assert.match(save.name, /\x1b\[90m· Recommended/);
@@ -245,110 +189,33 @@ describe("Claude model onboarding", () => {
     }
   });
 
-  it("maps every class to non-fast aliases with the standard profile", async () => {
-    let visits = 0;
-    const mapping = await runClaudeModelOnboarding({
-      recommended: FAST,
-      fastDefaults: FAST,
-      output: outputBuffer(),
-      loadCatalog: async () => CATALOG,
-      select: async ({ message, choices }) => {
-        if (message.startsWith("Opus ·")) {
-          const models = choices
-            .map((choice) => choice.value.model)
-            .filter(Boolean);
-          assert.ok(models.length > 0);
-          assert.ok(models.every((model) => !model.fast && !model.firerouter));
-          assert.ok(models.every((model) => !/(?:fast|flash|turbo)/i.test(model.slug)));
-          return choices.find((choice) => choice.value.action === "search").value;
-        }
-        visits += 1;
-        if (visits === 1) {
-          return choices.find((choice) => choice.value.action === "non-fast").value;
-        }
-        if (visits === 2) {
-          assert.match(message, /Non-fast mode/);
-          assert.ok(choices.some((choice) => (
-            choice.value.action === "fast"
-            && choice.name.includes("Use fast models")
-          )));
-          return choices.find((choice) => choice.value.slot === "opus").value;
-        }
-        return choices.find((choice) => choice.value.action === "save").value;
-      },
-      search: async ({ items }) => {
-        assert.ok(items.length > 5);
-        assert.ok(items.every((model) => !model.fast && !model.firerouter));
-        return items.find((model) => model.slug === "glm-latest");
-      },
-    });
-
-    assert.deepEqual(mapping, standardClaudeModelMapping());
-    assert.equal(visits, 3);
-  });
-
-  it("switches a saved non-fast mapping back to fast defaults", async () => {
-    const nonFast = standardClaudeModelMapping();
-    let visits = 0;
-    const mapping = await runClaudeModelOnboarding({
-      recommended: nonFast,
-      fastDefaults: FAST,
-      mappingLabel: "Current",
-      output: outputBuffer(),
-      select: async ({ message, choices }) => {
-        visits += 1;
-        if (visits === 1) {
-          assert.match(message, /Non-fast mode/);
-          const toggle = choices.find((choice) => choice.value.action === "fast");
-          assert.ok(toggle.name.includes("Use fast models"));
-          return toggle.value;
-        }
-        assert.doesNotMatch(message, /Non-fast mode/);
-        for (const model of Object.values(FAST)) {
-          // Native slots are rendered as the "Claude default" label, not the slug.
-          const label = model === "claude-default" ? "Claude default" : model;
-          assert.ok(choices.some((choice) => choice.name.includes(label)));
-        }
-        return choices.find((choice) => choice.value.action === "save").value;
-      },
-    });
-
-    assert.equal(visits, 2);
-    assert.deepEqual(mapping, FAST);
-  });
-
   it("returns to the mapping editor when no compatible models are available", async () => {
     let overviewVisits = 0;
     const mapping = await runClaudeMappingEditor({
-      initialMapping: FAST,
-      recommended: FAST,
-      nonFastMapping: standardClaudeModelMapping(),
+      initialMapping: DEFAULTS,
+      recommended: DEFAULTS,
       catalog: [],
       output: outputBuffer(),
       select: async ({ message, choices }) => {
         assert.match(message, /Claude model mapping/);
         overviewVisits += 1;
         if (overviewVisits === 1) {
-          return choices.find((choice) => choice.value.action === "non-fast").value;
-        }
-        if (overviewVisits === 2) {
           return choices.find((choice) => choice.value.slot === "opus").value;
         }
         return choices.find((choice) => choice.value.action === "save").value;
       },
     });
 
-    assert.equal(overviewVisits, 3);
-    assert.deepEqual(mapping, standardClaudeModelMapping());
+    assert.equal(overviewVisits, 2);
+    assert.deepEqual(mapping, DEFAULTS);
   });
 
   it("reset restores the exact mapping shown before customization", async () => {
-    const shown = { ...FAST, opus: "firerouter" };
+    const shown = { ...DEFAULTS, opus: "firerouter" };
     let overviewVisits = 0;
     const mapping = await runClaudeMappingEditor({
       initialMapping: shown,
-      recommended: FAST,
-      nonFastMapping: standardClaudeModelMapping(),
+      recommended: DEFAULTS,
       catalog: CATALOG,
       output: outputBuffer(),
       select: async ({ message, choices }) => {
@@ -372,8 +239,7 @@ describe("Claude model onboarding", () => {
   it("labels reconfiguration as current rather than recommended", async () => {
     const output = outputBuffer();
     await runClaudeModelOnboarding({
-      recommended: FAST,
-      fastDefaults: FAST,
+      shownMapping: DEFAULTS,
       mappingLabel: "Current",
       output,
       select: async ({ choices }) => {
@@ -389,8 +255,7 @@ describe("Claude model onboarding", () => {
     let overviewVisits = 0;
     let catalogLoads = 0;
     const mapping = await runClaudeModelOnboarding({
-      recommended: FAST,
-      fastDefaults: FAST,
+      shownMapping: DEFAULTS,
       output: outputBuffer(),
       loadCatalog: async () => {
         catalogLoads += 1;
@@ -430,11 +295,36 @@ describe("Claude model onboarding", () => {
     });
 
     assert.deepEqual(mapping, {
-      ...FAST,
+      ...DEFAULTS,
       opus: "glm-latest",
       haiku: "deepseek-v4-pro",
     });
     assert.equal(overviewVisits, 3);
     assert.equal(catalogLoads, 1);
+  });
+
+  it("shows flash models in the picker alongside standard-tier models", async () => {
+    let visits = 0;
+    await runClaudeModelOnboarding({
+      shownMapping: DEFAULTS,
+      output: outputBuffer(),
+      loadCatalog: async () => CATALOG,
+      select: async ({ message, choices }) => {
+        if (message.startsWith("Fable ·")) {
+          const models = choices
+            .map((choice) => choice.value.model)
+            .filter(Boolean);
+          assert.ok(models.some((model) => model.slug === "glm-flash-latest"));
+          assert.ok(models.some((model) => model.slug === "kimi-latest"));
+          return choices.find((choice) => choice.value.action === "search").value;
+        }
+        visits += 1;
+        if (visits === 1) {
+          return choices.find((choice) => choice.value.slot === "fable").value;
+        }
+        return choices.find((choice) => choice.value.action === "save").value;
+      },
+      search: async ({ items }) => items.find((model) => model.slug === "kimi-latest"),
+    });
   });
 });

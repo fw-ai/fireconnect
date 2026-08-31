@@ -81,9 +81,10 @@ describe("claude harness integration", () => {
     assert.equal(enabled.model, undefined);
     assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
-    assert.equal(enabled.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "kimi-fast-latest[1m]");
+    assert.equal(enabled.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "glm-flash-latest[1m]");
     assert.equal(enabled.env.DISABLE_TELEMETRY, "1");
     assert.equal(enabled.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
+    assert.equal(enabled.env.ENABLE_TOOL_SEARCH, "true");
     assert.equal(
       (await stat(settingsPath)).mode & 0o077,
       0,
@@ -110,6 +111,7 @@ describe("claude harness integration", () => {
     assert.equal(restored.env.ANTHROPIC_API_KEY, "sk-ant-original");
     assert.equal(restored.apiKeyHelper, undefined);
     assert.equal(Object.hasOwn(restored.env, "DISABLE_TELEMETRY"), false);
+    assert.equal(Object.hasOwn(restored.env, "ENABLE_TOOL_SEARCH"), false);
 
     const config = await readGlobalConfig(home);
     assert.equal(config.harnesses.claude.enabled, false);
@@ -463,7 +465,7 @@ describe("claude harness integration", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(
       result.stdout,
-      /Text-only: deepseek-flash-latest, deepseek-pro-latest, glm-fast-latest · Avoid images; recover with \/rewind\./,
+      /Text-only: deepseek-flash-latest, deepseek-pro-latest, glm-fast-latest, glm-latest · Avoid images; recover with \/rewind\./,
     );
     assert.doesNotMatch(result.stdout, /Claude Code cannot mark models as text-only/);
   });
@@ -488,8 +490,14 @@ describe("claude harness integration", () => {
 
     const statusResult = await runFireconnect(["claude", "status"], { HOME: home });
     assert.equal(statusResult.code, 0, statusResult.stderr);
+    // status reports every slot's real value, not just overrides: main/sonnet
+    // were overridden, but the default-matching opus/haiku/fable slots appear
+    // too (each pinned to its default Fireworks model).
     assert.match(statusResult.stdout, /main\s+->\s+glm-fast-latest.*text-only/);
     assert.match(statusResult.stdout, /sonnet\s+->\s+kimi-latest.*vision/);
+    assert.match(statusResult.stdout, /opus\s+->\s+glm-latest/);
+    assert.match(statusResult.stdout, /haiku\s+->\s+deepseek-flash-latest.*text-only/);
+    assert.match(statusResult.stdout, /fable\s+->\s+glm-flash-latest.*vision/);
   });
 });
 

@@ -53,13 +53,13 @@ async function readJson(filePath) {
 }
 
 describe("syncBakedKeysAfterStore", () => {
-  it("re-bakes Claude's custom header, migrating the legacy header name", async () => {
+  it("re-bakes Claude's custom header", async () => {
     await withTempHome("key-sync-", async (home) => {
       await enableHarnessesForSync(home, ["claude"]);
       await writeJsonFile(userSettingsPath(home), {
         env: {
           ANTHROPIC_BASE_URL: "https://api.fireworks.ai/inference",
-          ANTHROPIC_CUSTOM_HEADERS: "X-FireRouter-Fireworks-Key: fw_stale\nx-routing-preference: 3",
+          ANTHROPIC_CUSTOM_HEADERS: "X-Fireworks-Api-Key: fw_stale\nx-routing-preference: 3",
         },
       });
 

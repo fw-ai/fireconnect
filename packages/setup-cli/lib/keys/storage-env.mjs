@@ -13,6 +13,12 @@ export function readKeyStorageOverride() {
     || "";
 }
 
+/** Effective override; tests default to file storage instead of the OS keychain. */
+export function effectiveKeyStorageOverride() {
+  return readKeyStorageOverride()
+    || (process.env.FIRECONNECT_TEST === "1" ? "file" : "");
+}
+
 /**
  * @returns {boolean}
  */

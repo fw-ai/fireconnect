@@ -6,8 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   defaultMainModel,
+  firerouterRequiresAnthropicKey,
+  isAutoModelId,
+  isFirerouterModelPattern,
   fullFireworksResourceId,
-  isFirerouterModel,
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
@@ -18,7 +20,7 @@ import {
   MISSING_FIREWORKS_API_KEY_MESSAGE,
 } from "../../keys/key-type.mjs";
 import { resolveModelDisplayMetadata } from "../../fireworks/model-display.mjs";
-import { FIREPASS_ROUTER_ID, prettyModelName } from "../../fireworks/models.mjs";
+import { FIREPASS_ROUTER_ID, autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import {
   AZURE_API_KEY_ENV,
   AZURE_API_KEY_ENV_REF,
@@ -308,7 +310,7 @@ export function fireconnectRegisteredModels(arr) {
  */
 export function vscodeStoredByokHeaders(arr) {
   const provider = findFireconnectProvider(arr);
-  const model = (provider?.models ?? []).find((m) => isFirerouterModel(m.id));
+  const model = (provider?.models ?? []).find((m) => firerouterRequiresAnthropicKey(m.id));
   if (!model) {
     return {};
   }
@@ -332,7 +334,11 @@ export function vscodeStoredByokHeaders(arr) {
 export function buildModelEntry(modelId) {
   return {
     id: shortFireworksModelRef(modelId),
-    name: prettyModelName(modelId),
+    name: isFirerouterModelPattern(modelId)
+      ? firerouterDisplayName(modelId)
+      : isAutoModelId(modelId)
+        ? autoDisplayName(modelId)
+        : prettyModelName(modelId),
     url: VSCODE_FIREWORKS_MODEL_URL,
     ...resolveModelDisplayMetadata(modelId),
   };
@@ -873,40 +879,6 @@ export async function disableVscodeFireworks({
     await writeChatLanguageModels(vscodePath, next);
   }
   return "stripped";
-}
-
-/**
- * Flip the fireconnect-owned provider's `apiType` from `"responses"` to
- * `"chat-completions"` — the upgrade migration for installs configured when
- * direct Fireworks routing used the Responses wire. No-ops (returns `false`)
- * when there is no fireconnect provider, when it is already chat-completions
- * (Azure included), or when VS Code is running (its exit rewrite would
- * discard the edit). The secret store is untouched — the `apiKey` reference
- * and the `state.vscdb` row stay as they are.
- *
- * `isRunning` is injectable so the guard is unit-testable without a real IDE.
- * @param {{ home?: string, vscodePath?: string, isRunning?: () => boolean }} opts
- * @returns {Promise<boolean>} whether the file was rewritten
- */
-export async function migrateVscodeResponsesApiType({
-  home = "",
-  vscodePath = "",
-  isRunning = isVscodeRunning,
-} = {}) {
-  const jsonPath = vscodePath || chatLanguageModelsPath({ home });
-  const arr = await readChatLanguageModels(jsonPath);
-  const provider = findFireconnectProvider(arr);
-  if (!provider || provider.apiType !== "responses") {
-    return false;
-  }
-  if (isRunning()) {
-    return false;
-  }
-  await writeChatLanguageModels(
-    jsonPath,
-    arr.map((p) => (p === provider ? { ...p, apiType: "chat-completions" } : p)),
-  );
-  return true;
 }
 
 /**

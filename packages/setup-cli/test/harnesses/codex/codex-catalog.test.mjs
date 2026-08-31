@@ -10,7 +10,7 @@ import {
   codexCatalogContainsModel,
   codexModelExclusionReason,
   DEPRECATED_MODELS,
-  ensureCodexFirerouterPatternEntry,
+  ensureCodexOffCatalogEntry,
   filterPickerCatalogForCodex,
   MODEL_OVERRIDES,
   MODEL_REASONING,
@@ -70,8 +70,8 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
   });
 
   for (const [modelName, defaultLevel, efforts, summaryFormat] of [
-    ["accounts/fireworks/models/glm-5p2", "max", ["high", "max"], "experimental"],
-    ["accounts/fireworks/models/minimax-m2p7", "medium", ["low", "medium", "high"], "experimental"],
+    ["accounts/fireworks/models/glm-5p2", "high", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/minimax-m2p7", "high", ["low", "medium", "high"], "experimental"],
   ]) {
     it(`uses correct reasoning config for ${modelName.split("/").pop()}`, () => {
       const entry = buildCodexCatalogEntry(mockModel({ name: modelName }));
@@ -91,8 +91,35 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
   it("uses default reasoning config for an unknown model", () => {
     const entry = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/unknown-model" }));
     assert.equal(entry.default_reasoning_level, "high");
-    assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), ["high"]);
-    assert.equal(entry.reasoning_summary_format, "none");
+    assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high"]);
+    assert.equal(entry.reasoning_summary_format, "experimental");
+  });
+
+  it("falls back from a versioned slug to the unversioned base reasoning config", () => {
+    // Live catalog returns versioned slugs (e.g. deepseek-v4-flash-0731); the
+    // reasoning table is keyed by the unversioned base (deepseek-v4-flash).
+    const flash = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/deepseek-v4-flash-0731" }));
+    assert.equal(flash.default_reasoning_level, "high");
+    assert.deepEqual(flash.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
+    const pro = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/deepseek-v4-pro-0813" }));
+    assert.equal(pro.default_reasoning_level, "high");
+    assert.deepEqual(pro.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
+  });
+
+  it("uses the kimi-k3 reasoning config for the current Kimi generation", () => {
+    const entry = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/kimi-k3" }));
+    assert.equal(entry.default_reasoning_level, "high");
+    assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high"]);
+  });
+
+  it("offers a multi-tier effort ladder for every catalog model", () => {
+    // The app only renders a selectable Effort row when a model advertises more
+    // than one tier — a single-tier model looks frozen at its default.
+    for (const [name, config] of Object.entries(MODEL_REASONING)) {
+      assert.ok(config.levels.length > 1, `${name} must expose more than one effort tier`);
+      const efforts = config.levels.map((level) => level.effort);
+      assert.ok(efforts.includes(config.default), `${name} default ${config.default} must be in its ladder`);
+    }
   });
 });
 
@@ -120,7 +147,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(catalog.models[0].slug, "firerouter");
     assert.equal(
       catalog.models[0].description,
-      "Picks a model for each request based on the task.",
+      "Routes each request between Claude and open models.",
     );
     assert.equal(catalog.models[0].context_window, 1_048_575);
     assert.equal(catalog.models[0].supports_parallel_tool_calls, true);
@@ -130,7 +157,7 @@ describe("codex-catalog buildCodexCatalog", () => {
 
   it("dynamically adds firerouter* entries with shared FireRouter metadata", () => {
     const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
-    const catalog = ensureCodexFirerouterPatternEntry(base, "firerouter/x");
+    const catalog = ensureCodexOffCatalogEntry(base, "firerouter/x");
     const entry = catalog.models.find((model) => model.slug === "firerouter/x");
     assert.ok(entry);
     assert.equal(entry.context_window, 1_048_575);
@@ -138,14 +165,47 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(entry.supports_parallel_tool_calls, true);
     assert.equal(
       entry.description,
-      "Picks a model for each request based on the task.",
+      "Routes each request between Claude and open models.",
     );
     assert.equal(codexCatalogContainsModel(catalog, "firerouter/x"), true);
     assert.equal(
-      ensureCodexFirerouterPatternEntry(catalog, "firerouter/x"),
+      ensureCodexOffCatalogEntry(catalog, "firerouter/x"),
       catalog,
       "idempotent when already present",
     );
+  });
+
+  it("dynamically adds an auto entry so Codex can resolve its context", () => {
+    const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
+    const catalog = ensureCodexOffCatalogEntry(base, "auto");
+    const entry = catalog.models.find((model) => model.slug === "auto");
+    assert.ok(entry);
+    assert.equal(entry.display_name, "Auto");
+    assert.equal(entry.context_window, 1_048_575);
+    assert.deepEqual(entry.input_modalities, ["text", "image"]);
+    assert.equal(entry.supports_parallel_tool_calls, true);
+    assert.equal(codexCatalogContainsModel(catalog, "auto"), true);
+    assert.equal(
+      ensureCodexOffCatalogEntry(catalog, "auto"),
+      catalog,
+      "idempotent when already present",
+    );
+  });
+
+  it("dynamically adds an auto-* entry so Codex can resolve its context", () => {
+    const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
+    const catalog = ensureCodexOffCatalogEntry(base, "auto-instant");
+    const entry = catalog.models.find((model) => model.slug === "auto-instant");
+    assert.ok(entry);
+    assert.equal(entry.display_name, "Auto Instant");
+    assert.equal(entry.context_window, 1_048_575);
+    assert.deepEqual(entry.input_modalities, ["text", "image"]);
+    assert.equal(codexCatalogContainsModel(catalog, "auto-instant"), true);
+  });
+
+  it("leaves the catalog alone for an ordinary off-catalog model", () => {
+    const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
+    assert.equal(ensureCodexOffCatalogEntry(base, "not-a-real-model"), base);
   });
 
   it("filters out deprecated models", () => {
@@ -363,6 +423,7 @@ describe("codex-catalog metadata tables", () => {
       "accounts/fireworks/models/gpt-oss-120b",
       "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
       "accounts/fireworks/models/qwen3p7-plus",
+      "accounts/fireworks/models/kimi-k3",
     ];
     for (const id of expected) {
       assert.ok(MODEL_REASONING[id], `missing reasoning config for ${id}`);

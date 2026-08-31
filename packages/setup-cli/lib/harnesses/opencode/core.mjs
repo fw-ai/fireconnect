@@ -17,8 +17,8 @@ import {
   defaultMainModel,
   fireworksModelSlug,
   fullFireworksResourceId,
-  isFirerouterGatewayPattern,
-  isFirerouterModel,
+  isAutoModelId,
+  isFirerouterModelPattern,
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
@@ -29,7 +29,7 @@ import {
   resolveFireworksModelLabel,
   ROUTER_SPEC_ALIASES,
 } from "../../fireworks/model-specs.mjs";
-import { prettyModelName } from "../../fireworks/models.mjs";
+import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
 import {
   assumedModelsDevListed,
@@ -89,16 +89,16 @@ export const OPENCODE_AZURE_PROVIDER_ID = "fireworks-azure";
 
 /**
  * Whether FireConnect should write a provider.models entry for this model.
- * FireRouter, ROUTER_SPEC_ALIASES "latest" routers, and catalog models absent
- * from models.dev need provider overrides (display name, modalities, limits).
- * Standard catalog entries on models.dev only need config.model.
+ * FireRouter, `auto` / `auto-*`, ROUTER_SPEC_ALIASES "latest" routers, and catalog models
+ * absent from models.dev need provider overrides (display name, modalities,
+ * limits). Standard catalog entries on models.dev only need config.model.
  * @param {string} modelId
  */
 export function opencodeNeedsProviderModelOverride(modelId) {
   if (!modelId || typeof modelId !== "string") {
     return false;
   }
-  if (isFirerouterGatewayPattern(modelId)) {
+  if (isFirerouterModelPattern(modelId) || isAutoModelId(modelId)) {
     return true;
   }
   const slug = fireworksModelSlug(normalizeModelId(modelId));
@@ -144,8 +144,11 @@ export function opencodeConfigModelRef(modelId) {
 }
 
 function opencodeFireworksDisplayName(modelId) {
-  if (isFirerouterModel(modelId)) {
-    return "FireRouter";
+  if (isFirerouterModelPattern(modelId)) {
+    return firerouterDisplayName(modelId);
+  }
+  if (isAutoModelId(modelId)) {
+    return autoDisplayName(modelId);
   }
   const liveLabel = resolveFireworksModelLabel(modelId);
   if (liveLabel) {
@@ -417,7 +420,14 @@ export async function enableOpencodeFireworks({
   // requests through to Anthropic. Drop any stale one when none is supplied
   // (e.g. switching firerouter → a direct model). x-openai-api-key is dropped
   // too, to clean up configs written before OpenAI BYOK was removed.
-  const byokHeaderNames = ["x-anthropic-api-key", "x-openai-api-key"];
+  // x-fireworks-api-key is dropped because the Fireworks key belongs in
+  // options.apiKey, never in a header; stripping it here clears stale keys left
+  // in headers by older releases.
+  const byokHeaderNames = [
+    "x-anthropic-api-key",
+    "x-openai-api-key",
+    "x-fireworks-api-key",
+  ];
   const priorHeaders = Object.fromEntries(
     Object.entries(existing.options?.headers ?? {}).filter(
       ([name]) => !byokHeaderNames.includes(name.toLowerCase()),
@@ -458,7 +468,7 @@ export async function enableOpencodeFireworks({
     return out;
   };
   let models;
-  if (isFirerouterGatewayPattern(storedModel)) {
+  if (isFirerouterModelPattern(storedModel)) {
     models = buildModels([storedModel]);
   } else if (catalog.length) {
     models = buildModels([storedModel, ...catalog]);

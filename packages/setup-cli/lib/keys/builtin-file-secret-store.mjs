@@ -200,6 +200,23 @@ export async function builtinSetPassword(service, account, password) {
 }
 
 /**
+ * Write and readback-verify a secret in the builtin encrypted-file store.
+ *
+ * @param {string} service
+ * @param {string} account
+ * @param {string} password
+ */
+export async function storeBuiltinFileSecretVerified(service, account, password) {
+  const trimmed = password?.trim() ?? "";
+  await builtinSetPassword(service, account, trimmed);
+  const readback = await builtinGetPassword(service, account);
+  if (!readback || readback.trim() !== trimmed) {
+    const where = secretsFilePath() ?? "the encrypted file store";
+    throw new Error(`Storage verification failed: the key could not be read back from ${where}.`);
+  }
+}
+
+/**
  * @param {string} service
  * @param {string} account
  */

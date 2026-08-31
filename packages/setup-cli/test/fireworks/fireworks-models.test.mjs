@@ -1,18 +1,31 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, test } from "node:test";
 
 import {
+  autoCatalogEntry,
   buildPickerCatalogFromApiModels,
   buildServerlessCatalogSnapshot,
   fetchServerlessCatalogRaw,
   inputModalitiesFromModel,
+  loadServerlessCatalog,
   moneyToUsd,
   parseSkuPricing,
   SERVERLESS_CODING_USE_CASE,
   warmServerlessPricingCache,
 } from "../../lib/fireworks/models.mjs";
-import { organizeCatalogForDisplay } from "../../lib/fireworks/model-list.mjs";
-import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import {
+  catalogWithAutoEntry,
+  formatCatalogUpdatedAt,
+  organizeCatalogForDisplay,
+} from "../../lib/fireworks/model-list.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  readCatalogCache,
+  setServerlessCatalogSnapshot,
+} from "../../lib/fireworks/serverless-catalog-cache.mjs";
 
 import { mockServerlessModel } from "../helpers.mjs";
 
@@ -42,6 +55,98 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     }
   });
 
+  /**
+   * Run `fn` against a throwaway HOME (so the catalog cache file is isolated)
+   * seeded with a fresh single-entry `stale` snapshot.
+   */
+  async function withSeededCatalogCache(fetchImpl, fn) {
+    const home = mkdtempSync(path.join(os.tmpdir(), "fc-catalog-refresh-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const seededAt = cacheServerlessCatalogSnapshot({
+        entries: [{
+          id: "accounts/fireworks/models/stale",
+          shortId: "stale",
+          displayName: "Stale",
+          kind: "serverless",
+        }],
+        pricingById: new Map(),
+        inputModalitiesById: new Map(),
+        routerBaseModelById: new Map(),
+        contextLengthById: new Map(),
+        supportsToolsById: new Map(),
+      });
+      await fn(seededAt);
+    } finally {
+      globalThis.fetch = previousFetch;
+      process.env.HOME = prevHome;
+      setServerlessCatalogSnapshot(null);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  test("loadServerlessCatalog refresh ignores a fresh cache and refetches", async () => {
+    let fetches = 0;
+    const fetchImpl = async () => {
+      fetches += 1;
+      return {
+        ok: true,
+        json: async () => ({ models: [mockServerlessModel()] }),
+      };
+    };
+
+    await withSeededCatalogCache(fetchImpl, async (seededAt) => {
+      const cached = await loadServerlessCatalog({ apiKey: "fw_test_key" });
+      assert.equal(cached.source, "cache");
+      assert.equal(cached.updatedAt, seededAt);
+      assert.equal(fetches, 0);
+      assert.equal(cached.catalog[0].shortId, "stale");
+
+      const refreshed = await loadServerlessCatalog({ apiKey: "fw_test_key", refresh: true });
+      assert.equal(refreshed.source, "network");
+      assert.equal(refreshed.updatedAt, readCatalogCache()?.cachedAt);
+      assert.equal(fetches, 1);
+      assert.ok(refreshed.catalog.some((entry) => entry.shortId === "glm-5p2"));
+      assert.equal(refreshed.catalog.some((entry) => entry.shortId === "stale"), false);
+      assert.ok(
+        readCatalogCache()?.snapshot.entries.some((entry) => entry.shortId === "glm-5p2"),
+        "refetch replaces the persisted snapshot",
+      );
+    });
+  });
+
+  // An offline refresh must not leave the user worse off than before: the old
+  // snapshot stays on disk so later commands (harness `on`, the picker) still
+  // have a catalog instead of hard-failing as a cold start.
+  test("loadServerlessCatalog refresh keeps the cached snapshot when the fetch fails", async () => {
+    const fetchImpl = async () => {
+      throw new Error("network unreachable");
+    };
+
+    await withSeededCatalogCache(fetchImpl, async (seededAt) => {
+      const result = await loadServerlessCatalog({ apiKey: "fw_test_key", refresh: true });
+      assert.equal(result.source, "stale");
+      assert.equal(result.updatedAt, seededAt);
+      assert.equal(result.catalog[0].shortId, "stale");
+      assert.equal(
+        readCatalogCache()?.snapshot.entries[0].shortId,
+        "stale",
+        "a failed refresh must not delete the cache file",
+      );
+    });
+  });
+
+  test("formatCatalogUpdatedAt uses the local timezone and includes its abbreviation", () => {
+    assert.equal(
+      formatCatalogUpdatedAt(Date.UTC(2026, 7, 29, 20, 28), "America/Los_Angeles"),
+      "Aug 29, 2026, 1:28 PM PDT",
+    );
+    assert.equal(formatCatalogUpdatedAt(null), "bundled with FireConnect");
+  });
+
   test("buildPickerCatalogFromApiModels derives routers from usage_identifier", () => {
     const catalog = buildPickerCatalogFromApiModels([
       mockServerlessModel(),
@@ -57,6 +162,43 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.ok(ids.includes("accounts/fireworks/routers/glm-5p2-fast"));
     assert.ok(ids.includes("accounts/fireworks/routers/glm-latest"));
     assert.equal(ids.filter((id) => id.includes("/models/")).length, 2);
+  });
+
+  test("buildPickerCatalogFromApiModels adds documented US-only routers", () => {
+    const catalog = buildPickerCatalogFromApiModels([
+      mockServerlessModel(),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
+        serverlessModes: [],
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/glm-5p3-flash",
+        displayName: "GLM 5.3 Flash",
+        serverlessModes: [],
+      }),
+    ]);
+    const byId = new Map(catalog.map((entry) => [entry.id, entry]));
+
+    assert.equal(
+      byId.get("accounts/fireworks/routers/glm-5p2-fast-us")?.displayName,
+      "GLM 5.2 Fast (US)",
+    );
+    assert.equal(
+      byId.get("accounts/fireworks/routers/kimi-k3-us")?.displayName,
+      "Kimi K3 (US)",
+    );
+    assert.equal(
+      byId.get("accounts/fireworks/routers/glm-5p3-flash-us")?.displayName,
+      "GLM 5.3 Flash (US)",
+    );
+
+    const sections = organizeCatalogForDisplay(catalog);
+    const usOnly = sections.find((section) => section.title === "US-ONLY ROUTERS");
+    assert.deepEqual(
+      usOnly?.entries.map((entry) => entry.shortId),
+      ["glm-5p2-fast-us", "glm-5p3-flash-us", "kimi-k3-us"],
+    );
   });
 
   test("buildServerlessCatalogSnapshot captures API pricing and modalities", () => {
@@ -473,6 +615,7 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     });
     const sections = organizeCatalogForDisplay([
       entry("firerouter", "routers"),
+      autoCatalogEntry(),
       entry("glm-5p1", "models"),
       entry("glm-5p2", "models"),
       entry("glm-5p2-fast", "routers"),
@@ -494,14 +637,43 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     ]));
 
     assert.deepEqual(idsBySection, {
-      "SMART ROUTER": ["firerouter"],
+      // auto leads the section so the default recommendation is listed first.
+      "SMART ROUTERS": ["auto", "firerouter"],
       "LATEST ROUTERS": ["glm-latest", "kimi-latest", "minimax-latest"],
       "FAST ROUTERS": ["glm-fast-latest", "kimi-fast-latest"],
       "INDIVIDUAL MODELS": ["glm-5p2", "kimi-k3", "minimax-m3"],
     });
   });
 
-  test("individual models only include bases targeted by -latest routers", () => {
+  test("model list synthesizes the auto rows, except on Fire Pass keys", () => {
+    const catalog = [{
+      id: "accounts/fireworks/routers/glm-latest",
+      shortId: "glm-latest",
+      displayName: "GLM 5.2 (Latest)",
+      kind: "serverless",
+    }];
+
+    const listed = catalogWithAutoEntry(catalog, "fireworks");
+    assert.deepEqual(listed.map((e) => e.shortId), ["auto", "auto-instant", "glm-latest"]);
+    assert.equal(listed[0].displayName, "Auto");
+    assert.equal(listed[1].displayName, "Auto Instant");
+
+    assert.deepEqual(
+      catalogWithAutoEntry(catalog, "firepass").map((e) => e.shortId),
+      ["glm-latest"],
+    );
+    // A gateway-supplied auto row must not be duplicated by the synthesized one,
+    // and it must not suppress the other auto routers either.
+    const withGatewayRow = [autoCatalogEntry(), ...catalog];
+    assert.deepEqual(
+      catalogWithAutoEntry(withGatewayRow, "fireworks").map((e) => e.shortId),
+      ["auto-instant", "auto", "glm-latest"],
+    );
+    const withAllGatewayRows = [autoCatalogEntry(), autoCatalogEntry("auto-instant"), ...catalog];
+    assert.equal(catalogWithAutoEntry(withAllGatewayRows, "fireworks"), withAllGatewayRows);
+  });
+
+  test("individual models list the newest version of every catalog family", () => {
     const entry = (shortId, kind, baseModelId = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,
       shortId,
@@ -519,7 +691,8 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       // family alias, so it must not reappear.
       entry("deepseek-v4-flash", "models"),
       entry("glm-5p2", "models"),
-      // Standalone model with no -latest alias: excluded from INDIVIDUAL MODELS.
+      // Standalone model with no -latest alias: still listed, since harnesses
+      // can be pinned to it.
       entry("gpt-oss-120b", "models"),
     ]);
     const individual = sections.find((section) => section.title === "INDIVIDUAL MODELS")?.entries
@@ -529,6 +702,68 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       "deepseek-v4-flash-0731",
       "deepseek-v4-pro-0813",
       "glm-5p2",
+      "gpt-oss-120b",
     ]);
+  });
+
+  test("a -latest router pinned to an older version cannot hide a newer model", () => {
+    const entry = (shortId, kind, baseModelId = undefined) => ({
+      id: `accounts/fireworks/${kind}/${shortId}`,
+      shortId,
+      displayName: shortId,
+      kind: "serverless",
+      ...(baseModelId ? { baseModelId } : {}),
+    });
+    // glm-latest still resolves to 5p2 while the catalog already serves 5p3 —
+    // the state a stale ROUTER_SPEC_ALIASES entry leaves behind.
+    const sections = organizeCatalogForDisplay([
+      entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p2"),
+      entry("glm-5p2", "models"),
+      entry("glm-5p3", "models"),
+      // Family the CLI has never seen, with no alias of its own.
+      entry("newfamily-2p1", "models"),
+      entry("newfamily-3", "models"),
+    ]);
+    const individual = sections.find((section) => section.title === "INDIVIDUAL MODELS")?.entries
+      .map(({ shortId }) => shortId);
+
+    assert.deepEqual(individual, ["glm-5p3", "newfamily-3"]);
+  });
+
+  test("a -flash-latest alias keeps Flash a family of its own", () => {
+    const entry = (shortId, kind, baseModelId = undefined) => ({
+      id: `accounts/fireworks/${kind}/${shortId}`,
+      shortId,
+      displayName: shortId,
+      kind: "serverless",
+      ...(baseModelId ? { baseModelId } : {}),
+    });
+    // Without glm-flash-latest, "glm-flash" prefix-collapses into "glm" and the
+    // Flash model loses to the higher-versioned sibling.
+    const withoutAlias = organizeCatalogForDisplay([
+      entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p3"),
+      entry("glm-5p3", "models"),
+      entry("glm-5p2-flash", "models"),
+    ]);
+    assert.deepEqual(
+      withoutAlias.find((s) => s.title === "INDIVIDUAL MODELS")?.entries.map((e) => e.shortId),
+      ["glm-5p3"],
+    );
+
+    const withAlias = organizeCatalogForDisplay([
+      entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p3"),
+      entry("glm-flash-latest", "routers", "accounts/fireworks/models/glm-5p2-flash"),
+      entry("glm-5p2", "models"),
+      entry("glm-5p3", "models"),
+      entry("glm-5p2-flash", "models"),
+    ]);
+    const bySection = Object.fromEntries(withAlias.map((s) => [
+      s.title,
+      s.entries.map((e) => e.shortId),
+    ]));
+    assert.deepEqual(bySection["LATEST ROUTERS"], ["glm-flash-latest", "glm-latest"]);
+    // Flash is a distinct model, not a speed tier: it must not land in FAST ROUTERS.
+    assert.equal(bySection["FAST ROUTERS"], undefined);
+    assert.deepEqual(bySection["INDIVIDUAL MODELS"], ["glm-5p2-flash", "glm-5p3"]);
   });
 });

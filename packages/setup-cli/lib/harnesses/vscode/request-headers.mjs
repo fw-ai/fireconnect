@@ -1,4 +1,7 @@
-import { isFirerouterModel } from "../../fireworks/model-id.mjs";
+import {
+  firerouterRequiresAnthropicKey,
+  isFirerouterModelPattern,
+} from "../../fireworks/model-id.mjs";
 import {
   ANTHROPIC_BYOK_BODY_FIELD,
   ANTHROPIC_BYOK_HEADER,
@@ -14,15 +17,25 @@ export function withFireconnectRequestHeaders(
   model,
   { telemetryHeaders = {}, byokHeaders = {} } = {},
 ) {
-  const firerouter = isFirerouterModel(model.id);
+  // Attach byokHeaders (incl. routing-preference) for any firerouter selection;
+  // strip the Anthropic BYOK key when the selection doesn't route to Anthropic.
+  const firerouter = isFirerouterModelPattern(model.id);
+  const needsAnthropicKey = firerouterRequiresAnthropicKey(model.id);
   const priorHeaders = Object.fromEntries(
     Object.entries(model.requestHeaders ?? {}).filter(
       ([name]) => !BYOK_HEADER_NAMES.has(name.toLowerCase()),
     ),
   );
+  const attachedByok = firerouter
+    ? Object.fromEntries(
+        Object.entries(byokHeaders).filter(
+          ([name]) => needsAnthropicKey || name.toLowerCase() !== ANTHROPIC_BYOK_HEADER,
+        ),
+      )
+    : {};
   const requestHeaders = {
     ...mergeFireconnectTelemetryHeaders(priorHeaders, telemetryHeaders),
-    ...(firerouter ? byokHeaders : {}),
+    ...attachedByok,
   };
   const next = { ...model };
   if (Object.keys(requestHeaders).length) {
@@ -31,7 +44,7 @@ export function withFireconnectRequestHeaders(
     delete next.requestHeaders;
   }
   const anthropicKey = byokHeaders[ANTHROPIC_BYOK_HEADER];
-  if (firerouter && anthropicKey) {
+  if (needsAnthropicKey && anthropicKey) {
     next[ANTHROPIC_BYOK_BODY_FIELD] = anthropicKey;
   } else {
     delete next[ANTHROPIC_BYOK_BODY_FIELD];

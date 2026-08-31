@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { codexConfigPath } from "../../../lib/harnesses/codex/core.mjs";
 import { SHELL_HOOK_BEGIN } from "../../../lib/io/shell-env-hook.mjs";
-import { seedKeychainConfig } from "../../helpers.mjs";
+import { codexOnOffArgs, seedKeychainConfig } from "../../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "fireconnect.mjs");
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
@@ -17,7 +17,7 @@ const AZURE_KEY = "azure-test-key-1234567890";
 
 function runFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], {
+    const child = spawn(process.execPath, [CLI, ...codexOnOffArgs(args)], {
       env: { ...process.env, FIREWORKS_API_KEY: "", AZURE_API_KEY: "", FIRECONNECT_SECRET_STORE: "memory", FIRECONNECT_TEST: "1", ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });

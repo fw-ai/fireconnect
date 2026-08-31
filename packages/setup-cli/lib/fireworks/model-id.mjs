@@ -1,11 +1,23 @@
 import {
+  AUTO_INSTANT_MODEL_ID,
+  AUTO_MODEL_ID,
   FIREWORKS_MODEL_SPECS,
+  KNOWN_AUTO_MODEL_IDS,
   ROUTER_SPEC_ALIASES,
-  isFirerouterGatewayPattern,
+  canonicalAutoModelId,
+  isAutoModelId,
+  isFirerouterModelPattern,
   isRouterShortId,
 } from "./model-specs.mjs";
 
-export { isFirerouterGatewayPattern };
+export {
+  AUTO_INSTANT_MODEL_ID,
+  AUTO_MODEL_ID,
+  KNOWN_AUTO_MODEL_IDS,
+  canonicalAutoModelId,
+  isAutoModelId,
+  isFirerouterModelPattern,
+};
 
 export const FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference";
 export const FIREROUTER_MODEL_ID = "firerouter";
@@ -48,6 +60,7 @@ const FIREWORKS_ROUTER_SHORT_IDS = new Set([
   "kimi-k2p6-turbo",
   "kimi-latest",
   "firerouter",
+  AUTO_MODEL_ID,
 ]);
 
 const KNOWN_FIREWORKS_SHORT_IDS = new Set([
@@ -96,6 +109,29 @@ export function isFirerouterModel(model) {
 }
 
 /**
+ * Whether a FireRouter selection requires an Anthropic credential: bare
+ * `firerouter` (primary is Claude Opus 5) or any Claude/Opus model in the slash
+ * path. Pure-Fireworks selections (firerouter/kimi-k3) need no Anthropic key.
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function firerouterRequiresAnthropicKey(model) {
+  if (!isFirerouterModelPattern(model)) {
+    return false;
+  }
+  if (isFirerouterModel(model)) {
+    return true;
+  }
+  const stripped = stripContextSuffix(String(model ?? "").trim());
+  return stripped.split("/").some((part) => {
+    const seg = part.trim().toLowerCase();
+    return seg === "claude"
+      || seg.startsWith("claude-")
+      || CLAUDE_MODEL_ALIASES.has(seg);
+  });
+}
+
+/**
  * Whether a model reference is a real Anthropic model id (e.g. claude-sonnet-4-5).
  * Anthropic models are served on the Fireworks gateway even though they don't
  * appear in the public serverless catalog, so they're exempt from catalog
@@ -122,6 +158,22 @@ export function isClaudeNativeSlotAlias(model) {
     return false;
   }
   return model.trim().toLowerCase() === CLAUDE_NATIVE_SLOT_ALIAS;
+}
+
+/**
+ * Claude Code `/model` picker aliases that resolve at request time through the
+ * matching `ANTHROPIC_DEFAULT_*_MODEL` env slot (opus/sonnet/haiku/fable). They
+ * name no concrete model themselves, so FireConnect never writes one — a bare
+ * alias in `settings.model` is the user's picker choice, not a FireConnect pin.
+ */
+const CLAUDE_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku", "fable"]);
+
+/** Whether a model reference is a bare Claude Code `/model` picker alias. */
+export function isClaudeModelAlias(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  return CLAUDE_MODEL_ALIASES.has(stripContextSuffix(model.trim()).toLowerCase());
 }
 
 /**
@@ -168,6 +220,11 @@ export function fullFireworksResourceId(model) {
   if (isFirerouterModel(bare)) {
     return FIREROUTER_ROUTER_ID;
   }
+  // `auto` / `auto-*` have no accounts/fireworks resource path — the gateway
+  // serves them under the bare slug only, so they pass through unexpanded.
+  if (isAutoModelId(bare)) {
+    return canonicalAutoModelId(bare);
+  }
   // Classify routers by the same suffix/alias heuristic spec lookups use
   // (`isRouterShortId`), not a hand-maintained list. A stale list would expand a
   // real router slug (e.g. kimi-k3-fast) to a non-existent models/ path, which
@@ -193,6 +250,9 @@ export function normalizeModelId(model) {
   if (isFirerouterModel(bare)) {
     return FIREROUTER_MODEL_ID;
   }
+  if (isAutoModelId(bare)) {
+    return canonicalAutoModelId(bare);
+  }
   if (isClaudeNativeSlotAlias(bare) || isClaudeNativeModel(bare)) {
     return CLAUDE_NATIVE_MODEL_ID;
   }
@@ -206,7 +266,7 @@ export function normalizeModelId(model) {
 }
 
 export function validateModelId(model, flag) {
-  if (!model.startsWith("accounts/") && model.includes("/") && !isFirerouterGatewayPattern(model)) {
+  if (!model.startsWith("accounts/") && model.includes("/") && !isFirerouterModelPattern(model)) {
     throw new Error(
       `${flag} must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest`,
     );
@@ -219,7 +279,8 @@ export function isFireworksModelId(model) {
   }
   const ref = model.trim();
   return ref.startsWith("accounts/fireworks/")
-    || KNOWN_FIREWORKS_SHORT_IDS.has(fireworksModelSlug(ref));
+    || KNOWN_FIREWORKS_SHORT_IDS.has(fireworksModelSlug(ref))
+    || isAutoModelId(ref);
 }
 
 export function defaultMainModel(keyType = "fireworks") {

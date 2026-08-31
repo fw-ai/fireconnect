@@ -11,7 +11,8 @@ import readline from "node:readline";
 import { FIRST_TOKEN_TIMEOUT_MS, HARD_RUN_CAP_MS } from "./constants.mjs";
 import { FIREWORKS_ENV_KEYS } from "../harnesses/claude/core.mjs";
 import { CLAUDE_FIREROUTER_ENV_KEYS } from "../firerouter/core.mjs";
-import { computeClaudeUsageCost } from "../harnesses/claude/usage/report.mjs";
+import { computeClaudeUsageCost } from "../harnesses/claude/usage/pricing.mjs";
+import { isFirerouterModelPattern } from "../fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../fireworks/pricing.mjs";
 import { stripClaudeCodeContextSuffix } from "../harnesses/claude/code-context.mjs";
 
@@ -171,16 +172,12 @@ export function parseStreamJson(obj) {
       // without splitting write/read and pricing each at its own rate, cost is
       // computed from a near-zero input count and wildly understated.
       Object.assign(out, extractCacheTokens(u));
-      // Keep the raw usage so the runner can compute a fallback cost via the
-      // shared computeClaudeUsageCost (same function `claude usage`/`claude live`
-      // use) when Claude Code doesn't report its own total_cost_usd.
+      // Keep raw usage so the runner can price it with the same canonical
+      // provider-rate engine as transcript reports and statusline.
       out.usage = u;
     }
-    // Claude Code reports its own authoritative cost (computed from its internal
-    // model→price table, including for firerouter where the underlying routed
-    // model is opaque to us). Prefer this over our rate-table estimate so the
-    // demo's cost column reflects what was actually charged. total_cost_usd is
-    // the whole-run total; modelUsage[*].costUSD is the per-model breakdown.
+    // Preserve Claude Code's own estimate for diagnostics. It can apply
+    // Anthropic rates to Fireworks models, so it never drives demo pricing.
     if (typeof obj.total_cost_usd === "number" && obj.total_cost_usd > 0) {
       out.costUsd = obj.total_cost_usd;
     } else {
@@ -317,7 +314,7 @@ function toolFileContentSoFar(json) {
  * Split Anthropic prompt-caching usage into priced buckets. `cache_creation`
  * carries the per-TTL write breakdown (ephemeral_1h / ephemeral_5m); when absent,
  * fall back to the aggregate `cache_creation_input_tokens` and assume 5m (the
- * cheaper, safer default — matches `computeClaudeUsageCost` in usage/report.mjs
+ * cheaper, safer default — matches `computeClaudeUsageCost` in usage/pricing.mjs
  * so the demo and `claude usage` agree on identical session data). 1h writes
  * bill at a premium over 5m, so assuming 1h would overprice a flat-shape run.
  * `cache_read_input_tokens` is the read/hit bucket.
@@ -348,6 +345,29 @@ function extractCacheTokens(u) {
 }
 
 /**
+ * Price demo usage with the same engine as transcript reports/statusline.
+ *
+ * Prefer a priced requested router because the router identifies the serving
+ * tier. Otherwise use the backend model Claude Code recorded.
+ */
+export function priceClaudeUsage({ model, resolvedModel = "", usage }) {
+  const requested = stripClaudeCodeContextSuffix(String(model || ""));
+  const requestedIsPriced = requested
+    ? Boolean(lookupFireworksPricing(requested))
+    : false;
+  // FireRouter delegates to a backend per call, so its own catalog row (if one
+  // exists) cannot replace the model that actually served this usage. Stable
+  // tier routers are different: their requested id carries the fast/standard
+  // tier that a resolved base-model id loses.
+  const priceModel = resolvedModel && isFirerouterModelPattern(requested)
+    ? resolvedModel
+    : (requestedIsPriced ? requested : (resolvedModel || model));
+  return priceModel && usage
+    ? computeClaudeUsageCost(priceModel, usage)
+    : null;
+}
+
+/**
  * @typedef {Object} ClaudeRunResult
  * @property {boolean} ok
  * @property {string} text
@@ -356,8 +376,8 @@ function extractCacheTokens(u) {
  * @property {number | null} cacheWrite5mTokens 5m prompt-cache write tokens (billed at a premium)
  * @property {number | null} cacheReadTokens prompt-cache read/hit tokens (billed at a discount)
  * @property {number | null} outputTokens
- * @property {number | null} costUsd Claude Code's own cost (total_cost_usd) — authoritative when present
- * @property {number | null} estimatedCostUsd shared computeClaudeUsageCost estimate — fallback when costUsd is absent
+ * @property {number | null} costUsd Claude Code's own diagnostic total_cost_usd; never used for Fireworks pricing
+ * @property {ReturnType<typeof computeClaudeUsageCost> | null} usagePricing canonical provider pricing for the final usage
  * @property {number} seconds
  * @property {{ t: number, text: string }[]} tokenLog
  * @property {string} [error]
@@ -422,7 +442,7 @@ export async function runClaude({
   let resultCacheWrite5m = null;
   let resultCacheRead = null;
   let resultCostUsd = null;
-  let resultEstimatedCostUsd = null;
+  let usagePricing = null;
   let resultOutput = null;
   let text = "";
   let resultText = "";
@@ -658,16 +678,7 @@ export async function runClaude({
       // fast router silently gets billed at standard rates. Only fall back to
       // the resolved model when the request was an opaque router with no price
       // of its own (firerouter), where the backend it picked is the only key.
-      const requested = stripClaudeCodeContextSuffix(String(model || ""));
-      const requestedIsPriced = requested ? Boolean(lookupFireworksPricing(requested)) : false;
-      const priceModel = requestedIsPriced ? requested : (resolvedModel || model);
-      if (parsed.usage && priceModel) {
-        try {
-          resultEstimatedCostUsd = computeClaudeUsageCost(priceModel, parsed.usage).cost;
-        } catch {
-          resultEstimatedCostUsd = null;
-        }
-      }
+      usagePricing = priceClaudeUsage({ model, resolvedModel, usage: parsed.usage });
       // The result event's totals are authoritative — surface them to the live
       // meter so the cost reflects real usage as soon as the run finishes.
       onTokens?.({
@@ -735,10 +746,33 @@ export async function runClaude({
   const cacheWrite5mTokens = resultCacheWrite5m ?? (sumCacheWrite5m || null);
   const cacheReadTokens = resultCacheRead ?? (sumCacheRead || null);
   const outputTokens = resultOutput ?? (accOutput || null);
-  // Claude Code's own cost (from total_cost_usd) — authoritative when present.
+  // Keep Claude Code's own total for diagnostics only. It prices Fireworks
+  // models from Anthropic tables and must never drive the demo comparison.
   const costUsd = resultCostUsd;
-  // Shared computeClaudeUsageCost estimate — fallback when costUsd is absent.
-  const estimatedCostUsd = resultEstimatedCostUsd;
+  // Older event streams can omit the result-level usage object while still
+  // carrying per-message token totals. Price that aggregate through the same
+  // canonical engine rather than duplicating rate math in the demo.
+  if (!usagePricing && [
+    inputTokens,
+    cacheWrite1hTokens,
+    cacheWrite5mTokens,
+    cacheReadTokens,
+    outputTokens,
+  ].some((value) => value != null)) {
+    usagePricing = priceClaudeUsage({
+      model,
+      resolvedModel,
+      usage: {
+        input_tokens: inputTokens ?? 0,
+        cache_creation: {
+          ephemeral_1h_input_tokens: cacheWrite1hTokens ?? 0,
+          ephemeral_5m_input_tokens: cacheWrite5mTokens ?? 0,
+        },
+        cache_read_input_tokens: cacheReadTokens ?? 0,
+        output_tokens: outputTokens ?? 0,
+      },
+    });
+  }
 
   if (timedOut && !gotResult) {
     const which = firstDeltaAt ? "run cap" : "first token";
@@ -748,7 +782,7 @@ export async function runClaude({
       : `no tokens after ${Math.round(limitMs / 1000)}s — connection stalled or no content deltas.`;
     const msg = `claude timed out (${which}) ${stalled}`;
     const result = {
-      ok: false, text, inputTokens, cacheWrite1hTokens, cacheWrite5mTokens, cacheReadTokens, outputTokens, costUsd, estimatedCostUsd, resolvedModel, sessionId, seconds, tokenLog,
+      ok: false, text, inputTokens, cacheWrite1hTokens, cacheWrite5mTokens, cacheReadTokens, outputTokens, costUsd, usagePricing, resolvedModel, sessionId, seconds, tokenLog,
       error: msg, httpStatus: 0, errorBody: stderrTail,
     };
     onError?.(result);
@@ -759,7 +793,7 @@ export async function runClaude({
   // process exited 0 with a result event — surface it instead of claiming ok.
   if (streamError) {
     const result = {
-      ok: false, text, inputTokens, cacheWrite1hTokens, cacheWrite5mTokens, cacheReadTokens, outputTokens, costUsd, estimatedCostUsd, resolvedModel, sessionId, seconds, tokenLog,
+      ok: false, text, inputTokens, cacheWrite1hTokens, cacheWrite5mTokens, cacheReadTokens, outputTokens, costUsd, usagePricing, resolvedModel, sessionId, seconds, tokenLog,
       error: streamError, httpStatus: 0, errorBody: stderrTail || streamError,
     };
     onError?.(result);
@@ -776,7 +810,7 @@ export async function runClaude({
       cacheReadTokens,
       outputTokens,
       costUsd,
-      estimatedCostUsd,
+      usagePricing,
       resolvedModel,
       sessionId,
       seconds,

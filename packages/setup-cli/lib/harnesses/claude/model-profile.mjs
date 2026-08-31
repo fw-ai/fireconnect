@@ -6,7 +6,8 @@ import {
   fireworksModelSlug,
   isClaudeNativeModel,
   isClaudeNativeSlotAlias,
-  isFirerouterModel,
+  isFirerouterModelPattern,
+  firerouterRequiresAnthropicKey,
   normalizeModelId,
   validateModelId,
 } from "../../fireworks/model-id.mjs";
@@ -20,13 +21,25 @@ export const CLAUDE_MODEL_SLOTS = Object.freeze([
   "subagent",
 ]);
 
-export const DEFAULT_OPUS_MODEL = "deepseek-pro-latest";
-export const DEFAULT_FABLE_MODEL = "kimi-fast-latest";
-// Sonnet stays native: it is the alias most people pick deliberately in
-// `/model`, so FireConnect leaves it pointing at Anthropic's own model.
-export const DEFAULT_SONNET_MODEL = CLAUDE_NATIVE_MODEL_ID;
-export const DEFAULT_HAIKU_MODEL = "deepseek-flash-latest";
-export const DEFAULT_SUBAGENT_MODEL = DEFAULT_HAIKU_MODEL;
+/** Pinned Fireworks router aliases for each Claude slot (main stays native). */
+export const CLAUDE_FIREWORKS_PINNED_DEFAULTS = Object.freeze({
+  opus: "glm-latest",
+  sonnet: "deepseek-pro-latest",
+  haiku: "deepseek-flash-latest",
+  fable: "glm-flash-latest",
+  subagent: "deepseek-flash-latest",
+});
+
+/** Opus override applied on first connect when FireRouter auth is available. */
+export const FIRST_CONNECT_AUTOMATIC_OPUS_MODEL = "firerouter";
+/** Sonnet companion when Opus is FireRouter — GLM moves off the Opus slot. */
+export const FIRST_CONNECT_AUTOMATIC_SONNET_MODEL = "glm-latest";
+
+export const DEFAULT_OPUS_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.opus;
+export const DEFAULT_FABLE_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.fable;
+export const DEFAULT_SONNET_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.sonnet;
+export const DEFAULT_HAIKU_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.haiku;
+export const DEFAULT_SUBAGENT_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.subagent;
 
 const PROFILE_VERSION = 1;
 const KEY_TYPES = ["fireworks", "firepass"];
@@ -42,11 +55,7 @@ export function defaultClaudeModelMapping(keyType = "fireworks") {
   // Pinning it would write settings.model and shadow the `/model` picker.
   return {
     main: CLAUDE_NATIVE_MODEL_ID,
-    opus: DEFAULT_OPUS_MODEL,
-    sonnet: DEFAULT_SONNET_MODEL,
-    haiku: DEFAULT_HAIKU_MODEL,
-    fable: DEFAULT_FABLE_MODEL,
-    subagent: DEFAULT_SUBAGENT_MODEL,
+    ...CLAUDE_FIREWORKS_PINNED_DEFAULTS,
   };
 }
 
@@ -175,7 +184,12 @@ export function resolveClaudeModelMapping(overrides = {}, keyType = "fireworks")
 }
 
 export function mappingUsesFirerouter(mapping) {
-  return Object.values(mapping).some((modelId) => isFirerouterModel(modelId));
+  return Object.values(mapping).some((modelId) => isFirerouterModelPattern(modelId));
+}
+
+/** Whether any Claude slot is an Anthropic-requiring FireRouter selection. */
+export function mappingRequiresAnthropicKey(mapping) {
+  return Object.values(mapping).some((modelId) => firerouterRequiresAnthropicKey(modelId));
 }
 
 function completeMapping(raw) {

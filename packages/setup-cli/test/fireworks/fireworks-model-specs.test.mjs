@@ -13,6 +13,7 @@ import {
   resolveRouterEntryDisplayName,
   resolveRouterSpecAliasTarget,
   resolveSpecSlug,
+  isAutoModelId,
   isFireworksRoutedModelRef,
 } from "../../lib/fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../lib/fireworks/pricing.mjs";
@@ -125,9 +126,9 @@ describe("fireworks-model-specs", () => {
       const spec = lookupModelSpec("kimi-fast-latest");
       assert.equal(spec?.label, "Kimi K3 Fast");
       assert.equal(spec?.pricing?.tier, "fast");
-      assert.equal(spec?.pricing?.input, 6.00);
-      assert.equal(lookupFireworksPricing("kimi-fast-latest")?.output, 30.00);
-      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 6.00);
+      assert.equal(spec?.pricing?.input, 4.50);
+      assert.equal(lookupFireworksPricing("kimi-fast-latest")?.output, 22.50);
+      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 4.50);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -152,8 +153,8 @@ describe("fireworks-model-specs", () => {
     try {
       const pricing = lookupFireworksPricing("kimi-fast-latest");
       assert.equal(pricing?.tier, "fast");
-      assert.equal(pricing?.input, 6.00);
-      assert.equal(pricing?.output, 30.00);
+      assert.equal(pricing?.input, 4.50);
+      assert.equal(pricing?.output, 22.50);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -213,9 +214,9 @@ describe("fireworks-model-specs", () => {
     const flashPricing = {
       slug: "deepseek-v4-flash-0731",
       label: "DeepSeek V4 Flash (0731)",
-      input: 0.14,
-      cachedInput: 0.028,
-      output: 0.28,
+      input: 0.22,
+      cachedInput: 0.007,
+      output: 0.66,
       tier: "standard",
       source: "api",
     };
@@ -245,8 +246,8 @@ describe("fireworks-model-specs", () => {
       assert.equal(spec?.label, "DeepSeek V4 Flash (0731)");
       // The dated pin carries the documented sibling rates as an offline
       // fallback; live catalog pricing still wins below.
-      assert.deepEqual(spec?.pricing, { input: 0.14, cachedInput: 0.028, output: 0.28 });
-      assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.output, 0.28);
+      assert.deepEqual(spec?.pricing, { input: 0.22, cachedInput: 0.007, output: 0.66 });
+      assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.output, 0.66);
       assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.source, "api");
     } finally {
       setServerlessCatalogSnapshot(null);
@@ -289,7 +290,7 @@ describe("fireworks-model-specs", () => {
       assert.equal(spec?.label, "DeepSeek V4 Pro (0813)");
       // The dated pin carries the documented sibling rates as an offline
       // fallback; live catalog pricing still wins below.
-      assert.deepEqual(spec?.pricing, { input: 1.74, cachedInput: 0.145, output: 3.48 });
+      assert.deepEqual(spec?.pricing, { input: 1.32, cachedInput: 0.044, output: 3.96 });
       assert.equal(lookupFireworksPricing("deepseek-pro-latest")?.output, 3.96);
       assert.equal(lookupFireworksPricing("deepseek-pro-latest")?.source, "api");
     } finally {
@@ -386,9 +387,9 @@ describe("fireworks-model-specs", () => {
     try {
       const pricing = lookupFireworksPricing("kimi-fast-latest");
       assert.equal(pricing?.tier, "fast");
-      assert.equal(pricing?.input, 6.00);
-      assert.equal(pricing?.output, 30.00);
-      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 6.00);
+      assert.equal(pricing?.input, 4.50);
+      assert.equal(pricing?.output, 22.50);
+      assert.equal(lookupFireworksModelCost("kimi-fast-latest")?.input, 4.50);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -447,6 +448,7 @@ describe("fireworks-model-specs", () => {
 
     assert.equal(requiresFastTierPricing("kimi-fast-latest"), true);
     assert.equal(requiresFastTierPricing("kimi-k2p6-turbo"), true);
+    assert.equal(requiresFastTierPricing("glm-5p2-fast-us"), true);
     assert.equal(requiresFastTierPricing("kimi-latest"), false);
 
     assert.equal(pricingMatchesModelRefTier("kimi-fast-latest", fastPricing), true);
@@ -519,6 +521,37 @@ describe("fireworks-model-specs", () => {
     assert.equal(spec?.label, "FireRouter");
     assert.equal(spec?.capabilities.vision, true);
     const limits = lookupFireworksModelLimits("firerouter/x");
+    assert.equal(limits.contextWindow, 1_048_575);
+    assert.equal(limits.vision, true);
+  });
+
+  it("resolves auto from the static spec without a catalog row", () => {
+    const spec = lookupModelSpec("auto");
+    assert.equal(spec?.label, "Auto");
+    assert.equal(spec?.capabilities.vision, true);
+    const limits = lookupFireworksModelLimits("auto");
+    assert.equal(limits.contextWindow, 1_048_575);
+    assert.equal(limits.vision, true);
+  });
+
+  it("shares auto spec metadata for auto-* model ids", () => {
+    assert.equal(isAutoModelId("auto"), true);
+    assert.equal(isAutoModelId("Auto"), true);
+    assert.equal(isAutoModelId("auto[1m]"), true);
+    assert.equal(isAutoModelId("auto-instant"), true);
+    assert.equal(isAutoModelId("Auto-Instant[1m]"), true);
+    assert.equal(isAutoModelId("auto-fast"), true);
+    assert.equal(isAutoModelId("automatic"), false);
+    assert.equal(isAutoModelId("auto-smart"), false, "Cursor-native picker is not a Fireworks mix");
+    // A slash means the ref names something else that merely contains an
+    // auto-shaped segment; matching it would route to the wrong model.
+    assert.equal(isAutoModelId("accounts/auto-corp/models/private-model"), false);
+    assert.equal(isAutoModelId("accounts/fireworks/deployments/auto-instant"), false);
+    assert.equal(isAutoModelId("firerouter/auto-instant"), false);
+    const spec = lookupModelSpec("auto-instant");
+    assert.equal(spec?.label, "Auto");
+    assert.equal(spec?.capabilities.vision, true);
+    const limits = lookupFireworksModelLimits("auto-instant");
     assert.equal(limits.contextWindow, 1_048_575);
     assert.equal(limits.vision, true);
   });
@@ -618,6 +651,9 @@ describe("fireworks-model-specs", () => {
     assert.equal(isFireworksRoutedModelRef("kimi-fast-latest"), true);
     assert.equal(isFireworksRoutedModelRef("accounts/fireworks/models/glm-5p2"), true);
     assert.equal(isFireworksRoutedModelRef("firerouter"), true);
+    assert.equal(isFireworksRoutedModelRef("auto"), true);
+    assert.equal(isFireworksRoutedModelRef("auto-instant"), true);
+    assert.equal(isFireworksRoutedModelRef("auto-smart"), false);
     assert.equal(isFireworksRoutedModelRef("claude-sonnet-5"), false);
     assert.equal(isFireworksRoutedModelRef("unknown-user-model"), false);
   });

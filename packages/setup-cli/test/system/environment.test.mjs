@@ -9,6 +9,7 @@ import {
   detectSecretStorage,
   isWsl,
 } from "../../lib/system/environment.mjs";
+import { withLinuxSshEnv } from "../helpers.mjs";
 
 describe("environment detection", () => {
   it("detects a structured, current-platform environment", () => {
@@ -69,5 +70,16 @@ describe("environment detection", () => {
     } finally {
       if (prev !== undefined) process.env.FIRECONNECT_KEY_STORAGE = prev;
     }
+  });
+
+  it("prefers encrypted file on Linux SSH sessions", async () => {
+    await withLinuxSshEnv((isLinux) => {
+      if (!isLinux) {
+        return;
+      }
+      const s = detectSecretStorage();
+      assert.equal(s.backend, "file");
+      assert.match(s.detail ?? "", /SSH\/remote/i);
+    });
   });
 });

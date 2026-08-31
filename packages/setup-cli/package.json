@@ -1,6 +1,6 @@
 {
   "name": "@fireconnect/cli",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "FireConnect CLIs for using Fireworks models with Claude Code",
   "type": "module",
   "bin": {
@@ -14,6 +14,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "postinstall": "node ./lib/system/postinstall-finalize.mjs",
     "test": "node --import ./test/global-setup.mjs --test \"test/**/*.test.mjs\""
   },
   "dependencies": {

@@ -1,6 +1,9 @@
 import process from "node:process";
 
-import { isFirerouterModel } from "../fireworks/model-id.mjs";
+import {
+  isFirerouterModelPattern,
+  firerouterRequiresAnthropicKey,
+} from "../fireworks/model-id.mjs";
 import {
   isAccountFeatureFlagEnabled,
 } from "../config/feature-flags.mjs";
@@ -306,6 +309,9 @@ export async function resolveWorkspaceByok(apiKey, seams) {
  * @property {string}  mainModel     Model id to write to the harness's main slot
  *                                   ("" = keep the harness's normal Fireworks default).
  * @property {boolean} isFirerouter  Whether `mainModel` routes through FireRouter.
+ * @property {boolean} requiresAnthropicKey
+ *   Whether the selection needs an Anthropic credential (bare firerouter or a
+ *   Claude/Opus model in the path). Pure-Fireworks selections need none.
  */
 
 /**
@@ -322,10 +328,14 @@ export async function resolveWorkspaceByok(apiKey, seams) {
 export function resolveFirerouterPlan(ctx, { keyType = "" } = {}) {
   const requested = ctx.main?.trim() ?? "";
   if (!requested) {
-    return { mainModel: "", isFirerouter: false };
+    return { mainModel: "", isFirerouter: false, requiresAnthropicKey: false };
   }
   assertFirerouterKeyType(requested, keyType);
-  return { mainModel: requested, isFirerouter: isFirerouterModel(requested) };
+  return {
+    mainModel: requested,
+    isFirerouter: isFirerouterModelPattern(requested),
+    requiresAnthropicKey: firerouterRequiresAnthropicKey(requested),
+  };
 }
 
 /** FireRouter is only offered for standard Fireworks keys, not Fire Pass. */
@@ -333,13 +343,13 @@ export const FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE =
   "FireRouter is not available for Fire Pass keys (fpk_...). Use a standard Fireworks API key (fw_...).";
 
 /**
- * Throw when the `firerouter` model is requested with a Fire Pass key. Call after
+ * Throw when a FireRouter selection is requested with a Fire Pass key. Call after
  * the effective model + key type are known, before enabling.
  * @param {string} model
  * @param {string} keyType
  */
 export function assertFirerouterKeyType(model, keyType) {
-  if (isFirerouterModel(model) && keyType === "firepass") {
+  if (isFirerouterModelPattern(model) && keyType === "firepass") {
     throw new Error(FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE);
   }
 }
@@ -392,20 +402,25 @@ export async function resolveFirerouterByokHeaders({
   if (!plan.isFirerouter && !catalogFirerouter) {
     return {};
   }
-  const anthropicKey = preResolvedAnthropicKey !== undefined
-    ? preResolvedAnthropicKey
-    : (await resolveFirerouterByokKeys({
-      anthropicFlag: ctx.anthropicKeyFromFlag ? ctx.anthropicKey : "",
-      settingsEnv,
-      home: ctx.home,
-      explicit: true,
-      resolveWorkspaceByok: () => (
-        workspaceByokLookup === null
-          ? resolveWorkspaceByokStatus(apiKey)
-          : Promise.resolve(workspaceByokLookup)
-      ),
-    })).anthropicKey;
-  const headers = firerouterByokHeaders({ anthropicKey });
+  /** @type {Record<string, string>} */
+  const headers = {};
+  // Attach the Anthropic BYOK key only for Anthropic-requiring selections.
+  if (plan.requiresAnthropicKey || catalogFirerouter) {
+    const anthropicKey = preResolvedAnthropicKey !== undefined
+      ? preResolvedAnthropicKey
+      : (await resolveFirerouterByokKeys({
+        anthropicFlag: ctx.anthropicKeyFromFlag ? ctx.anthropicKey : "",
+        settingsEnv,
+        home: ctx.home,
+        explicit: true,
+        resolveWorkspaceByok: () => (
+          workspaceByokLookup === null
+            ? resolveWorkspaceByokStatus(apiKey)
+            : Promise.resolve(workspaceByokLookup)
+        ),
+      })).anthropicKey;
+    Object.assign(headers, firerouterByokHeaders({ anthropicKey }));
+  }
   const preference = normalizeRoutingPreference(ctx.routingPreference);
   if (preference !== null) {
     headers[ROUTING_PREFERENCE_HEADER] = String(preference);
@@ -416,13 +431,17 @@ export async function resolveFirerouterByokHeaders({
 /**
  * Env-reference BYOK header for Codex, which forwards the provider key by
  * env-var NAME (`env_http_headers`) rather than value. Returns the Anthropic env
- * ref when the plan routes through FireRouter; otherwise `{}`. Pure — reads only
- * the plan.
+ * ref when the selection needs an Anthropic credential (bare firerouter, or a
+ * Claude/Opus member in the slash path); otherwise `{}`. The routing-preference
+ * header is handled separately by the value-mode builder. Pure — reads only the plan.
  * @param {FirerouterPlan} plan
  * @returns {Record<string, string>}
  */
 export function firerouterByokEnvRefHeaders(plan, { catalogFirerouter = false } = {}) {
   if (!plan.isFirerouter && !catalogFirerouter) {
+    return {};
+  }
+  if (!plan.requiresAnthropicKey && !catalogFirerouter) {
     return {};
   }
   return {

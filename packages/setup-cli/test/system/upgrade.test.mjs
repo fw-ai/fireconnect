@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, it } from "node:test";
 
 import { runUpgradeCommand } from "../../lib/cli/commands/global.mjs";
 import { FIREWORKS_BASE_URL } from "../../lib/fireworks/model-id.mjs";
-import { userSettingsPath } from "../../lib/harnesses/claude/core.mjs";
 import {
   CLAUDE_OFF_UPGRADE_BEFORE_VERSION,
   CLAUDE_UPGRADE_PROMPT,
@@ -13,6 +11,7 @@ import {
   needsClaudeOffBeforeUpgrade,
   runClaudeUpgradePreflight,
 } from "../../lib/system/upgrade.mjs";
+import { runUpgradeFinalize } from "../../lib/system/upgrade-finalize.mjs";
 import { runCli, withTempHome } from "../helpers.mjs";
 
 function managedClaudeEvidence() {
@@ -58,6 +57,7 @@ function upgradeDependencies(overrides = {}) {
     infoFn: () => {},
     successFn: () => {},
     log: () => {},
+    runtimeDepsPresent: () => true,
     ...overrides,
   };
 }
@@ -237,41 +237,6 @@ describe("Claude upgrade preflight", () => {
   });
 });
 
-describe("Claude upgrade restoration fallback", () => {
-  it("strips backup-less legacy managed settings through the old adapter's off", async () => {
-    await withTempHome("upgrade-legacy-off", async (home) => {
-      const settingsPath = userSettingsPath(home);
-      await mkdir(path.dirname(settingsPath), { recursive: true });
-      await writeFile(settingsPath, `${JSON.stringify({
-        model: "accounts/fireworks/routers/firerouter[1m]",
-        env: {
-          ANTHROPIC_BASE_URL: "https://router.fireworks.ai",
-          ANTHROPIC_AUTH_TOKEN: "sk-ant-original",
-          ANTHROPIC_CUSTOM_HEADERS: [
-            "X-FireRouter-Fireworks-Key: fw_test_key",
-            "X-User-Header: keep-me",
-          ].join("\n"),
-          CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
-          CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
-          USER_ENV: "keep-me",
-        },
-        unrelated: { keep: true },
-      }, null, 2)}\n`);
-
-      const result = await runCli(["claude", "off"], { home });
-      assert.equal(result.code, 0, result.stderr);
-
-      const restored = JSON.parse(await readFile(settingsPath, "utf8"));
-      assert.equal(restored.model, undefined);
-      assert.deepEqual(restored.env, {
-        ANTHROPIC_CUSTOM_HEADERS: "X-User-Header: keep-me",
-        USER_ENV: "keep-me",
-      });
-      assert.deepEqual(restored.unrelated, { keep: true });
-    });
-  });
-});
-
 describe("upgrade fetch, compare, and reset ordering", () => {
   it("does not run the Claude preflight or reset when already current", async () => {
     const events = [];
@@ -364,5 +329,102 @@ describe("upgrade fetch, compare, and reset ordering", () => {
 
     assert.ok(events.includes("preflight"));
     assert.ok(events.includes("reset --hard new"));
+  });
+
+  it("runs npm install when already current but runtime packages are missing", async () => {
+    const events = [];
+    await runUpgradeCommand(upgradeDependencies({
+      execFile: (file, args) => {
+        if (file === "git") {
+          const command = args.slice(2);
+          events.push(command.join(" "));
+          if (command[0] === "rev-parse" && command[1] === "HEAD") {
+            return "same\n";
+          }
+          if (command[0] === "rev-parse" && command[1] === "FETCH_HEAD") {
+            return "same\n";
+          }
+          return "";
+        }
+        events.push([file, ...args].join(" "));
+        return "";
+      },
+      runtimeDepsPresent: () => false,
+    }));
+
+    assert.ok(
+      events.some((event) => /npm(\.cmd)? install --omit=dev/.test(event)),
+      `expected npm install, got: ${events.join(" | ")}`,
+    );
+  });
+
+  it("runs npm install when the lockfile is unchanged but packages are missing", async () => {
+    const events = [];
+    await runUpgradeCommand(upgradeDependencies({
+      execFile: (file, args) => {
+        if (file === "git") {
+          const command = args.slice(2);
+          events.push(command.join(" "));
+          if (command[0] === "rev-parse" && command[1] === "HEAD") {
+            return "old\n";
+          }
+          if (command[0] === "rev-parse" && command[1] === "FETCH_HEAD") {
+            return "new\n";
+          }
+          return "";
+        }
+        events.push([file, ...args].join(" "));
+        return "";
+      },
+      preflight: async () => ({ proceed: true, restored: false }),
+      runtimeDepsPresent: () => false,
+    }));
+
+    assert.ok(events.includes("reset --hard new"));
+    assert.ok(events.includes("diff --quiet old new -- packages/setup-cli/package-lock.json"));
+    assert.ok(
+      events.some((event) => /npm(\.cmd)? install --omit=dev/.test(event)),
+      `expected npm install, got: ${events.join(" | ")}`,
+    );
+  });
+});
+
+describe("upgrade finalize process", () => {
+  it("runs finalize-install from the updated checkout in a fresh Node process", async () => {
+    const calls = [];
+    const home = "/tmp/fireconnect-upgrade-home";
+    const installDir = `${home}/.fireconnect/cli`;
+
+    await runUpgradeFinalize(home, installDir, {
+      exists: () => true,
+      execFile: (file, args, options) => calls.push({ file, args, options }),
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, process.execPath);
+    assert.deepEqual(calls[0].args, [
+      `${installDir}/packages/setup-cli/bin/fireconnect.mjs`,
+      "finalize-install",
+    ]);
+    assert.equal(calls[0].options.env.HOME, home);
+    assert.equal(calls[0].options.stdio, "inherit");
+  });
+
+  it("falls back to in-process finalize when the installed CLI is missing", async () => {
+    const calls = [];
+    await runUpgradeFinalize("/tmp/home", "/tmp/home/.fireconnect/cli", {
+      exists: () => false,
+      execFile: () => {
+        throw new Error("must not spawn");
+      },
+      finalizeInProcess: async (opts) => {
+        calls.push(opts);
+      },
+    });
+
+    assert.deepEqual(calls, [{
+      home: "/tmp/home",
+      installDir: "/tmp/home/.fireconnect/cli",
+    }]);
   });
 });

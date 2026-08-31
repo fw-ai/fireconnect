@@ -9,6 +9,7 @@ import {
   renderSegmentedBar,
   runClaudeUsageInteractiveDisplay,
 } from "../../../../lib/harnesses/claude/usage/display.mjs";
+import { formatUsageCost } from "../../../../lib/harnesses/claude/usage/format.mjs";
 
 function lastInteractiveFrame(text) {
   const plain = String(text).replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
@@ -83,6 +84,37 @@ describe("claude usage display", () => {
     assert.match(text, /\*\*\*All pricing shown below are estimates based on token usage/);
     assert.match(text, /Use -v \/ --verbose for request and sub-agent details/);
     assert.doesNotMatch(text, /Parent\/Sub-agent ID/);
+  });
+
+  it("keeps a sub-cent total at the precision the status line quotes", () => {
+    // One real GLM 5.3 call: 2,086 uncached + 15,222 cached in, 3 out.
+    const cost = 0.006891;
+    const row = {
+      model: "accounts/fireworks/models/glm-5p3",
+      displayModel: "glm-5p3",
+      input: 2_086,
+      output: 3,
+      cacheRead: 15_222,
+      cost,
+    };
+    const totals = { input: 2_086, output: 3, cacheRead: 15_222, cost };
+    const text = formatClaudeUsageSummaryDisplay({
+      path: "/tmp/12345678-1234-4234-9234-123456789abc.jsonl",
+      requests: 1,
+      rows: [row],
+      totals,
+      grandTotals: totals,
+      grandRequests: 1,
+      subagents: [],
+      estimated: false,
+    }, { stream: { isTTY: false } });
+
+    // The cent is not the floor: rounding this up to `$0.01` would overstate a
+    // known figure by 45%.
+    assert.match(text, /\$0\.0069/);
+    assert.doesNotMatch(text, /\$0\.01(\D|$)/);
+    // And the status line quotes that same figure, digit for digit.
+    assert.equal(formatUsageCost(cost), "$0.0069");
   });
 
   it("shows fallback pricing disclaimer in static and interactive estimated summaries", () => {
@@ -312,6 +344,52 @@ describe("claude usage display", () => {
     assert.match(requests, /REQ\s+SOURCE\s+MODEL\s+INPUT\s+5M WRITE\s+1H WRITE\s+CACHE RD\s+OUTPUT\s+COST/);
     assert.match(requests, /#1\s+sub-agent alpha\s+claude-opus-4-8\s+5\s+11\s+13\s+17\s+7\s+0\.20/);
     assert.match(requests, /TOTAL sub-agent alpha\s+5\s+11\s+13\s+17\s+7\s+0\.20/);
+  });
+
+  it("keeps unpriced costs unknown in source rows and interactive notes", () => {
+    const sessionId = "44444444-4444-4444-9444-444444444444";
+    const report = {
+      path: `/tmp/${sessionId}.jsonl`,
+      rows: [
+        {
+          model: "accounts/fireworks/models/glm-5p3",
+          displayModel: "glm-5p3",
+          input: 10,
+          cacheWrite5m: 0,
+          cacheWrite1h: 0,
+          output: 1,
+          cacheRead: 0,
+          cost: 0.01,
+        },
+        {
+          model: "accounts/fireworks/models/glm-5p3",
+          displayModel: "glm-5p3",
+          input: 20,
+          cacheWrite5m: 0,
+          cacheWrite1h: 0,
+          output: 2,
+          cacheRead: 0,
+          cost: null,
+          priced: false,
+        },
+      ],
+      totals: { input: 30, cacheWrite5m: 0, cacheWrite1h: 0, output: 3, cacheRead: 0, cost: null },
+      grandTotals: { input: 30, cacheWrite5m: 0, cacheWrite1h: 0, output: 3, cacheRead: 0, cost: null },
+      grandRequests: 2,
+      subagents: [],
+      estimated: false,
+      unpriced: 1,
+    };
+
+    const text = formatClaudeUsageInteractiveFrame(report, {
+      expandedSessionId: sessionId,
+      detailSessionId: sessionId,
+    }, { stream: { isTTY: false, columns: 140 } });
+
+    assert.match(text, /parent\s+glm-5p3\s+2\s+30\s+0\s+0\s+0\s+3\s+n\/a/);
+    assert.match(text, /TOTAL\s+2\s+30\s+0\s+0\s+0\s+3\s+n\/a/);
+    assert.match(text, /Some calls have no rate available; their cost reads n\/a/);
+    assert.doesNotMatch(text, /parent\s+glm-5p3[\s\S]*\$0\.00/);
   });
 
   it("drills into interactive usage with right arrow and exits with q", async () => {

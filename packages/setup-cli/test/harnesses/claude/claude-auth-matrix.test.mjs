@@ -13,7 +13,8 @@ import { FIRECONNECT_REFERER, runFireconnect, withTempHome, assertClaudeMainMode
 
 const FIREWORKS_KEY = "fw_claude_matrix_key_000000000000";
 const ANTHROPIC_KEY = "sk-ant-claude-matrix-byok";
-const KIMI_FABLE_MODEL = "kimi-fast-latest[1m]";
+const KIMI_FABLE_MODEL = "glm-flash-latest[1m]";
+const GLM_SONNET_MODEL = "glm-latest[1m]";
 const FIREROUTER_MODEL = "firerouter[1m]";
 const SUBSCRIPTION_SETTINGS = `${JSON.stringify({
   model: "sonnet",
@@ -129,8 +130,8 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
           settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL,
           expectedOpus,
         );
-        // Sonnet is native by default, so its alias env key is never written.
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
+        // FireRouter on Opus moves GLM to Sonnet.
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, GLM_SONNET_MODEL);
         // Fable carries the vision model in every scenario now, so the old
         // firerouter-only shift is gone.
         assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FABLE_MODEL);
@@ -184,8 +185,8 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         assert.equal(settings.model, undefined);
         assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
         assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, FIREROUTER_MODEL);
-        // Sonnet is native by default, so its alias env key is never written.
-        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
+        // FireRouter on Opus moves GLM to Sonnet.
+        assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, GLM_SONNET_MODEL);
         assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, KIMI_FABLE_MODEL);
         assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
         assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);

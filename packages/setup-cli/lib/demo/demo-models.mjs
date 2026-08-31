@@ -8,7 +8,7 @@
 
 import {
   FIREROUTER_ROUTER_ID,
-  isFirerouterModel,
+  isFirerouterModelPattern,
 } from "../fireworks/model-id.mjs";
 import {
   FIREWORKS_MODEL_SPECS,
@@ -25,6 +25,7 @@ import {
 import { lookupFireworksPricing } from "../fireworks/pricing.mjs";
 import {
   firerouterCatalogEntry,
+  firerouterDisplayName,
   preferLatestAliases,
 } from "../fireworks/models.mjs";
 import { prettyClaudeLabel, providerListPricing } from "./incumbent-detect.mjs";
@@ -129,7 +130,7 @@ export function demoFireworksPickerIds() {
 
 /** @param {string} id */
 function demoFireworksKind(id) {
-  return id === "firerouter" || isFirerouterModel(id) ? "firerouter" : "fireworks";
+  return id === "firerouter" || isFirerouterModelPattern(id) ? "firerouter" : "fireworks";
 }
 
 /**
@@ -182,8 +183,8 @@ export function demoModelLabel(id) {
   if (resolved) {
     return resolved;
   }
-  if (bare === "firerouter") {
-    return FIREWORKS_MODEL_SPECS.firerouter?.label ?? "FireRouter";
+  if (isFirerouterModelPattern(bare)) {
+    return firerouterDisplayName(bare);
   }
   return FIREWORKS_MODEL_SPECS[bare]?.label ?? bare;
 }
@@ -200,11 +201,11 @@ function hasLiveCachedPricing(modelRef) {
 
 /**
  * @param {NonNullable<ReturnType<typeof lookupFireworksPricing>>} pricing
- * @param {{ label: string, pricingRef: string, forceEstimated?: boolean }} opts
+ * @param {{ label: string, pricingRef: string }} opts
  */
-function toDemoRateShape(pricing, { label, pricingRef, forceEstimated = false }) {
+function toDemoRateShape(pricing, { label, pricingRef }) {
   const live = hasLiveCachedPricing(pricingRef);
-  const estimated = forceEstimated || !live;
+  const estimated = !live;
   return {
     inputPerMillion: pricing.input,
     outputPerMillion: pricing.output,
@@ -218,15 +219,15 @@ function toDemoRateShape(pricing, { label, pricingRef, forceEstimated = false })
 
 /**
  * Resolve FireRouter pricing. FireRouter is a delegating router with no
- * per-token price of its own, so it has no spec/catalog entry; fall back to a
- * stable priced router (`glm-5p2-fast`) as an estimate when neither the live
- * serverless catalog nor the static specs carry a rate for it.
+ * per-token price of its own. If the catalog does not publish a rate for the
+ * selected router, leave the pre-run rate unavailable; the demo runner prices
+ * the backend model that actually served the request once usage arrives.
  *
  * Shared by the top-level `firerouter` demo id and by Anthropic slots whose
  * pinned backend is FireRouter (e.g. `opus` -> `firerouter[1m]`).
  * @param {string} id
  * @param {string} labelPrefix Optional "Claude Opus (via …)" prefix for slots.
- * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, source: string, label: string, estimated?: boolean } | null}
+ * @returns {{ inputPerMillion: number | null, outputPerMillion: number | null, cachedInputPerMillion: number | null, cacheWrite1hPerMillion: number | null, cacheWrite5mPerMillion: number | null, cacheReadPerMillion: number | null, tier: string, source: string, label: string, estimated: boolean } | null}
  */
 function firerouterRates(id, labelPrefix = null) {
   const p = lookupFireworksPricing(id)
@@ -237,23 +238,26 @@ function firerouterRates(id, labelPrefix = null) {
       pricingRef: id,
     });
   }
-  const fallback = lookupFireworksPricing("glm-5p2-fast");
-  if (!fallback) {
-    return null;
-  }
-  return toDemoRateShape(fallback, {
+  return {
+    inputPerMillion: null,
+    outputPerMillion: null,
+    cachedInputPerMillion: null,
+    cacheWrite1hPerMillion: null,
+    cacheWrite5mPerMillion: null,
+    cacheReadPerMillion: null,
+    tier: "unpriced",
+    source: "",
     label: labelPrefix
-      ? `${labelPrefix} (via ${demoModelLabel(id)}, estimate)`
-      : `${demoModelLabel(id)} (estimate)`,
-    pricingRef: "glm-5p2-fast",
-    forceEstimated: true,
-  });
+      ? `${labelPrefix} (via ${demoModelLabel(id)})`
+      : demoModelLabel(id),
+    estimated: true,
+  };
 }
 
 /**
  * Rate table shape used by measurement / TUI.
  * @param {string} id
- * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, source: string, label: string, estimated?: boolean } | null}
+ * @returns {{ inputPerMillion: number | null, outputPerMillion: number | null, cachedInputPerMillion: number | null, cacheWrite1hPerMillion?: number | null, cacheWrite5mPerMillion?: number | null, cacheReadPerMillion?: number | null, tier: string, source: string, label: string, estimated?: boolean } | null}
  */
 export function demoModelRates(id, keyType = "fireworks", slotMapping = null) {
   if (isAnthropicSlotModel(id)) {
@@ -284,7 +288,7 @@ export function demoModelRates(id, keyType = "fireworks", slotMapping = null) {
       ...(list.estimated ? { estimated: true } : {}),
     };
   }
-  if (id === "firerouter" || isFirerouterModel(id)) {
+  if (id === "firerouter" || isFirerouterModelPattern(id)) {
     return firerouterRates(id);
   }
   const p = lookupFireworksPricing(id);
@@ -295,6 +299,12 @@ export function demoModelRates(id, keyType = "fireworks", slotMapping = null) {
     label: p.label,
     pricingRef: id,
   });
+}
+
+/** Whether a demo rate shape carries concrete input and output prices. */
+export function hasDemoTokenRates(rates) {
+  return Number.isFinite(rates?.inputPerMillion)
+    && Number.isFinite(rates?.outputPerMillion);
 }
 
 export function defaultLeftModel() {
@@ -310,7 +320,7 @@ export function demoSideDisplayLabel(id) {
   if (isAnthropicSlotModel(id)) {
     return `Anthropic · ${demoModelLabel(id)}`;
   }
-  if (isFirerouterModel(id) || id === "firerouter") {
+  if (isFirerouterModelPattern(id) || id === "firerouter") {
     return `Fireworks · ${demoModelLabel(id)}`;
   }
   return `Fireworks · ${demoModelLabel(id)}`;

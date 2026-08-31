@@ -31,7 +31,7 @@ describe("firerouter-core", () => {
   it("does not infer router mode from stale headers on direct Fireworks URL", () => {
     const env = {
       ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
-      ANTHROPIC_CUSTOM_HEADERS: "X-FireRouter-Fireworks-Key: fw_test",
+      ANTHROPIC_CUSTOM_HEADERS: "X-Stale-Fireworks-Key: fw_test",
     };
     assert.equal(firerouterStatusFromEnv(env), "other");
     assert.equal(providerStatusFromEnv(env), "fireworks");
@@ -49,13 +49,6 @@ describe("firerouter-core", () => {
     assert.equal(
       replaceFireworksKeyInCustomHeaders(current, "fw_new"),
       "X-Fireworks-Api-Key: fw_new\nx-routing-preference: 3\nX-User-Header: keep-me",
-    );
-  });
-
-  it("migrates a legacy-named Fireworks header while swapping the key", () => {
-    assert.equal(
-      replaceFireworksKeyInCustomHeaders("X-FireRouter-Fireworks-Key: fw_old", "fw_new"),
-      "X-Fireworks-Api-Key: fw_new",
     );
   });
 

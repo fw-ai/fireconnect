@@ -1,33 +1,21 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { lookupFireworksPricing } from "../../../fireworks/pricing.mjs";
-import { shortFireworksModelRef } from "../../../fireworks/model-id.mjs";
-import { providerListPricing } from "../../../demo/incumbent-detect.mjs";
+import { FIREWORKS_PRICING_DOCS_URL } from "../../../fireworks/pricing.mjs";
+import {
+  UNPRICED_TEXT,
+  addUsage,
+  sumUsage,
+} from "./cost.mjs";
+import { computeClaudeUsageCost } from "./pricing.mjs";
+import { usageCostDigits } from "./format.mjs";
 import {
   formatCostEstimateNote,
   formatClaudeUsageReportsSummaryDisplay,
   formatClaudeUsageSummaryDisplay,
 } from "./display.mjs";
 
-const DEFAULT_PRICE = {
-  input: 1,
-  cacheWrite5m: 1.25,
-  cacheWrite1h: 2,
-  cacheRead: 0.1,
-  output: 5,
-  label: "Default reference",
-  source: "",
-  estimated: true,
-};
+export { computeClaudeUsageCost };
 
-const FAST_PRICES = {
-  "claude-opus-4-8": { input: 10, output: 50 },
-  "claude-opus-4-7": { input: 30, output: 150 },
-};
-
-const WEB_SEARCH_PER_1K = 10;
-const US_INFERENCE_GEO_MULTIPLIER = 1.1;
-const BATCH_DISCOUNT = 0.5;
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function expandHome(value, home) {
@@ -320,130 +308,8 @@ export async function findClaudeSessionLogs({ home, session = "", lastN = 1, wit
   return withMtime.slice(0, parseLastN(lastN)).map(({ filePath }) => filePath);
 }
 
-function displayModel(model) {
-  return shortFireworksModelRef(model);
-}
-
-function fireworkPriceFor(model) {
-  const pricing = lookupFireworksPricing(model);
-  if (!pricing) {
-    return null;
-  }
-  return {
-    input: pricing.input,
-    cacheWrite5m: 0,
-    cacheWrite1h: 0,
-    cacheRead: pricing.cachedInput,
-    output: pricing.output,
-    label: pricing.label,
-    source: pricing.source,
-    estimated: false,
-  };
-}
-
-function anthropicPriceFor(model) {
-  const rate = providerListPricing({ provider: "anthropic", modelId: model });
-  if (!rate || rate.tier === "subscription") {
-    return null;
-  }
-  const input = rate.inputPerMillion;
-  return {
-    input,
-    cacheWrite5m: input * 1.25,
-    cacheWrite1h: input * 2,
-    cacheRead: input * 0.1,
-    output: rate.outputPerMillion,
-    label: rate.label,
-    source: rate.source,
-    estimated: rate.estimated,
-  };
-}
-
-function fastPriceFor(model) {
-  const id = model.toLowerCase();
-  const key = Object.keys(FAST_PRICES).find((candidate) => id.startsWith(candidate));
-  return key ? FAST_PRICES[key] : null;
-}
-
-function priceFor(model, usage) {
-  const fireworksPrice = fireworkPriceFor(model);
-  let price = fireworksPrice ?? anthropicPriceFor(model);
-  price ??= DEFAULT_PRICE;
-
-  const fast = usage.speed === "fast" ? fastPriceFor(model) : null;
-  if (fast) {
-    return {
-      ...price,
-      fireworks: Boolean(fireworksPrice),
-      input: fast.input,
-      cacheWrite5m: fast.input * 1.25,
-      cacheWrite1h: fast.input * 2,
-      cacheRead: fast.input * 0.1,
-      output: fast.output,
-    };
-  }
-  return { ...price, fireworks: Boolean(fireworksPrice) };
-}
-
 function numberValue(value) {
   return Number.isFinite(value) ? value : 0;
-}
-
-export function computeClaudeUsageCost(model, usage = {}) {
-  const price = priceFor(model, usage);
-  const input = numberValue(usage.input_tokens);
-  const cacheRead = numberValue(usage.cache_read_input_tokens);
-  const output = numberValue(usage.output_tokens);
-  const cacheCreation = usage.cache_creation && typeof usage.cache_creation === "object"
-    ? usage.cache_creation
-    : null;
-  const cacheWrite5m = cacheCreation
-    ? numberValue(cacheCreation.ephemeral_5m_input_tokens)
-    : numberValue(usage.cache_creation_input_tokens);
-  const cacheWrite1h = cacheCreation ? numberValue(cacheCreation.ephemeral_1h_input_tokens) : 0;
-
-  let tokenCost = (
-    input * price.input
-    + cacheWrite5m * price.cacheWrite5m
-    + cacheWrite1h * price.cacheWrite1h
-    + cacheRead * price.cacheRead
-    + output * price.output
-  ) / 1_000_000;
-
-  if (usage.inference_geo === "us") {
-    tokenCost *= US_INFERENCE_GEO_MULTIPLIER;
-  }
-  if (usage.service_tier === "batch") {
-    tokenCost *= BATCH_DISCOUNT;
-  }
-
-  const webSearches = numberValue(usage.server_tool_use?.web_search_requests);
-  const cost = tokenCost + (webSearches / 1000) * WEB_SEARCH_PER_1K;
-
-  return {
-    model,
-    displayModel: displayModel(model),
-    fireworks: price.fireworks,
-    input,
-    cacheWrite5m,
-    cacheWrite1h,
-    cacheRead,
-    output,
-    webSearches,
-    cost,
-    estimated: price.estimated,
-    rates: {
-      inputPerMillion: price.input,
-      cacheWrite5mPerMillion: price.cacheWrite5m,
-      cacheWrite1hPerMillion: price.cacheWrite1h,
-      cacheReadPerMillion: price.cacheRead,
-      outputPerMillion: price.output,
-      webSearchPer1k: WEB_SEARCH_PER_1K,
-      label: price.label,
-      source: price.source,
-      estimated: price.estimated,
-    },
-  };
 }
 
 function cleanSessionName(value) {
@@ -642,35 +508,11 @@ export function parseClaudeUsageLog(text) {
 }
 
 function sumRows(rows) {
-  return rows.reduce((totals, row) => ({
-    input: totals.input + row.input,
-    cacheWrite5m: totals.cacheWrite5m + row.cacheWrite5m,
-    cacheWrite1h: totals.cacheWrite1h + row.cacheWrite1h,
-    cacheRead: totals.cacheRead + row.cacheRead,
-    output: totals.output + row.output,
-    webSearches: totals.webSearches + row.webSearches,
-    cost: totals.cost + row.cost,
-  }), {
-    input: 0,
-    cacheWrite5m: 0,
-    cacheWrite1h: 0,
-    cacheRead: 0,
-    output: 0,
-    webSearches: 0,
-    cost: 0,
-  });
+  return sumUsage(rows);
 }
 
 function addTotals(a, b) {
-  return {
-    input: a.input + b.input,
-    cacheWrite5m: a.cacheWrite5m + b.cacheWrite5m,
-    cacheWrite1h: a.cacheWrite1h + b.cacheWrite1h,
-    cacheRead: a.cacheRead + b.cacheRead,
-    output: a.output + b.output,
-    webSearches: a.webSearches + b.webSearches,
-    cost: a.cost + b.cost,
-  };
+  return addUsage(a, b);
 }
 
 function rowHasUsage(row) {
@@ -680,7 +522,7 @@ function rowHasUsage(row) {
     || row.cacheRead > 0
     || row.output > 0
     || row.webSearches > 0
-    || row.cost > 0;
+    || (row.cost ?? 0) > 0;
 }
 
 function reportHasUsage(report) {
@@ -695,6 +537,7 @@ function reportFromRows(filePath, rows, { sessionName = "" } = {}) {
     rows: usedRows,
     totals: sumRows(usedRows),
     estimated: usedRows.some((row) => row.estimated),
+    unpriced: usedRows.filter((row) => row.priced === false).length,
   };
   if (sessionName) {
     report.sessionName = sessionName;
@@ -744,6 +587,7 @@ async function readClaudeUsageAtPath(sessionPath) {
     grandTotals,
     grandRequests: report.requests + subagents.reduce((total, subagent) => total + subagent.requests, 0),
     estimated: report.estimated || subagents.some((subagent) => subagent.estimated),
+    unpriced: report.unpriced + subagents.reduce((total, subagent) => total + subagent.unpriced, 0),
   };
 }
 
@@ -764,6 +608,7 @@ export async function readClaudeUsages({ home, session = "", lastN = 1 }) {
     grandTotals,
     grandRequests: sessions.reduce((total, report) => total + report.grandRequests, 0),
     estimated: sessions.some((report) => report.estimated),
+    unpriced: sessions.reduce((total, report) => total + report.unpriced, 0),
     lastN: sessions.length,
     requestedLastN,
     sessionCount: sessions.length,
@@ -775,10 +620,13 @@ function fmtInt(value) {
 }
 
 function fmtCost(value) {
-  return value.toFixed(2);
+  return value == null ? UNPRICED_TEXT : usageCostDigits(value);
 }
 
 function fmtRate(value) {
+  if (value == null) {
+    return UNPRICED_TEXT;
+  }
   const text = value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
   return `$${text}`;
 }
@@ -880,11 +728,11 @@ function modelRateRows(report) {
   for (const row of allRows(report)) {
     const key = [
       row.model,
-      row.rates.inputPerMillion,
-      row.rates.cacheWrite5mPerMillion,
-      row.rates.cacheWrite1hPerMillion,
-      row.rates.cacheReadPerMillion,
-      row.rates.outputPerMillion,
+      row.rates?.inputPerMillion,
+      row.rates?.cacheWrite5mPerMillion,
+      row.rates?.cacheWrite1hPerMillion,
+      row.rates?.cacheReadPerMillion,
+      row.rates?.outputPerMillion,
     ].join("|");
     if (seen.has(key)) {
       continue;
@@ -923,14 +771,14 @@ function formatEstimateExplanation(report) {
   ];
 
   const rows = rates.map((row) => {
-    const r = row.rates;
+    const r = row.rates ?? {};
     return [
       row.model,
-      fmtRate(r.inputPerMillion),
-      row.fireworks ? "-" : fmtRate(r.cacheWrite5mPerMillion),
-      row.fireworks ? "-" : fmtRate(r.cacheWrite1hPerMillion),
-      fmtRate(r.cacheReadPerMillion),
-      fmtRate(r.outputPerMillion),
+      fmtRate(r.inputPerMillion ?? null),
+      row.fireworks ? "-" : fmtRate(r.cacheWrite5mPerMillion ?? null),
+      row.fireworks ? "-" : fmtRate(r.cacheWrite1hPerMillion ?? null),
+      fmtRate(r.cacheReadPerMillion ?? null),
+      fmtRate(r.outputPerMillion ?? null),
     ];
   });
   lines.push(...formatWrappedTable({
@@ -989,11 +837,11 @@ function summarizeUsageRows(rows) {
       output: 0,
       cost: 0,
     };
-    current.calls += 1;
-    current.input += row.input;
-    current.output += row.output;
-    current.cost += row.cost;
-    byModel.set(key, current);
+    byModel.set(key, {
+      ...current,
+      ...addUsage(current, row),
+      calls: current.calls + 1,
+    });
   }
   return [...byModel.values()].sort((a, b) => (
     (a.subagentId === "Parent" && b.subagentId !== "Parent" ? -1 : 0)
@@ -1004,15 +852,10 @@ function summarizeUsageRows(rows) {
 }
 
 function formatPlainSummaryTable(rows, label) {
+  const totals = sumUsage(rows);
   let calls = 0;
-  let input = 0;
-  let output = 0;
-  let cost = 0;
   const tableRows = rows.map((row) => {
     calls += row.calls;
-    input += row.input;
-    output += row.output;
-    cost += row.cost;
     return [
       row.subagentId,
       row.model,
@@ -1023,7 +866,14 @@ function formatPlainSummaryTable(rows, label) {
     ];
   });
 
-  tableRows.push(["TOTAL", "", fmtInt(calls), fmtInt(input), fmtInt(output), fmtCost(cost)]);
+  tableRows.push([
+    "TOTAL",
+    "",
+    fmtInt(calls),
+    fmtInt(totals.input),
+    fmtInt(totals.output),
+    fmtCost(totals.cost),
+  ]);
   return formatWrappedTable({
     label,
     headers: ["Parent/Sub-agent ID", "Model", "Calls", "Input", "Output", "Cost (USD)"],
@@ -1045,10 +895,8 @@ function formatPlainSessionTotalsTable(sessions, label) {
 
   const totals = sessions.reduce(
     (total, report) => ({
+      ...addUsage(total, report.grandTotals),
       calls: total.calls + report.grandRequests,
-      input: total.input + report.grandTotals.input,
-      output: total.output + report.grandTotals.output,
-      cost: total.cost + report.grandTotals.cost,
     }),
     { calls: 0, input: 0, output: 0, cost: 0 },
   );
@@ -1073,7 +921,28 @@ function plainSummaryRowsForReport(report) {
 }
 
 function formatTotalsLine(label, totals) {
-  return `${label}: $${fmtCost(totals.cost)} (${fmtInt(totals.input)} input, ${fmtInt(totals.cacheRead)} cache read, ${fmtInt(totals.output)} output)`;
+  const cost = totals.cost == null ? UNPRICED_TEXT : `$${fmtCost(totals.cost)}`;
+  return `${label}: ${cost} (${fmtInt(totals.input)} input, ${fmtInt(totals.cacheRead)} cache read, ${fmtInt(totals.output)} output)`;
+}
+
+/**
+ * Why a cost column reads `n/a`, named per model so it is actionable.
+ *
+ * @param {{ rows?: any[], subagents?: any[], unpriced?: number }} report
+ * @returns {string[]}
+ */
+function unpricedNote(report) {
+  if (!report.unpriced) {
+    return [];
+  }
+  const models = [...new Set(allRows(report)
+    .filter((row) => row.priced === false)
+    .map((row) => row.displayModel))].sort();
+  return [
+    `Note: ${report.unpriced} request(s) have no rate available, so their cost is not shown`
+    + ` and totals that include them read ${UNPRICED_TEXT}: ${models.join(", ")}.`
+    + ` Refresh the model catalog (fireconnect model list --refresh) or see ${FIREWORKS_PRICING_DOCS_URL}.`,
+  ];
 }
 
 function sessionId(report) {
@@ -1123,6 +992,7 @@ function formatClaudeUsageVerboseReport(report) {
   if (report.estimated) {
     lines.push("Note: Some rows used fallback/reference pricing because the model id was not recognized.");
   }
+  lines.push(...unpricedNote(report));
   return lines.join("\n");
 }
 
@@ -1147,6 +1017,7 @@ function formatClaudeUsagePlainSummaryReport(report) {
   if (report.estimated) {
     lines.push("Note: Some rows used fallback/reference pricing because the model id was not recognized.");
   }
+  lines.push(...unpricedNote(report));
   return lines.join("\n");
 }
 
@@ -1181,6 +1052,9 @@ export function formatClaudeUsageReports(reportGroup, { verbose = false, plain =
     if (reportGroup.estimated) {
       lines.push("Note: Some rows used fallback/reference pricing because the model id was not recognized.");
     }
+    if (reportGroup.unpriced) {
+      lines.push(`Note: ${reportGroup.unpriced} request(s) have no rate available; their cost is not included.`);
+    }
     return lines.join("\n");
   }
   if (plain) {
@@ -1200,6 +1074,9 @@ export function formatClaudeUsageReports(reportGroup, { verbose = false, plain =
     lines.push(...formatPlainSessionTotalsTable(sessions, `Session totals for last ${sessions.length} sessions:`));
     if (reportGroup.estimated) {
       lines.push("Note: Some rows used fallback/reference pricing because the model id was not recognized.");
+    }
+    if (reportGroup.unpriced) {
+      lines.push(`Note: ${reportGroup.unpriced} request(s) have no rate available; their cost is not included.`);
     }
     return lines.join("\n");
   }

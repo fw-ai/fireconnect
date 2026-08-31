@@ -6,14 +6,17 @@ import {
   resolveClaudeActivationPlan,
 } from "../../../lib/harnesses/claude/activation.mjs";
 import {
+  CLAUDE_FIREWORKS_PINNED_DEFAULTS,
   CLAUDE_MODEL_SLOTS,
   defaultClaudeModelMapping,
+  FIRST_CONNECT_AUTOMATIC_SONNET_MODEL,
   inferClaudeActiveKeyType,
   migrateLegacyClaudeModelMapping,
   normalizeClaudeProfiles,
   savedClaudeModelMapping,
   withSavedClaudeModelMapping,
 } from "../../../lib/harnesses/claude/model-profile.mjs";
+import { CLAUDE_NATIVE_MODEL_ID } from "../../../lib/fireworks/model-id.mjs";
 
 const EMPTY_OVERRIDES = {
   main: "",
@@ -131,6 +134,96 @@ describe("Claude model profiles", () => {
       snapshot: { profiles, intent: { mapping: ambiguous } },
     });
     assert.deepEqual(plan.mapping, firepass);
+  });
+
+  it("keeps a live Sonnet pin when Opus is already FireRouter", () => {
+    const persisted = {
+      ...defaultClaudeModelMapping("fireworks"),
+      opus: "firerouter",
+      sonnet: "deepseek-pro-latest",
+    };
+    const profiles = withSavedClaudeModelMapping({}, "fireworks", persisted);
+    const plan = resolveClaudeActivationPlan({
+      ctx: EMPTY_OVERRIDES,
+      keyType: "fireworks",
+      activeKeyType: "fireworks",
+      snapshot: { profiles, intent: { mapping: persisted } },
+    });
+    assert.equal(plan.mapping.sonnet, "deepseek-pro-latest");
+  });
+
+  it("honors explicit --sonnet overrides and live custom Sonnet pins", () => {
+    const live = {
+      ...defaultClaudeModelMapping("fireworks"),
+      opus: "firerouter",
+      sonnet: "kimi-latest",
+    };
+    const plan = resolveClaudeActivationPlan({
+      ctx: EMPTY_OVERRIDES,
+      keyType: "fireworks",
+      activeKeyType: "fireworks",
+      snapshot: { profiles: {}, intent: { mapping: live } },
+    });
+    assert.equal(plan.mapping.sonnet, "kimi-latest");
+
+    const explicit = resolveClaudeActivationPlan({
+      ctx: { ...EMPTY_OVERRIDES, sonnet: "deepseek-pro-latest" },
+      keyType: "fireworks",
+      activeKeyType: "fireworks",
+      snapshot: {
+        profiles: {},
+        intent: {
+          mapping: {
+            ...defaultClaudeModelMapping("fireworks"),
+            opus: "firerouter",
+          },
+        },
+      },
+    });
+    assert.equal(explicit.mapping.sonnet, "deepseek-pro-latest");
+  });
+
+  it("does not rewrite an unpinned native Sonnet slot under FireRouter Opus", () => {
+    const live = {
+      ...defaultClaudeModelMapping("fireworks"),
+      opus: "firerouter",
+      sonnet: CLAUDE_NATIVE_MODEL_ID,
+    };
+    const plan = resolveClaudeActivationPlan({
+      ctx: EMPTY_OVERRIDES,
+      keyType: "fireworks",
+      activeKeyType: "fireworks",
+      snapshot: { profiles: {}, intent: { mapping: live } },
+    });
+    assert.equal(plan.mapping.sonnet, CLAUDE_NATIVE_MODEL_ID);
+  });
+
+  it("moves Sonnet to GLM when Opus switches to FireRouter without a Sonnet override", () => {
+    const live = {
+      ...defaultClaudeModelMapping("fireworks"),
+      opus: "glm-latest",
+      sonnet: "deepseek-pro-latest",
+    };
+    const plan = resolveClaudeActivationPlan({
+      ctx: { ...EMPTY_OVERRIDES, opus: "firerouter" },
+      keyType: "fireworks",
+      activeKeyType: "fireworks",
+      snapshot: { profiles: {}, intent: { mapping: live } },
+    });
+    assert.equal(plan.mapping.opus, "firerouter");
+    assert.equal(plan.mapping.sonnet, FIRST_CONNECT_AUTOMATIC_SONNET_MODEL);
+  });
+
+  it("auto-pins Opus to firerouter on first connect when FireRouter auth is available", () => {
+    const plan = resolveClaudeActivationPlan({
+      ctx: EMPTY_OVERRIDES,
+      keyType: "fireworks",
+      activeKeyType: "",
+      automaticFirerouter: true,
+      snapshot: { profiles: {}, intent: null },
+    });
+    assert.equal(plan.mapping.opus, "firerouter");
+    assert.equal(plan.mapping.sonnet, FIRST_CONNECT_AUTOMATIC_SONNET_MODEL);
   });
 
   it("defers routing validation only when the wizard can add FireRouter", () => {

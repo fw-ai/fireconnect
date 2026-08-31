@@ -73,6 +73,15 @@ describe("parseCli", () => {
     assert.equal(parsed.command, "model");
     assert.equal(parsed.modelSubcommand, "list");
     assert.equal(parsed.ctx.search, "glm");
+    assert.equal(parsed.ctx.refresh, false);
+  });
+
+  it("parses model list --refresh", () => {
+    const parsed = parseCli(["model", "list", "--refresh"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "model");
+    assert.equal(parsed.modelSubcommand, "list");
+    assert.equal(parsed.ctx.refresh, true);
   });
 
   it("parses bare harness as on", () => {
@@ -80,6 +89,27 @@ describe("parseCli", () => {
     assert.equal(parsed.kind, "harness");
     assert.equal(parsed.route.harnessId, "claude");
     assert.equal(parsed.route.verb, "on");
+  });
+
+  it("aliases chatgpt to the codex harness", () => {
+    const parsed = parseCli(["chatgpt", "on"]);
+    assert.equal(parsed.kind, "harness");
+    assert.equal(parsed.route.harnessId, "codex");
+    assert.equal(parsed.route.verb, "on");
+  });
+
+  it("aliases bare chatgpt to codex on", () => {
+    const parsed = parseCli(["chatgpt"]);
+    assert.equal(parsed.kind, "harness");
+    assert.equal(parsed.route.harnessId, "codex");
+    assert.equal(parsed.route.verb, "on");
+  });
+
+  it("passes the typed chatgpt help topic through for display", () => {
+    const parsed = parseCli(["help", "chatgpt"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "help");
+    assert.equal(parsed.helpTopic, "chatgpt");
   });
 
   it("parses harness verb", () => {
@@ -290,6 +320,10 @@ describe("parseCli typo suggestions", () => {
   it("suggests the nearest command", () => {
     assert.throws(() => parseCli(["cluade", "on"]), /Did you mean: claude\?/);
     assert.throws(() => parseCli(["confgure"]), /Did you mean: configure\?/);
+  });
+
+  it("suggests harness aliases, which help advertises as top-level commands", () => {
+    assert.throws(() => parseCli(["chatgtp", "on"]), /Did you mean: chatgpt\?/);
   });
 
   it("suggests the nearest flag", () => {

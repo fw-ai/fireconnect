@@ -17,7 +17,6 @@ import {
   fireworksProviderStatus,
   isFireconnectProvider,
   makeFireconnectSecretId,
-  migrateVscodeResponsesApiType,
   prettyModelName,
   removeFireconnectProvider,
   vscodeDataDir,
@@ -96,6 +95,24 @@ describe("vscode-core pure transforms", () => {
     assert.equal(m.maxOutputTokens, 131_072);
   });
 
+  it("buildModelEntry registers auto under its bare slug with vision", () => {
+    const m = buildModelEntry("auto");
+    assert.equal(m.id, "auto");
+    assert.equal(m.name, "Auto");
+    assert.equal(m.vision, true);
+    assert.equal(m.toolCalling, true);
+    assert.equal(m.maxInputTokens, 1_048_575);
+    assert.equal(m.maxOutputTokens, 131_072);
+  });
+
+  it("buildModelEntry registers auto-* under the variant slug with shared limits", () => {
+    const m = buildModelEntry("auto-instant");
+    assert.equal(m.id, "auto-instant");
+    assert.equal(m.name, "Auto Instant");
+    assert.equal(m.vision, true);
+    assert.equal(m.maxInputTokens, 1_048_575);
+  });
+
   it("buildAzureModelEntry sets maxInputTokens from the mapped Fireworks spec", () => {
     const m = buildAzureModelEntry("FW-GLM-5.2", "https://example.services.ai.azure.com/openai/v1");
     assert.equal(m.id, "FW-GLM-5.2");
@@ -157,68 +174,6 @@ describe("vscode-core pure transforms", () => {
     assert.equal(prettyModelName("accounts/fireworks/models/glm-5p2"), "GLM 5.2");
     assert.equal(prettyModelName("accounts/fireworks/models/deepseek-v4-flash"), "Deepseek V4 Flash");
     assert.equal(prettyModelName(""), "(unset)");
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/* migrateVscodeResponsesApiType — upgrade flip from the Responses wire to      */
-/* chat-completions. File-based but headless: `isRunning` is injected so the    */
-/* VS Code guard is deterministic.                                              */
-/* -------------------------------------------------------------------------- */
-
-describe("migrateVscodeResponsesApiType", () => {
-  const legacyProvider = (secretId) => ({
-    name: FIRECONNECT_PROVIDER_NAME,
-    vendor: "customendpoint",
-    apiType: "responses",
-    apiKey: `\${input:${secretId}}`,
-    models: [buildModelEntry("accounts/fireworks/routers/glm-latest")],
-  });
-
-  it("flips the fireconnect provider to chat-completions, leaving user providers alone", async () => {
-    await withTempHome("vscode-migrate-", async (home) => {
-      const vscodePath = path.join(home, "chatLanguageModels.json");
-      const secretId = makeFireconnectSecretId();
-      await writeFile(vscodePath, `${JSON.stringify([userProvider(), legacyProvider(secretId)])}\n`);
-
-      const migrated = await migrateVscodeResponsesApiType({ vscodePath, isRunning: () => false });
-      assert.equal(migrated, true);
-
-      const arr = await readJson(vscodePath);
-      assert.deepEqual(arr[0], userProvider()); // user provider fully untouched
-      assert.equal(arr[1].apiType, "chat-completions"); // flipped
-      assert.equal(arr[1].apiKey, `\${input:${secretId}}`); // secret reference preserved
-      assert.equal(arr[1].models[0].id, "glm-latest"); // models preserved
-    });
-  });
-
-  it("no-ops when the provider is already chat-completions or absent", async () => {
-    await withTempHome("vscode-migrate-noop-", async (home) => {
-      const vscodePath = path.join(home, "chatLanguageModels.json");
-      const secretId = makeFireconnectSecretId();
-      const original = `${JSON.stringify(
-        addFireworksProvider([], { secretId, models: [buildModelEntry("accounts/fireworks/routers/glm-latest")] }),
-      )}\n`;
-      await writeFile(vscodePath, original);
-
-      assert.equal(await migrateVscodeResponsesApiType({ vscodePath, isRunning: () => false }), false);
-      assert.equal(await readFile(vscodePath, "utf8"), original); // byte-for-byte untouched
-
-      // No fireconnect provider at all → nothing to migrate.
-      await writeFile(vscodePath, `${JSON.stringify([userProvider()])}\n`);
-      assert.equal(await migrateVscodeResponsesApiType({ vscodePath, isRunning: () => false }), false);
-    });
-  });
-
-  it("skips while VS Code is running", async () => {
-    await withTempHome("vscode-migrate-running-", async (home) => {
-      const vscodePath = path.join(home, "chatLanguageModels.json");
-      const original = `${JSON.stringify([legacyProvider(makeFireconnectSecretId())])}\n`;
-      await writeFile(vscodePath, original);
-
-      assert.equal(await migrateVscodeResponsesApiType({ vscodePath, isRunning: () => true }), false);
-      assert.equal(await readFile(vscodePath, "utf8"), original);
-    });
   });
 });
 
@@ -407,8 +362,11 @@ describe("vscode harness integration", () => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
       const legacy = await readJson(vscodePath);
-      legacy.find(isFireconnectProvider).models[0].id =
-        "accounts/fireworks/routers/glm-fast-latest";
+      const provider = legacy.find(isFireconnectProvider);
+      provider.models = [{
+        ...provider.models[0],
+        id: "accounts/fireworks/routers/glm-fast-latest",
+      }];
       await writeFile(vscodePath, `${JSON.stringify(legacy, null, "\t")}\n`);
       const r = await runCliJson(["vscode", "status", "--vscode-path", vscodePath, "--json"], { home, env: secretEnv() });
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);

@@ -10,10 +10,10 @@ import {
 import {
   fireworksModelSlug,
   fullFireworksResourceId,
-  isFirerouterGatewayPattern,
-  isFirerouterModel,
+  isAutoModelId,
+  isFirerouterModelPattern,
 } from "../../fireworks/model-id.mjs";
-import { prettyModelName, preferLatestAliases } from "../../fireworks/models.mjs";
+import { autoDisplayName, firerouterDisplayName, prettyModelName, preferLatestAliases } from "../../fireworks/models.mjs";
 import { getServerlessCatalogSnapshot } from "../../fireworks/serverless-catalog-cache.mjs";
 import { mergeFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
@@ -52,8 +52,11 @@ function withPiModelDefaults(model) {
 }
 
 function piFireworksDisplayName(modelId) {
-  if (isFirerouterModel(modelId)) {
-    return "FireRouter";
+  if (isFirerouterModelPattern(modelId)) {
+    return firerouterDisplayName(modelId);
+  }
+  if (isAutoModelId(modelId)) {
+    return autoDisplayName(modelId);
   }
   const liveLabel = resolveFireworksModelLabel(modelId);
   if (liveLabel) {
@@ -105,12 +108,30 @@ export function buildPiCustomFireworksModelEntry(modelId, name, reasoning = true
 export const PI_FIREWORKS_ROUTER_SCOPE = "fireworks/accounts/fireworks/routers/*";
 export const PI_ENABLED_MODELS = [PI_FIREWORKS_ROUTER_SCOPE];
 
+const PI_ROUTER_ID_PREFIX = "accounts/fireworks/routers/";
+
+/**
+ * Pi resolves `defaultModel` through `enabledModels` and silently substitutes
+ * its own built-in default when the model falls outside that scope — which then
+ * 404s, because Pi's default (kimi-k2p5-turbo) is long gone from the gateway.
+ * So any active model that isn't a router-path id (`auto`, a concrete serverless
+ * model, a custom deployment) is enabled explicitly alongside the router scope.
+ * @param {string} activeModelId id as stored in Pi's config
+ */
+export function piEnabledModels(activeModelId) {
+  const stored = fullFireworksResourceId(activeModelId ?? "");
+  if (!stored || stored.startsWith(PI_ROUTER_ID_PREFIX)) {
+    return [...PI_ENABLED_MODELS];
+  }
+  return [...PI_ENABLED_MODELS, `${PI_PROVIDER}/${stored}`];
+}
+
 function isRouterCatalogId(id) {
   if (!id || typeof id !== "string") {
     return false;
   }
   // firerouter* gateway patterns (incl. slash-bearing like firerouter/x).
-  if (isFirerouterGatewayPattern(id)) {
+  if (isFirerouterModelPattern(id)) {
     return true;
   }
   // Router aliases / suffixed router slugs, by the same heuristic
@@ -130,9 +151,9 @@ function piModelsToRegister(resolvedModel, catalogModelIds = []) {
     .filter(isRouterCatalogId);
   const entries = routerCatalog.map((id) => ({ id, name: piFireworksDisplayName(id), reasoning: true }));
   // Always include the active model so a `--model <id>` that isn't in the router
-  // catalog (e.g. a concrete direct model or a custom deployment) is still
-  // registered — it becomes defaultModel. It is hidden from the picker by the
-  // router-only enabledModels scope, but Pi can still use it as the default.
+  // catalog (e.g. `auto`, a concrete direct model, or a custom deployment) is
+  // still registered — it becomes defaultModel, and piEnabledModels adds it to
+  // the scope so Pi actually uses it.
   const resolvedCanonical = fullFireworksResourceId(resolvedModel);
   if (resolvedCanonical
     && !entries.some((entry) => fullFireworksResourceId(entry.id) === resolvedCanonical)) {
@@ -204,7 +225,7 @@ export function mergePiFireworksRouterModels(config, resolvedModel, managedHeade
   // catalog exactly — no accumulation. User-added entries are left untouched.
   // Offline (empty catalog, direct mode) we skip this and merge, so a transient
   // catalog fetch failure doesn't wipe the picker.
-  const rebuilding = isFirerouterGatewayPattern(resolvedModel)
+  const rebuilding = isFirerouterModelPattern(resolvedModel)
     || catalogModelIds.some((id) => typeof id === "string" && id.startsWith("accounts/"));
   if (rebuilding && previousManagedIds.length) {
     const prior = new Set(previousManagedIds.map(fullFireworksResourceId));

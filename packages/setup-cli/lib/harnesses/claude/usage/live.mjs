@@ -16,9 +16,46 @@ import {
   promptClaudeUsageAgent,
 } from "./agent-picker.mjs";
 import { listSessionAgents } from "./agents.mjs";
+import { sumCosts } from "./cost.mjs";
 import { findClaudeSessionLog } from "./report.mjs";
 import { runUsageMeter } from "./meter.mjs";
 import { ANSI } from "../../../ui/palette.mjs";
+
+/**
+ * Totals for agents other than the one the meter is currently tracking.
+ * Null costs stay null: an agent with an unpriceable call has an unknown total,
+ * not a free one, and that unknown must reach the session total.
+ *
+ * @param {any[]} agents
+ */
+export function summarizePeerAgents(agents) {
+  let count = 0;
+  let calls = 0;
+  /** @type {Array<number | null>} */
+  const costs = [];
+  /** @type {{ label: string, calls: number, cost: number | null } | null} */
+  let main = null;
+
+  for (const agent of agents) {
+    const agentCalls = agent.report?.requests ?? 0;
+    const agentCost = agent.report?.totals?.cost === undefined
+      ? 0
+      : agent.report.totals.cost;
+    if (agent.kind === "main") {
+      main = { label: agent.label || "Main", calls: agentCalls, cost: agentCost };
+      continue;
+    }
+    count += 1;
+    calls += agentCalls;
+    costs.push(agentCost);
+  }
+  return {
+    count,
+    calls,
+    cost: sumCosts(costs),
+    main,
+  };
+}
 
 /**
  * Whether `claude usage` should run the live meter rather than a snapshot.
@@ -125,25 +162,8 @@ export async function runClaudeUsageLive({
    * @param {string} selfPath the tracked agent's log
    */
   const peersExcluding = async (selfPath) => {
-    const all = await agentsOf(sessionPath);
-    let count = 0;
-    let calls = 0;
-    let cost = 0;
-    /** @type {{ label: string, calls: number, cost: number } | null} */
-    let main = null;
-    for (const agent of all) {
-      if (agent.filePath === selfPath) continue;
-      const agentCalls = agent.report?.requests ?? 0;
-      const agentCost = agent.report?.totals?.cost ?? 0;
-      if (agent.kind === "main") {
-        main = { label: agent.label || "Main", calls: agentCalls, cost: agentCost };
-        continue;
-      }
-      count += 1;
-      calls += agentCalls;
-      cost += agentCost;
-    }
-    return { count, calls, cost, main };
+    const others = (await agentsOf(sessionPath)).filter((agent) => agent.filePath !== selfPath);
+    return summarizePeerAgents(others);
   };
 
   /** Main (or the first agent) of the session at `sessionPath`. */

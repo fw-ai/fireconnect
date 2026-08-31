@@ -1,4 +1,4 @@
-import { isFirerouterGatewayPattern } from "./model-specs.mjs";
+import { isAutoModelId, isFirerouterModelPattern } from "./model-specs.mjs";
 import {
   isGatewayAnthropicSlot,
   shortFireworksModelRef,
@@ -13,17 +13,18 @@ const CUSTOM_DEPLOYMENT_REF_RE = /^accounts\/[^/]+\/deployments\/[^/]+/i;
 
 /**
  * Whether a `--model` id is one we validate against the serverless catalog.
- * Firerouter gateway ids, custom deployment ids, and real Anthropic model ids
- * are served on the gateway but aren't (or aren't always) listed in the public
- * catalog, so they're allowed unconditionally; an empty model means the harness
- * default is used.
+ * Firerouter gateway ids, the `auto` / `auto-*` open-mix routers, custom
+ * deployment ids, and real Anthropic model ids are served on the gateway but
+ * aren't (or aren't always) listed in the public catalog, so they're allowed
+ * unconditionally; an empty model means the harness default is used.
  * @param {string} modelId
  * @returns {boolean}
  */
 export function isModelIdValidationApplicable(modelId) {
   if (!modelId) return false;
   const ref = shortFireworksModelRef(modelId);
-  if (isFirerouterGatewayPattern(ref)) return false;
+  if (isFirerouterModelPattern(ref)) return false;
+  if (isAutoModelId(ref)) return false;
   if (isGatewayAnthropicSlot(ref)) return false;
   return !CUSTOM_DEPLOYMENT_REF_RE.test(ref);
 }

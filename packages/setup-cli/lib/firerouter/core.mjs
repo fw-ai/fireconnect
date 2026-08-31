@@ -1,5 +1,5 @@
 import {
-  isFirerouterModel,
+  isFirerouterModelPattern,
 } from "../fireworks/model-id.mjs";
 import { stdin as input } from "node:process";
 import {
@@ -15,8 +15,7 @@ import {
 
 export const FIREROUTER_FIREWORKS_HEADER = "X-Fireworks-Api-Key";
 export const FIREROUTER_TAGLINE =
-  "Picks a model for each request based on the task.";
-export const LEGACY_FIREROUTER_FIREWORKS_HEADER = "X-FireRouter-Fireworks-Key";
+  "Routes each request between Claude and open models.";
 // Outbound routing preference FireRouter reads to trade capability vs cost
 // (1 = max intelligence … 5 = max savings). Set via `--routing-preference`;
 // omitted entirely when unset so FireRouter applies its own default. Re-running
@@ -122,7 +121,7 @@ export const CLAUDE_FIREROUTER_MODEL_ENV_KEYS = [
  */
 export function firerouterStatusFromEnv(env) {
   const slotValues = CLAUDE_FIREROUTER_MODEL_ENV_KEYS.map((key) => env[key]);
-  return slotValues.some((modelId) => isFirerouterModel(modelId))
+  return slotValues.some((modelId) => isFirerouterModelPattern(modelId))
     ? "firerouter"
     : "other";
 }
@@ -134,7 +133,7 @@ function isFirerouterOwnedEnvEntry(key, value, env) {
   // FireConnect and is rebuilt together. Outside that state a user's own model
   // mapping is never stripped by this helper.
   if (CLAUDE_FIREROUTER_MODEL_ENV_KEYS.includes(key)) {
-    return isFirerouterModel(value) || firerouterStatusFromEnv(env) === "firerouter";
+    return isFirerouterModelPattern(value) || firerouterStatusFromEnv(env) === "firerouter";
   }
   if (firerouterStatusFromEnv(env) !== "firerouter") {
     return false;
@@ -209,10 +208,7 @@ export function customHeaderValue(value, headerNames) {
 }
 
 export function fireworksKeyFromCustomHeaders(value) {
-  return customHeaderValue(value, [
-    FIREROUTER_FIREWORKS_HEADER,
-    LEGACY_FIREROUTER_FIREWORKS_HEADER,
-  ]);
+  return customHeaderValue(value, [FIREROUTER_FIREWORKS_HEADER]);
 }
 
 /**
@@ -260,9 +256,9 @@ export function setFireworksKeyInCustomHeaders(value, fireworksKey) {
 }
 
 /**
- * Remove any Fireworks-key line(s) (current or legacy name) from an
- * ANTHROPIC_CUSTOM_HEADERS value, preserving all other lines. Returns "" when
- * nothing remains, so callers can drop the key entirely on teardown.
+ * Remove any Fireworks-key line(s) from an ANTHROPIC_CUSTOM_HEADERS value,
+ * preserving all other lines. Returns "" when nothing remains, so callers can
+ * drop the key entirely on teardown.
  * @param {unknown} value
  * @returns {string}
  */
@@ -270,10 +266,7 @@ export function stripFireworksKeyFromCustomHeaders(value) {
   if (typeof value !== "string") {
     return "";
   }
-  const names = [
-    FIREROUTER_FIREWORKS_HEADER.toLowerCase(),
-    LEGACY_FIREROUTER_FIREWORKS_HEADER.toLowerCase(),
-  ];
+  const names = [FIREROUTER_FIREWORKS_HEADER.toLowerCase()];
   return value
     .split("\n")
     .filter((line) => {
@@ -296,7 +289,6 @@ export const ANTHROPIC_BYOK_BODY_FIELD = "anthropic_api_key";
 /** Every ANTHROPIC_CUSTOM_HEADERS line FireConnect writes (auth + routing). */
 const MANAGED_CUSTOM_HEADER_NAMES = [
   FIREROUTER_FIREWORKS_HEADER,
-  LEGACY_FIREROUTER_FIREWORKS_HEADER,
   ANTHROPIC_BYOK_HEADER,
   ROUTING_PREFERENCE_HEADER,
   ...FIRECONNECT_TELEMETRY_HEADER_NAMES,
@@ -386,11 +378,10 @@ export function firerouterByokHeaders({ anthropicKey = "" } = {}) {
 
 /**
  * Swap the Fireworks key inside an ANTHROPIC_CUSTOM_HEADERS value while
- * preserving every other line (routing preference, user-added headers). A
- * legacy-named Fireworks header is rewritten under the current name, so the
- * swap also heals settings written before the header rename. Returns the
- * input unchanged (same reference) when it isn't FireRouter-shaped or there
- * is no key to swap in — callers use identity to mean "nothing to write".
+ * preserving every other line (routing preference, user-added headers).
+ * Returns the input unchanged (same reference) when it isn't FireRouter-shaped
+ * or there is no key to swap in; callers use identity to mean "nothing to
+ * write".
  * @param {unknown} value  current ANTHROPIC_CUSTOM_HEADERS
  * @param {string} fireworksKey
  */
@@ -398,10 +389,7 @@ export function replaceFireworksKeyInCustomHeaders(value, fireworksKey) {
   if (typeof value !== "string" || !fireworksKey?.trim()) {
     return value;
   }
-  const fireworksHeaderNames = [
-    FIREROUTER_FIREWORKS_HEADER.toLowerCase(),
-    LEGACY_FIREROUTER_FIREWORKS_HEADER.toLowerCase(),
-  ];
+  const fireworksHeaderNames = [FIREROUTER_FIREWORKS_HEADER.toLowerCase()];
   let found = false;
   const lines = value.split("\n").map((line) => {
     const colon = line.indexOf(":");

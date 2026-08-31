@@ -1,5 +1,6 @@
 import process from "node:process";
 import { FIREWORKS_GATEWAY_URL } from "../fireworks/models.mjs";
+import { fireworksGatewayFetchSignal } from "../fireworks/gateway-fetch.mjs";
 
 /**
  * @typedef {Object} VerifyResult
@@ -31,6 +32,7 @@ export async function verifyFireworksApiKey(apiKey, { gatewayUrl = "" } = {}) {
   try {
     response = await fetch(`${base}/verifyApiKey`, {
       headers: { Authorization: `Bearer ${apiKey}` },
+      signal: fireworksGatewayFetchSignal(),
     });
   } catch (error) {
     const cause = error?.cause;

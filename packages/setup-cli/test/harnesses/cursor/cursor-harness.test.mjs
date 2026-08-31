@@ -907,17 +907,19 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("firerouter without a key reports the missing-key error", async () => {
+  itIfSqlite("firerouter without a key reports the Anthropic-required error", async () => {
     await withTempHome("cursor-firerouter-no-key-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
+      // Bare firerouter routes to an Anthropic primary, so even with no key the
+      // dedicated refusal fires (Cursor can't forward a local Anthropic key) —
+      // more informative than the generic missing-key error.
       const result = await runCli(
         ["cursor", "on", "--model", "firerouter", "--db-path", dbPath, "--force"],
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /No Fireworks API key found/);
-      assert.doesNotMatch(result.stderr, /needs workspace BYOK/);
+      assert.match(result.stderr, /Anthropic API key Cursor can't forward/);
     });
   });
 
@@ -962,22 +964,54 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("firerouter is rejected by Cursor on", async () => {
+  itIfSqlite("firerouter is rejected by Cursor on without workspace BYOK", async () => {
     await withTempHome("cursor-reject-firerouter-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
+      // A pure-Fireworks selection needs no Anthropic key, so without workspace
+      // BYOK it gets the general "enable FireRouter for your account" refusal.
       const unsupported =
         /Ask the Fireworks team to enable FireRouter for your account/;
 
       const selectOn = await runCli(
         [
           "cursor", "on", "--api-key", "fw_test_key_12345",
-          "--model", "firerouter", "--db-path", dbPath, "--force",
+          "--model", "firerouter/kimi-k3", "--db-path", dbPath, "--force",
         ],
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.notEqual(selectOn.code, 0);
       assert.match(selectOn.stderr, unsupported);
+      await assert.rejects(access(path.join(home, ".fireconnect", ".secret-memory")));
+    });
+  });
+
+  itIfSqlite("firerouter selection with an Anthropic primary is refused in Cursor", async () => {
+    await withTempHome("cursor-refuse-anthropic-firerouter-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+      const refused =
+        /Anthropic API key Cursor can't forward/;
+
+      // Bare firerouter's primary is Claude Opus 5 → needs an Anthropic key.
+      const bare = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345",
+          "--model", "firerouter", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.notEqual(bare.code, 0);
+      assert.match(bare.stderr, refused);
+
+      // A multi-model slug naming Claude Opus 5 is the same category — this is
+      // the regression for the crash reported with firerouter/claude-opus-5/kimi-k3-fast.
+      const compound = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345",
+          "--model", "firerouter/claude-opus-5/kimi-k3-fast", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.notEqual(compound.code, 0);
+      assert.match(compound.stderr, refused);
+      // Nothing was written.
       await assert.rejects(access(path.join(home, ".fireconnect", ".secret-memory")));
     });
   });
@@ -1032,7 +1066,7 @@ describe("cursor harness integration", () => {
           cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE),
           "firerouter",
         );
-        assert.match(result.stdout, /FireRouter is on\. Picks a model for each request/);
+        assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
       });
     } finally {
       gateway.server.close();

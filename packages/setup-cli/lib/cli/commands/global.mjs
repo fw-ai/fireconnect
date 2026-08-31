@@ -17,7 +17,7 @@ import {
 } from "../../harnesses/codex/core.mjs";
 import {
   DEEPSEEK_DATA_RELATIVE_DIR,
-} from "../../harnesses/deepseek/core.mjs";
+} from "../../harnesses/deepseek/constants.mjs";
 import {
   PI_DATA_RELATIVE_DIR,
 } from "../../harnesses/pi/core.mjs";
@@ -39,6 +39,8 @@ import { readLocalVersion } from "../../system/version.mjs";
 import { removeShellEnvHook } from "../../io/shell-env-hook.mjs";
 import { runClaudeUpgradePreflight } from "../../system/upgrade.mjs";
 import { finalizeInstallOrUpgrade } from "../../system/finalize-install.mjs";
+import { runUpgradeFinalize } from "../../system/upgrade-finalize.mjs";
+import { runtimeDepsInstalled } from "../../system/ensure-cli-deps.mjs";
 import { deleteSecret } from "../../keys/secret-store.mjs";
 import { demoHelpText } from "../../demo/help.mjs";
 import { info, printBanner, success } from "../../ui/index.mjs";
@@ -165,12 +167,15 @@ function claudeHelp() {
   );
 }
 
-function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "" } = {}) {
+function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "", displayId = id, force = false } = {}) {
   const onOpts = standardOnOpts({
     azure: Boolean(getHarness(id).azure),
     firerouter: getHarness(id).firerouter,
     modelNote: id === "deepseek" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
   });
+  if (force) {
+    onOpts.push(["--force", "Write while the ChatGPT app is running (not recommended)."]);
+  }
   const allOpts = [
     OPT_HOME,
     [configPath, configPathNote || "Explicit config file path."],
@@ -178,9 +183,9 @@ function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNo
   ].filter((row) => row[0]);
 
   return helpLines(
-    `Usage: ${CLI_NAME} ${id} [command] [options]`,
+    `Usage: ${CLI_NAME} ${displayId} [command] [options]`,
     "",
-    `Route ${label} through Fireworks. Bare \`${CLI_NAME} ${id}\` runs on.`,
+    `Route ${label} through Fireworks. Bare \`${CLI_NAME} ${displayId}\` runs on.`,
     codexNote ? `\n${codexNote}` : "",
     "",
     cmdBlock("Commands", [
@@ -243,7 +248,8 @@ export function mainCommandsHelp() {
     cmdBlock("Harnesses", [
       ["claude", "Claude Code"],
       ["opencode", "OpenCode"],
-      ["codex", "Codex CLI"],
+      ["codex", "Codex CLI & ChatGPT app"],
+      ["chatgpt", "Codex CLI & ChatGPT app"],
       ["pi", "Pi"],
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
@@ -272,18 +278,23 @@ export function printHelp(topic = "") {
     return;
   }
 
+  const codexHelpOpts = {
+    configPath: "--config-path <path>",
+    configPathNote: "Explicit ~/.codex/config.toml path.",
+    codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY from your shell. "
+      + "Pass --anthropic-api-key with codex on (or configure), then source your shell config.",
+    force: true,
+  };
   const harnessHelp = {
     claude: claudeHelp(),
     opencode: configHarnessHelp("opencode", "OpenCode", {
       configPath: "--config-path <path>",
       configPathNote: "Explicit opencode.json path.",
     }),
-    codex: configHarnessHelp("codex", "Codex CLI", {
-      configPath: "--config-path <path>",
-      configPathNote: "Explicit ~/.codex/config.toml path.",
-      codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY from your shell. "
-        + "Pass --anthropic-api-key with codex on (or configure), then source your shell config.",
-    }),
+    codex: configHarnessHelp("codex", "Codex CLI & ChatGPT app", codexHelpOpts),
+    // `chatgpt` is an alias for the codex harness (shared ~/.codex config); show
+    // the same help but with the typed name in the usage line.
+    chatgpt: configHarnessHelp("codex", "Codex CLI & ChatGPT app", { ...codexHelpOpts, displayId: "chatgpt" }),
     pi: helpLines(
       configHarnessHelp("pi", "Pi", {
         configPath: "--settings-path <path>",
@@ -379,7 +390,8 @@ export function printHelp(topic = "") {
     cmdBlock("Harnesses", [
       ["claude", "Claude Code"],
       ["opencode", "OpenCode"],
-      ["codex", "Codex CLI"],
+      ["codex", "Codex CLI & ChatGPT app"],
+      ["chatgpt", "Codex CLI & ChatGPT app"],
       ["pi", "Pi"],
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
@@ -410,6 +422,7 @@ export function printHelp(topic = "") {
     optBlock("Global options", [
       ["--version, -V", "Print CLI version (--json for machine-readable)."],
       ["--search <q>", "Filter model list."],
+      ["--refresh", "Bypass the 1-hour cache and refetch (keeps cached data if offline)."],
       ["--json", "Machine-readable model list output."],
     ]),
     "",
@@ -444,17 +457,6 @@ export function runVersionCommand(ctx) {
 }
 
 /**
- * Shared post-bootstrap finalize used by `fireconnect upgrade` and
- * `install.sh` (via hidden `finalize-install`). See finalize-install.mjs.
- *
- * @param {string} home
- * @param {string} installDir
- */
-async function finalizeUpgradeKeyStorage(home, installDir) {
-  await finalizeInstallOrUpgrade({ home, installDir });
-}
-
-/**
  * Hidden easter-egg entry point — not listed in help. Use for local preview;
  * install.sh uses bin/fireconnect-banner.mjs directly.
  */
@@ -464,7 +466,7 @@ export function runBannerCommand() {
 
 /**
  * Hidden install.sh entry point — not listed in help. Same body as upgrade
- * finalize (deps, key-storage probe, harness + websearch MCP rebake).
+ * finalize (deps, key-storage probe, harness migrations, key rebake).
  *
  * @param {{ home?: string }} [ctx]
  */
@@ -483,7 +485,7 @@ export async function runFinalizeInstallCommand(ctx = {}) {
  *   execFile?: typeof execFileSync,
  *   exists?: typeof existsSync,
  *   readVersion?: typeof readInstalledVersion,
- *   finalize?: typeof finalizeUpgradeKeyStorage,
+ *   finalize?: typeof runUpgradeFinalize,
  *   printNotes?: typeof printReleaseNotesAfterUpgrade,
  *   preflight?: typeof runClaudeUpgradePreflight,
  *   getClaudeAdapter?: () => { off: (ctx: object) => Promise<void> },
@@ -492,6 +494,7 @@ export async function runFinalizeInstallCommand(ctx = {}) {
  *   infoFn?: typeof info,
  *   successFn?: typeof success,
  *   log?: (...args: unknown[]) => void,
+ *   runtimeDepsPresent?: (setupDir: string) => boolean,
  * }} [dependencies]
  */
 export async function runUpgradeCommand({
@@ -499,7 +502,7 @@ export async function runUpgradeCommand({
   execFile = execFileSync,
   exists = existsSync,
   readVersion = readInstalledVersion,
-  finalize = finalizeUpgradeKeyStorage,
+  finalize = runUpgradeFinalize,
   printNotes = printReleaseNotesAfterUpgrade,
   preflight = runClaudeUpgradePreflight,
   getClaudeAdapter = () => getHarness(HARNESS.CLAUDE),
@@ -508,6 +511,7 @@ export async function runUpgradeCommand({
   infoFn = info,
   successFn = success,
   log = console.log,
+  runtimeDepsPresent = runtimeDepsInstalled,
 } = {}) {
   if (!home) {
     throw new Error("HOME is not set; upgrade requires HOME to be set.");
@@ -551,8 +555,30 @@ export async function runUpgradeCommand({
     throw new Error("Upgrade failed: unable to determine the fetched revision.");
   }
 
+  const setupDir = path.join(installDir, "packages/setup-cli");
+  const installRuntimeDeps = (lockfileChanged) => {
+    // Reinstall after a lockfile change, and also when package.json deps are
+    // missing (e.g. yaml added while git still reports no lockfile diff, or an
+    // already-current checkout whose node_modules lagged a previous pull).
+    const missing = exists(setupDir) && !runtimeDepsPresent(setupDir);
+    if ((!lockfileChanged && !missing) || !exists(setupDir)) {
+      return;
+    }
+    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+    try {
+      execFile(npmBin, ["install", "--omit=dev", "--no-fund", "--no-audit"], {
+        cwd: setupDir,
+        env: { ...process.env, FIRECONNECT_SKIP_POSTINSTALL_FINALIZE: "1" },
+        stdio: "inherit",
+      });
+    } catch (error) {
+      throw new Error(`Upgrade failed: could not install dependencies (${error.message}). Re-run the installer.`);
+    }
+  };
+
   if (beforeHash && beforeHash === targetHash) {
     infoFn(`Already up to date${before ? ` (v${before})` : ""}.`);
+    installRuntimeDeps(false);
     await printNotes({
       home,
       fromVersion: "",
@@ -589,10 +615,8 @@ export async function runUpgradeCommand({
   const after = await readVersion(installDir);
 
   // Reinstall runtime dependencies after the pull — a new release may have
-  // added/changed deps (e.g. cross-keychain). Without this, upgraded installs
-  // can hit "OS keychain is unavailable" if the dep was missing. Skip the npm
-  // resolution when the lockfile is unchanged between commits (code-only
-  // releases), to avoid ~300-800ms of overhead on every upgrade.
+  // added/changed deps (e.g. yaml). Skip npm when the lockfile is unchanged
+  // *and* every package.json dependency is already on disk.
   const lockfileRel = "packages/setup-cli/package-lock.json";
   let depsChanged = true;
   if (beforeHash && afterHash) {
@@ -603,21 +627,7 @@ export async function runUpgradeCommand({
       depsChanged = true; // non-zero => diff (or git error) => install
     }
   }
-
-  const setupDir = path.join(installDir, "packages/setup-cli");
-  if (depsChanged && exists(setupDir)) {
-    // npm is npm.cmd on Windows; execFileSync without shell:true doesn't resolve
-    // .cmd shims, so pick the right binary name per platform.
-    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
-    try {
-      execFile(npmBin, ["install", "--omit=dev", "--no-fund", "--no-audit"], {
-        cwd: setupDir,
-        stdio: "inherit",
-      });
-    } catch (error) {
-      throw new Error(`Upgrade failed: could not install dependencies (${error.message}). Re-run the installer.`);
-    }
-  }
+  installRuntimeDeps(depsChanged);
 
   if (!claudePreflight.restored) {
     if (before && after && before !== after) {

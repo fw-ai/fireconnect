@@ -10,8 +10,11 @@ import {
   renderFormLines,
   estimateRaceCost,
 } from "../../lib/demo/setup-form.mjs";
-import { CUSTOM_MATCHUP_ID } from "../../lib/demo/demo-matchups.mjs";
-import { CUSTOM_DEMO_PROMPT_ID } from "../../lib/demo/presets.mjs";
+import { CUSTOM_MATCHUP_ID, demoMatchupOptionIds } from "../../lib/demo/demo-matchups.mjs";
+import { CUSTOM_DEMO_PROMPT_ID, demoPromptOptionIds } from "../../lib/demo/presets.mjs";
+
+const CUSTOM_MATCHUP_INDEX = demoMatchupOptionIds().indexOf(CUSTOM_MATCHUP_ID);
+const CUSTOM_PROMPT_INDEX = demoPromptOptionIds().indexOf(CUSTOM_DEMO_PROMPT_ID);
 
 const DEFAULTS = {
   promptSource: "preset",
@@ -37,6 +40,27 @@ function advanceToConfirm(s) {
   return cur;
 }
 
+/**
+ * Cycle a wizard picker to its custom option. `right` wraps, so the walk is
+ * bounded by the option count rather than looping until a hardcoded index.
+ */
+function cycleTo(s, indexOf, target, optionCount) {
+  let cur = s;
+  for (let step = 0; step < optionCount && indexOf(cur) !== target; step += 1) {
+    cur = applyKey(cur, "right");
+  }
+  assert.equal(indexOf(cur), target);
+  return cur;
+}
+
+function selectCustomMatchup(s) {
+  return cycleTo(s, (cur) => cur.matchupIndex, CUSTOM_MATCHUP_INDEX, demoMatchupOptionIds().length);
+}
+
+function selectCustomPrompt(s) {
+  return cycleTo(s, (cur) => cur.promptIndex, CUSTOM_PROMPT_INDEX, demoPromptOptionIds().length);
+}
+
 test("createFormState: starts on matchup step", () => {
   const s = state();
   assert.equal(s.step, "matchup");
@@ -51,23 +75,20 @@ test("applyKey: preset matchup enter advances to game step", () => {
 });
 
 test("applyKey: custom matchup stays on step 1 with inline model pickers", () => {
-  let s = state();
-  while (s.matchupIndex !== 3) {
-    s = applyKey(s, "right");
-  }
+  let s = selectCustomMatchup(state());
   assert.equal(CUSTOM_MATCHUP_ID, "custom");
   assert.equal(s.step, "matchup");
   s = applyKey(s, "down");
   assert.equal(s.focus, "models");
   s = applyKey(s, "right");
-  assert.equal(s.matchupIndex, 3);
+  assert.equal(s.matchupIndex, CUSTOM_MATCHUP_INDEX);
 });
 
 test("applyKey: editing models switches preset to custom", () => {
   let s = state();
   s = applyKey(s, "down");
   s = applyKey(s, "right");
-  assert.equal(s.matchupIndex, 3);
+  assert.equal(s.matchupIndex, CUSTOM_MATCHUP_INDEX);
 });
 
 test("applyKey: same model blocked on confirm", () => {
@@ -83,7 +104,7 @@ test("applyKey: s swaps models on confirm", () => {
   s = applyKey(s, "s");
   assert.equal(s.leftModel, "glm-fast-latest");
   assert.equal(s.rightModel, "opus");
-  assert.equal(s.matchupIndex, 3);
+  assert.equal(s.matchupIndex, CUSTOM_MATCHUP_INDEX);
   assert.equal(formResult(s, { defaults: DEFAULTS }).matchupPresetId, "custom");
 });
 
@@ -94,10 +115,7 @@ test("applyKey: confirm b goes back to game step", () => {
 });
 
 test("applyKey: q inserts into custom prompt text", () => {
-  let s = advanceToGame(state());
-  while (s.promptIndex !== 4) {
-    s = applyKey(s, "right");
-  }
+  let s = selectCustomPrompt(advanceToGame(state()));
   s = applyKey(s, "q");
   assert.equal(s.quit, false);
   assert.equal(s.customPromptText, "q");
@@ -123,20 +141,14 @@ test("applyKey: confirm enter finishes", () => {
 });
 
 test("applyKey: custom game requires text", () => {
-  let s = advanceToGame(state());
-  while (s.promptIndex !== 4) {
-    s = applyKey(s, "right");
-  }
+  let s = selectCustomPrompt(advanceToGame(state()));
   s = applyKey(s, "enter");
   assert.equal(s.step, "game");
   assert.match(s.error, /custom task/i);
 });
 
 test("formResult: custom prompt preserved", () => {
-  let s = advanceToGame(state());
-  while (s.promptIndex !== 4) {
-    s = applyKey(s, "right");
-  }
+  let s = selectCustomPrompt(advanceToGame(state()));
   for (const ch of "build timer") {
     s = applyKey(s, ch);
   }
