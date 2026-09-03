@@ -212,6 +212,11 @@ describe("Fire Pass defaults", () => {
     assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
   });
 
+  test("Fable 5.1 qualifies for Claude Code 1m context", () => {
+    assert.equal(claudeCodeModelId("claude-fable-5-1"), "claude-fable-5-1[1m]");
+    assert.equal(modelQualifiesForClaudeCode1mContext("claude-fable-5-1"), true);
+  });
+
   test("models below 1M context omit the Claude Code [1m] suffix", () => {
     assert.equal(claudeCodeModelId("accounts/fireworks/models/gpt-oss-120b"), "accounts/fireworks/models/gpt-oss-120b");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/minimax-latest"), "accounts/fireworks/routers/minimax-latest");

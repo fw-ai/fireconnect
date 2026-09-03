@@ -55,7 +55,7 @@ describe("Claude slot-level FireRouter", () => {
     );
     assert.equal(
       settings.env.CLAUDE_CODE_SUBAGENT_MODEL,
-      "deepseek-flash-latest",
+      "deepseek-flash-latest[1m]",
     );
     assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, /X-Fireworks-Api-Key: fw_test_key_12345/);
     assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);

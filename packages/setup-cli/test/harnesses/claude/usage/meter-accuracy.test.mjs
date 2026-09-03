@@ -523,6 +523,38 @@ describe("live meter billing accuracy", () => {
     assert.ok(!/\$0\.0000/.test(firstRow), `cost should land on turn 1: ${firstRow}`);
   });
 
+  it("shows full footer model names so Flash does not collide with GLM 5.3", async () => {
+    const usage = { input_tokens: 0, cache_read_input_tokens: 16_300, output_tokens: 3 };
+    const frame = await render([
+      { type: "user", message: { content: "go" } },
+      assistant("a", usage, "accounts/fireworks/models/glm-5p3"),
+      assistant("b", usage, "accounts/fireworks/models/glm-5p3-flash"),
+    ]);
+
+    const footer = plainLines(frame).filter((l) => l.includes("●"));
+    assert.equal(footer.length, 2, `expected two model rows:\n${frame}`);
+    assert.ok(footer.some((l) => /● GLM 5\.3 Flash/.test(l)), `flash label missing:\n${footer.join("\n")}`);
+    assert.ok(
+      footer.some((l) => /● GLM 5\.3\s+\d/.test(l) && !/Flash/.test(l)),
+      `base GLM 5.3 row missing:\n${footer.join("\n")}`,
+    );
+  });
+
+  it("drops an empty footer bucket when revision moves spend to another model", async () => {
+    const usage = { input_tokens: 0, cache_read_input_tokens: 16_300, output_tokens: 3 };
+    const zero = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+    const frame = await render([
+      { type: "user", message: { content: "go" } },
+      assistant("msg_1", zero, "accounts/fireworks/models/glm-5p3-flash"),
+      assistant("msg_1", usage, "accounts/fireworks/models/glm-5p3"),
+    ]);
+
+    const footer = plainLines(frame).filter((l) => l.includes("●"));
+    assert.equal(footer.length, 1, `orphan flash bucket should be gone:\n${frame}`);
+    assert.match(footer[0], /GLM 5\.3/);
+    assert.doesNotMatch(footer[0], /Flash/);
+  });
+
   it("restarts cleanly when the log is truncated and rewritten", async () => {
     // Keeping the old byte offset skipped the head of the new content, so turns
     // written before that offset never appeared and stale turns lingered.
@@ -1096,18 +1128,16 @@ describe("column layout is derived, not duplicated", () => {
     const footer = lines.find((l) => l.trimStart().startsWith("●"));
     assert.ok(header && turn && footer, `need header, turn and footer rows:\n${frame}`);
 
-    // Each heading's right edge must line up with its cell's right edge on BOTH
-    // the turn row and the footer row — that is the property the shared table
-    // buys, and the one a stray literal would break.
+    // Each heading's right edge must line up with its cell's right edge on the
+    // turn row. Footer model names use a wider label block, so footer numeric
+    // columns start further right on purpose.
     for (const head of ["uncached", "cached", "write", "cache%", "out"]) {
       const at = header.indexOf(head) + head.length;
-      for (const [name, row] of [["turn", turn], ["footer", footer]]) {
-        assert.equal(
-          row.slice(0, at).trimEnd().length,
-          at,
-          `${head} not right-aligned on the ${name} row at col ${at}:\n${header}\n${row}`,
-        );
-      }
+      assert.equal(
+        turn.slice(0, at).trimEnd().length,
+        at,
+        `${head} not right-aligned on the turn row at col ${at}:\n${header}\n${turn}`,
+      );
     }
   });
 

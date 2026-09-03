@@ -16,8 +16,8 @@ import { sumCosts } from "./cost.mjs";
 import {
   BAR_MAX,
   COST_COL,
-  FOOTER_LABEL_INDENT,
-  LABEL_BLOCK,
+  FOOTER_LABEL_BLOCK,
+  FOOTER_MODEL_COL,
   MODEL_COL,
   money,
   SHARE_COL,
@@ -202,7 +202,7 @@ export function renderFooter({ totals, unpriced, peers, agentLabel, colorOf, wid
   // the meter 40% of the window — 48-64 cols on a laptop — so this is the common
   // case, not an edge case. Its floor is everything on a model row except the bar
   // itself, derived so a column change cannot leave it stale.
-  const fixedRow = LABEL_BLOCK + TOKEN_COLUMNS_WIDTH + 1 + SHARE_COL + 1 + COST_COL;
+  const fixedRow = FOOTER_LABEL_BLOCK + TOKEN_COLUMNS_WIDTH + 1 + SHARE_COL + 1 + COST_COL;
   const barw = Math.max(0, Math.min(BAR_MAX, width - fixedRow - 2));
 
   const lines = [];
@@ -211,9 +211,9 @@ export function renderFooter({ totals, unpriced, peers, agentLabel, colorOf, wid
     const fill = grand ? Math.floor((t.cost / grand) * barw) : 0;
     const bar = barw ? `${c}${"█".repeat(fill)}${R}${D}${"░".repeat(barw - fill)}${R} ` : "";
     const share = `${grand ? ((t.cost / grand) * 100).toFixed(0) : "0"}%`.padStart(SHARE_COL);
-    // Label padded to LABEL_BLOCK minus its `  ● ` prefix, so the numbers land
-    // under the same headings as a turn row's.
-    const label = key.slice(0, MODEL_COL).padEnd(LABEL_BLOCK - FOOTER_LABEL_INDENT);
+    // Full priced label — turn badges stay compact; truncating here made
+    // "GLM 5.3 Flash" and "GLM 5.3" indistinguishable in the footer.
+    const label = clip(key, FOOTER_MODEL_COL).padEnd(FOOTER_MODEL_COL);
     lines.push(
       `  ${c}●${R} ${label}${D}${tokenCells(t)}${R} `
       + `${bar}${GHOST}${share}${R} ${GOLD}${money(t.cost)}${R}`,

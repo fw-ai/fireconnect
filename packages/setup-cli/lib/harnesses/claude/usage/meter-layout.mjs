@@ -86,6 +86,13 @@ export const TOKEN_COLUMNS_WIDTH = TOKEN_COLUMNS.reduce((n, c) => n + c.width, 0
 /** Model badge column — 8 fits "GLM5.2" and "Opus5" but not two models joined. */
 export const MODEL_COL = 8;
 
+/**
+ * Footer model-name column — full priced labels ("GLM 5.3 Flash (US)"), not the
+ * compact turn-badge width. Footer rows start their numeric block further right
+ * than turn rows so names stay readable without colliding with "GLM 5.3".
+ */
+export const FOOTER_MODEL_COL = 18;
+
 /** Cost column — wide enough for "$1234.5678". */
 export const COST_COL = 10;
 
@@ -116,6 +123,9 @@ export const LABEL_BLOCK = TURN_NO_PREFIX.length + MODEL_COL;
 
 /** Gutter + coloured dot that opens a footer model row, before its label. */
 export const FOOTER_LABEL_INDENT = 4;
+
+/** Width of the footer label block (dot + model name) before numeric columns. */
+export const FOOTER_LABEL_BLOCK = FOOTER_LABEL_INDENT + FOOTER_MODEL_COL;
 
 /** Widest the elastic share bar is allowed to get. */
 export const BAR_MAX = 22;

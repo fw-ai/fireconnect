@@ -15,7 +15,7 @@ const CLAUDE_CODE_1M_SUFFIX = "[1m]";
 
 /**
  * Concrete Anthropic model ids that support Claude Code's 1M context window.
- * Per platform.claude.com/docs: Opus 5 / Sonnet 5 / Fable 5 ship 1M context;
+ * Per platform.claude.com/docs: Opus 5 / Sonnet 5 / Fable 5 / 5.1 ship 1M context;
  * Haiku 4.5 is 200K, so it must NOT receive the `[1m]` suffix (the tag would
  * request a context window the model doesn't have). The bare aliases (opus/
  * sonnet/haiku/fable) resolve to these via ANTHROPIC_DEFAULT_*_MODEL, and a
@@ -30,6 +30,7 @@ const ANTHROPIC_1M_CONTEXT_IDS = new Set([
   "claude-opus-4-5",
   "claude-sonnet-5",
   "claude-fable-5",
+  "claude-fable-5-1",
 ]);
 
 export function stripClaudeCodeContextSuffix(modelId) {

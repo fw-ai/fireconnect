@@ -37,18 +37,12 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 1.40, cachedInput: 0.26, output: 4.40 },
     capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
-  // GLM 5.3 Flash is a distinct cheaper model, not the fast tier of GLM 5.3 —
-  // `glm-flash-latest` names it, while `glm-fast-latest` is the GLM fast tier.
-  // It is also the first vision-capable GLM.
   "glm-5p3-flash": {
     label: "GLM 5.3 Flash",
     pricing: { input: 0.15, cachedInput: 0.03, output: 0.50 },
     capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
     api: { contextLength: 1_048_576, supportsImageInput: true },
   },
-  // US-only Serverless rates are per-model, not a uniform uplift: models
-  // launched from 2026-09-01 carry a 50% premium over the matching global row,
-  // while earlier US routers keep the rates they launched with.
   "glm-5p3-flash-us": {
     label: "GLM 5.3 Flash (US)",
     pricing: { input: 0.225, cachedInput: 0.045, output: 0.75 },
@@ -75,7 +69,6 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
     capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
-  // Priced at parity with the global GLM 5.2 Fast row, with no US premium.
   "glm-5p2-fast-us": {
     label: "GLM 5.2 Fast (US)",
     pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
@@ -86,7 +79,6 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 3.00, cachedInput: 0.30, output: 15.00 },
     capabilities: { contextWindow: 1_040_000, maxOutputTokens: 131_072, vision: true, toolCalling: true },
   },
-  // Launched before the 50% premium, at a 10% premium over the global row.
   "kimi-k3-us": {
     label: "Kimi K3 (US)",
     pricing: { input: 3.30, cachedInput: 0.33, output: 16.50 },
@@ -178,8 +170,6 @@ export const FIREWORKS_MODEL_SPECS = {
       toolCalling: true,
     },
   },
-  // Fireworks-managed mix of open models, served on the gateway but absent from
-  // the public serverless catalog.
   auto: {
     label: "Auto",
     capabilities: {
@@ -273,6 +263,7 @@ export const ROUTER_SPEC_ALIASES = {
 };
 
 const GLM_LATEST_BASE_CANDIDATES = ["glm-5p3", "glm-5p2"];
+const GLM_FAST_LATEST_BASE_CANDIDATES = ["glm-5p3-fast", "glm-5p2-fast"];
 const GLM_FLASH_LATEST_BASE_CANDIDATES = ["glm-5p3-flash"];
 const DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES = ["deepseek-v4-flash-0731", "deepseek-v4-flash"];
 const DEEPSEEK_PRO_LATEST_BASE_CANDIDATES = ["deepseek-v4-pro-0813", "deepseek-v4-pro"];
@@ -289,11 +280,15 @@ function resolveFirstCatalogCandidate(catalogCheck, candidates) {
   return null;
 }
 
-function makeCatalogModelChecker(entryIds = null) {
+function makeCatalogModelChecker(entryIds = null, { includeRouters = false } = {}) {
   if (entryIds) {
-    return (slug) => entryIds.has(`accounts/fireworks/models/${slug}`);
+    return (slug) => entryIds.has(`accounts/fireworks/models/${slug}`)
+      || (includeRouters && entryIds.has(`accounts/fireworks/routers/${slug}`));
   }
-  return (slug) => Boolean(lookupCatalogEntryById(`accounts/fireworks/models/${slug}`));
+  return (slug) => Boolean(
+    lookupCatalogEntryById(`accounts/fireworks/models/${slug}`)
+    || (includeRouters && lookupCatalogEntryById(`accounts/fireworks/routers/${slug}`)),
+  );
 }
 
 function resolveKimiLatestBaseSlug(catalogCheck) {
@@ -313,7 +308,7 @@ export function resolveRouterSpecAliasTarget(alias, entryIds = null) {
     return resolveKimiLatestBaseSlug(catalogCheck) ?? ROUTER_SPEC_ALIASES[alias] ?? null;
   }
   if (alias === "kimi-fast-latest") {
-    if (catalogCheck("kimi-k3-fast")) {
+    if (makeCatalogModelChecker(entryIds, { includeRouters: true })("kimi-k3-fast")) {
       return "kimi-k3-fast";
     }
     const base = resolveKimiLatestBaseSlug(catalogCheck);
@@ -324,6 +319,14 @@ export function resolveRouterSpecAliasTarget(alias, entryIds = null) {
   }
   if (alias === "glm-latest") {
     return resolveFirstCatalogCandidate(catalogCheck, GLM_LATEST_BASE_CANDIDATES)
+      ?? ROUTER_SPEC_ALIASES[alias]
+      ?? null;
+  }
+  if (alias === "glm-fast-latest") {
+    return resolveFirstCatalogCandidate(
+      makeCatalogModelChecker(entryIds, { includeRouters: true }),
+      GLM_FAST_LATEST_BASE_CANDIDATES,
+    )
       ?? ROUTER_SPEC_ALIASES[alias]
       ?? null;
   }
@@ -463,10 +466,13 @@ export function resolveSpecSlug(modelRef) {
   if (FIREWORKS_MODEL_SPECS[shortId]) {
     return shortId;
   }
+  const folded = String(shortId).toLowerCase().replace(/(\d)\.(\d)/g, "$1p$2");
+  if (folded !== shortId && FIREWORKS_MODEL_SPECS[folded]) {
+    return folded;
+  }
   const baseModelId = resolveLiveRouterBaseModelId(modelRef);
   if (baseModelId) {
-    const baseSlug = specShortIdFromModelRef(baseModelId);
-    return fastSpecSlugForBase(baseSlug, shortId);
+    return fastSpecSlugForBase(specShortIdFromModelRef(baseModelId), shortId);
   }
   const aliasTarget = resolveRouterSpecAliasTarget(shortId);
   if (aliasTarget) {
@@ -540,11 +546,9 @@ export function resolveFireworksModelLabel(modelRef) {
 }
 
 export function lookupModelSpec(modelRef) {
-  // firerouter* IDs share the static firerouter catalog metadata (1M context, vision).
   if (isFirerouterModelPattern(modelRef)) {
     return FIREWORKS_MODEL_SPECS.firerouter;
   }
-  // auto / auto-* share the static auto mix metadata (1M context, vision).
   if (isAutoModelId(modelRef)) {
     return FIREWORKS_MODEL_SPECS.auto;
   }
@@ -555,8 +559,6 @@ export function lookupModelSpec(modelRef) {
   const direct = FIREWORKS_MODEL_SPECS[slug];
 
   if (direct) {
-    // Catalog-resolved slugs like kimi-k3-fast ship metadata before pricing lands.
-    // Borrow documented rates from the static -latest alias target when needed.
     if (direct.pricing || !aliasSpec?.pricing) {
       return direct;
     }
@@ -578,8 +580,6 @@ export function isRouterShortId(shortId) {
   if (typeof shortId !== "string") {
     return false;
   }
-  // `firerouter*` prefix (not just the bare slug) mirrors
-  // isFirerouterModelPattern, so firerouter variants classify as routers too.
   return shortId.startsWith("firerouter")
     || Boolean(ROUTER_SPEC_ALIASES[shortId])
     || shortId.endsWith("-latest")
@@ -619,7 +619,6 @@ export function pricingMatchesModelRefTier(modelRef, pricing) {
   if (!pricing) {
     return false;
   }
-  // Priority is opt-in at request time; never surface it in catalog or picker pricing.
   if (pricing.tier === "priority") {
     return false;
   }

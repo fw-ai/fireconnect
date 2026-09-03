@@ -245,6 +245,51 @@ describe("codex-toml-patch", () => {
     assert.match(patched, /model_catalog_json = "~\/\.codex\/fireworks-model-catalog\.json"/);
   });
 
+  it("patchFireconnectRoutingRaw writes web_search = disabled when webSearch option is set", () => {
+    const patched = patchFireconnectRoutingRaw("", { ...ROUTING, webSearch: "disabled" });
+    assert.match(patched, /^web_search = "disabled"$/m);
+    assert.equal(parseToml(patched).root.web_search, "disabled");
+  });
+
+  it("patchFireconnectRoutingRaw omits web_search when webSearch option is absent", () => {
+    const patched = patchFireconnectRoutingRaw("", ROUTING);
+    assert.doesNotMatch(patched, /web_search/);
+  });
+
+  it("patchFireconnectRoutingRaw overrides an existing web_search line without duplicating", () => {
+    const input = [
+      'model_provider = "openai"',
+      'model = "gpt-4.1"',
+      'web_search = "live"',
+      "",
+    ].join("\n");
+    const patched = patchFireconnectRoutingRaw(input, { ...ROUTING, webSearch: "disabled" });
+    assert.equal(
+      (patched.match(/^web_search = .+$/gm) ?? []).length,
+      1,
+      "should not duplicate web_search",
+    );
+    assert.match(patched, /^web_search = "disabled"$/m);
+    assert.equal(parseToml(patched).root.web_search, "disabled");
+  });
+
+  it("stripFireconnectRoutingRaw with stripRootRouting removes fireconnect-managed web_search", () => {
+    const input = [
+      'model_provider = "fireworks-ai"',
+      'model = "accounts/fireworks/routers/glm-latest"',
+      'web_search = "disabled"',
+      "",
+      "[model_providers.fireworks-ai]",
+      'name = "Fireworks"',
+      'base_url = "https://api.fireworks.ai/inference/v1"',
+      'env_key = "FIREWORKS_API_KEY"',
+      "requires_openai_auth = false",
+      "",
+    ].join("\n");
+    const stripped = stripFireconnectRoutingRaw(input, { stripRootRouting: true });
+    assert.doesNotMatch(stripped, /web_search/);
+  });
+
   it("patchCodexCatalogRefRaw updates an existing model_catalog_json line", () => {
     const input = [
       'model_provider = "fireworks-ai"',

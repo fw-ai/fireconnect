@@ -1,6 +1,20 @@
 {
   "releases": [
     {
+      "version": "0.9.6",
+      "highlights": [
+        "Codex 0.153 works with Fireworks again. It turns on a `web_search` tool the Responses API can't accept; FireConnect now bakes `web_search = \"disabled\"` and repairs existing setups on `fireconnect codex on`.",
+        "Cleaner cost breakdown: the status line and meter dedupe and name model labels instead of listing the same one twice."
+      ],
+      "improvements": [
+        "Claude Fable 5.1 pricing added; estimates and `fireconnect model list` are accurate.",
+        "Subagent slot keeps its `[1m]` tag when routed.",
+        "`fireconnect model list` aligns price precision across models.",
+        "`fireconnect claude demo` disables your user MCPs so they can't skew the race."
+      ],
+      "footer": "Using Codex? Run `fireconnect upgrade` and 0.153 keeps working through Fireworks."
+    },
+    {
       "version": "0.9.5",
       "highlights": [
         "Session costs in your Claude prompt. A new status line shows which models ran, what they cost at Fireworks rates, and cache savings. Your own status line is left alone — `fireconnect claude off` restores everything.",

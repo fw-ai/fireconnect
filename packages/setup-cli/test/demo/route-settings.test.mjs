@@ -33,7 +33,7 @@ test("demoCliModel: Anthropic slots resolve to concrete canonical ids (real Anth
   assert.equal(demoCliModel("opus"), "claude-opus-5[1m]");
   assert.equal(demoCliModel("sonnet"), "claude-sonnet-5[1m]");
   assert.equal(demoCliModel("haiku"), "claude-haiku-4-5");
-  assert.equal(demoCliModel("fable"), "claude-fable-5[1m]");
+  assert.equal(demoCliModel("fable"), "claude-fable-5-1[1m]");
 });
 
 test("demoCliModel: Fireworks models get Claude Code context suffix when needed", () => {

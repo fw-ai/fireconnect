@@ -48,7 +48,7 @@ export const ANTHROPIC_SLOT_CONCRETE_IDS = Object.freeze({
   opus: "claude-opus-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5",
-  fable: "claude-fable-5",
+  fable: "claude-fable-5-1",
 });
 
 // Labels include the version, matching the concrete id that actually runs
@@ -57,7 +57,7 @@ const ANTHROPIC_SLOT_LABELS = Object.freeze({
   opus: "Claude Opus 5",
   sonnet: "Claude Sonnet 5",
   haiku: "Claude Haiku 4.5",
-  fable: "Claude Fable 5",
+  fable: "Claude Fable 5.1",
 });
 
 const DEFAULT_LEFT_MODEL = "opus";

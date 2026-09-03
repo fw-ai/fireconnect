@@ -18,6 +18,7 @@ import {
 } from "../../lib/fireworks/models.mjs";
 import {
   catalogWithAutoEntry,
+  formatCatalogSections,
   formatCatalogUpdatedAt,
   organizeCatalogForDisplay,
 } from "../../lib/fireworks/model-list.mjs";
@@ -145,6 +146,37 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       "Aug 29, 2026, 1:28 PM PDT",
     );
     assert.equal(formatCatalogUpdatedAt(null), "bundled with FireConnect");
+  });
+
+  test("formatCatalogSections shows prices with consistent precision", () => {
+    const output = formatCatalogSections([{
+      title: "MODELS",
+      entries: [
+        {
+          id: "accounts/fireworks/models/model-a",
+          shortId: "model-a",
+          displayName: "Model A",
+          pricing: {
+            inputPerMillion: 0.2,
+            cachedInputPerMillion: 0.02,
+            outputPerMillion: 1,
+          },
+        },
+        {
+          id: "accounts/fireworks/models/model-b",
+          shortId: "model-b",
+          displayName: "Model B",
+          pricing: {
+            inputPerMillion: 4.5,
+            cachedInputPerMillion: 0.45,
+            outputPerMillion: 22.5,
+          },
+        },
+      ],
+    }]);
+
+    assert.match(output, /\$0\.200\s+\$0\.020\s+\$1\.000/);
+    assert.match(output, /\$4\.500\s+\$0\.450\s+\$22\.500/);
   });
 
   test("buildPickerCatalogFromApiModels derives routers from usage_identifier", () => {

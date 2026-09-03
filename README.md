@@ -220,7 +220,7 @@ that first connect:
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-latest[1m]",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash-latest[1m]",
     "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-flash-latest[1m]",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash-latest",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash-latest[1m]",
     "ANTHROPIC_CUSTOM_HEADERS": "X-Fireworks-Api-Key: fw_..."
   }
 }
@@ -256,7 +256,11 @@ applied **per model ID** when the resolved serverless context window is at least
 1M tokens (live catalog cache when available, otherwise static specs), plus any
 `firerouter*` gateway pattern. Router aliases such as `deepseek-flash-latest`
 resolve to their base model before the limit check.
-`CLAUDE_CODE_SUBAGENT_MODEL` never gets `[1m]` — Claude Code forwards that value verbatim.
+Every slot is tagged the same way, `CLAUDE_CODE_SUBAGENT_MODEL` included: Claude Code
+reads the tag to size the context window and strips it before the request, so the
+gateway still sees a real model ID. Without the tag Claude Code sizes an unrecognized
+model at the 200K it assumes and auto-compacts the session down to fit, which is what
+starves subagents on a 1M model.
 The `[1m]` tag is Claude Code only; other harnesses (Cursor, etc.) should use the bare
 model ID without the suffix.
 
