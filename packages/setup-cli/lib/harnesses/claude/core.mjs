@@ -647,14 +647,13 @@ export function modelEnvFromMapping(mapping) {
     }
     const envKey = SLOT_MODEL_ENV_KEY[slot];
     if (!envKey) continue;
-    const ref = shortFireworksModelRef(claudeCodeModelId(modelId));
-    merged[envKey] = slot === "subagent"
-      // Claude Code forwards the subagent model id verbatim to the provider API,
-      // unlike ANTHROPIC_MODEL/DEFAULT_* slots where it consumes the [1m] beta tag.
-      // Fireworks has no model literally named "glm-latest[1m]", so the suffix
-      // must be stripped here or subagent/agent-team spawns fail with "model may not exist".
-      ? stripClaudeCodeContextSuffix(ref)
-      : ref;
+    // Every slot — subagent included — carries the [1m] tag when its model has a
+    // 1M window. Claude Code consumes the tag client-side to size the context
+    // window and strips it before the provider call, so Fireworks still sees a
+    // real model id. Leaving it off a 1M model makes Claude Code fall back to the
+    // window it assumes for an unrecognized id (200K) and auto-compact enforces
+    // that assumption, which thrashes subagents that the server could have served.
+    merged[envKey] = shortFireworksModelRef(claudeCodeModelId(modelId));
   }
   return merged;
 }

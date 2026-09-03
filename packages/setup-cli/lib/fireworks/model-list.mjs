@@ -18,8 +18,7 @@ function formatUsd(value) {
   if (!Number.isFinite(value)) {
     return "—";
   }
-  const text = value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
-  return `$${text}`;
+  return `$${value.toFixed(3)}`;
 }
 
 export function formatCatalogUpdatedAt(updatedAt, timeZone = undefined) {

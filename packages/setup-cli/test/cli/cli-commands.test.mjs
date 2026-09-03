@@ -247,8 +247,8 @@ describe("fireconnect claude on", () => {
       assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash (0731) (Latest)");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_FABLE_MODEL);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "GLM 5.3 Flash (Latest)");
-      // Subagent takes the Haiku model, with the [1m] tag stripped.
-      assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, "deepseek-flash-latest");
+      // Subagent takes the Haiku model, [1m] tag and all.
+      assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, CLAUDE_STORED_DS_FLASH_MODEL);
       assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
       assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, undefined);
       assert.equal(settings.env.DISABLE_TELEMETRY, "1");
@@ -278,9 +278,7 @@ describe("fireconnect claude on", () => {
       ]) {
         assert.equal(settings.env[key], CLAUDE_STORED_MAIN_MODEL);
       }
-      // Subagent model is forwarded verbatim to the provider, so the [1m] beta
-      // tag must be stripped (Fireworks has no "...kimi-fast-latest[1m]" model).
-      assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, KIMI_FAST_LATEST);
+      assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, CLAUDE_STORED_MAIN_MODEL);
       assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });

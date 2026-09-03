@@ -666,6 +666,22 @@ test("providerListPricing: fast mode uses the published Opus 5/4.8 rate", () => 
   }
 });
 
+test("providerListPricing: Fable 5.1 uses reduced cache-read tier, not Fable 5", () => {
+  const f51 = providerListPricing({ provider: "anthropic", modelId: "claude-fable-5-1" });
+  assert.equal(f51.inputPerMillion, 10);
+  assert.equal(f51.outputPerMillion, 50);
+  assert.equal(f51.cacheReadPerMillion, 0.25);
+  assert.equal(f51.cacheWrite5mPerMillion, 12.5);
+  assert.equal(f51.cacheWrite1hPerMillion, 20);
+  assert.equal(f51.estimated, false);
+
+  const legacy = providerListPricing({ provider: "anthropic", modelId: "claude-fable-5" });
+  assert.equal(legacy.cacheReadPerMillion, 1);
+
+  const alias = providerListPricing({ provider: "anthropic", modelId: "fable" });
+  assert.equal(alias.cacheReadPerMillion, 0.25);
+});
+
 test("providerListPricing: gpt-4o-mini does not match the gpt-4o tier", () => {
   // Regression: substring matching by insertion order let `gpt-4o` shadow
   // `gpt-4o-mini`, inflating cost ~17x. The longest-key match must win.

@@ -509,6 +509,118 @@ describe("fireworks-model-specs", () => {
     }
   });
 
+  it("follows the catalog for the GLM fast tier rather than a static target", () => {
+    // glm-fast-latest is the default Sonnet slot. `resolveSpecSlug` reads the
+    // catalog's live router base, so the alias target has to consult the catalog
+    // too — otherwise the two disagree and a GLM 5.3 Fast call borrows GLM 5.2
+    // Fast's rates.
+    //
+    // Fast is a serving path, so a tier is published under `routers/`, NOT
+    // `models/`: `accounts/fireworks/routers/glm-5p2-fast` is the shipped one.
+    // A probe that only looked at `models/` would never see a fast tier.
+    const snapshot = (id) => ({
+      entries: [{ id, shortId: "glm-5p3-fast", displayName: "GLM 5.3 Fast", kind: "serverless" }],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map(),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+
+    for (const id of [
+      "accounts/fireworks/routers/glm-5p3-fast",
+      "accounts/fireworks/models/glm-5p3-fast",
+    ]) {
+      setServerlessCatalogSnapshot(snapshot(id));
+      try {
+        assert.equal(resolveRouterSpecAliasTarget("glm-fast-latest"), "glm-5p3-fast", id);
+        assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-5p3-fast", id);
+      } finally {
+        setServerlessCatalogSnapshot(null);
+      }
+    }
+
+    // No GLM 5.3 fast tier is published today: the Fast lineup is GLM 5.2 Fast
+    // alone, so the alias must keep resolving there at the fast-tier rate.
+    assert.equal(resolveRouterSpecAliasTarget("glm-fast-latest"), "glm-5p2-fast");
+    assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-5p2-fast");
+    assert.equal(lookupFireworksPricing("glm-fast-latest")?.input, 2.10);
+    assert.equal(lookupFireworksPricing("glm-fast-latest")?.output, 6.60);
+    // And GLM 5.3 itself has no fast tier to fall into.
+    assert.equal(FIREWORKS_MODEL_SPECS["glm-5p3-fast"], undefined);
+  });
+
+  it("folds dotted served-model ids onto the canonical p-form slug", () => {
+    // Claude Code records whatever the gateway stamped on the response, and a
+    // transcript can carry both `glm-5p3` and `GLM-5.3` for the same model. Left
+    // unfolded they price as two models — one of them unpriced — and every
+    // per-model breakdown reports the same release twice.
+    for (const ref of ["GLM-5.3", "glm-5.3", "accounts/fireworks/models/GLM-5.3"]) {
+      assert.equal(resolveSpecSlug(ref), "glm-5p3", ref);
+      assert.equal(lookupModelSpec(ref)?.label, "GLM 5.3", ref);
+      assert.equal(lookupFireworksPricing(ref)?.input, 1.40, ref);
+    }
+    assert.equal(resolveSpecSlug("Kimi-K2.6"), "kimi-k2p6");
+  });
+
+  it("does not invent a slug for a dotted id with no matching spec", () => {
+    // Folding is only safe because it must land on a model we know; an id that
+    // merely looks dotted must survive verbatim.
+    for (const ref of ["glm-9.9", "not-a-real-1.0", "FW-GLM-5.2"]) {
+      assert.equal(resolveSpecSlug(ref), ref, ref);
+      assert.equal(lookupFireworksPricing(ref), null, ref);
+    }
+  });
+
+  it("does not invent a rate by stripping -latest off an id", () => {
+    // `-latest` and pinned ids are mutually exclusive by design: `-latest`
+    // tracks current versions while a pinned id names one and does not. So
+    // `glm-5p2-latest` is a contradiction Fireworks does not publish, and
+    // stripping `-latest` to reach `glm-5p2` would be inventing a rate for an id
+    // nothing serves.
+    for (const ref of ["glm-5p2-latest", "glm-5p3-latest", "glm-5p2-fast-latest"]) {
+      assert.equal(resolveSpecSlug(ref), ref, ref);
+      assert.equal(lookupFireworksPricing(ref), null, ref);
+    }
+    // The real `-latest` aliases keep resolving through the catalog and
+    // ROUTER_SPEC_ALIASES paths that own them.
+    assert.equal(resolveSpecSlug("glm-latest"), "glm-5p3");
+    assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-5p2-fast");
+    assert.equal(resolveSpecSlug("glm-flash-latest"), "glm-5p3-flash");
+    assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k3-fast");
+    assert.equal(resolveSpecSlug("not-real-latest"), "not-real-latest");
+  });
+
+  it("prefers the live catalog over the static alias table", () => {
+    // ROUTER_SPEC_ALIASES is a build-time snapshot of where a floating router
+    // pointed, so it goes stale the moment a release lands. Whenever the catalog
+    // can say, it wins — otherwise a status line would report a version, and
+    // charge a cached-input rate, that no longer matches what served the call.
+    assert.equal(resolveSpecSlug("glm-latest"), "glm-5p3");
+    setServerlessCatalogSnapshot({
+      entries: [
+        { id: "accounts/fireworks/models/glm-5p2", shortId: "glm-5p2", displayName: "GLM 5.2", kind: "serverless" },
+        { id: "accounts/fireworks/routers/glm-latest", shortId: "glm-latest", displayName: "GLM Latest", kind: "serverless" },
+      ],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/glm-latest", "accounts/fireworks/models/glm-5p2"],
+      ]),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveSpecSlug("glm-latest"), "glm-5p2");
+      // And the rate follows the observed model, not the stale snapshot: GLM 5.2
+      // and 5.3 share input/output rates but differ on cached input.
+      assert.equal(lookupFireworksPricing("glm-latest")?.cachedInput, 0.14);
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+    assert.equal(lookupFireworksPricing("glm-latest")?.cachedInput, 0.26);
+  });
+
   it("resolves firerouter from the shared model spec like other routers", () => {
     const spec = lookupModelSpec("accounts/fireworks/routers/firerouter");
     assert.equal(spec?.label, "FireRouter");

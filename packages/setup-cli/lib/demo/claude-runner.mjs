@@ -494,7 +494,13 @@ export async function runClaude({
   //     whole document twice (opus output 11,995 -> 2,578 tokens).
   // Measured on the same tictactoe prompt: glm-fast 18s -> 10s, opus 135s -> 28s
   // (~4.8x) with cache-write down 120,689 -> 73,539.
+  //
+  // User MCPs (Google Drive, fireworks-websearch, etc.) live in ~/.claude.json
+  // and are NOT covered by `--tools ""`. `--strict-mcp-config` with no
+  // `--mcp-config` keeps the race MCP-free so models cannot invoke mcp__*
+  // tools mid-demo.
   args.push("--tools", tools);
+  args.push("--strict-mcp-config");
   const child = spawn("claude", args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],

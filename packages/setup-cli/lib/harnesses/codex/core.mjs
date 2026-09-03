@@ -500,6 +500,8 @@ export async function enableCodexFireworks({
     catalogPath: effectiveCatalogPath,
     apiKey: resolvedEffective,
     literalAuth: true,
+    // codex 0.153+ injects a server-executed web_search tool; Fireworks Responses API rejects the mix (#320).
+    webSearch: "disabled",
     httpHeaders: mergeFireconnectTelemetryHeaders(
       priorHttpHeaders,
       telemetryHeaders,

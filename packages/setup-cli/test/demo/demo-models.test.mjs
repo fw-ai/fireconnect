@@ -175,6 +175,6 @@ test("defaults and display labels", () => {
     opus: "claude-opus-5",
     sonnet: "claude-sonnet-5",
     haiku: "claude-haiku-4-5",
-    fable: "claude-fable-5",
+    fable: "claude-fable-5-1",
   });
 });

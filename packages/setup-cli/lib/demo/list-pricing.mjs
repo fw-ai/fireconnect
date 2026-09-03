@@ -42,7 +42,9 @@ const ANTHROPIC_LIST_RATES = {
   "claude-haiku-4-5": { input: 1, cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5, label: "Claude Haiku 4.5" },
   "claude-haiku-3-5": { input: 0.8, cacheWrite5m: 1, cacheWrite1h: 1.6, cacheRead: 0.08, output: 4, label: "Claude Haiku 3.5" },
   "claude-haiku": { input: 1, cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5, label: "Claude Haiku" },
-  // Fable 5 (next-gen long-running agents).
+  // Fable 5 / 5.1 (next-gen long-running agents). 5.1 keeps $10/$50 but drops
+  // cache-read to $0.25/Mtok (2026-09-01); legacy Fable 5 stays at $1.00/Mtok.
+  "claude-fable-5-1": { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 0.25, output: 50, label: "Claude Fable 5.1" },
   "claude-fable-5": { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 1, output: 50, label: "Claude Fable 5" },
   "claude-fable": { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 1, output: 50, label: "Claude Fable" },
   // Bare `/model` aliases (settings.json `model` may be just "opus"/"sonnet"/"haiku").
@@ -52,7 +54,7 @@ const ANTHROPIC_LIST_RATES = {
   },
   "sonnet": { input: 2, cacheWrite5m: 2.5, cacheWrite1h: 4, cacheRead: 0.2, output: 10, label: "Claude Sonnet" },
   "haiku": { input: 1, cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5, label: "Claude Haiku" },
-  "fable": { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 1, output: 50, label: "Claude Fable" },
+  "fable": { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 0.25, output: 50, label: "Claude Fable 5.1" },
 };
 
 /** USD per 1M tokens, list price. Embedded reference — verify at the source URL.

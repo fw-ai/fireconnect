@@ -283,6 +283,18 @@ describe("claude usage", () => {
     );
   });
 
+  it("prices Fable 5.1 cache reads at the reduced $0.25/Mtok tier", () => {
+    const row = computeClaudeUsageCost("claude-fable-5-1", {
+      input_tokens: 100,
+      cache_read_input_tokens: 1_000_000,
+      output_tokens: 500,
+    });
+    const expected = (100 * 10 + 1_000_000 * 0.25 + 500 * 50) / 1_000_000;
+    assert.equal(row.cost, expected);
+    assert.equal(row.rates.cacheReadPerMillion, 0.25);
+    assert.equal(row.rates.label, "Claude Fable 5.1");
+  });
+
   it("computes Anthropic cache write, cache read, geo, batch, and web-search costs", () => {
     const row = computeClaudeUsageCost("claude-opus-4-8", {
       input_tokens: 100,

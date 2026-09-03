@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { userSettingsPath } from "../../../lib/harnesses/claude/core.mjs";
+import { lookupFireworksPricing } from "../../../lib/fireworks/pricing.mjs";
 import {
   claudeStatusLineCommand,
   claudeStatusLineModelLabel,
@@ -47,6 +48,66 @@ describe("claude status line", () => {
     // No metadata for the id: the bare slug, never a crash.
     assert.equal(claudeStatusLineModelLabel("not-a-real-model"), "not-a-real-model");
     assert.equal(claudeStatusLineModelLabel(""), "unknown model");
+  });
+
+  it("reads an id back without claiming to have recognised it", () => {
+    // `glm-5p2-latest` is not a router Fireworks publishes — `-latest` tracks
+    // versions and a pinned id names one, so the two never combine. The label is
+    // therefore only a tidier spelling of the id's own text, never a lookup: it
+    // must not imply we found a spec, and no rate may be attached.
+    assert.equal(claudeStatusLineModelLabel("glm-5p2-latest"), "GLM 5.2 (Latest)");
+    assert.equal(lookupFireworksPricing("glm-5p2-latest"), null);
+    // The dotted form a gateway may stamp on a response reads the same as the
+    // p-form slug, so one model never appears under two names.
+    assert.equal(claudeStatusLineModelLabel("GLM-5.3"), "GLM 5.3");
+    assert.equal(claudeStatusLineModelLabel("glm-5p3"), "GLM 5.3");
+  });
+
+  it("reads a Fireworks release newer than this build as a model, not a raw slug", () => {
+    // A GLM release whose spec has not shipped yet is still recognisably GLM.
+    assert.equal(claudeStatusLineModelLabel("glm-5p9"), "GLM 5.9");
+    assert.equal(claudeStatusLineModelLabel("glm-5p9-fast"), "GLM 5.9 Fast");
+    assert.equal(claudeStatusLineModelLabel("glm-5p9-latest"), "GLM 5.9 (Latest)");
+    assert.equal(claudeStatusLineModelLabel("kimi-k2p9"), "Kimi K2.9");
+    // An id carrying no Fireworks version segment is not ours to reformat.
+    assert.equal(claudeStatusLineModelLabel("some-unlisted-model"), "some-unlisted-model");
+  });
+
+  it("labels an unshipped region-bound router the way shipped ones read", () => {
+    // The three shipped US specs all label themselves "... (US)".
+    assert.equal(claudeStatusLineModelLabel("glm-5p2-fast-us"), "GLM 5.2 Fast (US)");
+    // A US variant with no spec yet must read in that same shape rather than as
+    // a bare slug, so it is recognisable as the regional twin of its base row.
+    assert.equal(claudeStatusLineModelLabel("glm-5p2-us"), "GLM 5.2 (US)");
+    assert.equal(claudeStatusLineModelLabel("glm-5p9-fast-us"), "GLM 5.9 Fast (US)");
+  });
+
+  it("never prices an unshipped US variant off its global row", async () => {
+    await withTempHome("statusline-us-unpriced", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      // US premiums are per-model, not a uniform uplift: the shipped rows carry
+      // +0% (glm-5p2-fast-us), +10% (kimi-k3-us) and +50% (glm-5p3-flash-us)
+      // over their global twins. Nothing can be inferred from the base rate, so
+      // an unknown US id must withhold a figure rather than understate the bill.
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p2", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "accounts/fireworks/models/glm-5p2-us", output: 1_000_000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 2, usage.models.map((m) => m.label).join(", "));
+      const byLabel = new Map(usage.models.map((m) => [m.label, m.cost]));
+      assert.equal(byLabel.get("GLM 5.2"), 4.40);
+      assert.equal(byLabel.get("GLM 5.2 (US)"), null);
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: transcript,
+      }, { home }));
+      // The qualifier survives compaction: two rates must not share one name.
+      assert.match(plain, /GLM 5\.2 \(US\) n\/a/, plain);
+      assert.match(plain, /cost n\/a/, plain);
+    });
   });
 
   it("invokes the helper with an absolute node and script path", () => {
@@ -473,6 +534,134 @@ describe("claude status line", () => {
       typeof await renderClaudeStatusLine({ transcript_path: "/nope/nothing.jsonl" }),
       "string",
     );
+  });
+
+  it("merges alias and full-path model ids into one legend row", async () => {
+    await withTempHome("statusline-canonical-bucket", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p3", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "glm-5p3", output: 1_000_000 }),
+        assistantLine({ id: "m3", model: "glm-latest", output: 1_000_000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 1, usage.models.map((m) => m.label).join(", "));
+      assert.equal(usage.models[0].label, "GLM 5.3");
+      assert.equal(usage.models[0].calls, 3);
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: transcript,
+      }, { home }));
+      // One backend after merge: legend names the model without repeating the total.
+      assert.match(plain, /GLM 5\.3/, plain);
+      assert.doesNotMatch(plain, /glm-5p3|glm-latest/, plain);
+    });
+  });
+
+  it("merges a dotted served-model id with its p-form slug", async () => {
+    await withTempHome("statusline-dotted-merge", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      // The duplicate-GLM report: one transcript, one model, two id spellings.
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p3", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "GLM-5.3", output: 1_000_000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 1, usage.models.map((m) => m.label).join(", "));
+      assert.equal(usage.models[0].label, "GLM 5.3");
+      assert.equal(usage.models[0].calls, 2);
+      // Both spellings price, so the session total is a real figure rather than
+      // withheld over an id we could have recognised.
+      assert.equal(usage.cost, 8.80);
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: transcript,
+      }, { home }));
+      assert.doesNotMatch(plain, /GLM-5\.3/, plain);
+      assert.doesNotMatch(plain, /cost n\/a/, plain);
+    });
+  });
+
+  it("merges the default Sonnet router with the model it resolves to", async () => {
+    await withTempHome("statusline-default-slot", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      // `glm-fast-latest` is the default Sonnet slot, so this is the shape most
+      // sessions have: the slot alias and the resolved model both appear as
+      // served ids across one session's calls.
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "glm-fast-latest", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "accounts/fireworks/models/glm-5p2-fast", output: 1_000_000 }),
+        assistantLine({ id: "m3", model: "glm-5p2-fast", output: 1_000_000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 1, usage.models.map((m) => m.label).join(", "));
+      assert.equal(usage.models[0].label, "GLM 5.2 Fast");
+      assert.equal(usage.models[0].calls, 3);
+      // 3M output at the fast tier's $6.60/Mtok.
+      assert.equal(Number(usage.cost.toFixed(4)), 19.80);
+    });
+  });
+
+  it("keeps the qualifier when dropping it would print one name twice", async () => {
+    await withTempHome("statusline-label-collision", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      // The global and US Flash routers are separate models on separate rates.
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p3-flash", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "accounts/fireworks/models/glm-5p3-flash-us", output: 1_000_000 }),
+      ].join("\n"));
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: transcript,
+      }, { home }));
+
+      const legend = plain.split("\n")[1];
+      // Two rows billing $0.50 and $0.75 must not both read "GLM 5.3 Flash".
+      assert.match(legend, /GLM 5\.3 Flash \$0\.50/, legend);
+      assert.match(legend, /GLM 5\.3 Flash \(US\) \$0\.75/, legend);
+      const names = [...legend.matchAll(/GLM 5\.3 Flash(?: \(US\))?/g)].map((m) => m[0]);
+      assert.equal(new Set(names).size, names.length, `ambiguous legend: ${legend}`);
+    });
+  });
+
+  it("still drops the qualifier when nothing collides", async () => {
+    await withTempHome("statusline-label-compact", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p3-flash-us", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "claude-opus-5", output: 1_000_000 }),
+      ].join("\n"));
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: transcript,
+      }, { home }));
+
+      // Alone in the session, the US row needs no disambiguating suffix.
+      assert.match(plain, /GLM 5\.3 Flash \$/, plain);
+      assert.doesNotMatch(plain, /\(US\)/, plain);
+    });
+  });
+
+  it("keeps distinct GLM tiers as separate legend rows", async () => {
+    await withTempHome("statusline-glm-tiers", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p3", output: 1_000_000 }),
+        assistantLine({ id: "m2", model: "accounts/fireworks/models/glm-5p3-flash", output: 1_000_000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 2);
+      const labels = usage.models.map((m) => m.label).sort();
+      assert.deepEqual(labels, ["GLM 5.3", "GLM 5.3 Flash"]);
+    });
   });
 
   it("attributes subagent spend so the per-model costs sum to the total", async () => {

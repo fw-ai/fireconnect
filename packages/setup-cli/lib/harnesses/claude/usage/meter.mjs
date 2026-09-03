@@ -198,7 +198,14 @@ class Dashboard {
       // Ties keep the first record: repeated all-zero blocks shouldn't churn.
       if (weight <= prev.weight) return;
       prev.turn.tally.remove(prev.priced);
-      this.totals.get(prev.bucket)?.remove(prev.priced);
+      const orphan = this.totals.get(prev.bucket);
+      orphan?.remove(prev.priced);
+      if (orphan && !orphan.cost && !orphan.input && !orphan.cacheRead
+        && !orphan.write5m && !orphan.write1h && !orphan.output) {
+        this.totals.delete(prev.bucket);
+        const index = prev.turn.models.indexOf(prev.bucket);
+        if (index >= 0) prev.turn.models.splice(index, 1);
+      }
       prev.turn.tally.add(priced);
       const bucket = this.index.bucket(model, priced);
       if (!this.totals.has(bucket)) this.totals.set(bucket, new Tally());
