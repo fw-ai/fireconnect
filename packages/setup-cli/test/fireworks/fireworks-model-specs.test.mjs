@@ -206,8 +206,42 @@ describe("fireworks-model-specs", () => {
     setServerlessCatalogSnapshot(null);
     assert.equal(resolveRouterSpecAliasTarget("minimax-latest"), "minimax-m3");
     assert.equal(resolveRouterSpecAliasTarget("qwen-plus-latest"), "qwen3p7-plus");
-    assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
+    assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4p1-flash");
     assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
+  });
+
+  it("prefers the newest deepseek flash model when several are catalogued", () => {
+    setServerlessCatalogSnapshot({
+      entries: [
+        {
+          id: "accounts/fireworks/models/deepseek-v4p1-flash",
+          shortId: "deepseek-v4p1-flash",
+          displayName: "DeepSeek V4.1 Flash",
+          kind: "serverless",
+        },
+        {
+          id: "accounts/fireworks/models/deepseek-v4-flash-0731",
+          shortId: "deepseek-v4-flash-0731",
+          displayName: "DeepSeek V4 Flash (0731)",
+          kind: "serverless",
+        },
+      ],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map(),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4p1-flash");
+      assert.equal(resolveSpecSlug("deepseek-flash-latest"), "deepseek-v4p1-flash");
+      assert.equal(
+        resolveFireworksModelLabel("deepseek-flash-latest"),
+        "DeepSeek V4.1 Flash (Latest)",
+      );
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
   });
 
   it("maps deepseek-flash-latest to deepseek-v4-flash-0731 metadata", () => {

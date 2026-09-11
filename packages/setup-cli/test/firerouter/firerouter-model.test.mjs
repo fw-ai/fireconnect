@@ -395,6 +395,35 @@ describe("firerouter routing plan", () => {
     assert.deepEqual(kept, ["acme-1p3", "acme-1p3-fast", "dotco-1.6", "multi-1p2p4"]);
   });
 
+  it("preferLatestAliases compares the version tuple before the release date", () => {
+    // A dated snapshot outranks its own undated base ...
+    const dated = preferLatestAliases([
+      { shortId: "acme-v5", id: "accounts/fireworks/models/acme-v5" },
+      { shortId: "acme-v5-0813", id: "accounts/fireworks/models/acme-v5-0813" },
+    ]).map((e) => e.shortId);
+    assert.deepEqual(dated, ["acme-v5-0813"]);
+
+    // ... but a minor-version bump outranks any date on the previous version,
+    // even though the date's flat digits are numerically larger.
+    const bumped = preferLatestAliases([
+      { shortId: "acme-v5-0813", id: "accounts/fireworks/models/acme-v5-0813" },
+      { shortId: "acme-v5p1", id: "accounts/fireworks/models/acme-v5p1" },
+    ]).map((e) => e.shortId);
+    assert.deepEqual(bumped, ["acme-v5p1"]);
+  });
+
+  it("release-date comparison does not normalize MMDD against YYYYMMDD", () => {
+    // Documented limitation: each stamp is kept as one digit run, so an
+    // eight-digit value compares above a four-digit one whatever the real
+    // dates are. No catalog family mixes formats today; this pins the behavior
+    // if one ever does.
+    const kept = preferLatestAliases([
+      { shortId: "acme-v5-0731", id: "accounts/fireworks/models/acme-v5-0731" },
+      { shortId: "acme-v5-20250101", id: "accounts/fireworks/models/acme-v5-20250101" },
+    ]).map((e) => e.shortId);
+    assert.deepEqual(kept, ["acme-v5-20250101"]);
+  });
+
   it("preferLatestAliases keeps distinct parameter sizes separate", () => {
     // "120b"-style size suffixes are not versions: every size stays visible.
     const catalog = [

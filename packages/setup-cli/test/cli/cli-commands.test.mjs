@@ -244,7 +244,7 @@ describe("fireconnect claude on", () => {
       assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "glm-latest[1m]");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.3 (Latest)");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, CLAUDE_STORED_DS_FLASH_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash (0731) (Latest)");
+      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4.1 Flash (Latest)");
       assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_FABLE_MODEL);
       assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "GLM 5.3 Flash (Latest)");
       // Subagent takes the Haiku model, [1m] tag and all.

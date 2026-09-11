@@ -32,6 +32,11 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 0.22, cachedInput: 0.007, output: 0.66 },
     capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: false, toolCalling: true },
   },
+  "deepseek-v4p1-flash": {
+    label: "DeepSeek V4.1 Flash",
+    pricing: { input: 0.22, cachedInput: 0.007, output: 0.66 },
+    capabilities: { contextWindow: 1_000_000, maxOutputTokens: 384_000, vision: true, toolCalling: true },
+  },
   "glm-5p3": {
     label: "GLM 5.3",
     pricing: { input: 1.40, cachedInput: 0.26, output: 4.40 },
@@ -248,7 +253,7 @@ export function isFirerouterModelPattern(model) {
 }
 
 export const ROUTER_SPEC_ALIASES = {
-  "deepseek-flash-latest": "deepseek-v4-flash-0731",
+  "deepseek-flash-latest": "deepseek-v4p1-flash",
   "deepseek-pro-latest": "deepseek-v4-pro-0813",
   "glm-latest": "glm-5p3",
   "glm-fast-latest": "glm-5p2-fast",
@@ -265,7 +270,7 @@ export const ROUTER_SPEC_ALIASES = {
 const GLM_LATEST_BASE_CANDIDATES = ["glm-5p3", "glm-5p2"];
 const GLM_FAST_LATEST_BASE_CANDIDATES = ["glm-5p3-fast", "glm-5p2-fast"];
 const GLM_FLASH_LATEST_BASE_CANDIDATES = ["glm-5p3-flash"];
-const DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES = ["deepseek-v4-flash-0731", "deepseek-v4-flash"];
+const DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES = ["deepseek-v4p1-flash", "deepseek-v4-flash-0731", "deepseek-v4-flash"];
 const DEEPSEEK_PRO_LATEST_BASE_CANDIDATES = ["deepseek-v4-pro-0813", "deepseek-v4-pro"];
 const KIMI_LATEST_BASE_CANDIDATES = ["kimi-k3", "kimi-k2p8-code", "kimi-k2p7-code"];
 const MINIMAX_LATEST_BASE_CANDIDATES = ["minimax-m3", "minimax-m2p7", "minimax-m2p5"];

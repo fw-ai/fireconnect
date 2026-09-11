@@ -465,7 +465,7 @@ describe("claude harness integration", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(
       result.stdout,
-      /Text-only: deepseek-flash-latest, deepseek-pro-latest, glm-fast-latest, glm-latest · Avoid images; recover with \/rewind\./,
+      /Text-only: deepseek-pro-latest, glm-fast-latest, glm-latest · Avoid images; recover with \/rewind\./,
     );
     assert.doesNotMatch(result.stdout, /Claude Code cannot mark models as text-only/);
   });
@@ -496,7 +496,7 @@ describe("claude harness integration", () => {
     assert.match(statusResult.stdout, /main\s+->\s+glm-fast-latest.*text-only/);
     assert.match(statusResult.stdout, /sonnet\s+->\s+kimi-latest.*vision/);
     assert.match(statusResult.stdout, /opus\s+->\s+glm-latest/);
-    assert.match(statusResult.stdout, /haiku\s+->\s+deepseek-flash-latest.*text-only/);
+    assert.match(statusResult.stdout, /haiku\s+->\s+deepseek-flash-latest.*vision/);
     assert.match(statusResult.stdout, /fable\s+->\s+glm-flash-latest.*vision/);
   });
 });

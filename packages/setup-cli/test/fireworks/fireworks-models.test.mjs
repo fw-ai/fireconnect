@@ -738,6 +738,29 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     ]);
   });
 
+  test("a version bump outranks a dated snapshot of the previous version", () => {
+    const entry = (shortId, kind, baseModelId = undefined) => ({
+      id: `accounts/fireworks/${kind}/${shortId}`,
+      shortId,
+      displayName: shortId,
+      kind: "serverless",
+      ...(baseModelId ? { baseModelId } : {}),
+    });
+    // deepseek-v4-flash-0731 is a dated build of v4, so its flat digit vector
+    // ([4, 0731]) used to beat the v4.1 bump ([4, 1]). Version tuple must be
+    // compared before the release-date tuple.
+    const sections = organizeCatalogForDisplay([
+      entry("deepseek-flash-latest", "routers", "accounts/fireworks/models/deepseek-v4p1-flash"),
+      entry("deepseek-v4p1-flash", "models"),
+      entry("deepseek-v4-flash-0731", "models"),
+      entry("deepseek-v4-flash", "models"),
+    ]);
+    const individual = sections.find((section) => section.title === "INDIVIDUAL MODELS")?.entries
+      .map(({ shortId }) => shortId);
+
+    assert.deepEqual(individual, ["deepseek-v4p1-flash"]);
+  });
+
   test("a -latest router pinned to an older version cannot hide a newer model", () => {
     const entry = (shortId, kind, baseModelId = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,

@@ -693,11 +693,20 @@ const LATEST_ALIAS_SUFFIXES = ["-fast-latest", "-latest"];
 
 // Version extraction is deliberately permissive: any digit-bearing segment is
 // version-shaped, whatever the vendor's marker convention (k3, v4, m2p7, 5p2,
-// qwen3p7, 0731, 1.5, a1b2, …). The one carve-out is parameter sizes
-// (7b, 20b, 120b, 1p5b, 135m): those name a distinct model, not a version, so
-// gpt-oss-20b and gpt-oss-120b must never collapse into one family.
+// qwen3p7, 1.5, a1b2, …). The one carve-out is parameter sizes (7b, 20b, 120b,
+// 1p5b, 135m): those name a distinct model, not a version, so gpt-oss-20b and
+// gpt-oss-120b must never collapse into one family.
 const PARAM_SIZE_SEGMENT_RE = /^\d+(?:[p.]\d+)?[bm]$/i;
 const LEADING_ALPHA_RE = /^[a-z]+/i;
+
+// Release stamps (`0731`, `0813`, `20250731`) are build metadata, not version
+// components. Keeping them out of the version tuple lets a minor-version bump
+// (`v4p1`) outrank a dated older core (`v4` + `0731`) while still ranking a
+// dated snapshot above its own undated base (`v4-flash-0731` > `v4-flash`).
+// Stamps aren't normalized across formats: each is kept as one digit run, so
+// an eight-digit YYYYMMDD value always compares above any four-digit MMDD
+// value. That only matters if a single family mixes the two.
+const RELEASE_DATE_SEGMENT_RE = /^(?:(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])|(?:19|20)\d{6})$/;
 
 function versionNumbers(text) {
   return (text.match(/\d+/g) ?? []).map(Number);
@@ -705,20 +714,26 @@ function versionNumbers(text) {
 
 /**
  * Strip version-shaped segments from a slug to recover its family name,
- * collecting the digits as a comparable version vector. A multi-letter alpha
- * prefix on a digit-bearing segment is part of the family (qwen3p7 → qwen);
- * a single letter is a version marker and goes with the digits (k3, v4, m2p7).
- * Works for arbitrary families without per-vendor rules: glm-5p2 → glm [5,2],
- * kimi-k3 → kimi [3], qwen3p7-plus → qwen-plus [3,7],
- * deepseek-v4-flash-0731 → deepseek-flash [4,731],
+ * collecting the digits as a comparable version tuple plus a release-date
+ * tuple. A multi-letter alpha prefix on a digit-bearing segment is part of the
+ * family (qwen3p7 → qwen); a single letter is a version marker and goes with
+ * the digits (k3, v4, m2p7). Works for arbitrary families without per-vendor
+ * rules: glm-5p2 → glm [5,2], kimi-k3 → kimi [3],
+ * qwen3p7-plus → qwen-plus [3,7],
+ * deepseek-v4-flash-0731 → deepseek-flash [4] date [731],
  * modelfamily-a1b2-abvc → modelfamily-abvc [1,2].
  */
 function stripVersionSegments(shortId) {
   const literals = [];
   const version = [];
+  const date = [];
   for (const segment of shortId.split("-")) {
     if (!/\d/.test(segment) || PARAM_SIZE_SEGMENT_RE.test(segment)) {
       literals.push(segment);
+      continue;
+    }
+    if (RELEASE_DATE_SEGMENT_RE.test(segment)) {
+      date.push(...versionNumbers(segment));
       continue;
     }
     version.push(...versionNumbers(segment));
@@ -727,7 +742,7 @@ function stripVersionSegments(shortId) {
       literals.push(prefix);
     }
   }
-  return { family: literals.join("-"), version };
+  return { family: literals.join("-"), version, date };
 }
 
 /** Family prefix of a `-latest` / `-fast-latest` alias slug, else null. */
@@ -753,21 +768,26 @@ function latestAliasFamily(shortId) {
 function catalogFamilyVersion(shortId = "", aliasFamilies = []) {
   const aliasFamily = latestAliasFamily(shortId);
   if (aliasFamily !== null) {
-    return { family: stripVersionSegments(aliasFamily).family, version: [], latest: true };
+    return {
+      family: stripVersionSegments(aliasFamily).family,
+      version: [],
+      date: [],
+      latest: true,
+    };
   }
-  const { family, version } = stripVersionSegments(shortId);
+  const { family, version, date } = stripVersionSegments(shortId);
   // Geography is a serving constraint, not a model-family variant. Keep a US
   // router separate from the global family so `*-latest` does not collapse it.
   if (shortId.endsWith("-us")) {
-    return { family, version, latest: false };
+    return { family, version, date, latest: false };
   }
   if (aliasFamilies.includes(family)) {
-    return { family, version, latest: false };
+    return { family, version, date, latest: false };
   }
   const prefixed = aliasFamilies
     .filter((candidate) => family.startsWith(`${candidate}-`))
     .sort((a, b) => b.length - a.length)[0];
-  return { family: prefixed ?? family, version, latest: false };
+  return { family: prefixed ?? family, version, date, latest: false };
 }
 
 function compareVersions(a, b) {
@@ -777,6 +797,12 @@ function compareVersions(a, b) {
     if (delta !== 0) return delta;
   }
   return 0;
+}
+
+/** Version tuple first, release date only as a tie-breaker. */
+function compareVersionKeys(left, right) {
+  return compareVersions(left.version, right.version)
+    || compareVersions(left.date, right.date);
 }
 
 /**
@@ -809,14 +835,15 @@ function parseCatalogFamilies(catalog) {
   }));
 }
 
-/** Highest version vector seen per family among concrete (non-alias) entries. */
+/** Highest version tuple seen per family among concrete (non-alias) entries. */
 function newestVersionByFamily(parsed) {
   const newestByFamily = new Map();
-  for (const { family, version, latest } of parsed) {
-    if (latest || version.length === 0) continue;
+  for (const entry of parsed) {
+    const { family, version, date, latest } = entry;
+    if (latest || (version.length === 0 && date.length === 0)) continue;
     const current = newestByFamily.get(family);
-    if (!current || compareVersions(version, current) > 0) {
-      newestByFamily.set(family, version);
+    if (!current || compareVersionKeys(entry, current) > 0) {
+      newestByFamily.set(family, entry);
     }
   }
   return newestByFamily;
@@ -830,11 +857,12 @@ export function preferLatestAliases(catalog) {
   const newestByFamily = newestVersionByFamily(parsed);
 
   return parsed
-    .filter(({ family, version, latest }) => {
+    .filter((entry) => {
+      const { family, latest } = entry;
       if (latest) return true;
       if (aliasedFamilies.has(family)) return false;
       const newest = newestByFamily.get(family);
-      return !newest || compareVersions(version, newest) === 0;
+      return !newest || compareVersionKeys(entry, newest) === 0;
     })
     .map(({ entry }) => entry);
 }
@@ -856,9 +884,9 @@ export function newestModelsByFamily(catalog) {
   const newestByFamily = newestVersionByFamily(parsed);
 
   return parsed
-    .filter(({ family, version }) => {
-      const newest = newestByFamily.get(family);
-      return !newest || compareVersions(version, newest) === 0;
+    .filter((entry) => {
+      const newest = newestByFamily.get(entry.family);
+      return !newest || compareVersionKeys(entry, newest) === 0;
     })
     .map(({ entry }) => entry);
 }

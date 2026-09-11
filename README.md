@@ -115,8 +115,8 @@ and the IDEs by removing only what FireConnect registered.
 | Claude `opus` | `firerouter` on first connect with a standard key; otherwise `glm-latest` |
 | Claude `sonnet` | `deepseek-pro-latest` |
 | Claude `fable` | `glm-flash-latest` (vision) |
-| Claude `haiku` | `deepseek-flash-latest` (text-only) |
-| Claude `subagent` | `deepseek-flash-latest` (text-only; tool runner) |
+| Claude `haiku` | `deepseek-flash-latest` (vision) |
+| Claude `subagent` | `deepseek-flash-latest` (vision; tool runner) |
 | OpenCode, Codex, Pi, Cursor, VS Code, DeepSeek Harness | `kimi-fast-latest` |
 | Fire Pass (`fpk_...`) | `kimi-fast-latest` everywhere |
 
@@ -271,7 +271,7 @@ text-only slot is active can break the session — recover with `/rewind`. Activ
 one-line warning:
 
 ```text
-Text-only: deepseek-flash-latest, glm-fast-latest · Avoid images; recover with /rewind.
+Text-only: deepseek-pro-latest, glm-fast-latest, glm-latest · Avoid images; recover with /rewind.
 ```
 
 The wizard and `fireconnect claude status` label every model `vision` or `text-only`.
