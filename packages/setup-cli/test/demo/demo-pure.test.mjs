@@ -274,6 +274,83 @@ test("looksRunnable", () => {
   assert.equal(looksRunnable("just text"), false);
 });
 
+// Real-world failure: a model roleplays a Write tool call — escaped HTML inside
+// a JSON object, plus a leaked antml:thinking prefix before the real copy.
+test("extractHtml: recovers HTML from roleplayed JSON tool call", () => {
+  const clean = '<!DOCTYPE html>\n<html lang="en">\n<body><p>ok</p>\n</body>\n</html>';
+  const escaped = clean.replace(/"/g, '\\"').replace(/\n/g, "\\n");
+  const raw =
+    "**Write**\n\n````\n{\n  \"file_path\": \"/tmp/clock.html\",\n" +
+    "  \"content\": \"" + escaped + "\"\n}\n````\n\n" +
+    "antml:thinking Now output the HTML content only." + clean;
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, clean);
+  assert.ok(!r.html.includes('\\"'), "must not contain escaped quotes");
+  assert.ok(!r.html.includes("\\n"), "must not contain literal \\n sequences");
+});
+
+// A model may wrap the JSON tool call in a ````-length fence to dodge the
+// "no markdown fences" instruction. The fence stripper must handle it.
+test("extractHtml: strips quad-backtick fences", () => {
+  const html = "<!doctype html><html><body>hi</body></html>";
+  const raw = "````\n" + html + "\n````";
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, html);
+});
+
+// A garbage fence must not hide a real document that follows it.
+test("extractHtml: falls back past an unrecoverable fence", () => {
+  const html = "<!doctype html><html><body>hi</body></html>";
+  const raw = "```\nnot html at all\n```\nSure — here it is:\n" + html;
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, html);
+});
+
+// When the document appears twice (escaped copy + real copy), the cleanest
+// copy must win — the escaped one scores high on artifact count.
+test("extractHtml: picks the cleanest of duplicate document copies", () => {
+  const clean = "<!doctype html>\n<html>\n<body><script>var x = 1;</script></body>\n</html>";
+  const escaped = clean.replace(/\n/g, "\\n").replace(/"/g, '\\"');
+  const raw = "{ \"content\": \"" + escaped + "\" }\n\n" + clean;
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, clean);
+});
+
+// A malformed JSON tool call (unescaped, trailing garbage) must not break
+// extraction: copy scoring still recovers the real HTML.
+test("extractHtml: survives malformed JSON wrapper with duplicate copies", () => {
+  const clean = "<!doctype html>\n<html>\n<body>clock</body>\n</html>";
+  const escaped = clean.replace(/\n/g, "\\n");
+  const raw = "Write\n{ \"content\": \"" + escaped + "\" more junk\n\n" + clean;
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, clean);
+});
+
+// The roleplayed JSON may sit in surrounding prose rather than alone.
+test("extractHtml: recovers JSON tool call preceded by prose", () => {
+  const clean = "<!doctype html>\n<html>\n<body>hi</body>\n</html>";
+  const escaped = clean.replace(/\n/g, "\\n").replace(/"/g, '\\"');
+  const raw = "Write tool call: {\"content\": \"" + escaped + "\"}";
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, clean);
+});
+
+// A truncated document in a fence must not shadow the complete document that
+// follows it outside the fence (the fragment borrows the real close tag).
+test("extractHtml: truncated fenced copy loses to complete doc after it", () => {
+  const full = "<!doctype html>\n<html>\n<body>full version</body>\n</html>";
+  const raw = "```html\n<!doctype html><html><body>trunc\n```\nsorry, full version:\n" + full;
+  const r = extractHtml(raw);
+  assert.equal(r.ok, true);
+  assert.equal(r.html, full);
+});
+
 // ── parse-args: claude demo command ───────────────────────────────────────────
 
 test("parseCli: claude demo with positional preset folds into ctx.prompt", () => {
