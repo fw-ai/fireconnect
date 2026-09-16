@@ -20,7 +20,6 @@ import {
 import { readRawIfExists } from "../opencode/core.mjs";
 import { parseToml } from "./toml.mjs";
 import {
-  patchCodexCatalogRefRaw,
   patchCodexProviderAuthRaw,
   patchFireconnectRoutingRaw,
   stripFireconnectRoutingRaw,
@@ -52,6 +51,7 @@ import {
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
 import { mergeFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
+import { normalizeCodexBaseUrl } from "./endpoint.mjs";
 export { printCodexRestartHint } from "../../cli/messages.mjs";
 
 export const CODEX_CONFIG_RELATIVE_PATH = ".codex/config.toml";
@@ -70,15 +70,19 @@ export const CODEX_AZURE_PROVIDER_TABLE = `model_providers.${CODEX_AZURE_PROVIDE
 export const CODEX_AZURE_API_KEY_ENV_REF = `{env:${AZURE_API_KEY_ENV}}`;
 
 export function codexConfigPath(home, configPath = "") {
-  return configPath || path.join(home, CODEX_CONFIG_RELATIVE_PATH);
+  return path.resolve(configPath || path.join(
+    process.env.CODEX_HOME?.trim() || path.join(home, ".codex"), "config.toml",
+  ));
 }
 
 export function codexDataDir(home, dataDir = "") {
   return dataDir || path.join(home, CODEX_DATA_RELATIVE_DIR);
 }
 
-export function codexCatalogPath(home, catalogPath = "") {
-  return catalogPath || path.join(home, CODEX_CATALOG_RELATIVE_PATH);
+export function codexCatalogPath(home, catalogPath = "", configPath = "") {
+  return path.resolve(catalogPath || path.join(
+    path.dirname(codexConfigPath(home, configPath)), "fireworks-model-catalog.json",
+  ));
 }
 
 export function codexBackupPath(dataDir, configPath) {
@@ -99,7 +103,9 @@ function readTomlDoc(raw) {
 
 function isManagedProviderTable(table) {
   return table
-    && table.base_url === CODEX_FIREWORKS_BASE_URL
+    && (table.base_url === CODEX_FIREWORKS_BASE_URL
+      || (typeof table.base_url === "string" && /^https?:\/\//.test(table.base_url)
+        && table.wire_api === "responses"))
     && (table.env_key === "FIREWORKS_API_KEY"
       || typeof table.experimental_bearer_token === "string");
 }
@@ -270,12 +276,13 @@ function backupContainsManagedRouting(backup) {
     && fireconnectManaged(readTomlDoc(backup.snapshot.raw));
 }
 
-export function snapshotReferencesFireworksCatalog(raw) {
+export function snapshotReferencesFireworksCatalog(raw, catalogPath = "") {
   if (!raw.trim()) {
     return false;
   }
   const ref = readTomlDoc(raw).root.model_catalog_json;
-  return typeof ref === "string" && ref.trim() === CODEX_CATALOG_TOML_REF;
+  return typeof ref === "string" && (ref.trim() === CODEX_CATALOG_TOML_REF
+    || Boolean(catalogPath && ref === path.resolve(catalogPath)));
 }
 
 /**
@@ -401,6 +408,7 @@ export async function enableCodexFireworks({
   effectiveApiKey = "",
   apiKeyFromFlag = false,
   modelId,
+  baseUrl = "",
   keyType = "fireworks",
   catalogPath = "",
   catalog = null,
@@ -417,6 +425,11 @@ export async function enableCodexFireworks({
   const doc = snapshot.existed && snapshot.raw.trim()
     ? readTomlDoc(snapshot.raw)
     : emptyTomlDoc();
+
+  // A model/key change keeps the chosen gateway until --base-url changes it.
+  const resolvedBaseUrl = normalizeCodexBaseUrl(baseUrl
+    || (fireconnectManagedVariant(doc) === "fireworks" && doc.tables[CODEX_PROVIDER_TABLE].base_url)
+    || CODEX_FIREWORKS_BASE_URL);
 
   const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(resolvedEffective) : keyType;
 
@@ -459,13 +472,13 @@ export async function enableCodexFireworks({
     const catalogToWrite = ensureCodexOffCatalogEntry(catalog, storedModel);
     await writeCodexCatalogFile(catalogPath, catalogToWrite);
     if (codexCatalogContainsModel(catalogToWrite, storedModel)) {
-      effectiveCatalogPath = CODEX_CATALOG_TOML_REF;
+      effectiveCatalogPath = path.resolve(catalogPath);
       catalogWritten = true;
     }
   } else if (
     catalogPath
     && existsSync(catalogPath)
-    && snapshotReferencesFireworksCatalog(snapshot.raw)
+    && snapshotReferencesFireworksCatalog(snapshot.raw, catalogPath)
   ) {
     const existingCatalog = await readCodexCatalogIfValid(catalogPath);
     const catalogToWrite = ensureCodexOffCatalogEntry(existingCatalog, storedModel);
@@ -473,7 +486,7 @@ export async function enableCodexFireworks({
       await writeCodexCatalogFile(catalogPath, catalogToWrite);
     }
     if (catalogToWrite && codexCatalogContainsModel(catalogToWrite, storedModel)) {
-      effectiveCatalogPath = CODEX_CATALOG_TOML_REF;
+      effectiveCatalogPath = path.resolve(catalogPath);
     }
   }
 
@@ -495,7 +508,7 @@ export async function enableCodexFireworks({
 
   const nextRaw = patchFireconnectRoutingRaw(snapshot.raw, {
     providerId: CODEX_FIREWORKS_PROVIDER_ID,
-    baseUrl: CODEX_FIREWORKS_BASE_URL,
+    baseUrl: resolvedBaseUrl,
     modelId: storedModel,
     catalogPath: effectiveCatalogPath,
     apiKey: resolvedEffective,
@@ -513,6 +526,7 @@ export async function enableCodexFireworks({
 
   return {
     model: storedModel,
+    baseUrl: resolvedBaseUrl,
     modelsAdded: catalogWritten
       ? (catalog?.models ?? []).map((entry) => entry.slug).filter(Boolean)
       : [storedModel],
@@ -645,7 +659,7 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
   const hasBackup = backup.snapshot !== undefined;
 
   if (!wasEnabled && !hasBackup && !fireconnectManaged(doc)) {
-    if (catalogPath && !snapshotReferencesFireworksCatalog(snapshot.raw)) {
+    if (catalogPath && !snapshotReferencesFireworksCatalog(snapshot.raw, catalogPath)) {
       await unlinkCatalogIfExists(catalogPath);
     }
     return "noop";
@@ -658,7 +672,7 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
       await unlink(backupPath);
     } else {
       await restoreConfigFromBackup(backup, configPath, backupPath);
-      if (!snapshotReferencesFireworksCatalog(backup.snapshot.raw)) {
+      if (!snapshotReferencesFireworksCatalog(backup.snapshot.raw, catalogPath)) {
         await unlinkCatalogIfExists(catalogPath);
       }
       return "restored";
@@ -672,7 +686,7 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
 
   const stripped = await stripManagedRoutingFromConfig(configPath, snapshot.raw);
   const currentSnapshot = stripped ? await readRawIfExists(configPath) : snapshot;
-  if (!snapshotReferencesFireworksCatalog(currentSnapshot.raw)) {
+  if (!snapshotReferencesFireworksCatalog(currentSnapshot.raw, catalogPath)) {
     await unlinkCatalogIfExists(catalogPath);
   }
   return stripped ? "stripped" : "noop";

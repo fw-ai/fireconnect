@@ -18,18 +18,18 @@ const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
 
 function tomlString(value) {
-  return `"${String(value).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
+  return JSON.stringify(String(value));
 }
 
 function providerAuthLines({ literal, apiKey, envKey = "FIREWORKS_API_KEY" }) {
   if (literal && apiKey) {
     return [
-      `experimental_bearer_token = "${apiKey}"`,
+      `experimental_bearer_token = ${tomlString(apiKey)}`,
       "requires_openai_auth = false",
     ];
   }
   return [
-    `env_key = "${envKey}"`,
+    `env_key = ${tomlString(envKey)}`,
     "requires_openai_auth = false",
   ];
 }
@@ -176,16 +176,16 @@ export function patchFireconnectRoutingRaw(raw, {
 }) {
   const base = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   const routingBlock = [
-    `model_provider = "${providerId}"`,
-    ...(catalogPath ? [`model_catalog_json = "${catalogPath}"`] : []),
-    `model = "${modelId}"`,
-    ...(webSearch ? [`web_search = "${webSearch}"`] : []),
+    `model_provider = ${tomlString(providerId)}`,
+    ...(catalogPath ? [`model_catalog_json = ${tomlString(catalogPath)}`] : []),
+    `model = ${tomlString(modelId)}`,
+    ...(webSearch ? [`web_search = ${tomlString(webSearch)}`] : []),
   ].join("\n");
   const tablesBlock = [
     `[model_providers.${providerId}]`,
-    `name = "${providerName}"`,
-    `base_url = "${baseUrl}"`,
-    `wire_api = "${wireApi}"`,
+    `name = ${tomlString(providerName)}`,
+    `base_url = ${tomlString(baseUrl)}`,
+    `wire_api = ${tomlString(wireApi)}`,
     ...providerAuthLines({ literal: literalAuth, apiKey, envKey: authEnvKey }),
     ...(Object.keys(httpHeaders).length
       ? [`http_headers = { ${Object.entries(httpHeaders)
@@ -222,13 +222,13 @@ export function patchCodexCatalogRefRaw(raw, catalogPath) {
 
   return transformRootLines(raw, ({ trimmed }) => {
     if (hasCatalog && ROOT_MODEL_CATALOG_LINE.test(trimmed)) {
-      return `model_catalog_json = "${catalogPath}"`;
+      return `model_catalog_json = ${tomlString(catalogPath)}`;
     }
     return "keep";
   }, {
     afterRootLine: ({ trimmed, out }) => {
       if (!hasCatalog && !inserted && ROOT_MODEL_PROVIDER_LINE.test(trimmed)) {
-        out.push(`model_catalog_json = "${catalogPath}"`);
+        out.push(`model_catalog_json = ${tomlString(catalogPath)}`);
         inserted = true;
       }
     },
@@ -242,7 +242,7 @@ export function patchCodexCatalogRefRaw(raw, catalogPath) {
 export function patchCodexModelRaw(raw, modelId) {
   return transformRootLines(raw, ({ trimmed }) => {
     if (/^model\s*=/.test(trimmed)) {
-      return `model = "${modelId}"`;
+      return `model = ${tomlString(modelId)}`;
     }
     return "keep";
   });

@@ -114,44 +114,46 @@ describe("uninstall", () => {
     assert.match(await readFile(configPath, "utf8"), /model_catalog_json/);
   });
 
-  it("keeps codex catalog on uninstall when restored config still references it", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-keep-catalog-"));
-    await mkdir(path.join(home, ".codex"), { recursive: true });
+  for (const referenceStyle of ["legacy", "absolute"]) {
+    it(`keeps codex catalog on uninstall when restored config has a ${referenceStyle} reference`, async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-keep-catalog-"));
+      await mkdir(path.join(home, ".codex"), { recursive: true });
 
-    await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+      await runFireconnect(
+        ["codex", "on", "--api-key", "fw_test_key_12345"],
+        { HOME: home, FIREWORKS_API_KEY: "" },
+      );
 
-    const configPath = codexConfigPath(home);
-    const catalogPath = path.join(home, ".codex/fireworks-model-catalog.json");
-    await writeFile(
-      configPath,
-      patchCodexCatalogRefRaw(await readFile(configPath, "utf8"), CODEX_CATALOG_TOML_REF),
-      "utf8",
-    );
-    await writeFile(catalogPath, '{"models":[]}', "utf8");
+      const configPath = codexConfigPath(home);
+      const catalogPath = path.join(home, ".codex/fireworks-model-catalog.json");
+      await writeFile(
+        configPath,
+        patchCodexCatalogRefRaw(await readFile(configPath, "utf8"), CODEX_CATALOG_TOML_REF),
+        "utf8",
+      );
+      await writeFile(catalogPath, '{"models":[]}', "utf8");
 
-    const original = [
-      'model_provider = "openai"',
-      `model_catalog_json = "${CODEX_CATALOG_TOML_REF}"`,
-      'model = "gpt-4.1"',
-      "",
-    ].join("\n");
-    await writeJson(codexBackupPath(codexDataDir(home), configPath), {
-      configPath: path.resolve(configPath),
-      snapshot: { existed: true, raw: original },
+      const original = [
+        'model_provider = "openai"',
+        `model_catalog_json = "${referenceStyle === "absolute" ? catalogPath : CODEX_CATALOG_TOML_REF}"`,
+        'model = "gpt-4.1"',
+        "",
+      ].join("\n");
+      await writeJson(codexBackupPath(codexDataDir(home), configPath), {
+        configPath: path.resolve(configPath),
+        snapshot: { existed: true, raw: original },
+      });
+
+      const offResult = await runFireconnect(["codex", "off"], { HOME: home });
+      assert.equal(offResult.code, 0);
+      assert.equal(await pathExists(catalogPath), true);
+
+      const uninstallResult = await runFireconnect(["uninstall"], { HOME: home });
+      assert.equal(uninstallResult.code, 0);
+      assert.equal(await pathExists(catalogPath), true);
+      assert.match(await readFile(configPath, "utf8"), /model_catalog_json/);
     });
-
-    const offResult = await runFireconnect(["codex", "off"], { HOME: home });
-    assert.equal(offResult.code, 0);
-    assert.equal(await pathExists(catalogPath), true);
-
-    const uninstallResult = await runFireconnect(["uninstall"], { HOME: home });
-    assert.equal(uninstallResult.code, 0);
-    assert.equal(await pathExists(catalogPath), true);
-    assert.match(await readFile(configPath, "utf8"), /model_catalog_json/);
-  });
+  }
 
   it("does not mutate settings when harness was configured but not enabled", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-config-only-"));

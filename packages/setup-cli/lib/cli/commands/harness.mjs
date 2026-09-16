@@ -6,6 +6,7 @@ import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
 import { isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
 import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
 import { supportsAnthropicApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
+import { normalizeCodexBaseUrl } from "../../harnesses/codex/endpoint.mjs";
 import {
   assertFireworksKeyUsable,
   assertFireworksKeyShape,
@@ -44,8 +45,14 @@ function validateHarnessOptions(route, ctx) {
   if (ctx.azure && harnessId === HARNESS.CLAUDE) {
     throw new Error("Claude does not support Azure mode; omit --azure to use the Fireworks gateway.");
   }
-  if (ctx.baseUrlFromFlag && harnessId !== HARNESS.CLAUDE && !ctx.azure) {
+  if (ctx.baseUrlFromFlag && harnessId !== HARNESS.CLAUDE && harnessId !== HARNESS.CODEX && !ctx.azure) {
     throw new Error("--base-url on this harness requires --azure.");
+  }
+  if (ctx.baseUrlFromFlag && harnessId === HARNESS.CODEX) {
+    if (!isOn) {
+      throw new Error("--base-url applies only to `fireconnect codex on`.");
+    }
+    if (!ctx.azure) normalizeCodexBaseUrl(ctx.baseUrl);
   }
   if (ctx.force && !IDE_HARNESSES.has(harnessId)) {
     throw new Error("--force is only supported for Cursor, VS Code, and Codex.");

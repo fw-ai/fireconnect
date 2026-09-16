@@ -54,7 +54,7 @@ export function codexPathsFor(ctx) {
   return {
     configPath: codexConfigPath(ctx.home, ctx.configPath),
     dataDir: codexDataDir(ctx.home, ctx.dataDir),
-    catalogPath: codexCatalogPath(ctx.home, ctx.catalogPath),
+    catalogPath: codexCatalogPath(ctx.home, ctx.catalogPath, ctx.configPath),
   };
 }
 
@@ -121,7 +121,8 @@ const HOME_VALIDATION = {
  */
 export function ensureHomeForHarness(ctx, harnessId) {
   const req = HOME_VALIDATION[harnessId] ?? HOME_VALIDATION.claude;
-  const hasOverride = req.fields.some((field) => ctx[field]);
+  const hasOverride = req.fields.some((field) => ctx[field])
+    || (harnessId === "codex" && process.env.CODEX_HOME?.trim());
   if (!hasOverride && !ctx.home) {
     throw new Error(`HOME is not set; pass --home or ${req.flag}`);
   }
