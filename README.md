@@ -348,14 +348,26 @@ fireconnect codex                       # writes ~/.codex/config.toml
 fireconnect codex status
 fireconnect codex --model glm-latest      # switch model
 fireconnect codex off
+
+# Custom Fireworks-compatible Responses gateway:
+fireconnect codex on --model glm-latest --base-url https://gateway.example.com/v1
 ```
 
 - Sets root `model_provider` / `model` for Codex 0.134+ (short slug) and adds a
   `[model_providers.fireworks-ai]` block with `wire_api = "responses"` and a **baked**
   `experimental_bearer_token` literal (mode `0600`). No shell hook needed.
+- `--base-url` replaces the provider's inference base URL. Use an HTTP(S) base
+  such as `https://gateway.example.com/v1`; Codex appends `/responses`. The gateway
+  must accept the Fireworks key and model IDs. The URL persists across model and
+  key changes. To return to the default endpoint, pass
+  `--base-url https://api.fireworks.ai/inference/v1` or restore with `off`.
 - Writes the preferred serverless catalog to `~/.codex/fireworks-model-catalog.json` and points
   Codex at it via `model_catalog_json` (latest aliases preferred; embeddings, no-tool, and
   deprecated models filtered out). `off` removes the file and reference.
+- Config path precedence is `--config-path`, then `$CODEX_HOME/config.toml`, then
+  `$HOME/.codex/config.toml` (`--home` overrides HOME). The catalog is placed beside
+  that config and referenced by absolute path. Use the same path override for
+  subsequent `status` and `off` commands.
 - Preserves unrelated settings (for example `[[mcp_servers]]`) via surgical TOML edits, and on
   `off` reconciles the shell hook when nothing else needs `FIREWORKS_API_KEY`.
 
@@ -365,7 +377,15 @@ fireconnect codex off
 > such as Claude Code or OpenCode.
 
 `config.toml` updates immediately; exit Codex and `codex resume <id>` (or start a new session)
-to pick up the change. Use `--config-path <path>` for a non-default config.
+to pick up the change. A Desktop process only uses a custom `CODEX_HOME` when it
+starts with that environment.
+
+`fireconnect codex status --json` reports the configured provider, endpoint, model,
+config path, and catalog, with `configurationSource: "config-file"` and
+`runtimeVerified: false`. It does not verify the running app or send inference
+requests. Project model settings, profiles, and explicit task settings can still
+affect a task. This configures local model inference; account and cloud services
+continue to use their own endpoints.
 
 > **Resuming a prior session requires the matching provider to be on.**
 > `codex resume` resolves the session's recorded `model_provider` against the live

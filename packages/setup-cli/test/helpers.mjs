@@ -89,6 +89,9 @@ export function seedOnCommandCatalog(home, args = []) {
 // reader of CLAUDE_CONFIG_DIR, so dropping it here is safe and makes the
 // temp home authoritative.
 delete process.env.CLAUDE_CONFIG_DIR;
+// Codex paths must stay inside each test's temporary home unless the test
+// explicitly passes its own CODEX_HOME to the CLI child.
+delete process.env.CODEX_HOME;
 
 // Attribution header value for the version under test. Read from package.json so
 // a release bump can't strand these assertions on a stale literal.

@@ -95,11 +95,15 @@ describe("harness help matches supported command features", () => {
 
   test("does not advertise ignored gateway base-url overrides", async () => {
     await withTempHome("help-baseurl", async (home) => {
-      for (const harness of ["codex", "pi"]) {
+      for (const harness of ["pi"]) {
         const result = await runCli(["help", harness], { home });
         assert.doesNotMatch(result.stdout, /Fireworks gateway URL override/);
         assert.match(result.stdout, /--base-url.*Microsoft Foundry endpoint/);
       }
+      const codex = await runCli(["help", "codex"], { home });
+      assert.match(codex.stdout, /--base-url.*Responses API base URL/);
+      assert.match(codex.stdout, /Codex CLI/);
+      assert.match(codex.stdout, /CODEX_HOME/);
     });
   });
 

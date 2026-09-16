@@ -1,17 +1,16 @@
 import {
+  printField,
+  printMutedNote,
   printStructuredHarnessStatus,
 } from "../../harness/status-display.mjs";
 import {
   printHarnessConnected,
 } from "../../cli/messages.mjs";
-import process from "node:process";
 import { defaultMainModel } from "../../fireworks/model-id.mjs";
 import {
   CODEX_API_KEY_ENV_REF,
   CODEX_AZURE_PROVIDER_ID,
   CODEX_AZURE_PROVIDER_TABLE,
-  CODEX_FIREWORKS_BASE_URL,
-  CODEX_FIREWORKS_PROVIDER_ID,
   codexAuthKeyMode,
   codexCurrentModelId,
   codexProviderStatus,
@@ -37,6 +36,7 @@ import { ensureChatGptStopped } from "./ide-running.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import { harnessStatusKeySource } from "../../keys/api-key.mjs";
 import { existsSync } from "node:fs";
+import path from "node:path";
 
 const CODEX_FIREROUTER = Object.freeze({
   byok: "envref",
@@ -128,6 +128,7 @@ export default defineHarnessProfile({
       dataDir: paths.dataDir,
       apiKey: apiKeyRef,
       effectiveApiKey: effectiveKey,
+      baseUrl: ctx.baseUrlFromFlag ? ctx.baseUrl : "",
       modelId,
       keyType,
       catalogPath: paths.catalogPath,
@@ -137,8 +138,10 @@ export default defineHarnessProfile({
     });
   },
   envHookOn: (ctx) => finishEnvHarnessOn(ctx.home, { harnessId: "codex" }),
-  printConnected: ({ result }) => {
+  printConnected: ({ paths, result }) => {
     printHarnessConnected("Codex", { model: result.model });
+    printField("Config", paths.configPath);
+    printField("Endpoint", result.baseUrl);
   },
   restartHint: () => printCodexRestartHint(),
 
@@ -161,51 +164,44 @@ export default defineHarnessProfile({
 
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
-    const { configPath, catalogPath } = codexPathsFor(ctx);
+    const { configPath } = codexPathsFor(ctx);
     const { doc } = await readCodexTomlIfExists(configPath);
     const provider = codexProviderStatus(doc);
-
-    if (provider === "azure") {
-      const azureTable = doc.tables[CODEX_AZURE_PROVIDER_TABLE] ?? {};
-      const storedAuth = codexStoredAuthRef(doc);
-      const payload = {
-        harness: HARNESS.CODEX,
-        provider,
-        baseUrl: typeof azureTable.base_url === "string" ? azureTable.base_url : null,
-        modelProvider: CODEX_AZURE_PROVIDER_ID,
-        hasAuthToken: Boolean(effectiveCodexApiKey(storedAuth)),
-        defaults: { main: DEFAULT_AZURE_MODEL },
-        current: { main: codexCurrentModelId(doc) },
-      };
-      if (ctx.json) {
-        console.log(JSON.stringify(payload, null, 2));
-        return;
-      }
-      printStructuredHarnessStatus(HARNESS.CODEX, {
-        provider: payload.provider,
-        keyConfigured: payload.hasAuthToken,
-        authMode: codexAuthKeyMode(storedAuth),
-        model: payload.current.main,
-        endpoint: payload.baseUrl,
-      });
-      return;
-    }
-
-    const model = codexCurrentModelId(doc);
+    const modelProvider = typeof doc.root.model_provider === "string" ? doc.root.model_provider : "openai";
+    const providerTable = doc.tables[`model_providers.${modelProvider}`] ?? {};
+    const baseUrl = modelProvider === "openai" ? doc.root.openai_base_url : providerTable.base_url;
+    const model = codexCurrentModelId(doc) ?? doc.root.model ?? null;
     const storedAuth = codexStoredAuthRef(doc);
+    const catalogRef = doc.root.model_catalog_json;
+    const catalogPath = typeof catalogRef === "string" && catalogRef
+      ? (catalogRef.startsWith("~/")
+        ? path.resolve(ctx.home, catalogRef.slice(2))
+        : path.resolve(path.dirname(configPath), catalogRef))
+      : null;
+    const diagnostics = [];
+    if (catalogPath && !existsSync(catalogPath)) {
+      diagnostics.push("The configured model catalog is missing. Re-run fireconnect codex on to regenerate it.");
+    }
+    if (doc.root.profile) {
+      diagnostics.push("A profile is selected in this file; its overrides are not included in this configuration-only status.");
+    }
     const payload = {
       harness: HARNESS.CODEX,
       provider,
-      baseUrl: CODEX_FIREWORKS_BASE_URL,
-      modelProvider: CODEX_FIREWORKS_PROVIDER_ID,
-      hasAuthToken: Boolean(storedAuth || process.env.FIREWORKS_API_KEY),
-      defaults: { main: defaultMainModel() },
+      configPath,
+      configurationSource: "config-file",
+      runtimeVerified: false,
+      baseUrl: redactEndpoint(baseUrl),
+      modelProvider,
+      hasAuthToken: Boolean(effectiveCodexApiKey(storedAuth)),
+      defaults: { main: provider === "azure" ? DEFAULT_AZURE_MODEL : defaultMainModel() },
       current: { main: model },
       modelCatalog: {
-        set: Boolean(doc.root.model_catalog_json),
+        set: Boolean(catalogPath),
         path: catalogPath,
-        exists: existsSync(catalogPath),
+        exists: Boolean(catalogPath && existsSync(catalogPath)),
       },
+      diagnostics,
     };
 
     if (ctx.json) {
@@ -218,8 +214,25 @@ export default defineHarnessProfile({
       keyConfigured: payload.hasAuthToken,
       authMode: codexAuthKeyMode(storedAuth),
       model: payload.current.main,
+      endpoint: payload.baseUrl,
       keySource: harnessStatusKeySource(HARNESS.CODEX, provider),
     });
+    printField("Config", configPath);
+    printField("Model provider", modelProvider);
+    printMutedNote("Configuration on disk. Running Codex tasks have not been verified.");
+    for (const diagnostic of diagnostics) printMutedNote(diagnostic);
   },
 
 });
+
+// URLs from hand-edited configs may contain secrets even though --base-url
+// rejects them. Never include URL credentials/query values in status output.
+function redactEndpoint(value) {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}${url.search ? "?[redacted]" : ""}${url.hash ? "#[redacted]" : ""}`;
+  } catch {
+    return "(invalid URL)";
+  }
+}

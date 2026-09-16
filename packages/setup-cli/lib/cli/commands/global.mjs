@@ -10,8 +10,8 @@ import {
   OPENCODE_DATA_RELATIVE_DIR,
 } from "../../harnesses/opencode/core.mjs";
 import {
-  CODEX_CATALOG_RELATIVE_PATH,
   CODEX_DATA_RELATIVE_DIR,
+  codexCatalogPath,
   codexConfigPath,
   snapshotReferencesFireworksCatalog,
 } from "../../harnesses/codex/core.mjs";
@@ -94,14 +94,16 @@ const OPT_DATA_DIR = ["--data-dir <path>", "Override backup/state directory."];
  * own firerouter profile using the same predicates `harness.mjs` validates
  * with, so help can never advertise a flag the runtime rejects.
  */
-function standardOnOpts({ azure = true, firerouter = null, modelNote = "" } = {}) {
+function standardOnOpts({ azure = true, firerouter = null, modelNote = "", responsesBaseUrl = false } = {}) {
   const opts = [
     ["--api-key <key>", "Fireworks API key (on also saves config when set)."],
   ];
   if (azure) {
     opts.push(
       ["--azure", "Route through Microsoft Foundry endpoint."],
-      ["--base-url <url>", "Microsoft Foundry endpoint (with --azure)."],
+      ["--base-url <url>", responsesBaseUrl
+        ? "Responses API base URL; Microsoft Foundry endpoint with --azure."
+        : "Microsoft Foundry endpoint (with --azure)."],
     );
   }
   opts.push(["--model <id>", `Model to use${modelNote ? ` (${modelNote})` : ""}.`]);
@@ -170,6 +172,7 @@ function claudeHelp() {
 function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "", displayId = id, force = false } = {}) {
   const onOpts = standardOnOpts({
     azure: Boolean(getHarness(id).azure),
+    responsesBaseUrl: id === "codex",
     firerouter: getHarness(id).firerouter,
     modelNote: id === "deepseek" ? "use firerouter for FireRouter" : id === "codex" ? "use firerouter for FireRouter" : "",
   });
@@ -280,8 +283,9 @@ export function printHelp(topic = "") {
 
   const codexHelpOpts = {
     configPath: "--config-path <path>",
-    configPathNote: "Explicit ~/.codex/config.toml path.",
-    codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY from your shell. "
+    configPathNote: "Override CODEX_HOME/config.toml (default: ~/.codex/config.toml).",
+    codexNote: "Custom --base-url persists across model changes; status distinguishes config from runtime.\n"
+      + "Firerouter BYOK reads ANTHROPIC_API_KEY from your shell. "
       + "Pass --anthropic-api-key with codex on (or configure), then source your shell config.",
     force: true,
   };
@@ -775,7 +779,7 @@ async function removeFireConnectFiles(home, removeCatalog, { skipPerHarnessDirs,
 
   const pathsToRemove = [
     ...perHarnessDirs.map((dir) => path.join(home, dir)),
-    ...(removeCatalog ? [path.join(home, CODEX_CATALOG_RELATIVE_PATH)] : []),
+    ...(removeCatalog ? [codexCatalogPath(home)] : []),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),
     path.join(home, ".local/bin/fireconnect"),
@@ -1018,7 +1022,7 @@ export async function runUninstallCommand(ctx) {
   if (removeCatalog) {
     try {
       const raw = await readFile(codexConfigPath(home), "utf8");
-      if (snapshotReferencesFireworksCatalog(raw)) {
+      if (snapshotReferencesFireworksCatalog(raw, codexCatalogPath(home))) {
         removeCatalog = false;
       }
     } catch (error) {

@@ -27,7 +27,7 @@ describe("harness option validation", () => {
       await rejects(home, ["pi", "on", "--provider", "azure"], /--provider is configure-only/);
       await rejects(
         home,
-        ["codex", "on", "--base-url", "https://example.services.ai.azure.com"],
+        ["pi", "on", "--base-url", "https://example.services.ai.azure.com"],
         /--base-url on this harness requires --azure/,
       );
     });
