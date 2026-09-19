@@ -26,17 +26,17 @@ import {
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
 import { fireworksInputModalities } from "../../fireworks/model-specs.mjs";
-import { warmServerlessPricingCache } from "../../fireworks/models.mjs";
 import {
   readGlobalConfig,
   setHarnessState,
 } from "../../config/global-config.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import {
+  PI_AUTO_ENABLED_MODEL,
   cachedFireworksModelIds,
-  managedPiFireworksModelIds,
   mergePiFireworksRouterModels,
   piEnabledModels,
+  planPiCatalogUpdate,
 } from "./fireworks-models.mjs";
 import { stripFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
@@ -223,7 +223,7 @@ async function readManagedModelIds(home, dataDir) {
  * Record the registered ids in the global config (empty clears the key) and
  * remove any legacy state.json so old installs migrate on their next on/off.
  */
-async function persistManagedModelIds(home, dataDir, ids) {
+async function persistManagedModelIds(home, dataDir, ids, { initialized = false } = {}) {
   if (home) {
     const config = await readGlobalConfig(home);
     const profiles = { ...(config.harnesses[HARNESS.PI]?.profiles ?? {}) };
@@ -231,6 +231,11 @@ async function persistManagedModelIds(home, dataDir, ids) {
       profiles.managedModelIds = ids;
     } else {
       delete profiles.managedModelIds;
+    }
+    if (initialized) {
+      profiles.catalogInitialized = true;
+    } else {
+      delete profiles.catalogInitialized;
     }
     await setHarnessState(home, HARNESS.PI, { profiles });
   }
@@ -453,6 +458,7 @@ export async function enablePiFireworks({
   byokHeaders = {},
   telemetryHeaders = {},
   catalogModelIds = [],
+  catalogAvailable = false,
 }) {
   if (!apiKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
@@ -508,42 +514,65 @@ export async function enablePiFireworks({
     await writePrivateBackup(dataDir, backupPath(dataDir, modelsPath, "models"), modelsPath, modelsSnapshot);
   }
 
-  await warmServerlessPricingCache(resolvedEffective, resolvedKeyType);
-
   const apiKeyValue = resolvedEffective;
+  // Scope Pi's picker to FireConnect's router rows only, hiding Pi's built-in
+  // concrete Fireworks models (which surface because they share the fireworks
+  // provider auth), plus the active model when it sits outside that scope.
+  // `auto` is always in scope (standard keys) so the picker offers it no
+  // matter which model is active — Fire Pass has no auto entry to scope.
+  // See piEnabledModels.
+  const enabledModels = piEnabledModels(storedModel);
+  if (resolvedKeyType !== "firepass" && !enabledModels.includes(PI_AUTO_ENABLED_MODEL)) {
+    enabledModels.push(PI_AUTO_ENABLED_MODEL);
+  }
   await writeJson(settingsPath, {
     ...settings,
     defaultProvider: PI_PROVIDER,
     defaultModel: storedModel,
-    // Scope Pi's picker to FireConnect's router rows only, hiding Pi's built-in
-    // concrete Fireworks models (which surface because they share the fireworks
-    // provider auth), plus the active model when it sits outside that scope.
-    // See piEnabledModels.
-    enabledModels: piEnabledModels(storedModel),
+    enabledModels,
   });
   await writeAuthFile(authPath, {
     ...auth,
     [PI_PROVIDER]: { type: "api_key", key: apiKeyValue, managedBy: PI_MANAGED_BY },
   });
-  // Drop a leftover Azure provider when switching from Foundry to the gateway,
-  // so only one FireConnect-managed provider remains (matches OpenCode/Codex).
-  // Ids FireConnect registered on the previous `on`, so a rebuild from a fresh
-  // catalog can drop them (no accumulation) without touching user-added entries.
-  const previousManagedIds = await readManagedModelIds(home, dataDir);
+  const globalConfig = home ? await readGlobalConfig(home) : {};
+  const profile = globalConfig.harnesses?.[HARNESS.PI]?.profiles;
+  const initialized = profile?.catalogInitialized === true
+    || Array.isArray(profile?.managedModelIds);
+  const previousManagedIds = initialized
+    ? (Array.isArray(profile?.managedModelIds) ? profile.managedModelIds : [])
+    : [];
+  const catalogPlan = planPiCatalogUpdate(
+    resolvedModel,
+    catalogModelIds,
+    previousManagedIds,
+    {
+      modelRequested: Boolean(modelId),
+      catalogAvailable,
+      existingModelIds: (modelsConfig.providers?.[PI_PROVIDER]?.models ?? [])
+        .map((model) => model.id),
+      initialized,
+    },
+  );
   const fireworksModels = mergePiFireworksRouterModels(
     modelsConfig,
     resolvedModel,
     { ...telemetryHeaders, ...byokHeaders },
     catalogModelIds,
     previousManagedIds,
-    { firepass: resolvedKeyType === "firepass" },
+    {
+      firepass: resolvedKeyType === "firepass",
+      modelRequested: Boolean(modelId),
+      catalogAvailable,
+      catalogPlan,
+    },
   );
   if (fireworksModels.providers?.[PI_AZURE_PROVIDER]) {
     delete fireworksModels.providers[PI_AZURE_PROVIDER];
   }
   await writeJson(modelsPath, fireworksModels);
-  const managedModelIds = managedPiFireworksModelIds(resolvedModel, catalogModelIds);
-  await persistManagedModelIds(home, dataDir, managedModelIds);
+  const managedModelIds = catalogPlan.managed;
+  await persistManagedModelIds(home, dataDir, managedModelIds, { initialized: true });
 
   return {
     model: storedModel,

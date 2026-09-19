@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import {
   buildPiCustomFireworksModelEntry,
   cachedFireworksModelIds,
-  managedPiFireworksModelIds,
   mergePiFireworksRouterModels,
   ONE_MILLION_CONTEXT,
   piEnabledModels,
+  planPiCatalogUpdate,
   resolvePiEffectiveFireworksModel,
 } from "../../../lib/harnesses/pi/fireworks-models.mjs";
 import {
@@ -15,6 +15,8 @@ import {
   shortFireworksModelRef,
 } from "../../../lib/fireworks/model-id.mjs";
 import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { mockServerlessModel } from "../../helpers.mjs";
 
 const GLM_5P2_FAST = "accounts/fireworks/routers/glm-5p2-fast";
 const GLM_LATEST = "accounts/fireworks/routers/glm-latest";
@@ -22,13 +24,102 @@ const GLM_FAST_LATEST = "accounts/fireworks/routers/glm-fast-latest";
 const KIMI_LATEST = "accounts/fireworks/routers/kimi-latest";
 const KIMI_K2P6_FAST = "accounts/fireworks/routers/kimi-k2p6-fast";
 
+// Flat `/v1/serverless/models` rows for the alias routers these tests exercise.
+// Under the refactor alias routers exist only when the API reports them via a
+// row's `aliases` field, so tests seed the alias onto the base row instead of
+// relying on the deleted static alias table. The standard glm-5p2 row carries
+// 1_048_576 context (like the live API), which the cache mirrors onto the alias.
+const GLM_5P2_CATALOG_ROWS = [
+  mockServerlessModel({
+    id: "accounts/fireworks/models/glm-5p2",
+    aliases: ["accounts/fireworks/routers/glm-latest"],
+  }),
+  mockServerlessModel({
+    id: "accounts/fireworks/models/glm-5p2",
+    serverless_mode: "fast",
+    usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+    aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+    pricing: [
+      { sku: "LLM input tokens (uncached)", amount: "2.1" },
+      { sku: "LLM input tokens (cached)", amount: "0.21" },
+      { sku: "LLM output tokens", amount: "6.6" },
+    ],
+  }),
+];
+
+const KIMI_K3_CATALOG_ROWS = [
+  mockServerlessModel({
+    id: "accounts/fireworks/models/kimi-k3",
+    display_name: "Kimi K3",
+    context_length: 1_040_000,
+    aliases: ["accounts/fireworks/routers/kimi-latest"],
+    pricing: [
+      { sku: "LLM input tokens (uncached)", amount: "3" },
+      { sku: "LLM output tokens", amount: "15" },
+    ],
+  }),
+];
+
+/** Run `fn` with `rows` installed as the in-process serverless catalog snapshot. */
+function withCatalogSnapshot(rows, fn) {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(rows));
+  try {
+    return fn();
+  } finally {
+    setServerlessCatalogSnapshot(null);
+  }
+}
+
 function effectiveAfterMerge(resolvedModel, modelId) {
   const merged = mergePiFireworksRouterModels({}, resolvedModel);
   return resolvePiEffectiveFireworksModel(merged.providers.fireworks, modelId);
 }
 
 describe("mergePiFireworksRouterModels", () => {
-  it("rebuilds from the current catalog, dropping stale managed ids but keeping user entries", () => {
+  it("treats an authoritative empty catalog as a prune", () => {
+    const staleId = "accounts/fireworks/routers/removed-latest";
+    const plan = planPiCatalogUpdate("", [], [staleId], {
+      catalogAvailable: true,
+      initialized: true,
+    });
+    assert.deepEqual(plan.remove, [staleId]);
+    assert.deepEqual(plan.managed, []);
+  });
+
+  it("does not seed after Pi ownership state is lost", () => {
+    const plan = planPiCatalogUpdate("kimi-fast-latest", ["accounts/fireworks/routers/new-latest"], [], {
+      catalogAvailable: true,
+      initialized: true,
+    });
+    assert.deepEqual(plan.add, []);
+  });
+
+  it("does not claim a matching user row on explicit selection", () => {
+    const selected = "accounts/fireworks/routers/kimi-latest";
+    const plan = planPiCatalogUpdate(selected, [], [], {
+      modelRequested: true,
+      existingModelIds: [selected],
+      initialized: true,
+    });
+    assert.deepEqual(plan.managed, []);
+  });
+
+  it("registers future full router resources without suffix heuristics", () => {
+    const id = "accounts/fireworks/routers/future-model-us";
+    const merged = mergePiFireworksRouterModels({}, "kimi-fast-latest", {}, [id]);
+    assert.ok(merged.providers.fireworks.models.some((model) => model.id === id));
+  });
+
+  it("registers the synthesized auto mix on a fresh on", () => {
+    // The registerable set carries bare `auto` (see catalogWithAutomaticAuto);
+    // a fresh `on` must register it for Pi's /model picker, not just select it.
+    const merged = mergePiFireworksRouterModels({}, "auto", {}, ["auto", GLM_LATEST]);
+    const ids = (merged.providers.fireworks.models ?? []).map((model) => model.id);
+    assert.ok(ids.includes("auto"));
+    assert.ok(ids.includes(GLM_LATEST));
+  });
+
+  it("prunes stale managed ids and registers newly served catalog entries", () => {
     // A prior `on` registered a model that's no longer in the catalog, plus the
     // user has their own custom entry in the provider.
     const userModel = { id: "accounts/fireworks/models/my-private-ft", name: "My FT" };
@@ -48,6 +139,7 @@ describe("mergePiFireworksRouterModels", () => {
       {},
       [GLM_FAST_LATEST, GLM_LATEST], // current catalog
       [staleId, GLM_5P2_FAST], // previously-managed ids to drop
+      { catalogAvailable: true },
     );
     const fireworks = merged.providers.fireworks;
     const modelIds = (fireworks.models ?? []).map((m) => m.id);
@@ -57,7 +149,7 @@ describe("mergePiFireworksRouterModels", () => {
     assert.equal(fireworks.modelOverrides?.[GLM_5P2_FAST], undefined);
     // ...the user's own entry survives...
     assert.ok(modelIds.includes(userModel.id));
-    // ...and the current catalog is registered (canonical ids override Pi built-ins).
+    // ...and re-`on` mirrors the fresh catalog: newly served routers are added.
     assert.ok(modelIds.includes(GLM_FAST_LATEST));
     assert.ok(modelIds.includes(GLM_LATEST));
   });
@@ -76,31 +168,29 @@ describe("mergePiFireworksRouterModels", () => {
     assert.ok(modelIds.includes(GLM_LATEST), "existing full-id entry survives offline");
   });
 
-  it("firepass re-on drops metered cost inherited from a previous row", () => {
-    setServerlessCatalogSnapshot(null);
-    // A prior (standard-key) run registered glm-latest WITH a cost block.
-    const config = {
-      providers: {
-        fireworks: {
-          models: [{
-            id: "accounts/fireworks/routers/glm-latest",
-            name: "GLM Latest",
-            cost: { input: 1.4, output: 4.4, cacheRead: 0.14, cacheWrite: 0 },
-          }],
+  it("does not claim or rewrite an existing row when ownership state is missing", () => {
+    withCatalogSnapshot(GLM_5P2_CATALOG_ROWS, () => {
+      const config = {
+        providers: {
+          fireworks: {
+            models: [{
+              id: "accounts/fireworks/routers/glm-latest",
+              name: "GLM Latest",
+              cost: { input: 1.4, output: 4.4, cacheRead: 0.14, cacheWrite: 0 },
+            }],
+          },
         },
-      },
-    };
-    // Fire Pass is a subscription: re-registering glm-latest (the active model,
-    // which has a previous row with cost) must not inherit that metered cost.
-    const merged = mergePiFireworksRouterModels(config, GLM_LATEST, {}, [], [], {
-      firepass: true,
+      };
+      const merged = mergePiFireworksRouterModels(config, GLM_LATEST, {}, [], [], {
+        firepass: true,
+      });
+      const entry = (merged.providers.fireworks.models ?? []).find(
+        (model) => shortFireworksModelRef(model.id) === shortFireworksModelRef(GLM_LATEST),
+      );
+      assert.ok(entry);
+      assert.deepEqual(entry.cost, { input: 1.4, output: 4.4, cacheRead: 0.14, cacheWrite: 0 });
+      assert.equal(entry.contextWindow, undefined);
     });
-    const entry = (merged.providers.fireworks.models ?? []).find(
-      (model) => shortFireworksModelRef(model.id) === shortFireworksModelRef(GLM_LATEST),
-    );
-    assert.ok(entry, "glm-latest re-registered");
-    assert.equal(entry.cost, undefined, "firepass row carries no metered cost");
-    assert.equal(entry.contextWindow, 1_048_576, "limits still resolved");
   });
 
   it("uses live catalog labels for -latest router picker names", () => {
@@ -149,30 +239,32 @@ describe("mergePiFireworksRouterModels", () => {
   });
 
   it("registers non-catalog routers in models with full context and pricing", () => {
-    const merged = mergePiFireworksRouterModels({}, GLM_LATEST);
-    const entry = merged.providers.fireworks.models.find((model) => model.id === GLM_LATEST);
+    withCatalogSnapshot(GLM_5P2_CATALOG_ROWS, () => {
+      const merged = mergePiFireworksRouterModels({}, GLM_LATEST);
+      const entry = merged.providers.fireworks.models.find((model) => model.id === GLM_LATEST);
 
-    assert.ok(entry);
-    assert.equal(entry.contextWindow, 1_048_576);
-    assert.equal(entry.cost.input, 1.4);
-    assert.equal(entry.cost.output, 4.4);
-    assert.equal(merged.providers.fireworks.modelOverrides?.[GLM_LATEST], undefined);
+      assert.ok(entry);
+      assert.equal(entry.contextWindow, 1_048_576);
+      assert.equal(entry.cost.input, 1.4);
+      assert.equal(entry.cost.output, 4.4);
+      assert.equal(merged.providers.fireworks.modelOverrides?.[GLM_LATEST], undefined);
+    });
   });
 
-  it("rebuilds a stale canonical catalog row into a complete canonical row", () => {
+  it("keeps an existing canonical catalog row unchanged", () => {
     const merged = mergePiFireworksRouterModels({
       providers: {
         fireworks: {
-          models: [{ id: GLM_5P2_FAST, name: "stale", reasoning: true, contextWindow: 128_000 }],
+          models: [{ id: GLM_5P2_FAST, name: "stale", reasoning: true, contextWindow: 1_000_000 }],
         },
       },
     }, GLM_5P2_FAST);
 
     const fireworks = merged.providers.fireworks;
     const entry = fireworks.models.find((model) => model.id === GLM_5P2_FAST);
-    assert.ok(entry, "canonical row present (overridden in place)");
-    assert.equal(entry.name, "GLM 5.2 Fast");
-    assert.equal(entry.contextWindow, 1_048_575);
+    assert.ok(entry);
+    assert.equal(entry.name, "stale");
+    assert.equal(entry.contextWindow, 1_000_000);
     assert.equal(fireworks.modelOverrides?.[GLM_5P2_FAST], undefined);
   });
 
@@ -199,18 +291,22 @@ describe("resolvePiEffectiveFireworksModel", () => {
     assert.notEqual(effective.cost.input, 0);
   });
 
-  it("preserves 1M context for non-catalog glm-latest via custom models entry", () => {
-    const effective = effectiveAfterMerge(GLM_LATEST, GLM_LATEST);
-    assert.ok(effective);
-    assert.ok(effective.contextWindow >= ONE_MILLION_CONTEXT);
-    assert.equal(effective.cost.input, 1.4);
+  it("preserves 1M context for glm-latest via a seeded API alias row", () => {
+    withCatalogSnapshot(GLM_5P2_CATALOG_ROWS, () => {
+      const effective = effectiveAfterMerge(GLM_LATEST, GLM_LATEST);
+      assert.ok(effective);
+      assert.ok(effective.contextWindow >= ONE_MILLION_CONTEXT);
+      assert.equal(effective.cost.input, 1.4);
+    });
   });
 
-  it("preserves 1M context for non-catalog glm-fast-latest via custom models entry", () => {
-    const effective = effectiveAfterMerge(GLM_FAST_LATEST, GLM_FAST_LATEST);
-    assert.ok(effective);
-    assert.ok(effective.contextWindow >= ONE_MILLION_CONTEXT);
-    assert.equal(effective.cost.input, 2.1);
+  it("preserves 1M context for glm-fast-latest via a seeded API alias row", () => {
+    withCatalogSnapshot(GLM_5P2_CATALOG_ROWS, () => {
+      const effective = effectiveAfterMerge(GLM_FAST_LATEST, GLM_FAST_LATEST);
+      assert.ok(effective);
+      assert.ok(effective.contextWindow >= ONE_MILLION_CONTEXT);
+      assert.equal(effective.cost.input, 2.1);
+    });
   });
 
   it("does not collapse catalog kimi-k2p6-fast to the 128K default", () => {
@@ -220,29 +316,33 @@ describe("resolvePiEffectiveFireworksModel", () => {
     assert.equal(effective.cost.input, 2);
   });
 
-  it("gives non-catalog kimi-latest 1M context from shared limits, not 128K", () => {
-    const effective = effectiveAfterMerge(KIMI_LATEST, KIMI_LATEST);
-    assert.ok(effective);
-    assert.equal(effective.contextWindow, 1_040_000);
-    assert.equal(effective.cost.input, 3);
+  it("gives kimi-latest 1M context from the seeded kimi-k3 alias, not 128K", () => {
+    withCatalogSnapshot(KIMI_K3_CATALOG_ROWS, () => {
+      const effective = effectiveAfterMerge(KIMI_LATEST, KIMI_LATEST);
+      assert.ok(effective);
+      assert.equal(effective.contextWindow, 1_040_000);
+      assert.equal(effective.cost.input, 3);
+    });
   });
 
-  it("would regress to 128K if a catalog router were written only to models", () => {
+  it("would regress to 1M if a catalog router were written only to models", () => {
     const stale = {
       models: [{ id: GLM_5P2_FAST, name: "stale", reasoning: true }],
     };
     const effective = resolvePiEffectiveFireworksModel(stale, GLM_5P2_FAST);
-    assert.equal(effective.contextWindow, 128_000);
+    assert.equal(effective.contextWindow, 1_000_000);
     assert.deepEqual(effective.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   });
 
   it("buildPiCustomFireworksModelEntry uses shared limits, not vscode field names", () => {
-    const entry = buildPiCustomFireworksModelEntry(GLM_LATEST, "GLM Latest");
-    assert.equal(entry.id, GLM_LATEST);
-    assert.equal(entry.contextWindow, 1_048_576);
-    assert.equal(entry.maxTokens, 131_072);
-    assert.deepEqual(entry.input, ["text"]);
-    assert.equal(entry.cost.output, 4.4);
+    withCatalogSnapshot(GLM_5P2_CATALOG_ROWS, () => {
+      const entry = buildPiCustomFireworksModelEntry(GLM_LATEST, "GLM Latest");
+      assert.equal(entry.id, GLM_LATEST);
+      assert.equal(entry.contextWindow, 1_048_576);
+      assert.equal(entry.maxTokens, 131_072);
+      assert.deepEqual(entry.input, ["text"]);
+      assert.equal(entry.cost.output, 4.4);
+    });
   });
 
   it("buildPiCustomFireworksModelEntry enables image input for firerouter", () => {
@@ -316,7 +416,7 @@ describe("resolvePiEffectiveFireworksModel", () => {
     assert.ok(entry, "custom deployment should be registered in models[]");
     assert.equal(entry.id, deploymentId);
     // Graceful defaults from lookupFireworksModelLimits when the ID isn't in specs.
-    assert.equal(entry.contextWindow, 128_000);
+    assert.equal(entry.contextWindow, 1_000_000);
     assert.equal(entry.maxTokens, 16_384);
     assert.equal(entry.cost, undefined);
     // Not in modelOverrides (it's not a Pi built-in).
@@ -327,7 +427,7 @@ describe("resolvePiEffectiveFireworksModel", () => {
     const deploymentId = "accounts/ahmadshahzad/deployments/ub9lvh50";
     const effective = effectiveAfterMerge(deploymentId, deploymentId);
     assert.ok(effective);
-    assert.equal(effective.contextWindow, 128_000);
+    assert.equal(effective.contextWindow, 1_000_000);
   });
 });
 
@@ -351,7 +451,12 @@ describe("fullFireworksResourceId router classification", () => {
     );
   });
 
-  it("expands documented US-only slugs to routers/", () => {
+  it("expands documented US-only slugs by the shared suffix heuristic", () => {
+    // US-only router slugs carry no `-latest`/`-fast` suffix, but each has a
+    // static spec naming a documented US router — `isRouterShortId` counts a
+    // `-us` slug with a spec as a router, so bare slugs expand under routers/.
+    // Full `accounts/fireworks/routers/...-us` ids (as the API reports them)
+    // pass through unchanged.
     assert.equal(
       fullFireworksResourceId("kimi-k3-us"),
       "accounts/fireworks/routers/kimi-k3-us",
@@ -363,6 +468,15 @@ describe("fullFireworksResourceId router classification", () => {
     assert.equal(
       fullFireworksResourceId("glm-5p3-flash-us"),
       "accounts/fireworks/routers/glm-5p3-flash-us",
+    );
+    // The full ids the catalog actually reports as US routers pass through.
+    assert.equal(
+      fullFireworksResourceId("accounts/fireworks/routers/kimi-k3-us"),
+      "accounts/fireworks/routers/kimi-k3-us",
+    );
+    assert.equal(
+      fullFireworksResourceId("accounts/fireworks/routers/glm-5p2-fast-us"),
+      "accounts/fireworks/routers/glm-5p2-fast-us",
     );
   });
 
@@ -404,11 +518,6 @@ describe("fullFireworksResourceId router classification", () => {
       );
       assert.equal(canonical.length, 1, "no duplicate rows for the active router");
       assert.equal(canonical[0], "accounts/fireworks/routers/kimi-k3-fast");
-      // managed ids are the canonical router id, not a models/ path.
-      assert.deepEqual(
-        managedPiFireworksModelIds("kimi-k3-fast", []),
-        ["accounts/fireworks/routers/kimi-k3-fast"],
-      );
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -435,10 +544,6 @@ describe("fullFireworksResourceId router classification", () => {
       // …concrete catalog models are NOT.
       assert.equal(ids.includes("accounts/fireworks/models/gpt-oss-120b"), false);
       assert.equal(ids.includes("accounts/fireworks/models/deepseek-v4-flash"), false);
-      // managed ids are routers only.
-      const managed = managedPiFireworksModelIds("kimi-fast-latest", catalog);
-      assert.equal(managed.some((id) => id.includes("/models/")), false);
-      assert.ok(managed.includes("accounts/fireworks/routers/firerouter"));
     } finally {
       setServerlessCatalogSnapshot(null);
     }

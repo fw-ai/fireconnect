@@ -6,11 +6,6 @@ import { fileURLToPath } from "node:url";
 
 import { OPENCODE_API_KEY_ENV_REF } from "../../lib/harnesses/opencode/core.mjs";
 import {
-  DEFAULT_HAIKU_MODEL,
-  DEFAULT_OPUS_MODEL,
-  DEFAULT_SONNET_MODEL,
-} from "../../lib/harnesses/claude/model-profile.mjs";
-import {
   FIREWORKS_INFERENCE_URL,
   FPK_KEY,
   FW_CLAUDE_KEY,
@@ -30,9 +25,72 @@ import {
   writeClaudeSettings,
   writeNativeAnthropicSettings,
   assertClaudeMainModel,
+  assertClaudeNativeTierSlots,
+  assertClaudeRegisterablePicker,
   writeOpencodeConfig,
 } from "../helpers.mjs";
 import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
+import { buildServerlessCatalogSnapshot } from "../../lib/fireworks/models.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  setServerlessCatalogSnapshot,
+} from "../../lib/fireworks/serverless-catalog-cache.mjs";
+
+// Alias routers (`*-latest`) only resolve to their base model/static spec when
+// the flat catalog reports them via a row's `aliases` field — the static alias
+// table is gone. Seed these rows (base model + alias) into the spawned CLI's
+// HOME-scoped catalog cache so `on` can resolve labels, 1M context, and pricing.
+const ON_CATALOG_ROWS = [
+  {
+    id: "accounts/fireworks/models/glm-5p3",
+    display_name: "GLM 5.3",
+    serverless_mode: "standard",
+    aliases: ["accounts/fireworks/routers/glm-latest"],
+  },
+  {
+    id: "accounts/fireworks/models/glm-5p3-flash",
+    display_name: "GLM 5.3 Flash",
+    serverless_mode: "standard",
+    aliases: ["accounts/fireworks/routers/glm-flash-latest"],
+    input_modalities: ["text", "image"],
+  },
+  {
+    id: "accounts/fireworks/models/deepseek-v4-flash-0731",
+    display_name: "DeepSeek V4 Flash (0731)",
+    serverless_mode: "standard",
+    aliases: ["accounts/fireworks/routers/deepseek-flash-latest"],
+  },
+  {
+    id: "accounts/fireworks/models/kimi-k3-fast",
+    display_name: "Kimi K3 Fast",
+    serverless_mode: "fast",
+    aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+    input_modalities: ["text", "image"],
+    pricing: [
+      { sku: "LLM input tokens (uncached)", amount: "4.5", unit: "1M tokens" },
+      { sku: "LLM input tokens (cached)", amount: "0.45", unit: "1M tokens" },
+      { sku: "LLM output tokens", amount: "22.5", unit: "1M tokens" },
+    ],
+  },
+];
+
+/**
+ * Persist the alias-bearing catalog snapshot to `home`'s scoped cache so the
+ * spawned CLI child lazy-loads it. Mirrors seedServerlessCatalogCache's
+ * HOME juggling; our snapshot has real aliases so `seedOnCommandCatalog` leaves
+ * it untouched.
+ * @param {string} home
+ */
+function seedOnCatalog(home) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(ON_CATALOG_ROWS));
+  } finally {
+    process.env.HOME = prevHome;
+    setServerlessCatalogSnapshot(null);
+  }
+}
 
 const CLAUDE_STORED_MAIN_MODEL = `${KIMI_FAST_LATEST}[1m]`;
 const CLAUDE_STORED_FABLE_MODEL = "glm-flash-latest[1m]";
@@ -119,15 +177,15 @@ describe("harness help matches supported command features", () => {
     assert.match(claude.stdout, /Options for on/);
     assert.match(claude.stdout, /Options for usage/);
     assert.match(claude.stdout, /Options for all commands/);
-    assert.match(claude.stdout, /--interactive/);
-    assert.match(claude.stdout, /Open the model mapping wizard/);
+    assert.match(claude.stdout, /--model <id>/);
+    assert.match(claude.stdout, /does not override tier slots/);
     assert.match(claude.stdout, /--plain/);
     assert.match(claude.stdout, /Plain text summary/);
     assert.match(claude.stdout, /--home <path>/);
     assert.match(claude.stdout, /--data-dir <path>/);
     assert.match(claude.stdout, /Override HOME/);
     assert.match(claude.stdout, /max-intelligence, more-intelligence, balanced/);
-    assert.match(claude.stdout, /firerouter slot/);
+    assert.match(claude.stdout, /--model firerouter/);
 
     const codex = await runCli(["codex", "help"]);
     assert.equal(codex.code, 0, codex.stderr);
@@ -221,52 +279,43 @@ describe("unexpected input guidance", () => {
 });
 
 describe("fireconnect claude on", () => {
-  test("fw_ leaves main native, routes Opus via FireRouter, pins Sonnet and the rest", async () => {
+  test("fw_ leaves tier slots native and registers serverless models in modelPicker", async () => {
     await withTempHome("on-fw", async (home) => {
+      seedOnCatalog(home);
       const result = await runCli(
         ["claude", "on", "--api-key", FW_CLAUDE_KEY],
         { home, env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } },
       );
       assert.equal(result.code, 0, result.stderr);
-      // FireRouter is Opus-tier, so first setup with a regular fw_ key puts it on
-      // the Opus slot. FireConnect no longer probes for a Claude OAuth login —
-      // Claude Code attaches Anthropic auth at request time — so only Fire Pass
-      // is ineligible. See "drop OAuth detection; let Claude Code own auth".
-      assert.match(result.stdout, /FireRouter is on/);
 
       const settings = await readClaudeSettings(home);
       // Main is native (unpinned): no top-level model and no legacy main env.
-      assert.equal(settings.model, undefined);
+      assert.equal(settings.model, "firerouter[1m]");
       assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, CLAUDE_STORED_FIREROUTER_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "FireRouter");
-      // FireRouter on Opus moves GLM to Sonnet.
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "glm-latest[1m]");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.3 (Latest)");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, CLAUDE_STORED_DS_FLASH_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash (0731) (Latest)");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_FABLE_MODEL);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "GLM 5.3 Flash (Latest)");
-      // Subagent takes the Haiku model, [1m] tag and all.
-      assert.equal(settings.env.CLAUDE_CODE_SUBAGENT_MODEL, CLAUDE_STORED_DS_FLASH_MODEL);
+      assertClaudeNativeTierSlots(settings);
+      assertClaudeRegisterablePicker(settings, {
+        includes: ["auto[1m]", "firerouter[1m]", "glm-latest[1m]"],
+      });
       assert.equal(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
       assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, undefined);
       assert.equal(settings.env.DISABLE_TELEMETRY, "1");
       assert.equal(settings.env.DO_NOT_TRACK, "1");
       assert.equal(settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
       assert.equal(settings.env.ENABLE_TOOL_SEARCH, "true");
+      assert.equal(settings.env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
       assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
 
-  test("fpk_ routes Claude Code to kimi-fast-latest", async () => {
+  test("fpk_ routes Claude Code to auto", async () => {
     await withTempHome("on-fpk", async (home) => {
+      seedOnCatalog(home);
       const result = await runCli(
         ["claude", "on", "--api-key", FPK_KEY],
         { home, env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /kimi-fast-latest/);
+      assert.match(result.stdout, /Model picker/);
 
       const settings = await readClaudeSettings(home);
       assertClaudeMainModel(settings, CLAUDE_STORED_MAIN_MODEL);
@@ -285,6 +334,7 @@ describe("fireconnect claude on", () => {
 
   test("uses FIREWORKS_API_KEY when settings only have native Anthropic key", async () => {
     await withTempHome("on-skant", async (home) => {
+      seedOnCatalog(home);
       await writeNativeAnthropicSettings(home);
       const result = await runCli(["claude", "on"], {
         home,
@@ -299,12 +349,10 @@ describe("fireconnect claude on", () => {
       const settings = await readClaudeSettings(home);
       assert.equal(settings.apiKeyHelper, undefined);
       assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Fireworks-Api-Key: ${FW_CLAUDE_KEY}`));
-      // FireRouter is Opus-tier: with native Anthropic auth present it takes the
-      // Opus slot. Main stays native (unpinned).
-      assert.equal(settings.model, undefined);
+      assert.equal(settings.model, "firerouter[1m]");
       assert.equal(settings.env?.ANTHROPIC_MODEL, undefined);
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
-      assert.equal(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL, CLAUDE_STORED_FABLE_MODEL);
+      assertClaudeNativeTierSlots(settings);
+      assertClaudeRegisterablePicker(settings, { includes: ["firerouter[1m]"] });
       assert.equal(settings.env.ANTHROPIC_API_KEY, SK_ANT_KEY);
       assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
       assert.equal(settings.env.ANTHROPIC_BASE_URL, FIREWORKS_INFERENCE_URL);
@@ -338,8 +386,9 @@ describe("fireconnect claude on", () => {
 });
 
 describe("fireconnect opencode on", () => {
-  test("fw_ uses kimi-fast-latest as default model", async () => {
+  test("fw_ uses auto as default model", async () => {
     await withTempHome("on-fw-oc", async (home) => {
+      seedOnCatalog(home);
       const result = await runCli(
         ["opencode", "on", "--api-key", FW_CLAUDE_KEY],
         { home },
@@ -347,22 +396,23 @@ describe("fireconnect opencode on", () => {
       assert.equal(result.code, 0, result.stderr);
 
       const config = await readOpencodeConfig(home);
-      assert.equal(config.model, `fireworks-ai/${KIMI_FAST_LATEST}`);
+      assert.equal(config.model, `fireworks-ai/auto`);
+      // Bare `auto` gets a synthesized catalog entry (name/limits only — no
+      // per-Mtok cost, unlike the router entries).
       assert.deepEqual(
-        config.provider["fireworks-ai"].models[KIMI_FAST_LATEST],
+        config.provider["fireworks-ai"].models["auto"],
         {
-          ...expectedOpencodeLatestRouterEntry("Kimi K3 Fast (Latest)", 1_040_000, 131_072),
-          // Metered per-Mtok rates, so OpenCode can report spend. Fire Pass is a
-          // subscription and gets no cost block — see the fpk_ case below.
-          cost: { input: 4.5, output: 22.5, cache_read: 0.45 },
+          name: "Auto",
+          limit: { context: 1_048_575, output: 131_072 },
           modalities: { input: ["text", "image"] },
         },
       );
     });
   });
 
-  test("fpk_ uses kimi-fast-latest", async () => {
+  test("fpk_ uses kimi-fast-latest via firepass pin", async () => {
     await withTempHome("on-fpk-oc", async (home) => {
+      seedOnCatalog(home);
       const result = await runCli(
         ["opencode", "on", "--api-key", FPK_KEY],
         { home },
@@ -508,10 +558,9 @@ describe("fireconnect <harness> status", () => {
       await writeClaudeSettings(home, FW_CLAUDE_KEY);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
       assert.equal(json.defaults.main, "claude-default");
-      assert.equal(json.defaults.opus, DEFAULT_OPUS_MODEL);
-      // Sonnet defaults to deepseek-pro-latest.
-      assert.equal(json.defaults.sonnet, DEFAULT_SONNET_MODEL);
-      assert.equal(json.defaults.haiku, DEFAULT_HAIKU_MODEL);
+      assert.equal(json.defaults.opus, "claude-default");
+      assert.equal(json.defaults.sonnet, "claude-default");
+      assert.equal(json.defaults.haiku, "claude-default");
     });
   });
 
@@ -520,11 +569,11 @@ describe("fireconnect <harness> status", () => {
       await writeNativeAnthropicSettings(home);
       const { json } = await runCliJson(["claude", "status", "--json"], { home, env: NO_ENV_KEY });
       assert.equal(json.provider, "default");
-      assert.equal(json.defaults.sonnet, DEFAULT_SONNET_MODEL);
+      assert.equal(json.defaults.sonnet, "claude-default");
     });
   });
 
-  test("opencode with Fire Pass key shows kimi-fast-latest default", async () => {
+  test("opencode with Fire Pass key shows the firepass default", async () => {
     await withTempHome("status-oc-fpk", async (home) => {
       await writeOpencodeConfig(home, FPK_KEY);
       const { json } = await runCliJson(

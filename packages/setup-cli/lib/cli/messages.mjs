@@ -2,6 +2,7 @@ import { accent, bold, dim, muted, ok } from "../ui.mjs";
 import { AZURE_PROVIDER_LABEL } from "../fireworks/azure-core.mjs";
 import {
   FIREROUTER_TAGLINE,
+  routingPreferenceLevelLabel,
   routingPreferenceLevelName,
   routingPreferenceOptionsList,
 } from "../firerouter/core.mjs";
@@ -10,12 +11,6 @@ import { isFirerouterModelPattern, isFirerouterModel } from "../fireworks/model-
 
 export const FIREROUTER_DOCS_URL =
   "https://docs.fireworks.ai/ecosystem/firerouter/overview";
-
-/** Display labels for the workspace-BYOK-only (under-development) note. */
-const FIREROUTER_HARNESS_LABELS = {
-  cursor: "Cursor",
-  deepseek: "DeepSeek Harness",
-};
 
 function displayModel(model) {
   if (typeof model !== "string") {
@@ -31,11 +26,17 @@ function displayModel(model) {
 
 function firerouterOnCommand(harnessId) {
   return harnessId === "claude"
-    ? "fireconnect claude --opus firerouter"
+    ? "fireconnect claude --model firerouter"
     : `fireconnect ${harnessId} --model firerouter`;
 }
 
-function printRoutingPreferenceHint(harnessId, routingPreference) {
+function printRoutingPreferenceHint(harnessId, routingPreference, { supported = true } = {}) {
+  const applied = supported
+    ? routingPreferenceLevelLabel(routingPreference, { defaultLevel: null })
+    : null;
+  if (applied) {
+    printNote(`Routing: ${applied} (applies to firerouter slots)`);
+  }
   const levelName = routingPreferenceLevelName(routingPreference) ?? "balanced";
   const command = `${firerouterOnCommand(harnessId)} --routing-preference ${levelName}`;
   const otherOptions = routingPreferenceOptionsList({ excludeLevel: levelName });
@@ -93,16 +94,32 @@ export function printModelsAdded(models = [], { primaryModel } = {}) {
       return;
     }
   }
-  printNote(`Also in your model list: ${shown.join(", ")}`);
+  // Compact one-liner for short lists; wrap into continuation rows once the
+  // catalog outgrows a single line.
+  const inline = `Also in your model list: ${shown.join(", ")}`;
+  if (inline.length <= 76) {
+    printNote(inline);
+    return;
+  }
+  printNote("Also in your model list:");
+  const width = 76;
+  const indent = "  ";
+  let row = indent;
+  for (const model of shown) {
+    const piece = `${model}, `;
+    if (row.length > indent.length && row.length + piece.length > width) {
+      console.log(muted(row.replace(/, $/, ",")));
+      row = indent;
+    }
+    row += piece;
+  }
+  console.log(muted(row.replace(/, $/, "")));
 }
 
 export function printClaudeModelManagementHints() {
   const rows = [
     ["Browse", "fireconnect model list"],
-    ["Configure", "fireconnect claude --interactive"],
-    ["Set one", "fireconnect claude --opus <model>"],
-    ["Other slots", "--model --sonnet --haiku --fable --subagent"],
-    ["Claude default", "fireconnect claude --opus native"],
+    ["Add to /model", "fireconnect claude --model <id>"],
   ];
   console.log("");
   console.log(bold("Manage models"));
@@ -166,11 +183,9 @@ export async function printHarnessOnSuccess({
  *   harnessId: string,
  *   firerouter: { byok?: string }|null|undefined,
  *   firerouterIncluded: boolean,
- *   eligible: boolean,
  *   routingPreference?: number|string|null,
+ *   routingSupported?: boolean,
  *   firepass?: boolean,
- *   workspaceByokOnly?: boolean,
- *   workspaceByokLookup?: import("../config/feature-flags.mjs").FeatureFlagLookupResult|null,
  * }} args
  * @returns {Array<() => void>}
  */
@@ -178,27 +193,22 @@ export function buildFirerouterOnFootnotes({
   harnessId,
   firerouter,
   firerouterIncluded,
-  eligible,
   routingPreference = null,
+  routingSupported = true,
   firepass = false,
-  workspaceByokOnly = false,
-  workspaceByokLookup = null,
 }) {
-  if (!firerouter) {
+  if (!firerouter || (!firerouterIncluded && !firepass)) {
+    // Nothing selected, nothing failed — stay quiet.
     return [];
   }
   /** @type {Array<() => void>} */
   const footnotes = [() => printFirerouterNote({
     harnessId,
     included: firerouterIncluded,
-    eligible,
-    supportsEnvByok: firerouter.byok !== "none",
-    workspaceByokOnly: firerouter.byok === "none",
     firepass,
-    workspaceByokLookup,
   })];
   if (firerouterIncluded && supportsRoutingPreference(firerouter)) {
-    footnotes.push(() => printRoutingPreferenceHint(harnessId, routingPreference));
+    footnotes.push(() => printRoutingPreferenceHint(harnessId, routingPreference, { supported: routingSupported }));
   }
   return footnotes;
 }
@@ -217,80 +227,20 @@ function printFirerouterUnavailableNote(message) {
 export function printFirerouterNote({
   harnessId,
   included = false,
-  eligible = false,
-  supportsEnvByok = false,
-  workspaceByokOnly = false,
   firepass = false,
-  workspaceByokLookup = null,
 }) {
-  const command = firerouterOnCommand(harnessId);
-  if (workspaceByokOnly) {
-    if (included) {
-      printFirerouterEnabledNote();
-      if (workspaceByokLookup?.unavailable) {
-        printNote(
-          `Couldn't verify workspace BYOK (${workspaceByokLookup.reason}). Continuing anyway.`,
-        );
-      }
-      return;
-    }
-    if (firepass) {
-      printFirerouterUnavailableNote(
-        "FireRouter needs a regular Fireworks API key (fw_...), not Fire Pass.",
-      );
-      return;
-    }
-    if (eligible) {
-      printNote(`FireRouter is available. Run ${command} to turn it on.`);
-      return;
-    }
-    if (workspaceByokLookup?.unavailable) {
-      printNote(
-        `FireRouter wasn't turned on: couldn't verify workspace BYOK (${workspaceByokLookup.reason}). `
-          + `Ask the Fireworks team, or try: ${command}.`,
-      );
-      return;
-    }
-    printNote(
-      `FireRouter support for ${FIREROUTER_HARNESS_LABELS[harnessId] ?? harnessId} is still under development. `
-        + "Reach out to the Fireworks team if you're interested.",
-    );
-    return;
-  }
-
+  // Only confirm what the user actually selected or what actually failed —
+  // never advertise FireRouter on a plain `on`. That keeps the success block
+  // short and matches the reader's intent.
   if (included) {
     printFirerouterEnabledNote();
-    if (workspaceByokLookup?.unavailable) {
-      printNote(
-        `Couldn't verify workspace BYOK (${workspaceByokLookup.reason}). Continuing anyway.`,
-      );
-    }
     return;
   }
   if (firepass) {
     printFirerouterUnavailableNote(
       "FireRouter needs a regular Fireworks API key (fw_...), not Fire Pass.",
     );
-    return;
   }
-  if (workspaceByokLookup?.unavailable) {
-    printNote(
-      `FireRouter wasn't turned on: couldn't verify workspace BYOK (${workspaceByokLookup.reason}). `
-        + `Set ANTHROPIC_API_KEY or try: ${command}.`,
-    );
-    return;
-  }
-  if (eligible) {
-    printNote(`FireRouter is available. Run ${command} to turn it on.`);
-    return;
-  }
-  if (supportsEnvByok) {
-    printNote(
-      `FireRouter wasn't turned on (no Anthropic API key). Run ${command} to enable it.`,
-    );
-    return;
-  }
-  printNote(`FireRouter wasn't turned on. Run ${command} to enable it.`);
 }
 
 /**

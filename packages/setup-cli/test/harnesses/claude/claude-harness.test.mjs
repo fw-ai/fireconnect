@@ -7,16 +7,90 @@ import {
   userSettingsPath,
   providerBackupPath,
   resolveDataDir,
-  fireworksModelPickerName,
-  fireworksModelDisplayFields,
-  fireworksFableOptionFields,
   syncFireworksModelDisplay,
   stripCustomModelOptionEnv,
 } from "../../../lib/harnesses/claude/core.mjs";
+import {
+  fireworksModelPickerName,
+  fireworksModelDisplayFields,
+} from "../../../lib/harnesses/claude/picker-labels.mjs";
 import { resolveClaudeAuthState } from "../../../lib/harnesses/claude/index.mjs";
 import { readGlobalConfig } from "../../../lib/config/global-config.mjs";
-import { FIRECONNECT_REFERER, runFireconnect, writeClaudeSettings, assertClaudeMainModel } from "../../helpers.mjs";
-import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import {
+  WEBSEARCH_MCP_SERVER_NAME,
+  WEBSEARCH_MCP_URL,
+  claudeJsonPath,
+} from "../../../lib/system/websearch-state.mjs";
+import {
+  FIRECONNECT_REFERER,
+  mockServerlessModel,
+  mockServerlessModelRows,
+  runFireconnect,
+  writeClaudeSettings,
+  assertClaudeNativeTierSlots,
+} from "../../helpers.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { cacheServerlessCatalogSnapshot, setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+
+// Flat catalog rows that bind the `-latest` router aliases the defaults and
+// picker labels resolve through. Alias routers come only from the API's per-row
+// `aliases` field now, so offline/spawned tests must seed a snapshot.
+const CATALOG_ROWS = [
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p3",
+    displayName: "GLM 5.3",
+    aliases: ["accounts/fireworks/routers/glm-latest"],
+  }),
+  ...mockServerlessModelRows({
+    name: "accounts/fireworks/models/glm-5p2",
+    aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/deepseek-v4-flash",
+    displayName: "DeepSeek V4 Flash",
+    aliases: ["accounts/fireworks/routers/deepseek-flash-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/deepseek-v4-pro",
+    displayName: "DeepSeek V4 Pro",
+    aliases: ["accounts/fireworks/routers/deepseek-pro-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p3-flash",
+    displayName: "GLM 5.3 Flash",
+    input_modalities: ["text", "image"],
+    aliases: ["accounts/fireworks/routers/glm-flash-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/kimi-k3",
+    displayName: "Kimi K3",
+    input_modalities: ["text", "image"],
+    aliases: ["accounts/fireworks/routers/kimi-latest", "accounts/fireworks/routers/kimi-fast-latest"],
+  }),
+];
+
+/** Persist the catalog to `home`'s scoped cache so a spawned CLI child reads it. */
+function seedCatalogFor(home) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(CATALOG_ROWS));
+  } finally {
+    process.env.HOME = prevHome;
+    // Keep this process's snapshot empty; in-process tests seed explicitly.
+    setServerlessCatalogSnapshot(null);
+  }
+}
+
+/** Run a synchronous in-process assertion with the alias catalog active. */
+function withCatalog(fn) {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(CATALOG_ROWS));
+  try {
+    return fn();
+  } finally {
+    setServerlessCatalogSnapshot(null);
+  }
+}
 
 describe("claude harness integration", () => {
   it("uses active custom-header auth ahead of stale env and helper state", () => {
@@ -38,6 +112,7 @@ describe("claude harness integration", () => {
 
   it("on/off round-trip restores settings", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-"));
+    seedCatalogFor(home);
     const settingsDir = path.join(home, ".claude");
     await mkdir(settingsDir, { recursive: true });
     const settingsPath = userSettingsPath(home);
@@ -78,13 +153,21 @@ describe("claude harness integration", () => {
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
     assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-original");
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
-    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.model, "firerouter[1m]");
     assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
-    assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
-    assert.equal(enabled.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "glm-flash-latest[1m]");
+    assert.equal(enabled.env.ANTHROPIC_DEFAULT_OPUS_MODEL, undefined);
+    assert.equal(enabled.env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+    assert.equal(enabled.modelPicker?.fireconnectManaged, true);
+    assert.equal(enabled.modelPicker?.replaceBuiltInOptions, false);
+    const pickerModels = enabled.modelPicker?.options?.map((row) => row.model) ?? [];
+    assert.ok(pickerModels.includes("auto[1m]"), pickerModels.join(", "));
+    assert.ok(pickerModels.includes("firerouter[1m]"), pickerModels.join(", "));
+    assert.ok(pickerModels.includes("glm-latest[1m]"), pickerModels.join(", "));
     assert.equal(enabled.env.DISABLE_TELEMETRY, "1");
     assert.equal(enabled.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
     assert.equal(enabled.env.ENABLE_TOOL_SEARCH, "true");
+    assert.equal(enabled.env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+    assert.equal(enabled.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
     assert.equal(
       (await stat(settingsPath)).mode & 0o077,
       0,
@@ -112,6 +195,8 @@ describe("claude harness integration", () => {
     assert.equal(restored.apiKeyHelper, undefined);
     assert.equal(Object.hasOwn(restored.env, "DISABLE_TELEMETRY"), false);
     assert.equal(Object.hasOwn(restored.env, "ENABLE_TOOL_SEARCH"), false);
+    assert.equal(Object.hasOwn(restored.env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
+    assert.equal(Object.hasOwn(restored.env, "CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP"), false);
 
     const config = await readGlobalConfig(home);
     assert.equal(config.harnesses.claude.enabled, false);
@@ -143,7 +228,7 @@ describe("claude harness integration", () => {
     assert.equal(enabled.apiKeyHelper, "/usr/local/bin/user-anthropic-key-helper");
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, "sk-ant-native-auth-token");
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
-    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.model, "firerouter[1m]");
     assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
   });
@@ -169,7 +254,7 @@ describe("claude harness integration", () => {
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(enabled.apiKeyHelper, "/usr/local/bin/user-anthropic-key-helper");
-    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.model, "firerouter[1m]");
     assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.equal(enabled.env.ANTHROPIC_API_KEY, undefined);
     assert.equal(enabled.env.ANTHROPIC_AUTH_TOKEN, undefined);
@@ -194,7 +279,7 @@ describe("claude harness integration", () => {
 
     const enabled = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(enabled.env.ANTHROPIC_API_KEY, "sk-ant-native-flag");
-    assert.equal(enabled.model, undefined);
+    assert.equal(enabled.model, "firerouter[1m]");
     assert.equal(enabled.env?.ANTHROPIC_MODEL, undefined);
     assert.doesNotMatch(enabled.env.ANTHROPIC_CUSTOM_HEADERS, /x-anthropic-api-key/i);
   });
@@ -227,7 +312,7 @@ describe("claude harness integration", () => {
     );
   });
 
-  it("on denies the gateway-incompatible WebSearch/WebFetch tools, keeping user deny rules", async () => {
+  it("on enables native WebSearch/WebFetch and removes the retired MCP", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-deny-"));
     await mkdir(path.join(home, ".claude"), { recursive: true });
     const settingsPath = userSettingsPath(home);
@@ -235,12 +320,18 @@ describe("claude harness integration", () => {
       settingsPath,
       JSON.stringify({ permissions: { allow: ["Bash(ls:*)"], deny: ["Bash(rm:*)"] } }),
     );
+    await writeFile(claudeJsonPath(home), JSON.stringify({
+      mcpServers: {
+        "user-server": { command: "echo" },
+        [WEBSEARCH_MCP_SERVER_NAME]: { type: "http", url: WEBSEARCH_MCP_URL },
+      },
+    }));
 
     for (const args of [
       ["claude", "on", "--api-key", "fw_test_key_12345"],
       [
         "claude", "on",
-        "--opus", "firerouter",
+        "--model", "firerouter",
         "--api-key", "fw_test_key_12345",
         "--anthropic-api-key", "sk-ant-tools-test",
       ],
@@ -255,17 +346,71 @@ describe("claude harness integration", () => {
       const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
       assert.deepEqual(
         enabled.permissions.deny,
-        ["Bash(rm:*)", "WebSearch", "WebFetch"],
+        ["Bash(rm:*)"],
         `deny merged after ${args.join(" ")}`,
       );
       // The user's own allow rule is untouched.
       assert.deepEqual(enabled.permissions.allow, ["Bash(ls:*)"]);
+      const claudeJson = JSON.parse(await readFile(claudeJsonPath(home), "utf8"));
+      assert.deepEqual(claudeJson.mcpServers, { "user-server": { command: "echo" } });
 
       const off = await runFireconnect(["claude", "off"], { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(off.code, 0, off.stderr);
       const restored = JSON.parse(await readFile(settingsPath, "utf8"));
       assert.deepEqual(restored.permissions.deny, ["Bash(rm:*)"], `deny restored after ${args.join(" ")}`);
     }
+  });
+
+  it("on retires an already-connected pre-0.9.7 profile's MCP and tool denials", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-upgrade-"));
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    const settingsPath = userSettingsPath(home);
+    const original = JSON.stringify({
+      permissions: { allow: ["Bash(ls:*)"], deny: ["Bash(rm:*)"] },
+    });
+    await writeFile(settingsPath, original);
+
+    const first = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+    });
+    assert.equal(first.code, 0, first.stderr);
+
+    // Recreate what FireConnect <= 0.9.6 left behind on a connected profile:
+    // the managed websearch MCP plus both server-tool denials.
+    const connected = JSON.parse(await readFile(settingsPath, "utf8"));
+    connected.permissions.deny = ["Bash(rm:*)", "WebSearch", "WebFetch"];
+    await writeFile(settingsPath, JSON.stringify(connected));
+    await writeFile(claudeJsonPath(home), JSON.stringify({
+      mcpServers: {
+        "user-server": { command: "echo" },
+        [WEBSEARCH_MCP_SERVER_NAME]: {
+          type: "http",
+          url: WEBSEARCH_MCP_URL,
+          headers: { Authorization: "Bearer fw_test_key_12345" },
+        },
+      },
+    }));
+
+    const upgraded = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+    });
+    assert.equal(upgraded.code, 0, upgraded.stderr);
+
+    const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.deepEqual(settings.permissions.deny, ["Bash(rm:*)"]);
+    assert.deepEqual(settings.permissions.allow, ["Bash(ls:*)"]);
+    const claudeJson = JSON.parse(await readFile(claudeJsonPath(home), "utf8"));
+    assert.deepEqual(claudeJson.mcpServers, { "user-server": { command: "echo" } });
+
+    const off = await runFireconnect(["claude", "off"], { HOME: home, FIREWORKS_API_KEY: "" });
+    assert.equal(off.code, 0, off.stderr);
+    assert.equal(await readFile(settingsPath, "utf8"), original);
   });
 
   it("on/off restores the settings file byte-for-byte (formatting, order, unrelated keys)", async () => {
@@ -287,7 +432,7 @@ describe("claude harness integration", () => {
 `;
     await writeFile(settingsPath, original);
 
-    for (const args of [["claude", "on", "--api-key", "fw_test_key_12345"], ["claude", "on", "--opus", "firerouter", "--api-key", "fw_test_key_12345"]]) {
+    for (const args of [["claude", "on", "--api-key", "fw_test_key_12345"], ["claude", "on", "--model", "firerouter", "--api-key", "fw_test_key_12345"]]) {
       const on = await runFireconnect(args, { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(on.code, 0, on.stderr);
       const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -449,6 +594,7 @@ describe("claude harness integration", () => {
 
   it("prints one compact warning for text-only models", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-vision-warn-"));
+    seedCatalogFor(home);
     const result = await runFireconnect(
       [
         "claude", "on",
@@ -465,19 +611,19 @@ describe("claude harness integration", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(
       result.stdout,
-      /Text-only: deepseek-flash-latest, deepseek-pro-latest, glm-fast-latest, glm-latest · Avoid images; recover with \/rewind\./,
+      /Text-only: glm-fast-latest · Avoid images; recover with \/rewind\./,
     );
     assert.doesNotMatch(result.stdout, /Claude Code cannot mark models as text-only/);
   });
 
-  it("status labels model slots with vision capability", async () => {
+  it("status shows Cursor-style model and registered models", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-vision-status-"));
+    seedCatalogFor(home);
     const onResult = await runFireconnect(
       [
         "claude", "on",
         "--api-key", "fw_test_key_12345",
         "--model", "glm-fast-latest",
-        "--sonnet", "kimi-latest",
       ],
       {
         HOME: home,
@@ -490,44 +636,41 @@ describe("claude harness integration", () => {
 
     const statusResult = await runFireconnect(["claude", "status"], { HOME: home });
     assert.equal(statusResult.code, 0, statusResult.stderr);
-    // status reports every slot's real value, not just overrides: main/sonnet
-    // were overridden, but the default-matching opus/haiku/fable slots appear
-    // too (each pinned to its default Fireworks model).
-    assert.match(statusResult.stdout, /main\s+->\s+glm-fast-latest.*text-only/);
-    assert.match(statusResult.stdout, /sonnet\s+->\s+kimi-latest.*vision/);
-    assert.match(statusResult.stdout, /opus\s+->\s+glm-latest/);
-    assert.match(statusResult.stdout, /haiku\s+->\s+deepseek-flash-latest.*text-only/);
-    assert.match(statusResult.stdout, /fable\s+->\s+glm-flash-latest.*vision/);
+    // Unpinned (native) main reads as the gateway-resolved `auto` alias.
+    assert.match(statusResult.stdout, /^Model: firerouter$/m);
+    assert.match(statusResult.stdout, /^Registered models:$/m);
+    assert.match(statusResult.stdout, /^\s+glm-fast-latest$/m);
+    assert.match(statusResult.stdout, /^\s+deepseek-flash-latest$/m);
+    assert.doesNotMatch(statusResult.stdout, /Model mapping/);
+    assert.doesNotMatch(statusResult.stdout, /Using Anthropic/);
+    const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
+    assert.equal(settings.model, "firerouter[1m]");
+    assertClaudeNativeTierSlots(settings);
   });
 });
 
 describe("fireworksModelPickerName", () => {
   it("uses catalog labels instead of raw slugs for subscription picker names", () => {
-    assert.equal(fireworksModelPickerName("glm-fast-latest"), "GLM 5.2 Fast (Latest)");
-    assert.equal(fireworksModelPickerName("kimi-fast-latest"), "Kimi K3 Fast (Latest)");
-    assert.equal(fireworksModelPickerName("deepseek-v4-flash"), "DeepSeek V4 Flash");
-    assert.equal(fireworksModelPickerName("firerouter"), "FireRouter");
+    withCatalog(() => {
+      assert.equal(fireworksModelPickerName("glm-fast-latest"), "GLM 5.2 Fast (Latest)");
+      assert.equal(fireworksModelPickerName("kimi-fast-latest"), "Kimi K3 Fast (Latest)");
+      assert.equal(fireworksModelPickerName("deepseek-v4-flash"), "DeepSeek V4 Flash");
+      assert.equal(fireworksModelPickerName("firerouter"), "FireRouter");
+    });
   });
 
   it("strips ' via Fireworks' from cached catalog pricing labels", () => {
-    setServerlessCatalogSnapshot({
-      entries: [],
-      pricingById: new Map([
-        ["accounts/fireworks/routers/glm-fast-latest", {
-          slug: "glm-fast-latest",
-          label: "GLM 5.2 Fast via Fireworks",
-          input: 2.1,
-          cachedInput: 0.21,
-          output: 6.6,
-          tier: "fast",
-          source: "https://fireworks.ai/pricing",
-        }],
-      ]),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
+    // A fast-mode row whose display name still carries the API's " via
+    // Fireworks" suffix: the snapshot builder must strip it from the pricing
+    // label the alias borrows.
+    const snapshot = buildServerlessCatalogSnapshot([
+      ...mockServerlessModelRows({
+        name: "accounts/fireworks/models/glm-5p2",
+        displayName: "GLM 5.2 Fast via Fireworks",
+        aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+      }),
+    ]);
+    setServerlessCatalogSnapshot(snapshot);
     try {
       assert.equal(fireworksModelPickerName("glm-fast-latest"), "GLM 5.2 Fast (Latest)");
       const fields = fireworksModelDisplayFields("glm-fast-latest", "ANTHROPIC_DEFAULT_FABLE_MODEL");
@@ -572,28 +715,23 @@ describe("fireworksModelPickerName", () => {
   });
 
   it("writes pretty display fields for every alias slot", () => {
-    const mapping = {
-      main: "firerouter",
-      opus: "glm-fast-latest",
-      sonnet: "glm-fast-latest",
-      haiku: "deepseek-v4-flash",
-      fable: "kimi-fast-latest",
-      subagent: "deepseek-v4-flash",
-    };
-    const env = syncFireworksModelDisplay({}, mapping);
-    assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash");
-    assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K3 Fast (Latest)");
-    assert.equal(env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
-    assert.match(env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION, /GLM 5\.2 Fast/);
-  });
-
-  it("writes pretty fable picker names into env fields", () => {
-    const fields = fireworksFableOptionFields("glm-fast-latest");
-    assert.equal(fields.ANTHROPIC_DEFAULT_FABLE_MODEL, "glm-fast-latest[1m]");
-    assert.equal(fields.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-    assert.match(fields.ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION, /GLM 5\.2 Fast/);
+    withCatalog(() => {
+      const mapping = {
+        main: "firerouter",
+        opus: "glm-fast-latest",
+        sonnet: "glm-fast-latest",
+        haiku: "deepseek-v4-flash",
+        fable: "kimi-fast-latest",
+        subagent: "deepseek-v4-flash",
+      };
+      const env = syncFireworksModelDisplay({}, mapping);
+      assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "GLM 5.2 Fast (Latest)");
+      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME, "DeepSeek V4 Flash");
+      assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME, "Kimi K3 Fast (Latest)");
+      assert.equal(env.ANTHROPIC_CUSTOM_MODEL_OPTION, undefined);
+      assert.match(env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION, /Fireworks serverless · .*per Mtok/);
+    });
   });
 
   it("strips ANTHROPIC_CUSTOM_MODEL_OPTION from subscription picker env", () => {
@@ -608,8 +746,10 @@ describe("fireworksModelPickerName", () => {
   });
 
   it("builds per-slot display fields from env prefix", () => {
-    const opus = fireworksModelDisplayFields("glm-fast-latest", "ANTHROPIC_DEFAULT_OPUS_MODEL");
-    assert.equal(opus.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
-    assert.match(opus.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION, /GLM 5\.2 Fast/);
+    withCatalog(() => {
+      const opus = fireworksModelDisplayFields("glm-fast-latest", "ANTHROPIC_DEFAULT_OPUS_MODEL");
+      assert.equal(opus.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, "GLM 5.2 Fast (Latest)");
+      assert.match(opus.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION, /per Mtok/);
+    });
   });
 });

@@ -6,7 +6,7 @@ import {
   printHarnessOnFootnotes,
   printHarnessOnSuccess,
 } from "../cli/messages.mjs";
-import { isFirerouterModelPattern } from "../fireworks/model-id.mjs";
+import { isFirerouterModel, isFirerouterModelPattern } from "../fireworks/model-id.mjs";
 import { assertRequestedModelServable } from "../fireworks/model-servability.mjs";
 import { detectApiKeyType } from "../keys/key-type.mjs";
 import { resolveAzureBaseUrl, resolveAzureOnApiKey } from "../fireworks/azure-core.mjs";
@@ -17,7 +17,6 @@ import {
   firerouterByokEnvRefHeaders,
   firerouterCredentialsApplyOnGateway,
   resolveExplicitFirerouterCredential,
-  resolveFirerouterAvailability,
   resolveFirerouterByokHeaders,
   resolveFirerouterPlan,
 } from "../firerouter/flag.mjs";
@@ -27,19 +26,9 @@ import {
   setHarnessEnabled,
 } from "../config/global-config.mjs";
 import { reconcileShellEnvHook } from "../io/shell-env-hook.mjs";
-import { disableWebsearchMcp } from "../system/websearch-mcp.mjs";
 import { ensureHomeForHarness } from "./context.mjs";
 import { defineHarness } from "./types.mjs";
 import { buildFireconnectTelemetryHeaders } from "../telemetry/request-headers.mjs";
-
-function resolveProfileFirerouterAvailability(profile, ctx, apiKey, keyType) {
-  return resolveFirerouterAvailability({
-    firerouter: profile.firerouter,
-    keyType,
-    workspaceApiKey: apiKey,
-    home: ctx.home,
-  });
-}
 
 /**
  * A HarnessProfile is the small, mostly-declarative description of a harness.
@@ -83,7 +72,6 @@ function resolveProfileFirerouterAvailability(profile, ctx, apiKey, keyType) {
  * @property {(outcome: string) => void} [restartHintOff]
  * Command overrides — when omitted, the engine's generic implementation is used
  * (except `status`, which is always harness-specific and required):
- * @property {boolean} [websearchMcp] Install Firesearch MCP on `on` when entitled.
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<void>} status
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<void>} [on]
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<void>} [off]
@@ -91,8 +79,8 @@ function resolveProfileFirerouterAvailability(profile, ctx, apiKey, keyType) {
  */
 
 /**
- * Generic `<harness> on`: resolve the key, decide the model (FireRouter default
- * or explicit/direct), build BYOK headers, write the provider config, flip the
+ * Generic `<harness> on`: resolve the key, decide the model (explicit
+ * `--model` or the harness default), build BYOK headers, write the provider
  * enabled flag, reconcile the shell env hook when needed, and print the standard success
  * output. Azure mode delegates to the profile's own handler unchanged.
  * @param {HarnessProfile} profile
@@ -112,12 +100,6 @@ export async function engineOn(profile, ctx) {
   const paths = profile.paths(ctx);
   const { apiKeyRef = "", effectiveKey, reusedExistingKey = false } = await resolveOnKey(profile, ctx, paths);
   const keyType = detectApiKeyType(effectiveKey);
-  const automaticFirerouter = await resolveProfileFirerouterAvailability(
-    profile,
-    ctx,
-    effectiveKey,
-    keyType,
-  );
   if (profile.precheck) {
     profile.precheck({ ctx, keyType });
   }
@@ -136,12 +118,12 @@ export async function engineOn(profile, ctx) {
     if (plan.requiresAnthropicKey && firerouterCredentialsApplyOnGateway(keyType)) {
       ({ anthropicKey: preResolvedAnthropicKey } = await resolveExplicitFirerouterCredential({
         firerouter: profile.firerouter,
-        availability: automaticFirerouter,
         ctx,
         settingsEnv,
       }));
     }
-    const catalogFirerouter = automaticFirerouter.include && profile.firerouter.catalogByok === true;
+    // FireRouter registers only when explicitly requested (`--model firerouter...`).
+    const catalogFirerouter = isFirerouterRequested && profile.firerouter.catalogByok === true;
     if (profile.firerouter.byok === "value") {
       // Recover BYOK keys that live only in the harness's existing config
       // headers, so a repeat `on` without re-supplying them doesn't drop them.
@@ -152,8 +134,6 @@ export async function engineOn(profile, ctx) {
         catalogFirerouter,
         ctx,
         settingsEnv,
-        apiKey: effectiveKey,
-        workspaceByokLookup: automaticFirerouter.workspaceByokLookup ?? null,
         preResolvedAnthropicKey,
       });
     } else if (profile.firerouter.byok === "envref") {
@@ -174,7 +154,7 @@ export async function engineOn(profile, ctx) {
     telemetryHeaders: profile.telemetryHeaders
       ? buildFireconnectTelemetryHeaders(profile.id)
       : {},
-    includeFirerouter: automaticFirerouter.include || isFirerouterRequested,
+    includeFirerouter: isFirerouterRequested,
   });
 
   await setHarnessEnabled(ctx.home, profile.id, true, "fireworks");
@@ -190,10 +170,9 @@ export async function engineOn(profile, ctx) {
     harnessId: profile.id,
     firerouter: profile.firerouter,
     firerouterIncluded,
-    eligible: automaticFirerouter.include,
     routingPreference: ctx.routingPreference,
+    routingSupported: isFirerouterModel(result.model),
     firepass: keyType === "firepass",
-    workspaceByokLookup: automaticFirerouter.workspaceByokLookup ?? null,
   });
   if (profile.printConnected) {
     await profile.printConnected({ ctx, paths, result, reusedExistingKey, keyType });
@@ -321,9 +300,6 @@ export async function engineOff(profile, ctx) {
     await profile.prepareOff(ctx);
   }
   const outcome = await profile.disable({ ctx, paths, wasEnabled });
-  if (profile.websearchMcp) {
-    await disableWebsearchMcp(ctx.home, profile.id);
-  }
   await setHarnessEnabled(ctx.home, profile.id, false);
   if (profile.envHookOff !== false) {
     await reconcileShellEnvHook(ctx.home);

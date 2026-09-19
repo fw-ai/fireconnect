@@ -495,7 +495,7 @@ export async function runClaude({
   // Measured on the same tictactoe prompt: glm-fast 18s -> 10s, opus 135s -> 28s
   // (~4.8x) with cache-write down 120,689 -> 73,539.
   //
-  // User MCPs (Google Drive, fireworks-websearch, etc.) live in ~/.claude.json
+  // User MCPs (Google Drive, filesystem servers, etc.) live in ~/.claude.json
   // and are NOT covered by `--tools ""`. `--strict-mcp-config` with no
   // `--mcp-config` keeps the race MCP-free so models cannot invoke mcp__*
   // tools mid-demo.

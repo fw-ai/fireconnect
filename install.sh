@@ -555,7 +555,7 @@ main() {
   install_cli_launcher
 
   # Shared with `fireconnect upgrade`: deps repair, key-storage probe, rebake
-  # enabled harness keys + websearch MCP Bearer, shell-hook reconcile.
+  # enabled harness keys, retire the Claude WebSearch MCP, reconcile shell hook.
   # Best-effort — never abort after the launcher is already on disk.
   install_progress "Finalizing install..."
   if ! node "${CLI}" finalize-install; then

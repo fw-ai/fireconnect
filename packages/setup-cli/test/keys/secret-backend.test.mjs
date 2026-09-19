@@ -25,7 +25,7 @@ import { plaintextMode } from "../../lib/harnesses/vscode/safestorage.mjs";
 import { shellHookBlock } from "../../lib/io/shell-env-hook.mjs";
 import { verifyKeyExportWorks } from "../../lib/keys/selfcheck.mjs";
 import { resolveHarnessOnApiKey } from "../../lib/keys/harness-api-key.mjs";
-import { withoutEnvFireworksKey, withLinuxSshEnv } from "../helpers.mjs";
+import { seedOnCommandCatalog, withoutEnvFireworksKey, withLinuxSshEnv } from "../helpers.mjs";
 
 const CLI = path.resolve("bin/fireconnect.mjs");
 const KEY = "fw_backend_test_key_000000000000";
@@ -35,10 +35,20 @@ const KEY = "fw_backend_test_key_000000000000";
  * file-backend path is exercised (no memory test-seam, no host keychain).
  */
 function runCli(args, env) {
+  // Mirror the shared runCli helper: seed an empty catalog cache so `on` with
+  // a placeholder key falls back to the stale-cache path instead of failing
+  // on the mock gateway's 404 for uncataloged keys.
+  if (args.includes("on")) {
+    seedOnCommandCatalog(env.HOME, args);
+  }
   const childEnv = { ...process.env };
   // Never use the in-memory test seam for these; we want the real file backend.
   delete childEnv.FIRECONNECT_SECRET_STORE;
   delete childEnv.FIRECONNECT_TEST;
+  // Deleting FIRECONNECT_TEST would re-enable the detached update checker,
+  // whose worker outlives the child and races afterEach temp-dir cleanup
+  // (ENOTEMPTY). Keep the checker off while still exercising the real backend.
+  childEnv.FIRECONNECT_NO_UPDATE_CHECK = "1";
   delete childEnv.FIREWORKS_API_KEY;
   Object.assign(childEnv, env);
   const res = spawnSync(process.execPath, [CLI, ...args], {

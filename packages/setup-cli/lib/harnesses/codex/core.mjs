@@ -7,8 +7,6 @@ import process from "node:process";
 import {
   DEFAULT_FIREPASS_MAIN_MODEL,
   defaultMainModel,
-  isFireworksModelId,
-  normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
@@ -26,22 +24,22 @@ import {
   stripFireconnectRoutingRaw,
 } from "./toml-patch.mjs";
 import {
+  addCodexSelectedModel,
   buildCodexCatalogFromSnapshot,
   codexCatalogContainsModel,
   codexModelExclusionReason,
-  ensureCodexOffCatalogEntry,
+  pruneCodexCatalogRows,
+  refreshCodexCatalogRows,
 } from "./catalog.mjs";
 import {
-  buildServerlessCatalogSnapshot,
-  fetchServerlessCatalogRaw,
   filterCatalogForKeyType,
   firerouterCatalogEntry,
   FIREPASS_FALLBACK_ROUTERS,
+  loadServerlessCatalog,
   preferLatestAliases,
 } from "../../fireworks/models.mjs";
 import {
-  cacheServerlessCatalogSnapshot,
-  setServerlessCatalogSnapshot,
+  getServerlessCatalogSnapshot,
 } from "../../fireworks/serverless-catalog-cache.mjs";
 import {
   AZURE_API_KEY_ENV,
@@ -124,7 +122,8 @@ function isManagedAzureProviderTable(table) {
  */
 export function fireconnectManagedVariant(doc) {
   if (doc.root.model_provider === CODEX_FIREWORKS_PROVIDER_ID
-    && isFireworksModelId(doc.root.model)
+    && typeof doc.root.model === "string"
+    && doc.root.model.trim().length > 0
     && isManagedProviderTable(doc.tables[CODEX_PROVIDER_TABLE])) {
     return "fireworks";
   }
@@ -299,7 +298,7 @@ async function unlinkCatalogIfExists(catalogPath) {
  * @param {string} configPath
  * @param {string} backupPath
  */
-async function restoreConfigFromBackup(backup, configPath, backupPath) {
+async function restoreConfigFromBackup(backup, configPath, backupPath, catalogPath = "") {
   if (backup.snapshot.existed) {
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFileAtomic(configPath, backup.snapshot.raw);
@@ -310,6 +309,20 @@ async function restoreConfigFromBackup(backup, configPath, backupPath) {
       if (error.code !== "ENOENT") {
         throw error;
       }
+    }
+  }
+  if (backup.catalogSnapshot && catalogPath) {
+    if (backup.catalogPath !== path.resolve(catalogPath)) {
+      throw new Error(
+        `Codex backup was taken for catalog ${backup.catalogPath}, not ${catalogPath}; refusing to restore.`,
+      );
+    }
+    if (backup.catalogSnapshot.existed) {
+      await writeFileAtomic(catalogPath, backup.catalogSnapshot.raw);
+    } else {
+      await unlink(catalogPath).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
     }
   }
   await unlink(backupPath);
@@ -356,11 +369,11 @@ function codexCatalogFetchWarning(error) {
 /**
  * Single API fetch for Codex provider registration and metadata catalog.
  * @param {string} apiKey
- * @returns {Promise<{ pickerCatalog: import("../../fireworks/models.mjs").CatalogEntry[] | null, codexCatalog: { models: unknown[] } | null, keyType: string }>}
+ * @returns {Promise<{ pickerCatalog: import("../../fireworks/models.mjs").CatalogEntry[] | null, codexCatalog: { models: unknown[] } | null, snapshot: import("../../fireworks/serverless-catalog-cache.mjs").ServerlessCatalogSnapshot | null, catalogAvailable: boolean, keyType: string }>}
  */
-export async function loadCodexCatalogBundle(apiKey, { includeFirerouter = false } = {}) {
+export async function loadCodexCatalogBundle(apiKey, { includeFirerouter = false, modelId = "" } = {}) {
   if (!apiKey) {
-    return { pickerCatalog: null, codexCatalog: null, keyType: "" };
+    return { pickerCatalog: null, codexCatalog: null, snapshot: null, catalogAvailable: false, keyType: "" };
   }
 
   const keyType = detectApiKeyType(apiKey);
@@ -370,27 +383,38 @@ export async function loadCodexCatalogBundle(apiKey, { includeFirerouter = false
         filterCatalogForKeyType(FIREPASS_FALLBACK_ROUTERS, "firepass"),
       ),
       codexCatalog: null,
+      snapshot: null,
+      catalogAvailable: true,
       keyType,
     };
   }
 
   try {
-    const rawModels = await fetchServerlessCatalogRaw(apiKey);
-    const snapshot = buildServerlessCatalogSnapshot(rawModels);
-    cacheServerlessCatalogSnapshot(snapshot);
-    const entries = preferLatestAliases(filterCatalogForKeyType(snapshot.entries, keyType));
+    const loaded = await loadServerlessCatalog({ apiKey, keyType, refresh: true });
+    const snapshot = getServerlessCatalogSnapshot();
+    if (!snapshot) {
+      throw new Error("Serverless catalog snapshot is unavailable.");
+    }
+    const entries = preferLatestAliases(loaded.catalog);
     if (includeFirerouter && !entries.some((entry) => entry.shortId === "firerouter")) {
       entries.unshift(firerouterCatalogEntry());
+    }
+    const selectedRef = shortFireworksModelRef(modelId);
+    const selected = snapshot.entries.find((entry) => entry.shortId === selectedRef);
+    if (selected && !entries.some((entry) => entry.id === selected.id)) {
+      entries.push(selected);
     }
     const preferredSnapshot = { ...snapshot, entries };
     return {
       pickerCatalog: entries,
-      codexCatalog: buildCodexCatalogFromSnapshot(preferredSnapshot, rawModels),
+      codexCatalog: buildCodexCatalogFromSnapshot(preferredSnapshot, loaded.rawModels),
+      snapshot,
+      catalogAvailable: loaded.source !== "stale",
       keyType,
     };
   } catch (error) {
     codexCatalogFetchWarning(error);
-    return { pickerCatalog: null, codexCatalog: null, keyType };
+    return { pickerCatalog: null, codexCatalog: null, snapshot: null, catalogAvailable: false, keyType };
   }
 }
 
@@ -404,6 +428,8 @@ export async function enableCodexFireworks({
   keyType = "fireworks",
   catalogPath = "",
   catalog = null,
+  catalogSnapshot = null,
+  catalogAvailable = false,
   envHttpHeaders = {},
   telemetryHeaders = {},
 }) {
@@ -431,10 +457,9 @@ export async function enableCodexFireworks({
   const currentGatewayModel = fireconnectManagedVariant(doc) === "fireworks"
     ? codexCurrentModelId(doc)
     : "";
-  const resolvedModel = normalizeModelId(
+  const storedModel = shortFireworksModelRef(
     effectiveModelId || currentGatewayModel || defaultMainModel(),
   );
-  const storedModel = shortFireworksModelRef(resolvedModel);
   const exclusionReason = codexModelExclusionReason(storedModel);
   if (exclusionReason) {
     throw new Error(exclusionReason);
@@ -448,28 +473,65 @@ export async function enableCodexFireworks({
   const shouldSnapshot = !hasBackup && !fireconnectManaged(doc);
 
   if (shouldSnapshot) {
+    const catalogSnapshot = catalogPath
+      ? await readRawIfExists(catalogPath)
+      : { existed: false, raw: "" };
     await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
-    await writeJson(backupPath, { configPath: path.resolve(configPath), snapshot });
+    await writeJson(backupPath, {
+      configPath: path.resolve(configPath),
+      snapshot,
+      catalogPath: catalogPath ? path.resolve(catalogPath) : "",
+      catalogSnapshot,
+    });
     await chmod(backupPath, 0o600);
   }
 
   let effectiveCatalogPath = "";
   let catalogWritten = false;
+  let catalogModelsWritten = [];
   if (catalog && catalogPath) {
-    const catalogToWrite = ensureCodexOffCatalogEntry(catalog, storedModel);
-    await writeCodexCatalogFile(catalogPath, catalogToWrite);
+    const existingCatalog = await readCodexCatalogIfValid(catalogPath);
+    const managedCatalog = snapshotReferencesFireworksCatalog(snapshot.raw)
+      ? existingCatalog
+      : null;
+    const models = managedCatalog
+      ? (modelId
+          ? managedCatalog.models
+          : catalogAvailable
+            ? refreshCodexCatalogRows(managedCatalog.models, catalogSnapshot, catalog.models ?? [])
+            : managedCatalog.models)
+      : (modelId ? [] : catalog.models ?? []);
+    const catalogToWrite = {
+      ...(managedCatalog ?? catalog),
+      models: modelId
+        ? addCodexSelectedModel(models, catalog, storedModel)
+        : models,
+    };
+    if ((managedCatalog || catalogToWrite.models.length > 0)
+      && (!managedCatalog
+        || JSON.stringify(catalogToWrite.models) !== JSON.stringify(managedCatalog.models))) {
+      await writeCodexCatalogFile(catalogPath, catalogToWrite);
+    }
     if (codexCatalogContainsModel(catalogToWrite, storedModel)) {
       effectiveCatalogPath = CODEX_CATALOG_TOML_REF;
       catalogWritten = true;
     }
+    catalogModelsWritten = (catalogToWrite.models ?? []).map((entry) => entry.slug).filter(Boolean);
   } else if (
     catalogPath
     && existsSync(catalogPath)
     && snapshotReferencesFireworksCatalog(snapshot.raw)
   ) {
     const existingCatalog = await readCodexCatalogIfValid(catalogPath);
-    const catalogToWrite = ensureCodexOffCatalogEntry(existingCatalog, storedModel);
-    if (catalogToWrite !== existingCatalog && catalogToWrite) {
+    const models = existingCatalog?.models ?? [];
+    const nextModels = modelId
+      ? addCodexSelectedModel(models, null, storedModel)
+      : models;
+    const catalogToWrite = {
+      ...(existingCatalog ?? {}),
+      models: nextModels,
+    };
+    if (nextModels !== models) {
       await writeCodexCatalogFile(catalogPath, catalogToWrite);
     }
     if (catalogToWrite && codexCatalogContainsModel(catalogToWrite, storedModel)) {
@@ -500,8 +562,6 @@ export async function enableCodexFireworks({
     catalogPath: effectiveCatalogPath,
     apiKey: resolvedEffective,
     literalAuth: true,
-    // codex 0.153+ injects a server-executed web_search tool; Fireworks Responses API rejects the mix (#320).
-    webSearch: "disabled",
     httpHeaders: mergeFireconnectTelemetryHeaders(
       priorHttpHeaders,
       telemetryHeaders,
@@ -509,12 +569,14 @@ export async function enableCodexFireworks({
     envHttpHeaders: { ...preservedEnvHeaders, ...envHttpHeaders },
   });
   await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
+  if (nextRaw !== snapshot.raw) {
+    await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
+  }
 
   return {
     model: storedModel,
     modelsAdded: catalogWritten
-      ? (catalog?.models ?? []).map((entry) => entry.slug).filter(Boolean)
+      ? catalogModelsWritten
       : [storedModel],
     keyType: resolvedKeyType,
     apiKeyMode: "literal",
@@ -657,8 +719,8 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
     if (backupContainsManagedRouting(backup)) {
       await unlink(backupPath);
     } else {
-      await restoreConfigFromBackup(backup, configPath, backupPath);
-      if (!snapshotReferencesFireworksCatalog(backup.snapshot.raw)) {
+      await restoreConfigFromBackup(backup, configPath, backupPath, catalogPath);
+      if (!backup.catalogSnapshot && !snapshotReferencesFireworksCatalog(backup.snapshot.raw)) {
         await unlinkCatalogIfExists(catalogPath);
       }
       return "restored";

@@ -1,6 +1,22 @@
 {
   "releases": [
     {
+      "version": "0.9.7",
+      "highlights": [
+        "GitHub Copilot works with Fireworks. `fireconnect copilot-app` connects the desktop app, `fireconnect copilot-cli` the CLI. Your own models stay; `off` removes only what FireConnect added.",
+        "Claude Code keeps its own tier models. The Fireworks catalog is added to the `/model` picker instead of overriding slots. Older pinned slots are released on the next `fireconnect claude on`.",
+        "Every other harness starts on `auto`, the cost-aware mix, also selectable in every picker.",
+        "Claude Code web search and fetch go through Fireworks natively; the old `fireworks-websearch` MCP is removed on upgrade, your own MCPs untouched.",
+        "Codex web search works again; upgrade cleans up the 0.9.6 override."
+      ],
+      "improvements": [
+        "The built-in Explore agent follows your session model again instead of always using Opus. Fixed on upgrade.",
+        "Pickers stay fresh: re-running `on` prunes retired models, adds new ones, and updates pricing and metadata. Upgrade refreshes the Claude picker too.",
+        "Codex auto-compacts at 80% of the context window so long sessions survive; GLM-5.3 models unlock max reasoning effort."
+      ],
+      "footer": ""
+    },
+    {
       "version": "0.9.6",
       "highlights": [
         "Codex 0.153 works with Fireworks again. It turns on a `web_search` tool the Responses API can't accept; FireConnect now bakes `web_search = \"disabled\"` and repairs existing setups on `fireconnect codex on`.",
@@ -17,22 +33,22 @@
     {
       "version": "0.9.5",
       "highlights": [
-        "Session costs in your Claude prompt. A new status line shows which models ran, what they cost at Fireworks rates, and cache savings. Your own status line is left alone — `fireconnect claude off` restores everything.",
+        "Session costs in your Claude prompt. A new status line shows which models ran, what they cost at Fireworks rates, and cache savings. Your own status line is left alone: `fireconnect claude off` restores everything.",
         "ChatGPT desktop app support. `fireconnect chatgpt` and `fireconnect codex` share one config, so you route both through Fireworks with a single command. Quit the app first so its model list refreshes.",
-        "Smart router mixes (preview): pin `auto` for the default mix or `auto-instant` for latency-first routing — for example, `fireconnect claude --sonnet auto-instant`. Every `auto-*` slug works the same way.",
+        "Smart router mixes (preview): pin `auto` for the default mix or `auto-instant` for latency-first routing. For example: `fireconnect claude --sonnet auto-instant`. Every `auto-*` slug works the same way.",
         "Simpler Claude model setup. The wizard lets you pick a model per slot instead of toggling fast profiles. New installs default to Sonnet on `deepseek-pro-latest`, Opus on `glm-latest`, and Fable on vision-capable `glm-flash-latest`. FireRouter still lands on Opus at first connect when your key supports it.",
         "Faster `fireconnect model list`. Results are cached for an hour, work offline, show when they were last updated, and `--refresh` pulls the latest. Smart Routers lists `auto`, `auto-instant`, and FireRouter."
       ],
       "improvements": [
-        "MCP tool search works through the Fireworks gateway again — upgrade applies the fix automatically.",
+        "MCP tool search works through the Fireworks gateway again. Upgrade applies the fix automatically.",
         "`fireconnect claude demo` and the status line use the same pricing, so their numbers always match.",
         "`fireconnect upgrade` repairs missing dependencies; partial installs recover instead of crashing.",
-        "Linux SSH/WSL: keys store in an encrypted file with timeouts on keyring and network calls — no more hangs.",
+        "Linux SSH/WSL: keys store in an encrypted file with timeouts on keyring and network calls. No more hangs.",
         "`fireconnect claude status` shows every slot, including defaults you never explicitly set.",
         "GLM 5.3 and GLM 5.3 Flash added. Stale pins no longer hide newer releases; US-only pricing corrected.",
         "Claude picker lists `auto` on every slot and `auto-instant` on Sonnet only."
       ],
-      "footer": "Already on Claude? Upgrade keeps your slot picks — run `fireconnect claude --interactive` to adopt the new defaults. Legacy pins like `deepseek-v4-flash` move to `deepseek-flash-latest` on your next `fireconnect claude on`."
+      "footer": "Already on Claude? Upgrade keeps your slot picks. Run `fireconnect claude --interactive` to adopt the new defaults. Legacy pins like `deepseek-v4-flash` move to `deepseek-flash-latest` on your next `fireconnect claude on`."
     },
     {
       "version": "0.9.4",
@@ -47,9 +63,9 @@
       "version": "0.9.3",
       "highlights": [
         "New Claude Code defaults: Sonnet on Anthropic's own model, Opus on `deepseek-pro-latest`, Haiku and subagents on `deepseek-flash-latest`. Change them with `fireconnect claude --interactive`.",
-        "Anthropic and Fireworks models both work once fireconnected — mix them freely.",
+        "Anthropic and Fireworks models both work once fireconnected. Mix them freely.",
         "`fireconnect claude demo` races two live Claude Code sessions side by side.",
-        "DeepSeek Harness replaces Deep Agents — `fireconnect deepseek on`."
+        "DeepSeek Harness replaces Deep Agents: `fireconnect deepseek on`."
       ],
       "improvements": [
         "`fireconnect status` no longer reports \"All off\" while models are routed.",
@@ -60,7 +76,7 @@
     {
       "version": "0.9.2",
       "highlights": [
-        "Live session cost meter — watch Fireworks spend accumulate in a tmux split pane beside Claude Code, with a recent-session picker.",
+        "Live session cost meter: watch Fireworks spend accumulate in a tmux split pane beside Claude Code, with a recent-session picker.",
         "VS Code now uses the chat-completions API for better compatibility.",
         "Cursor picker hides built-in models and preserves your native model IDs when re-enabling."
       ],
@@ -74,8 +90,8 @@
     {
       "version": "0.9.1",
       "highlights": [
-        "Keep Claude Code connected when you reinstall or upgrade. On FireConnect 0.9.0 and newer, FireConnect no longer asks you to disconnect first — your harness settings stay put.",
-        "When a newer FireConnect is available, interactive terminals can upgrade in place — answer Yes to run `fireconnect upgrade`, or No to snooze for a day.",
+        "Keep Claude Code connected when you reinstall or upgrade. On FireConnect 0.9.0 and newer, FireConnect no longer asks you to disconnect first. Your harness settings stay put.",
+        "When a newer FireConnect is available, interactive terminals can upgrade in place. Answer Yes to run `fireconnect upgrade`, or No to snooze for a day.",
         "Claude model preferences now persist across sessions, with interactive onboarding and a fast-model profile toggle."
       ],
       "improvements": [

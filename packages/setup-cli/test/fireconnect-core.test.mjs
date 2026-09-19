@@ -102,6 +102,7 @@ describe("disableFireworksProvider", () => {
       env: {
         ANTHROPIC_BASE_URL: FIREWORKS_INFERENCE_URL,
         ANTHROPIC_MODEL: "kimi-fast-latest",
+        CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP: "1",
       },
     });
 
@@ -114,6 +115,47 @@ describe("disableFireworksProvider", () => {
     const restored = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(Object.hasOwn(restored, "model"), false);
     assert.equal(restored.env.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(restored.env.ANTHROPIC_MODEL, undefined);
+    assert.equal(Object.hasOwn(restored.env, "CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP"), false);
+  });
+
+  it("strips managed picker and status line on off with a legacy values backup", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-disable-legacy-picker-"));
+    const dataDir = path.join(home, ".fireconnect/claude");
+    await mkdir(path.dirname(userSettingsPath(home)), { recursive: true });
+    await mkdir(dataDir, { recursive: true });
+
+    const settingsPath = userSettingsPath(home);
+    await writeJson(settingsPath, {
+      env: {
+        ANTHROPIC_BASE_URL: FIREWORKS_INFERENCE_URL,
+        ANTHROPIC_MODEL: "accounts/fireworks/routers/glm-latest[1m]",
+      },
+      modelPicker: {
+        fireconnectManaged: true,
+        replaceBuiltInOptions: false,
+        options: [{ model: "glm-latest[1m]", label: "GLM", description: "x" }],
+      },
+      statusLine: {
+        type: "command",
+        command: "node /opt/fireconnect/bin/claude-statusline.mjs",
+      },
+    });
+    await writeJson(providerBackupPath(dataDir), {
+      values: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+      missing: ["ANTHROPIC_MODEL"],
+    });
+
+    await disableFireworksProvider({
+      settingsPath,
+      dataDir,
+      wasEnabled: true,
+    });
+
+    const restored = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.equal(restored.modelPicker, undefined);
+    assert.equal(restored.statusLine, undefined);
+    assert.equal(restored.env.ANTHROPIC_BASE_URL, "https://api.anthropic.com");
     assert.equal(restored.env.ANTHROPIC_MODEL, undefined);
   });
 

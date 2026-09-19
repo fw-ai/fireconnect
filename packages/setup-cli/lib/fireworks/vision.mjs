@@ -10,6 +10,23 @@ export function modelSupportsVision(modelRef) {
   return lookupFireworksModelLimits(modelRef).vision;
 }
 
+/**
+ * Image support from a model-like object in any known shape: defined
+ * booleans win, otherwise the modalities array decides. Shared by catalog
+ * writers and capability checks so the two can never disagree.
+ */
+export function rowSupportsImageInput(model) {
+  const direct = model?.supportsImageInput ?? model?.supports_image_input;
+  if (direct !== undefined && direct !== null) {
+    return Boolean(direct);
+  }
+  const modalities = model?.inputModalities ?? model?.input_modalities;
+  if (Array.isArray(modalities) && modalities.length > 0) {
+    return modalities.includes("image");
+  }
+  return false;
+}
+
 /** Unique short IDs for text-only models in a mapping. */
 export function uniqueNonVisionModelShortIds(modelRefs) {
   return [...new Set(

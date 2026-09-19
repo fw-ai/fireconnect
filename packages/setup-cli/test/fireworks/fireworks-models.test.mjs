@@ -10,6 +10,7 @@ import {
   buildServerlessCatalogSnapshot,
   fetchServerlessCatalogRaw,
   inputModalitiesFromModel,
+  isAutoCatalogEntry,
   loadServerlessCatalog,
   moneyToUsd,
   parseSkuPricing,
@@ -28,9 +29,9 @@ import {
   setServerlessCatalogSnapshot,
 } from "../../lib/fireworks/serverless-catalog-cache.mjs";
 
-import { mockServerlessModel } from "../helpers.mjs";
+import { mockServerlessModel, mockServerlessModelRows } from "../helpers.mjs";
 
-describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCatalogRaw uses the serverless models API with coding filter", async () => {
+describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCatalogRaw uses the flat serverless models API with coding filter", async () => {
     const previousFetch = globalThis.fetch;
     let requestedUrl = "";
     globalThis.fetch = async (url) => {
@@ -38,7 +39,8 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       return {
         ok: true,
         json: async () => ({
-          models: [mockServerlessModel()],
+          object: "list",
+          data: [mockServerlessModel()],
         }),
       };
     };
@@ -46,11 +48,110 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     try {
       const models = await fetchServerlessCatalogRaw("fw_test_key");
       assert.equal(models.length, 1);
-      assert.equal(models[0].name, "accounts/fireworks/models/glm-5p2");
+      assert.equal(models[0].id, "accounts/fireworks/models/glm-5p2");
       const parsed = new URL(requestedUrl);
       assert.equal(parsed.pathname, "/v1/serverless/models");
-      assert.equal(parsed.searchParams.get("format"), "nested");
+      assert.equal(parsed.searchParams.get("format"), null);
       assert.equal(parsed.searchParams.get("use_cases"), SERVERLESS_CODING_USE_CASE);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("fetchServerlessCatalogRaw retries once on a transient 500", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 500,
+          statusText: "Internal Server Error",
+          text: async () => "Error listing serverless models",
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          object: "list",
+          data: [mockServerlessModel()],
+        }),
+      };
+    };
+
+    try {
+      const models = await fetchServerlessCatalogRaw("fw_test_key");
+      assert.equal(models.length, 1);
+      assert.equal(calls, 2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("fetchServerlessCatalogRaw throws after a persistent 500 without extra attempts", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        text: async () => "Error listing serverless models",
+      };
+    };
+
+    try {
+      await assert.rejects(
+        fetchServerlessCatalogRaw("fw_test_key"),
+        /Fireworks API 500/,
+      );
+      assert.equal(calls, 2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("fetchServerlessCatalogRaw does not retry client errors", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return {
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        text: async () => "nope",
+      };
+    };
+
+    try {
+      await assert.rejects(
+        fetchServerlessCatalogRaw("fw_test_key"),
+        /Fireworks API 404/,
+      );
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("fetchServerlessCatalogRaw propagates network errors without retrying", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    const failure = new Error("socket hang up");
+    globalThis.fetch = async () => {
+      calls += 1;
+      throw failure;
+    };
+
+    try {
+      await assert.rejects(
+        fetchServerlessCatalogRaw("fw_test_key"),
+        (error) => error === failure,
+      );
+      assert.equal(calls, 1);
     } finally {
       globalThis.fetch = previousFetch;
     }
@@ -95,7 +196,7 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       fetches += 1;
       return {
         ok: true,
-        json: async () => ({ models: [mockServerlessModel()] }),
+        json: async () => ({ object: "list", data: mockServerlessModelRows() }),
       };
     };
 
@@ -104,7 +205,8 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       assert.equal(cached.source, "cache");
       assert.equal(cached.updatedAt, seededAt);
       assert.equal(fetches, 0);
-      assert.equal(cached.catalog[0].shortId, "stale");
+      assert.equal(cached.catalog[0].shortId, "auto");
+      assert.ok(cached.catalog.some((entry) => entry.shortId === "stale"));
 
       const refreshed = await loadServerlessCatalog({ apiKey: "fw_test_key", refresh: true });
       assert.equal(refreshed.source, "network");
@@ -131,13 +233,62 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       const result = await loadServerlessCatalog({ apiKey: "fw_test_key", refresh: true });
       assert.equal(result.source, "stale");
       assert.equal(result.updatedAt, seededAt);
-      assert.equal(result.catalog[0].shortId, "stale");
+      assert.equal(result.catalog[0].shortId, "auto");
+      assert.ok(result.catalog.some((entry) => entry.shortId === "stale"));
       assert.equal(
         readCatalogCache()?.snapshot.entries[0].shortId,
         "stale",
         "a failed refresh must not delete the cache file",
       );
     });
+  });
+
+  test("loadServerlessCatalog serves auto like a serverless list member, never for Fire Pass", async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({ object: "list", data: mockServerlessModelRows() }),
+    });
+
+    await withSeededCatalogCache(fetchImpl, async () => {
+      const loaded = await loadServerlessCatalog({ apiKey: "fw_test_key", refresh: true });
+      assert.equal(loaded.source, "network");
+      assert.equal(loaded.catalog[0].shortId, "auto");
+      assert.ok(loaded.catalog.some((entry) => entry.shortId === "glm-5p2"));
+    });
+
+    const firepass = await loadServerlessCatalog({ apiKey: "fpk_test_firepass_key" });
+    assert.ok(
+      firepass.catalog.every((entry) => !isAutoCatalogEntry(entry)),
+      "auto is not supported for Fire Pass keys",
+    );
+  });
+
+  test("loadServerlessCatalog leaves an empty served list empty", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "fc-catalog-empty-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("network unreachable");
+    };
+    try {
+      cacheServerlessCatalogSnapshot({
+        entries: [],
+        pricingById: new Map(),
+        inputModalitiesById: new Map(),
+        routerBaseModelById: new Map(),
+        contextLengthById: new Map(),
+        supportsToolsById: new Map(),
+      });
+      const result = await loadServerlessCatalog({ apiKey: "fw_test_key", refresh: true });
+      assert.equal(result.source, "stale");
+      assert.deepEqual(result.catalog, [], "no auto row on an empty list — offline stays unavailable");
+    } finally {
+      globalThis.fetch = previousFetch;
+      process.env.HOME = prevHome;
+      setServerlessCatalogSnapshot(null);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("formatCatalogUpdatedAt uses the local timezone and includes its abbreviation", () => {
@@ -181,63 +332,56 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
 
   test("buildPickerCatalogFromApiModels derives routers from usage_identifier", () => {
     const catalog = buildPickerCatalogFromApiModels([
-      mockServerlessModel(),
+      ...mockServerlessModelRows(),
       mockServerlessModel({
-        name: "accounts/fireworks/models/embedding-only",
-        displayName: "Embedding Only",
-        serverlessModes: [],
+        id: "accounts/fireworks/models/embedding-only",
+        display_name: "Embedding Only",
       }),
     ]);
 
     const ids = catalog.map((entry) => entry.id);
     assert.ok(ids.includes("accounts/fireworks/models/glm-5p2"));
     assert.ok(ids.includes("accounts/fireworks/routers/glm-5p2-fast"));
-    assert.ok(ids.includes("accounts/fireworks/routers/glm-latest"));
     assert.equal(ids.filter((id) => id.includes("/models/")).length, 2);
   });
 
-  test("buildPickerCatalogFromApiModels adds documented US-only routers", () => {
+  test("buildPickerCatalogFromApiModels keeps API-reported US-only routers", () => {
     const catalog = buildPickerCatalogFromApiModels([
-      mockServerlessModel(),
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [],
-      }),
-      mockServerlessModel({
-        name: "accounts/fireworks/models/glm-5p3-flash",
-        displayName: "GLM 5.3 Flash",
-        serverlessModes: [],
+      ...mockServerlessModelRows({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        aliases: ["accounts/fireworks/routers/kimi-k3-us"],
       }),
     ]);
     const byId = new Map(catalog.map((entry) => [entry.id, entry]));
 
     assert.equal(
-      byId.get("accounts/fireworks/routers/glm-5p2-fast-us")?.displayName,
-      "GLM 5.2 Fast (US)",
-    );
-    assert.equal(
       byId.get("accounts/fireworks/routers/kimi-k3-us")?.displayName,
       "Kimi K3 (US)",
-    );
-    assert.equal(
-      byId.get("accounts/fireworks/routers/glm-5p3-flash-us")?.displayName,
-      "GLM 5.3 Flash (US)",
     );
 
     const sections = organizeCatalogForDisplay(catalog);
     const usOnly = sections.find((section) => section.title === "US-ONLY ROUTERS");
     assert.deepEqual(
       usOnly?.entries.map((entry) => entry.shortId),
-      ["glm-5p2-fast-us", "glm-5p3-flash-us", "kimi-k3-us"],
+      ["kimi-k3-us"],
     );
   });
 
   test("buildServerlessCatalogSnapshot captures API pricing and modalities", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        supportsImageInput: true,
+        input_modalities: ["text", "image"],
       }),
+      ...mockServerlessModelRows({
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "2.1", unit: "1M tokens" },
+          { sku: "LLM input tokens (cached)", amount: "0.21", unit: "1M tokens" },
+          { sku: "LLM output tokens", amount: "6.6", unit: "1M tokens" },
+        ],
+      }).slice(1),
     ]);
 
     assert.deepEqual(snapshot.inputModalitiesById.get("accounts/fireworks/models/glm-5p2"), ["text", "image"]);
@@ -247,12 +391,12 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.equal(pricing?.output, 6.6);
   });
 
-  test("parseSkuPricing reads nested money amounts", () => {
+  test("parseSkuPricing reads flat string amounts", () => {
     assert.equal(moneyToUsd({ units: "1", nanos: 500_000_000 }), 1.5);
     assert.deepEqual(parseSkuPricing([
-      { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-      { sku: "LLM input tokens (cached)", amount: { nanos: 160_000_000 } },
-      { sku: "LLM output tokens", amount: { units: "4" } },
+      { sku: "LLM input tokens (uncached)", amount: "0.95" },
+      { sku: "LLM input tokens (cached)", amount: "0.16" },
+      { sku: "LLM output tokens", amount: "4" },
     ]), { input: 0.95, cachedInput: 0.16, output: 4 });
   });
 
@@ -262,24 +406,28 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
   });
 
   test("snapshot routerBaseModelById uses model id when name is absent", () => {
-    const snapshot = buildServerlessCatalogSnapshot([{
-      id: "accounts/fireworks/models/glm-5p2",
-      serverlessModes: [{
-        usageIdentifier: "accounts/fireworks/routers/glm-5p2-fast",
-      }],
-    }]);
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p2",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+      }),
+    ]);
     assert.equal(
       snapshot.routerBaseModelById.get("accounts/fireworks/routers/glm-5p2-fast"),
       "accounts/fireworks/models/glm-5p2",
     );
   });
 
-  test("synthesizes kimi-latest routers from kimi-k3 when API exposes Kimi K3", () => {
+  test("adds alias routers from the API aliases field", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [],
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        aliases: [
+          "accounts/fireworks/routers/kimi-latest",
+          "accounts/fireworks/routers/kimi-fast-latest",
+        ],
       }),
     ]);
     const ids = snapshot.entries.map((entry) => entry.id);
@@ -293,36 +441,36 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       snapshot.routerBaseModelById.get("accounts/fireworks/routers/kimi-fast-latest"),
       "accounts/fireworks/models/kimi-k3",
     );
+    // The standard-tier alias inherits this row's standard pricing; the
+    // fast-latest alias must not (it expects fast-tier rates).
+    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-latest")?.tier, "standard");
     assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest"), undefined);
     const kimiLatest = snapshot.entries.find((entry) => entry.shortId === "kimi-latest");
-    const kimiFastLatest = snapshot.entries.find((entry) => entry.shortId === "kimi-fast-latest");
     assert.equal(kimiLatest?.displayName, "Kimi K3 (Latest)");
-    assert.equal(kimiFastLatest?.displayName, "Kimi K3 Fast (Latest)");
+  });
+
+  test("does not synthesize alias routers the API does not report", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+      }),
+    ]);
+    const ids = snapshot.entries.map((entry) => entry.id);
+    assert.equal(ids.includes("accounts/fireworks/routers/kimi-latest"), false);
+    assert.equal(ids.includes("accounts/fireworks/routers/kimi-fast-latest"), false);
   });
 
   test("preserves turbo router display names after catalog refresh", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k2p6",
-        displayName: "Kimi K2.6",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k2p6/serverlessModes/default",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "0", nanos: 950_000_000 } },
-              { sku: "LLM input tokens (cached)", amount: { nanos: 160_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "4" } },
-            ],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k2p6/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k2p6-turbo",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "2" } },
-              { sku: "LLM input tokens (cached)", amount: { nanos: 300_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "8" } },
-            ],
-          },
+        id: "accounts/fireworks/models/kimi-k2p6",
+        display_name: "Kimi K2.6",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k2p6-turbo",
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "2" },
+          { sku: "LLM output tokens", amount: "8" },
         ],
       }),
     ]);
@@ -332,30 +480,26 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.equal(turbo?.baseModelId, "accounts/fireworks/models/kimi-k2p6");
   });
 
-  test("kimi-k3 ignores priority mode for base model and -latest alias pricing", () => {
+  test("priority rows are not priced", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "3" } },
-              { sku: "LLM input tokens (cached)", amount: { nanos: 300_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "15" } },
-            ],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/priority",
-            serviceTier: "priority",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "3", nanos: 750_000_000 } },
-              { sku: "LLM input tokens (cached)", amount: { nanos: 375_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "18", nanos: 750_000_000 } },
-            ],
-          },
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        serverless_mode: "priority",
+        service_tier: "priority",
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "3.75" },
+          { sku: "LLM output tokens", amount: "18.75" },
+        ],
+      }),
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k3-fast",
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "3" },
+          { sku: "LLM output tokens", amount: "15" },
         ],
       }),
     ]);
@@ -366,255 +510,66 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.equal(fastRouterPricing?.tier, "fast");
     assert.equal(fastRouterPricing?.input, 3);
     assert.equal(fastRouterPricing?.output, 15);
+  });
 
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-latest"), undefined);
-
+  test("a fast-latest alias mirrors its fast-mode row pricing", () => {
+    const snapshot = buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k3-fast",
+        aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "1.9" },
+          { sku: "LLM output tokens", amount: "8" },
+        ],
+      }),
+    ]);
     const fastLatestPricing = snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest");
     assert.equal(fastLatestPricing?.tier, "fast");
-    assert.equal(fastLatestPricing?.input, 3);
-  });
-
-  test("does not pick fast or priority mode for base model pricing when default is absent", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "3" } },
-              { sku: "LLM output tokens", amount: { units: "15" } },
-            ],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/priority",
-            serviceTier: "priority",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "3", nanos: 750_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "18", nanos: 750_000_000 } },
-            ],
-          },
-        ],
-      }),
-    ]);
-
-    const modelPricing = snapshot.pricingById.get("accounts/fireworks/models/kimi-k3");
-    assert.equal(modelPricing, undefined);
-  });
-
-  test("prefers default mode over priority for base model pricing", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/default",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "4" } },
-            ],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/priority",
-            serviceTier: "priority",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "3", nanos: 750_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "18", nanos: 750_000_000 } },
-            ],
-          },
-        ],
-      }),
-    ]);
-
-    const modelPricing = snapshot.pricingById.get("accounts/fireworks/models/kimi-k3");
-    assert.equal(modelPricing?.tier, "standard");
-    assert.equal(modelPricing?.input, 0.95);
-    assert.equal(modelPricing?.output, 4);
-  });
-
-  test("leaves base model unpriced when only fast mode exists", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [{
-          name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
-          usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
-          skuInfos: [
-            { sku: "LLM input tokens (uncached)", amount: { units: "3" } },
-            { sku: "LLM output tokens", amount: { units: "15" } },
-          ],
-        }],
-      }),
-    ]);
-
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/models/kimi-k3"), undefined);
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-k3-fast")?.tier, "fast");
-  });
-
-  test("does not attach standard-tier model pricing to synthesized fast-latest routers", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3-fast",
-        displayName: "Kimi K3 Fast",
-        serverlessModes: [{
-          name: "accounts/fireworks/models/kimi-k3-fast/serverlessModes/default",
-          skuInfos: [
-            { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-            { sku: "LLM output tokens", amount: { units: "4" } },
-          ],
-        }],
-      }),
-    ]);
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest"), undefined);
-  });
-
-  test("synthesizes kimi-latest and kimi-fast-latest when API exposes kimi-k3-fast", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k3",
-        displayName: "Kimi K3",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/default",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "4" } },
-            ],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "1", nanos: 900_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "8" } },
-            ],
-          },
-        ],
-      }),
-    ]);
-    const ids = snapshot.entries.map((entry) => entry.id);
-    assert.ok(ids.includes("accounts/fireworks/routers/kimi-k3-fast"));
-    assert.ok(ids.includes("accounts/fireworks/routers/kimi-fast-latest"));
-    assert.ok(ids.includes("accounts/fireworks/routers/kimi-latest"));
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest")?.tier, "fast");
-  });
-
-  test("synthesizes minimax-latest and qwen-plus-latest", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/minimax-m2p7",
-        displayName: "MiniMax 2.7",
-      }),
-      mockServerlessModel({
-        name: "accounts/fireworks/models/minimax-m3",
-        displayName: "MiniMax M3",
-      }),
-      mockServerlessModel({
-        name: "accounts/fireworks/models/qwen3p6-plus",
-        displayName: "Qwen 3.6 Plus",
-      }),
-      mockServerlessModel({
-        name: "accounts/fireworks/models/qwen3p7-plus",
-        displayName: "Qwen 3.7 Plus",
-      }),
-    ]);
-    const ids = snapshot.entries.map((entry) => entry.id);
-    assert.ok(ids.includes("accounts/fireworks/routers/minimax-latest"));
-    assert.ok(ids.includes("accounts/fireworks/routers/qwen-plus-latest"));
+    assert.equal(fastLatestPricing?.input, 1.9);
     assert.equal(
-      snapshot.routerBaseModelById.get("accounts/fireworks/routers/minimax-latest"),
-      "accounts/fireworks/models/minimax-m3",
-    );
-    assert.equal(
-      snapshot.routerBaseModelById.get("accounts/fireworks/routers/qwen-plus-latest"),
-      "accounts/fireworks/models/qwen3p7-plus",
+      snapshot.routerBaseModelById.get("accounts/fireworks/routers/kimi-fast-latest"),
+      "accounts/fireworks/models/kimi-k3",
     );
   });
 
-  test("synthesizes deepseek-flash-latest and deepseek-pro-latest", () => {
+  test("a fast-latest alias borrows its own model's fast rates, never a sibling version's", () => {
+    // glm-5p1-fast is inserted first: a family-prefix matcher would return its
+    // rates for glm-fast-latest, but the alias sits on glm-5p2's rows.
     const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        name: "accounts/fireworks/models/deepseek-v4-flash-0731",
-        displayName: "DeepSeek V4 Flash (0731)",
-        serverlessModes: [],
+        id: "accounts/fireworks/models/glm-5p1",
+        display_name: "GLM 5.1",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p1-fast",
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "9.9" },
+          { sku: "LLM output tokens", amount: "9.9" },
+        ],
       }),
       mockServerlessModel({
-        name: "accounts/fireworks/models/deepseek-v4-pro-0813",
-        displayName: "DeepSeek V4 Pro (0813)",
-        serverlessModes: [],
+        id: "accounts/fireworks/models/glm-5p2",
+        display_name: "GLM 5.2",
+        aliases: ["accounts/fireworks/routers/glm-latest"],
       }),
-    ]);
-    const ids = snapshot.entries.map((entry) => entry.id);
-    assert.ok(ids.includes("accounts/fireworks/routers/deepseek-flash-latest"));
-    assert.ok(ids.includes("accounts/fireworks/routers/deepseek-pro-latest"));
-    assert.equal(
-      snapshot.routerBaseModelById.get("accounts/fireworks/routers/deepseek-flash-latest"),
-      "accounts/fireworks/models/deepseek-v4-flash-0731",
-    );
-    assert.equal(
-      snapshot.routerBaseModelById.get("accounts/fireworks/routers/deepseek-pro-latest"),
-      "accounts/fireworks/models/deepseek-v4-pro-0813",
-    );
-  });
-
-  test("exposes kimi-fast-latest directly when API uses it as usage_identifier", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
       mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k2p7-code",
-        displayName: "Kimi K2.7 Code",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "4" } },
-            ],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-fast-latest",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { units: "1", nanos: 900_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "8" } },
-            ],
-          },
+        id: "accounts/fireworks/models/glm-5p2",
+        display_name: "GLM 5.2",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+        aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+        pricing: [
+          { sku: "LLM input tokens (uncached)", amount: "2.1" },
+          { sku: "LLM output tokens", amount: "6.6" },
         ],
       }),
     ]);
-    const ids = snapshot.entries.map((entry) => entry.id);
-    assert.ok(ids.includes("accounts/fireworks/routers/kimi-fast-latest"));
-    assert.ok(!ids.includes("accounts/fireworks/routers/kimi-k3-fast"));
-    assert.equal(snapshot.routerBaseModelById.get("accounts/fireworks/routers/kimi-fast-latest"),
-      "accounts/fireworks/models/kimi-k2p7-code");
-  });
-
-  test("fast alias does not inherit standard pricing via -fast strip fallback", () => {
-    const snapshot = buildServerlessCatalogSnapshot([
-      mockServerlessModel({
-        name: "accounts/fireworks/models/kimi-k2p7-code",
-        displayName: "Kimi K2.7 Code",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
-            skuInfos: [
-              { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-              { sku: "LLM output tokens", amount: { units: "4" } },
-            ],
-          },
-        ],
-      }),
-    ]);
-    const ids = snapshot.entries.map((entry) => entry.id);
-    // The alias still surfaces because the base model is listed...
-    assert.ok(ids.includes("accounts/fireworks/routers/kimi-fast-latest"));
-    // ...but must not carry the non-fast base model's standard pricing.
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-fast-latest"), undefined);
-    // The standard alias legitimately inherits standard pricing.
-    assert.equal(snapshot.pricingById.get("accounts/fireworks/routers/kimi-latest")?.tier, "standard");
+    const fastLatestPricing = snapshot.pricingById.get("accounts/fireworks/routers/glm-fast-latest");
+    assert.equal(fastLatestPricing?.tier, "fast");
+    assert.equal(fastLatestPricing?.input, 2.1);
+    assert.equal(fastLatestPricing?.output, 6.6);
   });
 
   test("warmServerlessPricingCache never sends a non-Fireworks key to the gateway", async () => {
@@ -637,30 +592,31 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     }
   });
 
-  test("model list groups aliases and keeps only the newest pinned family versions", () => {
-    const entry = (shortId, kind, baseModelId = undefined) => ({
+  test("model list groups aliases and lists every model version", () => {
+    const entry = (shortId, kind, baseModelId = undefined, created = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,
       shortId,
       displayName: shortId,
       kind: "serverless",
       ...(baseModelId ? { baseModelId } : {}),
+      ...(created !== undefined ? { created } : {}),
     });
     const sections = organizeCatalogForDisplay([
       entry("firerouter", "routers"),
       autoCatalogEntry(),
-      entry("glm-5p1", "models"),
-      entry("glm-5p2", "models"),
+      entry("glm-5p1", "models", undefined, 100),
+      entry("glm-5p2", "models", undefined, 300),
       entry("glm-5p2-fast", "routers"),
       entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p2"),
       entry("glm-fast-latest", "routers", "accounts/fireworks/models/glm-5p2"),
-      entry("kimi-k2p6", "models"),
-      entry("kimi-k2p7-code", "models"),
-      entry("kimi-k3", "models"),
+      entry("kimi-k2p6", "models", undefined, 200),
+      entry("kimi-k2p7-code", "models", undefined, 400),
+      entry("kimi-k3", "models", undefined, 500),
       entry("kimi-k3-fast", "routers"),
       entry("kimi-latest", "routers", "accounts/fireworks/models/kimi-k3"),
       entry("kimi-fast-latest", "routers", "accounts/fireworks/models/kimi-k3"),
-      entry("minimax-m2p7", "models"),
-      entry("minimax-m3", "models"),
+      entry("minimax-m2p7", "models", undefined, 150),
+      entry("minimax-m3", "models", undefined, 600),
       entry("minimax-latest", "routers", "accounts/fireworks/models/minimax-m3"),
     ]);
     const idsBySection = Object.fromEntries(sections.map((section) => [
@@ -673,7 +629,8 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
       "SMART ROUTERS": ["auto", "firerouter"],
       "LATEST ROUTERS": ["glm-latest", "kimi-latest", "minimax-latest"],
       "FAST ROUTERS": ["glm-fast-latest", "kimi-fast-latest"],
-      "INDIVIDUAL MODELS": ["glm-5p2", "kimi-k3", "minimax-m3"],
+      // Every version, newest first — no family collapsing.
+      "INDIVIDUAL MODELS": ["minimax-m3", "kimi-k3", "kimi-k2p7-code", "glm-5p2", "kimi-k2p6", "minimax-m2p7", "glm-5p1"],
     });
   });
 
@@ -705,89 +662,78 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.equal(catalogWithAutoEntry(withAllGatewayRows, "fireworks"), withAllGatewayRows);
   });
 
-  test("individual models list the newest version of every catalog family", () => {
-    const entry = (shortId, kind, baseModelId = undefined) => ({
+  test("individual models list every version, newest first", () => {
+    const entry = (shortId, kind, baseModelId = undefined, created = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,
       shortId,
       displayName: shortId,
       kind: "serverless",
       ...(baseModelId ? { baseModelId } : {}),
+      ...(created !== undefined ? { created } : {}),
     });
     const sections = organizeCatalogForDisplay([
       entry("deepseek-flash-latest", "routers", "accounts/fireworks/models/deepseek-v4-flash-0731"),
       entry("deepseek-pro-latest", "routers", "accounts/fireworks/models/deepseek-v4-pro-0813"),
       entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p2"),
-      entry("deepseek-v4-flash-0731", "models"),
-      entry("deepseek-v4-pro-0813", "models"),
-      // Versioned flash with no base-model id: collapsed by the deepseek-flash
-      // family alias, so it must not reappear.
-      entry("deepseek-v4-flash", "models"),
-      entry("glm-5p2", "models"),
+      entry("deepseek-v4-flash-0731", "models", undefined, 400),
+      entry("deepseek-v4-pro-0813", "models", undefined, 300),
+      entry("deepseek-v4-flash", "models", undefined, 200),
+      entry("glm-5p2", "models", undefined, 100),
       // Standalone model with no -latest alias: still listed, since harnesses
       // can be pinned to it.
-      entry("gpt-oss-120b", "models"),
+      entry("gpt-oss-120b", "models", undefined, 500),
     ]);
     const individual = sections.find((section) => section.title === "INDIVIDUAL MODELS")?.entries
       .map(({ shortId }) => shortId);
 
     assert.deepEqual(individual, [
+      "gpt-oss-120b",
       "deepseek-v4-flash-0731",
       "deepseek-v4-pro-0813",
+      "deepseek-v4-flash",
       "glm-5p2",
-      "gpt-oss-120b",
     ]);
   });
 
   test("a -latest router pinned to an older version cannot hide a newer model", () => {
-    const entry = (shortId, kind, baseModelId = undefined) => ({
+    const entry = (shortId, kind, baseModelId = undefined, created = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,
       shortId,
       displayName: shortId,
       kind: "serverless",
       ...(baseModelId ? { baseModelId } : {}),
+      ...(created !== undefined ? { created } : {}),
     });
-    // glm-latest still resolves to 5p2 while the catalog already serves 5p3 —
-    // the state a stale ROUTER_SPEC_ALIASES entry leaves behind.
+    // glm-latest still resolves to 5p2 while the catalog already serves 5p3.
+    // Both versions stay listed; recency, not the alias, orders them.
     const sections = organizeCatalogForDisplay([
       entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p2"),
-      entry("glm-5p2", "models"),
-      entry("glm-5p3", "models"),
-      // Family the CLI has never seen, with no alias of its own.
-      entry("newfamily-2p1", "models"),
-      entry("newfamily-3", "models"),
+      entry("glm-5p2", "models", undefined, 100),
+      entry("glm-5p3", "models", undefined, 500),
+      entry("newfamily-2p1", "models", undefined, 200),
+      entry("newfamily-3", "models", undefined, 400),
     ]);
     const individual = sections.find((section) => section.title === "INDIVIDUAL MODELS")?.entries
       .map(({ shortId }) => shortId);
 
-    assert.deepEqual(individual, ["glm-5p3", "newfamily-3"]);
+    assert.deepEqual(individual, ["glm-5p3", "newfamily-3", "newfamily-2p1", "glm-5p2"]);
   });
 
   test("a -flash-latest alias keeps Flash a family of its own", () => {
-    const entry = (shortId, kind, baseModelId = undefined) => ({
+    const entry = (shortId, kind, baseModelId = undefined, created = undefined) => ({
       id: `accounts/fireworks/${kind}/${shortId}`,
       shortId,
       displayName: shortId,
       kind: "serverless",
       ...(baseModelId ? { baseModelId } : {}),
+      ...(created !== undefined ? { created } : {}),
     });
-    // Without glm-flash-latest, "glm-flash" prefix-collapses into "glm" and the
-    // Flash model loses to the higher-versioned sibling.
-    const withoutAlias = organizeCatalogForDisplay([
-      entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p3"),
-      entry("glm-5p3", "models"),
-      entry("glm-5p2-flash", "models"),
-    ]);
-    assert.deepEqual(
-      withoutAlias.find((s) => s.title === "INDIVIDUAL MODELS")?.entries.map((e) => e.shortId),
-      ["glm-5p3"],
-    );
-
     const withAlias = organizeCatalogForDisplay([
       entry("glm-latest", "routers", "accounts/fireworks/models/glm-5p3"),
       entry("glm-flash-latest", "routers", "accounts/fireworks/models/glm-5p2-flash"),
-      entry("glm-5p2", "models"),
-      entry("glm-5p3", "models"),
-      entry("glm-5p2-flash", "models"),
+      entry("glm-5p2", "models", undefined, 100),
+      entry("glm-5p3", "models", undefined, 300),
+      entry("glm-5p2-flash", "models", undefined, 200),
     ]);
     const bySection = Object.fromEntries(withAlias.map((s) => [
       s.title,
@@ -796,6 +742,6 @@ describe("fireworks-models serverless catalog", () => {  test("fetchServerlessCa
     assert.deepEqual(bySection["LATEST ROUTERS"], ["glm-flash-latest", "glm-latest"]);
     // Flash is a distinct model, not a speed tier: it must not land in FAST ROUTERS.
     assert.equal(bySection["FAST ROUTERS"], undefined);
-    assert.deepEqual(bySection["INDIVIDUAL MODELS"], ["glm-5p2-flash", "glm-5p3"]);
+    assert.deepEqual(bySection["INDIVIDUAL MODELS"], ["glm-5p3", "glm-5p2-flash", "glm-5p2"]);
   });
 });

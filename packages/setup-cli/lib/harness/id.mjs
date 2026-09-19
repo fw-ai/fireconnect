@@ -1,4 +1,4 @@
-/** @typedef {"" | "claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepseek"} HarnessArg */
+/** @typedef {"" | "claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "copilot-app" | "copilot-cli" | "deepseek"} HarnessArg */
 
 export const HARNESS = Object.freeze({
   CLAUDE: "claude",
@@ -7,6 +7,13 @@ export const HARNESS = Object.freeze({
   PI: "pi",
   CURSOR: "cursor",
   VSCODE: "vscode",
+  // GitHub ships two products both branded "GitHub Copilot", with no shared
+  // config: the desktop app keeps BYOK providers in ~/.copilot/data.db, the
+  // CLI in ~/.copilot/providers.json. Neither reads the other's. They are
+  // named explicitly because a bare `copilot` is genuinely ambiguous — it is
+  // also the CLI's own binary name.
+  COPILOT_APP: "copilot-app",
+  COPILOT_CLI: "copilot-cli",
   DEEPSEEK: "deepseek",
 });
 
@@ -47,7 +54,19 @@ export const FILE_CONFIG_HARNESS_SET = new Set(FILE_CONFIG_HARNESS_IDS);
  * @param {string} value
  * @returns {HarnessId}
  */
+/**
+ * `copilot` names two different products, so it is never guessed at — the
+ * error says which is which instead of silently picking one.
+ */
+export const AMBIGUOUS_COPILOT_MESSAGE =
+  "`copilot` is ambiguous — GitHub ships two products:\n"
+  + "  fireconnect copilot-app    GitHub Copilot desktop app\n"
+  + "  fireconnect copilot-cli    GitHub Copilot CLI (the `copilot` command)";
+
 export function parseHarnessId(value) {
+  if (value === "copilot") {
+    throw new Error(AMBIGUOUS_COPILOT_MESSAGE);
+  }
   if (!HARNESSES.includes(value)) {
     throw new Error(`Unknown harness: ${value}. Choose one of: ${HARNESSES.join(", ")}`);
   }

@@ -2,6 +2,7 @@ import { ensureIdeStopped, isIdeRunning, quitInstruction } from "../../io/ide-ru
 import {
   applyItemTableWrites,
   deleteItemTableValue,
+  ensureItemTable,
   readItemTableValue,
   writeItemTableValue,
 } from "../vscode/vscdb-sqlite.mjs";
@@ -16,6 +17,7 @@ export const readCursorValue = readItemTableValue;
 export const writeCursorValue = writeItemTableValue;
 export const deleteCursorValue = deleteItemTableValue;
 export const applyCursorWrites = applyItemTableWrites;
+export const ensureCursorTable = ensureItemTable;
 
 /* -------------------------------------------------------------------------- */
 /* Running-Cursor guard — writes while Cursor is open get clobbered by its    */

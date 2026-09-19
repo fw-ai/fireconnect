@@ -6,6 +6,7 @@ import {
   lookupCachedSupportsTools,
   lookupCatalogEntryById,
 } from "./serverless-catalog-cache.mjs";
+import { stripViaFireworksSuffix } from "./label-suffix.mjs";
 
 /** @see https://docs.fireworks.ai/serverless/pricing */
 export const FIREWORKS_PRICING_DOCS_URL = "https://docs.fireworks.ai/serverless/pricing";
@@ -41,13 +42,11 @@ export const FIREWORKS_MODEL_SPECS = {
     label: "GLM 5.3 Flash",
     pricing: { input: 0.15, cachedInput: 0.03, output: 0.50 },
     capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
-    api: { contextLength: 1_048_576, supportsImageInput: true },
   },
   "glm-5p3-flash-us": {
     label: "GLM 5.3 Flash (US)",
     pricing: { input: 0.225, cachedInput: 0.045, output: 0.75 },
     capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
-    api: { contextLength: 1_048_576, supportsImageInput: true },
   },
   "glm-5p2": {
     label: "GLM 5.2",
@@ -73,6 +72,11 @@ export const FIREWORKS_MODEL_SPECS = {
     label: "GLM 5.2 Fast (US)",
     pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
     capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
+  },
+  "glm-5p3-fast": {
+    label: "GLM 5.3 Fast",
+    pricing: { input: 2.10, cachedInput: 0.39, output: 6.60, tier: "fast" },
+    capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
   "kimi-k3": {
     label: "Kimi K3",
@@ -154,7 +158,6 @@ export const FIREWORKS_MODEL_SPECS = {
     label: "Inkling",
     pricing: { input: 1.00, cachedInput: 0.17, output: 4.05 },
     capabilities: { contextWindow: 1_048_576, maxOutputTokens: 131_072, vision: true, toolCalling: true },
-    api: { contextLength: 1_048_576, supportsImageInput: true },
     modelsDev: false,
   },
   "nemotron-3-ultra-nvfp4": {
@@ -247,127 +250,18 @@ export function isFirerouterModelPattern(model) {
     .some((part) => part.startsWith("firerouter"));
 }
 
-export const ROUTER_SPEC_ALIASES = {
-  "deepseek-flash-latest": "deepseek-v4-flash-0731",
-  "deepseek-pro-latest": "deepseek-v4-pro-0813",
-  "glm-latest": "glm-5p3",
-  "glm-fast-latest": "glm-5p2-fast",
-  "glm-flash-latest": "glm-5p3-flash",
-  "glm-5p2-fast-us": "glm-5p2",
-  "glm-5p3-flash-us": "glm-5p3-flash",
-  "kimi-latest": "kimi-k3",
-  "kimi-fast-latest": "kimi-k3-fast",
-  "kimi-k3-us": "kimi-k3",
-  "minimax-latest": "minimax-m3",
-  "qwen-plus-latest": "qwen3p7-plus",
-};
-
-const GLM_LATEST_BASE_CANDIDATES = ["glm-5p3", "glm-5p2"];
-const GLM_FAST_LATEST_BASE_CANDIDATES = ["glm-5p3-fast", "glm-5p2-fast"];
-const GLM_FLASH_LATEST_BASE_CANDIDATES = ["glm-5p3-flash"];
-const DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES = ["deepseek-v4-flash-0731", "deepseek-v4-flash"];
-const DEEPSEEK_PRO_LATEST_BASE_CANDIDATES = ["deepseek-v4-pro-0813", "deepseek-v4-pro"];
-const KIMI_LATEST_BASE_CANDIDATES = ["kimi-k3", "kimi-k2p8-code", "kimi-k2p7-code"];
-const MINIMAX_LATEST_BASE_CANDIDATES = ["minimax-m3", "minimax-m2p7", "minimax-m2p5"];
-const QWEN_PLUS_LATEST_BASE_CANDIDATES = ["qwen3p7-plus", "qwen3p6-plus"];
-
-function resolveFirstCatalogCandidate(catalogCheck, candidates) {
-  for (const slug of candidates) {
-    if (catalogCheck(slug)) {
-      return slug;
-    }
-  }
-  return null;
-}
-
-function makeCatalogModelChecker(entryIds = null, { includeRouters = false } = {}) {
-  if (entryIds) {
-    return (slug) => entryIds.has(`accounts/fireworks/models/${slug}`)
-      || (includeRouters && entryIds.has(`accounts/fireworks/routers/${slug}`));
-  }
-  return (slug) => Boolean(
-    lookupCatalogEntryById(`accounts/fireworks/models/${slug}`)
-    || (includeRouters && lookupCatalogEntryById(`accounts/fireworks/routers/${slug}`)),
-  );
-}
-
-function resolveKimiLatestBaseSlug(catalogCheck) {
-  return resolveFirstCatalogCandidate(catalogCheck, KIMI_LATEST_BASE_CANDIDATES);
-}
-
-/**
- * Resolve the target slug for a `-latest` router alias, preferring live catalog
- * models over static offline fallbacks.
- * @param {string} alias
- * @param {Set<string>} [entryIds] Optional catalog entry ids while building a snapshot.
- * @returns {string | null}
- */
-export function resolveRouterSpecAliasTarget(alias, entryIds = null) {
-  const catalogCheck = makeCatalogModelChecker(entryIds);
-  if (alias === "kimi-latest") {
-    return resolveKimiLatestBaseSlug(catalogCheck) ?? ROUTER_SPEC_ALIASES[alias] ?? null;
-  }
-  if (alias === "kimi-fast-latest") {
-    if (makeCatalogModelChecker(entryIds, { includeRouters: true })("kimi-k3-fast")) {
-      return "kimi-k3-fast";
-    }
-    const base = resolveKimiLatestBaseSlug(catalogCheck);
-    if (base) {
-      return fastSpecSlugForBase(base, alias);
-    }
-    return ROUTER_SPEC_ALIASES[alias] ?? null;
-  }
-  if (alias === "glm-latest") {
-    return resolveFirstCatalogCandidate(catalogCheck, GLM_LATEST_BASE_CANDIDATES)
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  if (alias === "glm-fast-latest") {
-    return resolveFirstCatalogCandidate(
-      makeCatalogModelChecker(entryIds, { includeRouters: true }),
-      GLM_FAST_LATEST_BASE_CANDIDATES,
-    )
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  if (alias === "glm-flash-latest") {
-    return resolveFirstCatalogCandidate(catalogCheck, GLM_FLASH_LATEST_BASE_CANDIDATES)
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  if (alias === "minimax-latest") {
-    return resolveFirstCatalogCandidate(catalogCheck, MINIMAX_LATEST_BASE_CANDIDATES)
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  if (alias === "qwen-plus-latest") {
-    return resolveFirstCatalogCandidate(catalogCheck, QWEN_PLUS_LATEST_BASE_CANDIDATES)
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  if (alias === "deepseek-flash-latest") {
-    return resolveFirstCatalogCandidate(catalogCheck, DEEPSEEK_FLASH_LATEST_BASE_CANDIDATES)
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  if (alias === "deepseek-pro-latest") {
-    return resolveFirstCatalogCandidate(catalogCheck, DEEPSEEK_PRO_LATEST_BASE_CANDIDATES)
-      ?? ROUTER_SPEC_ALIASES[alias]
-      ?? null;
-  }
-  return ROUTER_SPEC_ALIASES[alias] ?? null;
-}
-
-/** Router IDs that share pricing/base-model metadata for a target slug. */
-export function routerIdsForTargetSlug(targetSlug) {
-  const ids = [`accounts/fireworks/routers/${targetSlug}`];
-  for (const alias of Object.keys(ROUTER_SPEC_ALIASES)) {
-    if (resolveRouterSpecAliasTarget(alias) === targetSlug) {
-      ids.push(`accounts/fireworks/routers/${alias}`);
-    }
-  }
-  return [...new Set(ids)];
-}
+/** Router aliases used before the serverless catalog cache is warm. */
+export const KNOWN_LATEST_ROUTER_ALIASES = Object.freeze([
+  "deepseek-flash-latest",
+  "deepseek-pro-latest",
+  "glm-fast-latest",
+  "glm-flash-latest",
+  "glm-latest",
+  "kimi-fast-latest",
+  "kimi-latest",
+  "minimax-latest",
+  "qwen-plus-latest",
+]);
 
 export const DEFAULT_MODEL_CAPABILITIES = {
   vision: false,
@@ -406,10 +300,6 @@ export function resolveLiveRouterBaseModelId(modelRef) {
     }
   }
   return null;
-}
-
-function stripViaFireworksSuffix(label) {
-  return String(label).replace(/ via Fireworks$/i, "");
 }
 
 function appendFastTierLabel(label) {
@@ -474,30 +364,7 @@ export function resolveSpecSlug(modelRef) {
   if (baseModelId) {
     return fastSpecSlugForBase(specShortIdFromModelRef(baseModelId), shortId);
   }
-  const aliasTarget = resolveRouterSpecAliasTarget(shortId);
-  if (aliasTarget) {
-    return fastSpecSlugForBase(aliasTarget, shortId);
-  }
   return shortId;
-}
-
-/** True when a model ref resolves through Fireworks specs, router aliases, or catalog. */
-export function isFireworksRoutedModelRef(modelRef) {
-  if (typeof modelRef !== "string" || !modelRef.trim()) {
-    return false;
-  }
-  const ref = modelRef.trim();
-  if (ref.startsWith("accounts/fireworks/")) {
-    return true;
-  }
-  const shortId = specShortIdFromModelRef(ref);
-  if (isFirerouterModelPattern(ref) || isAutoModelId(ref)) {
-    return true;
-  }
-  if (ROUTER_SPEC_ALIASES[shortId]) {
-    return true;
-  }
-  return Boolean(lookupModelSpec(ref) || resolveLiveRouterBaseModelId(ref));
 }
 
 /**
@@ -513,18 +380,7 @@ export function resolveFireworksModelLabel(modelRef) {
   }
   const baseModelId = resolveLiveRouterBaseModelId(modelRef);
   if (!baseModelId) {
-    const aliasTarget = resolveRouterSpecAliasTarget(shortId);
-    if (!aliasTarget) {
-      return null;
-    }
-    const aliasSpec = FIREWORKS_MODEL_SPECS[aliasTarget];
-    if (!aliasSpec?.label) {
-      return null;
-    }
-    return resolveRouterEntryDisplayName(
-      routerCatalogIdCandidates(modelRef)[0] ?? `accounts/fireworks/routers/${shortId}`,
-      aliasSpec.label,
-    );
+    return FIREWORKS_MODEL_SPECS[shortId]?.label ?? null;
   }
 
   const baseEntry = lookupCatalogEntryById(baseModelId);
@@ -553,18 +409,7 @@ export function lookupModelSpec(modelRef) {
     return FIREWORKS_MODEL_SPECS.auto;
   }
   const slug = resolveSpecSlug(modelRef);
-  const shortId = specShortIdFromModelRef(modelRef);
-  const staticAlias = ROUTER_SPEC_ALIASES[shortId];
-  const aliasSpec = staticAlias ? FIREWORKS_MODEL_SPECS[staticAlias] ?? null : null;
-  const direct = FIREWORKS_MODEL_SPECS[slug];
-
-  if (direct) {
-    if (direct.pricing || !aliasSpec?.pricing) {
-      return direct;
-    }
-    return { ...direct, pricing: aliasSpec.pricing };
-  }
-  return aliasSpec;
+  return FIREWORKS_MODEL_SPECS[slug] ?? null;
 }
 
 /**
@@ -573,6 +418,9 @@ export function lookupModelSpec(modelRef) {
  * without needing a hand-maintained list — `fullFireworksResourceId` relies on
  * this to pick `routers/` vs `models/`, so a stale list would mis-expand a
  * real router id to a non-existent `accounts/fireworks/models/...` path.
+ * US-only router slugs (`kimi-k3-us`) carry no router suffix, so a static spec
+ * for the slug is treated as a router too — every other spec key names a model
+ * with a `models/` path, while the US spec keys name documented US routers.
  * @param {string} shortId
  * @returns {boolean}
  */
@@ -581,10 +429,10 @@ export function isRouterShortId(shortId) {
     return false;
   }
   return shortId.startsWith("firerouter")
-    || Boolean(ROUTER_SPEC_ALIASES[shortId])
     || shortId.endsWith("-latest")
     || shortId.endsWith("-fast")
-    || shortId.endsWith("-turbo");
+    || shortId.endsWith("-turbo")
+    || (shortId.endsWith("-us") && Boolean(FIREWORKS_MODEL_SPECS[shortId]));
 }
 
 function canonicalResourceIdForCache(modelRef) {
@@ -644,12 +492,6 @@ export function catalogCacheCandidates(modelRef) {
   for (const routerId of routerCatalogIdCandidates(modelRef)) {
     candidates.push(routerId);
   }
-  const shortId = specShortIdFromModelRef(modelRef);
-  const aliasSlug = resolveRouterSpecAliasTarget(shortId);
-  if (aliasSlug && !FIREWORKS_MODEL_SPECS[shortId]) {
-    candidates.push(`accounts/fireworks/models/${aliasSlug}`);
-    candidates.push(`accounts/fireworks/routers/${aliasSlug}`);
-  }
   const resolvedSlug = resolveSpecSlug(modelRef);
   candidates.push(`accounts/fireworks/models/${resolvedSlug}`);
   candidates.push(`accounts/fireworks/routers/${resolvedSlug}`);
@@ -697,7 +539,7 @@ function firstCachedServerlessPricing(modelRef) {
 }
 
 export const DEFAULT_FIREWORKS_MODEL_LIMITS = {
-  contextWindow: 128_000,
+  contextWindow: 1_000_000,
   maxTokens: 16_384,
   vision: false,
 };

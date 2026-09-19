@@ -9,6 +9,14 @@ import {
 import { opencodeConfigPath, refreshOpencodeGatewayKey } from "../harnesses/opencode/core.mjs";
 import { piAuthPath, refreshPiGatewayKey } from "../harnesses/pi/core.mjs";
 import {
+  copilotDataDbPath,
+  refreshCopilotAppGatewayKey,
+} from "../harnesses/copilot-app/sqlite.mjs";
+import {
+  copilotProvidersPath,
+  refreshCopilotCliGatewayKey,
+} from "../harnesses/copilot-cli/config.mjs";
+import {
   FIREWORKS_API_KEY_KEYCHAIN_REF,
   readGlobalConfig,
   isEnabledFireworksHarness,
@@ -18,7 +26,6 @@ import { HARNESS } from "../harness/id.mjs";
 import { reconcileShellEnvHook } from "../io/shell-env-hook.mjs";
 import { resolveFireworksApiKeyValue, tryReadKeychainSecret } from "./api-key.mjs";
 import { isEnvConfigRef, migrateLegacyGlobalApiKey } from "./config-ref.mjs";
-import { refreshWebsearchMcpAuth } from "../system/websearch-mcp.mjs";
 
 /**
  * @param {import("../config/global-config.mjs").HarnessConfigMap} harnesses
@@ -89,6 +96,18 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
         fireworksKey,
       }),
     },
+    {
+      id: HARNESS.COPILOT_APP,
+      label: "Copilot app",
+      hint: "fireconnect copilot-app on",
+      refresh: () => refreshCopilotAppGatewayKey({ dbPath: copilotDataDbPath({ home }), fireworksKey }),
+    },
+    {
+      id: HARNESS.COPILOT_CLI,
+      label: "Copilot CLI",
+      hint: "fireconnect copilot-cli on",
+      refresh: () => refreshCopilotCliGatewayKey({ providersPath: copilotProvidersPath({ home }), fireworksKey }),
+    },
   ];
   const notes = [];
   for (const { id, label, hint, refresh } of targets) {
@@ -103,15 +122,6 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       notes.push(`Couldn't update ${label}'s Fireworks settings — re-run ${hint} to use this key there.`);
     }
   }
-  try {
-    if (await refreshWebsearchMcpAuth(home, fireworksKey)) {
-      notes.push(
-        "Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up.",
-      );
-    }
-  } catch {
-    notes.push("Couldn't update Claude websearch MCP auth — re-run fireconnect claude on.");
-  }
   return notes;
 }
 
@@ -119,8 +129,7 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
  * Post-upgrade key reconciliation: rebake every enabled Fireworks harness
  * config to plaintext literals (including legacy env-reference auth), repair
  * a stale global `{env:FIREWORKS_API_KEY}` ref when keychain holds the secret,
- * and reconcile the shell hook (Anthropic export for Codex BYOK; no FIREWORKS
- * export — websearch MCP bakes its Bearer token).
+ * and reconcile the shell hook (Anthropic export for Codex BYOK).
  *
  * Key-independent harness migrations live in `system/forward-migrations.mjs`.
  * Never throws.

@@ -1,71 +1,26 @@
-import process from "node:process";
-
 import {
   isFirerouterModelPattern,
   firerouterRequiresAnthropicKey,
 } from "../fireworks/model-id.mjs";
 import {
-  isAccountFeatureFlagEnabled,
-} from "../config/feature-flags.mjs";
-import {
   ANTHROPIC_BYOK_HEADER,
   ROUTING_PREFERENCE_HEADER,
   firerouterByokHeaders,
-  isAnthropicShapedKey,
   normalizeRoutingPreference,
-  resolveAnthropicKey,
   resolveFirerouterByokKeys,
 } from "./core.mjs";
-import { verifyFireworksApiKey } from "../keys/verify-api-key.mjs";
-
-/**
- * Account feature flag indicating workspace-level BYOK is provisioned
- * server-side (control-plane `EnableWorkspaceByok`). When set, the gateway
- * supplies the provider (e.g. Anthropic) key for FireRouter pass-through, so
- * `firerouter` reaches frontier models with NO user-supplied Anthropic key —
- * and FireConnect must not prompt for one.
- *
- * (FireRouter access itself is generally available; only this BYOK provisioning
- * is still account-specific.)
- */
-export const ENABLE_WORKSPACE_BYOK_FLAG_ID = "enable-workspace-byok";
 
 export const FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE =
   "Ask the Fireworks team to enable FireRouter for your account.";
 
 export const FIREROUTER_ENV_BYOK_REQUIRED_MESSAGE =
   "FireRouter needs an Anthropic key in your environment. Export ANTHROPIC_API_KEY, "
-  + "pass --anthropic-api-key with codex on, "
-  + "or ask the Fireworks team about workspace BYOK.";
+  + "or pass --anthropic-api-key with codex on.";
 
 export const FIREROUTER_BYOK_REQUIRED_MESSAGE =
-  "FireRouter needs your Anthropic API key (or workspace BYOK). "
+  "FireRouter needs your Anthropic API key. "
   + "Set ANTHROPIC_API_KEY, pass --anthropic-api-key <sk-ant-...>, "
-  + "or ask the Fireworks team about workspace BYOK.";
-
-/** Lookup result used before a workspace-BYOK probe has run. */
-export const WORKSPACE_BYOK_UNRESOLVED = Object.freeze({
-  enabled: false,
-  unavailable: false,
-  reason: "",
-});
-
-/**
- * Whether FireRouter credentials are available for an explicit `--model firerouter`
- * selection. When workspace BYOK cannot be verified (offline/control-plane error),
- * allow the request so a transient lookup failure does not block enablement.
- * @param {{
- *   include?: boolean,
- *   workspaceByokLookup?: import("../config/feature-flags.mjs").FeatureFlagLookupResult|null,
- * }} availability
- * @returns {boolean}
- */
-export function firerouterCredentialsSatisfied(availability) {
-  if (availability.include) {
-    return true;
-  }
-  return availability.workspaceByokLookup?.unavailable === true;
-}
+  + "or ask the Fireworks team to enable FireRouter for your account."
 
 /**
  * Resolve the error message for a missing FireRouter credential requirement.
@@ -83,38 +38,12 @@ export function firerouterCredentialsRequiredMessage(firerouter) {
 }
 
 /**
- * Throw when `<harness> on --model firerouter` is requested on a harness that
- * cannot forward a local Anthropic key (`byok: "none"`) and workspace BYOK is
- * not provisioned.
- *
- * @param {{
- *   availability?: {
- *     include?: boolean,
- *     workspaceByokLookup?: import("../config/feature-flags.mjs").FeatureFlagLookupResult|null,
- *   },
- * }} input
- */
-export function assertFirerouterWorkspaceByok({
-  availability = { include: false },
-  firerouter = { byok: "none" },
-} = {}) {
-  if (firerouterCredentialsSatisfied(availability)) {
-    return;
-  }
-  throw new Error(firerouterCredentialsRequiredMessage(firerouter));
-}
-
-/**
  * Resolve or prompt for Anthropic credentials when the user explicitly selects
- * FireRouter (`--model firerouter` or a Claude slot). Workspace-only harnesses
- * throw when workspace BYOK is missing.
+ * FireRouter (`--model firerouter` or a Claude slot). Harnesses that cannot
+ * forward a key (`byok: "none"`) throw.
  *
  * @param {{
  *   firerouter?: { byok?: "value"|"envref"|"none" }|null,
- *   availability?: {
- *     include?: boolean,
- *     workspaceByokLookup?: import("../config/feature-flags.mjs").FeatureFlagLookupResult|null,
- *   },
  *   ctx?: { anthropicKey?: string, anthropicKeyFromFlag?: boolean, home?: string },
  *   settingsEnv?: Record<string, string>,
  *   allowPromptSkip?: boolean,
@@ -122,7 +51,6 @@ export function assertFirerouterWorkspaceByok({
  */
 export async function resolveExplicitFirerouterCredential({
   firerouter = null,
-  availability = { include: false },
   ctx = {},
   settingsEnv = {},
   allowPromptSkip = true,
@@ -130,10 +58,8 @@ export async function resolveExplicitFirerouterCredential({
   if (!firerouter) {
     return { anthropicKey: "" };
   }
-  const workspaceByokLookup = availability.workspaceByokLookup ?? WORKSPACE_BYOK_UNRESOLVED;
   if (firerouter.byok === "none") {
-    assertFirerouterWorkspaceByok({ availability, firerouter });
-    return { anthropicKey: "" };
+    throw new Error(firerouterCredentialsRequiredMessage(firerouter));
   }
   return resolveFirerouterByokKeys({
     anthropicFlag: ctx.anthropicKeyFromFlag ? ctx.anthropicKey : "",
@@ -141,7 +67,6 @@ export async function resolveExplicitFirerouterCredential({
     home: ctx.home,
     explicit: true,
     allowPromptSkip,
-    resolveWorkspaceByok: () => Promise.resolve(workspaceByokLookup),
   });
 }
 
@@ -152,156 +77,22 @@ export async function resolveExplicitFirerouterCredential({
  * @returns {boolean}
  */
 export function supportsRoutingPreference(firerouter) {
-  return firerouter?.byok === "value";
+  return firerouter?.byok === "value" || firerouter?.routingPreference === true;
 }
 
 /**
- * Whether a harness accepts `--anthropic-api-key` on `on` for FireRouter BYOK.
+ * Whether a harness accepts `--anthropic-api-key` on `on`.
  * Value harnesses embed the key in config headers; envref harnesses (Codex)
- * persist it and export ANTHROPIC_API_KEY via the shell hook.
- * @param {{ byok?: "value"|"envref"|"none" }|null|undefined} firerouter
+ * persist it and export ANTHROPIC_API_KEY via the shell hook. Claude Code
+ * (`nativeAnthropicKey`) accepts it for native auth even though FireRouter
+ * itself needs no BYOK there.
+ * @param {{ byok?: "value"|"envref"|"none", nativeAnthropicKey?: boolean }|null|undefined} firerouter
  * @returns {boolean}
  */
 export function supportsAnthropicApiKeyFlag(firerouter) {
-  return firerouter?.byok === "value" || firerouter?.byok === "envref";
-}
-
-/**
- * Whether FireRouter should be auto-visible for a harness. Workspace BYOK works
- * for every supported harness; a local Anthropic env key only counts when the
- * harness can forward a value or env reference.
- */
-export function shouldAutoIncludeFirerouter({
-  autoFirerouter = false,
-  byok = "none",
-  keyType = "",
-  workspaceByok = false,
-  anthropicApiKey = "",
-} = {}) {
-  if (!autoFirerouter || keyType === "firepass") {
-    return false;
-  }
-  if (workspaceByok) {
-    return true;
-  }
-  return (byok === "value" || byok === "envref")
-    && isAnthropicShapedKey(anthropicApiKey);
-}
-
-/**
- * Resolve the complete automatic-visibility decision once. Local Anthropic
- * credentials (flag/global/env) avoid a control-plane lookup; workspace BYOK
- * is consulted only when local BYOK is unavailable.
- *
- * @typedef {{
- *   byok: "value"|"envref"|"none",
- *   autoCatalog: boolean,
- * }} FirerouterCapability
- *
- * @param {{
- *   firerouter?: FirerouterCapability|null,
- *   keyType?: string,
- *   workspaceApiKey?: string,
- *   home?: string,
- * }} input
- * @param {{
- *   resolveAnthropic?: typeof resolveAnthropicKey,
- *   resolveWorkspace?: typeof resolveWorkspaceByok,
- * }} [seams]
- */
-export async function resolveFirerouterAvailability({
-  firerouter = null,
-  keyType = "",
-  workspaceApiKey = "",
-  home = "",
-} = {}, {
-  resolveAnthropic = resolveAnthropicKey,
-  resolveWorkspace = resolveWorkspaceByokStatus,
-} = {}) {
-  if (!firerouter) {
-    return { include: false, workspaceByok: false };
-  }
-  const { autoCatalog, byok } = firerouter;
-  const anthropicApiKey = byok === "none"
-    ? ""
-    : await resolveAnthropic({ home });
-  const options = {
-    autoFirerouter: autoCatalog,
-    byok,
-    keyType,
-    anthropicApiKey,
-  };
-  if (shouldAutoIncludeFirerouter(options)) {
-    return { include: true, workspaceByok: false };
-  }
-  if (!autoCatalog || keyType === "firepass") {
-    return { include: false, workspaceByok: false };
-  }
-  const rawLookup = await resolveWorkspace(workspaceApiKey);
-  const workspaceByokLookup = typeof rawLookup === "boolean"
-    ? { enabled: rawLookup, unavailable: false, reason: "" }
-    : rawLookup;
-  const workspaceByok = workspaceByokLookup.enabled;
-  return {
-    include: shouldAutoIncludeFirerouter({ ...options, workspaceByok }),
-    workspaceByok,
-    workspaceByokLookup,
-  };
-}
-
-/**
- * Resolve workspace BYOK without collapsing disabled and unavailable states.
- * @param {string} apiKey
- * @param {{ verifyKey?: typeof verifyFireworksApiKey, lookupFlag?: typeof isAccountFeatureFlagEnabled }} [seams]
- * @returns {Promise<import("../config/feature-flags.mjs").FeatureFlagLookupResult>}
- */
-export async function resolveWorkspaceByokStatus(
-  apiKey,
-  {
-    verifyKey = verifyFireworksApiKey,
-    lookupFlag = isAccountFeatureFlagEnabled,
-  } = {},
-) {
-  const key = (apiKey ?? "").trim();
-  if (!key) {
-    return { enabled: false, unavailable: false, reason: "" };
-  }
-  try {
-    const verified = await verifyKey(key);
-    if (!verified.ok) {
-      return {
-        enabled: false,
-        unavailable: true,
-        reason: verified.reason || "API key verification failed",
-      };
-    }
-    const acct = verified.ok ? verified.accountId?.trim() ?? "" : "";
-    if (!acct) {
-      return {
-        enabled: false,
-        unavailable: true,
-        reason: "API key verification returned no account ID",
-      };
-    }
-    const apiBaseUrl = process.env.FIRECONNECT_GATEWAY_URL?.trim() ?? "";
-    return await lookupFlag(
-      acct,
-      key,
-      ENABLE_WORKSPACE_BYOK_FLAG_ID,
-      apiBaseUrl ? { apiBaseUrl } : undefined,
-    );
-  } catch (error) {
-    return {
-      enabled: false,
-      unavailable: true,
-      reason: error instanceof Error ? error.message : "workspace BYOK lookup failed",
-    };
-  }
-}
-
-/** Backward-compatible boolean view for callers that need only enabled/disabled. */
-export async function resolveWorkspaceByok(apiKey, seams) {
-  return (await resolveWorkspaceByokStatus(apiKey, seams)).enabled;
+  return firerouter?.byok === "value"
+    || firerouter?.byok === "envref"
+    || firerouter?.nativeAnthropicKey === true;
 }
 
 /**
@@ -376,16 +167,10 @@ export function firerouterCredentialsApplyOnGateway(keyType) {
  * Also carries the `x-routing-preference` header when `ctx.routingPreference`
  * is set, so `--routing-preference` keeps tuning FireRouter under the model path.
  *
- * When neither key is supplied, workspace BYOK (`enable-workspace-byok`) is
- * checked before prompting: if the workspace provisions the provider key
- * server-side, firerouter works with no user key, so we never prompt.
- *
  * @param {{
  *   plan: FirerouterPlan,
  *   ctx: { anthropicKey?: string, anthropicKeyFromFlag?: boolean, home?: string, routingPreference?: number|string|null },
  *   settingsEnv?: Record<string, string>,
- *   apiKey?: string,
- *   workspaceByokLookup?: import("../config/feature-flags.mjs").FeatureFlagLookupResult|null,
  *   preResolvedAnthropicKey?: string,
  * }} args
  * @returns {Promise<Record<string, string>>}
@@ -395,8 +180,6 @@ export async function resolveFirerouterByokHeaders({
   catalogFirerouter = false,
   ctx,
   settingsEnv = {},
-  apiKey = "",
-  workspaceByokLookup = null,
   preResolvedAnthropicKey,
 }) {
   if (!plan.isFirerouter && !catalogFirerouter) {
@@ -404,8 +187,10 @@ export async function resolveFirerouterByokHeaders({
   }
   /** @type {Record<string, string>} */
   const headers = {};
-  // Attach the Anthropic BYOK key only for Anthropic-requiring selections.
-  if (plan.requiresAnthropicKey || catalogFirerouter) {
+  // Anthropic BYOK is only needed when the selection routes to an Anthropic
+  // model. Pure-Fireworks firerouter paths (e.g. firerouter/kimi-k3 on VS Code,
+  // where catalogFirerouter is true) must not prompt for or attach a key.
+  if (plan.requiresAnthropicKey) {
     const anthropicKey = preResolvedAnthropicKey !== undefined
       ? preResolvedAnthropicKey
       : (await resolveFirerouterByokKeys({
@@ -413,11 +198,6 @@ export async function resolveFirerouterByokHeaders({
         settingsEnv,
         home: ctx.home,
         explicit: true,
-        resolveWorkspaceByok: () => (
-          workspaceByokLookup === null
-            ? resolveWorkspaceByokStatus(apiKey)
-            : Promise.resolve(workspaceByokLookup)
-        ),
       })).anthropicKey;
     Object.assign(headers, firerouterByokHeaders({ anthropicKey }));
   }
@@ -441,7 +221,9 @@ export function firerouterByokEnvRefHeaders(plan, { catalogFirerouter = false } 
   if (!plan.isFirerouter && !catalogFirerouter) {
     return {};
   }
-  if (!plan.requiresAnthropicKey && !catalogFirerouter) {
+  // Pure-Fireworks firerouter paths need no Anthropic key, even when the
+  // catalog entry is registered (catalogFirerouter).
+  if (!plan.requiresAnthropicKey) {
     return {};
   }
   return {

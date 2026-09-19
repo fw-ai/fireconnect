@@ -345,6 +345,22 @@ describe("checkForUpdates prompt path", () => {
   });
 });
 
+describe("checkForUpdates spawn suppression", () => {
+  it("never spawns the detached checker when FIRECONNECT_NO_UPDATE_CHECK=1", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-check-suppressed-"));
+    // No update-check.json → shouldSpawnChecker would be true and the spawn
+    // path would acquire the lock before detaching the worker. If the guard
+    // works, no lock file ever appears.
+    await checkForUpdates("help", home, {
+      environment: { HOME: home, FIRECONNECT_NO_UPDATE_CHECK: "1" },
+    });
+    await assert.rejects(
+      () => readFile(path.join(home, ".fireconnect/update-check.lock")),
+      (error) => error.code === "ENOENT",
+    );
+  });
+});
+
 describe("mergeUpdateCache", () => {
   it("preserves an active prompt snooze across checker refreshes", async () => {
     const { mergeUpdateCache } = await import("../../lib/system/update-cache.mjs");

@@ -7,7 +7,6 @@ import {
 import {
   fireworksModelSlug,
   fullFireworksResourceId,
-  isFireworksModelId,
   normalizeModelId,
   resolveDefaultMainModel,
   defaultMainModel,
@@ -21,6 +20,7 @@ import {
 } from "../../lib/harnesses/claude/code-context.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
 import {
+  buildServerlessCatalogSnapshot,
   fetchServerlessCatalog,
   filterCatalogForKeyType,
   FIREPASS_ROUTER_ID,
@@ -33,6 +33,59 @@ import {
   KIMI_FAST_LATEST,
   mockServerlessModel,
 } from "../helpers.mjs";
+
+// Alias routers (`glm-latest`, `kimi-fast-latest`, `deepseek-flash-latest`, …)
+// now exist only as the API's per-row `aliases` on flat serverless rows, so
+// these tests seed a catalog snapshot binding each alias to its concrete base.
+const ALIAS_BASE_ROWS = [
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p2",
+    context_length: 1_048_576,
+    aliases: [
+      "accounts/fireworks/routers/glm-latest",
+      "accounts/fireworks/routers/glm-fast-latest",
+    ],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/kimi-k3",
+    context_length: 1_040_000,
+    input_modalities: ["text", "image"],
+    usage_identifier: "accounts/fireworks/routers/kimi-k3-fast",
+    aliases: [
+      "accounts/fireworks/routers/kimi-latest",
+      "accounts/fireworks/routers/kimi-fast-latest",
+    ],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/deepseek-v4-flash",
+    context_length: 1_000_000,
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/deepseek-v4-flash-0731",
+    context_length: 1_000_000,
+    aliases: ["accounts/fireworks/routers/deepseek-flash-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/minimax-m2p7",
+    context_length: 1_000_000,
+    aliases: ["accounts/fireworks/routers/minimax-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/deepseek-v4-pro",
+    context_length: 1_000_000,
+    aliases: ["accounts/fireworks/routers/deepseek-pro-latest"],
+  }),
+];
+
+/** Run `fn` against a warmed catalog binding the alias routers above. */
+function withAliasCatalog(fn) {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(ALIAS_BASE_ROWS));
+  try {
+    return fn();
+  } finally {
+    setServerlessCatalogSnapshot(null);
+  }
+}
 
 describe("Fire Pass defaults", () => {
   test("FIREPASS_ROUTER_ID is kimi-fast-latest", () => {
@@ -56,7 +109,13 @@ describe("Fire Pass defaults", () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async () => ({
       ok: true,
-      json: async () => ({ models: [mockServerlessModel()] }),
+      json: async () => ({
+        object: "list",
+        data: [mockServerlessModel({
+          usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+          aliases: ["accounts/fireworks/routers/glm-latest"],
+        })],
+      }),
     });
 
     try {
@@ -67,12 +126,13 @@ describe("Fire Pass defaults", () => {
       assert.ok(ids.includes("accounts/fireworks/routers/glm-latest"));
     } finally {
       globalThis.fetch = previousFetch;
+      setServerlessCatalogSnapshot(null);
     }
   });
 
-  test("resolveDefaultMainModel always uses kimi-fast-latest", () => {
-    assert.equal(resolveDefaultMainModel(), KIMI_FAST_LATEST);
-    assert.equal(defaultMainModel(), KIMI_FAST_LATEST);
+  test("resolveDefaultMainModel always uses auto", () => {
+    assert.equal(resolveDefaultMainModel(), "auto");
+    assert.equal(defaultMainModel(), "auto");
   });
 
   test("latest router short IDs stay as gateway slugs", () => {
@@ -113,19 +173,6 @@ describe("Fire Pass defaults", () => {
     );
   });
 
-  test("ownership accepts canonical legacy refs and known stored short refs", () => {
-    assert.equal(isFireworksModelId("accounts/fireworks/models/deepseek-v4-flash"), true);
-    assert.equal(isFireworksModelId("glm-fast-latest[1m]"), true);
-    assert.equal(isFireworksModelId("deepseek-v4-flash"), true);
-    assert.equal(isFireworksModelId("minimax-latest"), true);
-    assert.equal(isFireworksModelId("auto"), true);
-    assert.equal(isFireworksModelId("auto[1m]"), true);
-    assert.equal(isFireworksModelId("auto-instant"), true);
-    assert.equal(isFireworksModelId("auto-smart"), false);
-    assert.equal(isFireworksModelId("claude-sonnet-5"), false);
-    assert.equal(isFireworksModelId("unknown-user-model"), false);
-  });
-
   test("Fire Pass catalog includes all supported routers", () => {
     const catalog = [
       { id: "accounts/fireworks/routers/glm-latest", shortId: GLM_LATEST },
@@ -154,7 +201,7 @@ describe("Fire Pass defaults", () => {
     assert.doesNotThrow(() => validateModelId("firerouter/x[1m]", "--opus"));
   });
 
-  test("GLM fast routers and GLM 5P2 use Claude Code 1m context", () => {
+  test("GLM fast routers and GLM 5P2 use Claude Code 1m context", () => withAliasCatalog(() => {
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/glm-latest"), "accounts/fireworks/routers/glm-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/glm-fast-latest"), "accounts/fireworks/routers/glm-fast-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/glm-5p2"), "accounts/fireworks/models/glm-5p2[1m]");
@@ -165,9 +212,9 @@ describe("Fire Pass defaults", () => {
       { main: "accounts/fireworks/routers/glm-fast-latest" },
     );
     assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
-  });
+  }));
 
-  test("Kimi K3 family uses Claude Code 1m context", () => {
+  test("Kimi K3 family uses Claude Code 1m context", () => withAliasCatalog(() => {
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/kimi-latest"), "accounts/fireworks/routers/kimi-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/kimi-fast-latest"), "accounts/fireworks/routers/kimi-fast-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/kimi-k3"), "accounts/fireworks/models/kimi-k3[1m]");
@@ -178,16 +225,16 @@ describe("Fire Pass defaults", () => {
       { main: "accounts/fireworks/routers/kimi-fast-latest" },
     );
     assert.equal(Object.hasOwn(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
-  });
+  }));
 
-  test("DeepSeek latest routers use Claude Code 1m context", () => {
+  test("DeepSeek latest routers use Claude Code 1m context", () => withAliasCatalog(() => {
     assert.equal(claudeCodeModelId("deepseek-flash-latest"), "deepseek-flash-latest[1m]");
     assert.equal(claudeCodeModelId("deepseek-pro-latest"), "deepseek-pro-latest[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-pro"), "accounts/fireworks/models/deepseek-v4-pro[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-flash"), "accounts/fireworks/models/deepseek-v4-flash[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-pro-0813"), "accounts/fireworks/models/deepseek-v4-pro-0813[1m]");
     assert.equal(claudeCodeModelId("accounts/fireworks/models/deepseek-v4-flash-0731"), "accounts/fireworks/models/deepseek-v4-flash-0731[1m]");
-  });
+  }));
 
   test("firerouter* model patterns use Claude Code 1m context", () => {
     assert.equal(claudeCodeModelId("firerouter"), "firerouter[1m]");
@@ -217,12 +264,25 @@ describe("Fire Pass defaults", () => {
     assert.equal(modelQualifiesForClaudeCode1mContext("claude-fable-5-1"), true);
   });
 
-  test("models below 1M context omit the Claude Code [1m] suffix", () => {
-    assert.equal(claudeCodeModelId("accounts/fireworks/models/gpt-oss-120b"), "accounts/fireworks/models/gpt-oss-120b");
+  test("models below 1M context omit the Claude Code [1m] suffix", () => {    assert.equal(claudeCodeModelId("accounts/fireworks/models/gpt-oss-120b"), "accounts/fireworks/models/gpt-oss-120b");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/minimax-latest"), "accounts/fireworks/routers/minimax-latest");
     assert.equal(claudeCodeModelId("accounts/fireworks/routers/qwen-plus-latest"), "accounts/fireworks/routers/qwen-plus-latest");
     assert.equal(claudeCodeModelId("kimi-k2p6-fast"), "kimi-k2p6-fast");
     assert.equal(modelQualifiesForClaudeCode1mContext("gpt-oss-120b"), false);
+  });
+
+  test("cold fallback aliases qualify via their base model window", () => {
+    // Fire Pass keys cannot warm the catalog; pinned aliases (kimi-fast-latest)
+    // must still get [1m] through the static fallback base mapping.
+    setServerlessCatalogSnapshot(null);
+    try {
+      assert.equal(modelQualifiesForClaudeCode1mContext("kimi-fast-latest"), true);
+      assert.equal(claudeCodeModelId("kimi-fast-latest"), "kimi-fast-latest[1m]");
+      assert.equal(modelQualifiesForClaudeCode1mContext("glm-fast-latest"), true);
+      assert.equal(modelQualifiesForClaudeCode1mContext("minimax-latest"), false);
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
   });
 
   test("deepseek-flash-latest qualifies via live router base context length", () => {

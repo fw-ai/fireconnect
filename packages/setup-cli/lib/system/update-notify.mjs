@@ -243,6 +243,10 @@ export async function checkForUpdates(command, homeOverride, options = {}) {
   // Never run under test: detached child races temp-dir cleanup and hits network.
   const environment = options.environment ?? process.env;
   if (environment.FIRECONNECT_TEST === "1" || environment.NODE_ENV === "test") return;
+  // Explicit opt-out for spawned CLI children that must strip FIRECONNECT_TEST
+  // (e.g. tests exercising the real file key backend) but still must not spawn
+  // the detached checker into a throwaway HOME.
+  if (environment.FIRECONNECT_NO_UPDATE_CHECK === "1") return;
   if (SKIP_UPDATE_CHECK_COMMANDS.has(command)) return;
 
   const home = homeOverride || environment.HOME || "";

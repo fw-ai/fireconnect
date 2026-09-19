@@ -1,11 +1,10 @@
+import { resolveManagedDisplayName } from "../../fireworks/model-display.mjs";
 import {
-  appendLatestRouterSuffix,
+  DEFAULT_FIREWORKS_MODEL_LIMITS,
   fireworksInputModalities,
   isRouterShortId,
   lookupFireworksModelCost,
   lookupFireworksModelLimits,
-  lookupModelSpec,
-  resolveFireworksModelLabel,
 } from "../../fireworks/model-specs.mjs";
 import {
   fireworksModelSlug,
@@ -13,9 +12,10 @@ import {
   isAutoModelId,
   isFirerouterModelPattern,
 } from "../../fireworks/model-id.mjs";
-import { autoDisplayName, firerouterDisplayName, prettyModelName, preferLatestAliases } from "../../fireworks/models.mjs";
+import { preferLatestAliases } from "../../fireworks/models.mjs";
 import { getServerlessCatalogSnapshot } from "../../fireworks/serverless-catalog-cache.mjs";
 import { mergeFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
+import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
 
 const PI_PROVIDER = "fireworks";
 
@@ -35,38 +35,18 @@ export function cachedFireworksModelIds() {
     .map((entry) => entry.id);
 }
 
-const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
-const PI_DEFAULT_MAX_TOKENS = 16_384;
 const PI_DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 function withPiModelDefaults(model) {
   return {
     reasoning: false,
     input: ["text"],
-    contextWindow: PI_DEFAULT_CONTEXT_WINDOW,
-    maxTokens: PI_DEFAULT_MAX_TOKENS,
+    contextWindow: DEFAULT_FIREWORKS_MODEL_LIMITS.contextWindow,
+    maxTokens: DEFAULT_FIREWORKS_MODEL_LIMITS.maxTokens,
     cost: PI_DEFAULT_COST,
     ...model,
     cost: model.cost ?? PI_DEFAULT_COST,
   };
-}
-
-function piFireworksDisplayName(modelId) {
-  if (isFirerouterModelPattern(modelId)) {
-    return firerouterDisplayName(modelId);
-  }
-  if (isAutoModelId(modelId)) {
-    return autoDisplayName(modelId);
-  }
-  const liveLabel = resolveFireworksModelLabel(modelId);
-  if (liveLabel) {
-    return liveLabel;
-  }
-  const spec = lookupModelSpec(modelId);
-  if (spec?.label) {
-    return appendLatestRouterSuffix(modelId, spec.label);
-  }
-  return prettyModelName(modelId);
 }
 
 /**
@@ -107,6 +87,8 @@ export function buildPiCustomFireworksModelEntry(modelId, name, reasoning = true
  */
 export const PI_FIREWORKS_ROUTER_SCOPE = "fireworks/accounts/fireworks/routers/*";
 export const PI_ENABLED_MODELS = [PI_FIREWORKS_ROUTER_SCOPE];
+/** Picker scope entry for the `auto` mix (`provider/modelId` glob form). */
+export const PI_AUTO_ENABLED_MODEL = "fireworks/auto";
 
 const PI_ROUTER_ID_PREFIX = "accounts/fireworks/routers/";
 
@@ -134,41 +116,98 @@ function isRouterCatalogId(id) {
   if (isFirerouterModelPattern(id)) {
     return true;
   }
+  if (id.startsWith("accounts/fireworks/routers/")) {
+    return true;
+  }
   // Router aliases / suffixed router slugs, by the same heuristic
   // fullFireworksResourceId uses to pick routers/ vs models/.
   return isRouterShortId(fireworksModelSlug(id));
 }
 
+function piCatalogEntry(id) {
+  return { id, name: resolveManagedDisplayName(id), reasoning: true };
+}
+
 function piModelsToRegister(resolvedModel, catalogModelIds = []) {
-  // Always register FireConnect's router catalog (-latest/-fast/-turbo aliases +
-  // firerouter*) — not concrete models like gpt-oss-120b — so every router is
-  // pickable in Pi's UI regardless of which one is active (firerouter included).
-  // The picker is scoped to routers via `enabledModels` (see
-  // PI_FIREWORKS_ROUTER_SCOPE), so Pi's built-in concrete models don't surface.
-  // Offline, fall back to the cached serverless catalog, filtered the same way.
-  const catalog = catalogModelIds.filter((id) => typeof id === "string" && id.startsWith("accounts/"));
+  // The registerable set carries bare `auto` (see catalogWithAutomaticAuto);
+  // keep it alongside the accounts/ rows so the picker can offer it.
+  const catalog = catalogModelIds.filter(
+    (id) => typeof id === "string" && (id.startsWith("accounts/") || isAutoModelId(id)),
+  );
   const routerCatalog = (catalog.length ? catalog : cachedFireworksModelIds())
-    .filter(isRouterCatalogId);
-  const entries = routerCatalog.map((id) => ({ id, name: piFireworksDisplayName(id), reasoning: true }));
-  // Always include the active model so a `--model <id>` that isn't in the router
-  // catalog (e.g. `auto`, a concrete direct model, or a custom deployment) is
-  // still registered — it becomes defaultModel, and piEnabledModels adds it to
-  // the scope so Pi actually uses it.
+    .filter((id) => isRouterCatalogId(id) || isAutoModelId(id));
+  const entries = routerCatalog.map(piCatalogEntry);
   const resolvedCanonical = fullFireworksResourceId(resolvedModel);
   if (resolvedCanonical
     && !entries.some((entry) => fullFireworksResourceId(entry.id) === resolvedCanonical)) {
-    entries.push({
-      id: resolvedModel,
-      name: piFireworksDisplayName(resolvedModel),
-      reasoning: true,
-    });
+    entries.push(piCatalogEntry(resolvedModel));
   }
   return entries;
 }
 
-export function managedPiFireworksModelIds(resolvedModel, catalogModelIds = []) {
-  return piModelsToRegister(resolvedModel, catalogModelIds)
-    .map((entry) => fullFireworksResourceId(entry.id));
+export function planPiCatalogUpdate(
+  resolvedModel,
+  catalogModelIds,
+  previousManagedIds,
+  {
+    modelRequested = false,
+    catalogAvailable = false,
+    existingModelIds = [],
+    initialized = false,
+  } = {},
+) {
+  const previous = previousManagedIds.map(fullFireworksResourceId);
+  if (modelRequested) {
+    const selected = fullFireworksResourceId(resolvedModel);
+    const existing = new Set(existingModelIds.map(fullFireworksResourceId));
+    const managed = previous.includes(selected) || !existing.has(selected)
+      ? [...new Set([...previous, selected])]
+      : previous;
+    return {
+      add: [piCatalogEntry(resolvedModel)],
+      refresh: [],
+      remove: [],
+      managed,
+    };
+  }
+  if (!initialized) {
+    const add = piModelsToRegister(resolvedModel, catalogModelIds);
+    return {
+      add,
+      refresh: [],
+      remove: [],
+      managed: add.map((entry) => fullFireworksResourceId(entry.id)),
+    };
+  }
+  if (!catalogAvailable) {
+    return { add: [], refresh: [], remove: [], managed: previous };
+  }
+  // Shared catalog-refresh policy: prune delisted managed ids, add newly
+  // served ones, and refresh metadata (name/limits/cost) of kept managed rows.
+  const plan = planCatalogRefresh({
+    currentIds: previous,
+    freshIds: catalogModelIds.map(fullFireworksResourceId),
+    keepUnserved: (id) => isAutoModelId(id) || isFirerouterModelPattern(id),
+  });
+  const existing = new Set(existingModelIds.map(fullFireworksResourceId));
+  // Additions only with ownership evidence: a lost managedModelIds record
+  // (empty `previous` on an initialized install) means the config may be the
+  // user's own, so reseeding it would be a hijack. Never claim a row the
+  // config already carries under that id either.
+  const add = previous.length === 0
+    ? []
+    : plan.added
+      .filter((id) => !existing.has(id))
+      .map((id) => piCatalogEntry(id));
+  const refresh = plan.kept
+    .filter((id) => existing.has(id))
+    .map((id) => piCatalogEntry(id));
+  return {
+    add,
+    refresh,
+    remove: plan.pruned,
+    managed: [...plan.kept, ...add.map((entry) => fullFireworksResourceId(entry.id))],
+  };
 }
 
 function applyPiModelOverride(base, override) {
@@ -202,7 +241,7 @@ export function resolvePiEffectiveFireworksModel(fireworksProvider, modelId) {
   const cost = lookupFireworksModelCost(modelId);
   return withPiModelDefaults({
     id: canonicalId,
-    name: piFireworksDisplayName(canonicalId),
+    name: resolveManagedDisplayName(canonicalId),
     reasoning: true,
     input: fireworksInputModalities(limits),
     contextWindow: limits.contextWindow,
@@ -211,35 +250,44 @@ export function resolvePiEffectiveFireworksModel(fireworksProvider, modelId) {
   });
 }
 
-export function mergePiFireworksRouterModels(config, resolvedModel, managedHeaders = {}, catalogModelIds = [], previousManagedIds = [], { firepass = false } = {}) {
+export function mergePiFireworksRouterModels(config, resolvedModel, managedHeaders = {}, catalogModelIds = [], previousManagedIds = [], { firepass = false, modelRequested = false, catalogAvailable = false, catalogPlan = null } = {}) {
   const next = config && typeof config === "object"
     ? structuredClone(config)
     : { providers: {} };
   next.providers ??= {};
+  const initialized = Boolean(next.providers[PI_PROVIDER]);
   const fireworks = { ...(next.providers[PI_PROVIDER] ?? {}) };
   let models = [...(fireworks.models ?? [])];
   const modelOverrides = { ...(fireworks.modelOverrides ?? {}) };
 
-  // When rebuilding from a fresh catalog (or switching to firerouter), drop the
-  // ids FireConnect registered last time so the live config matches the current
-  // catalog exactly — no accumulation. User-added entries are left untouched.
-  // Offline (empty catalog, direct mode) we skip this and merge, so a transient
-  // catalog fetch failure doesn't wipe the picker.
-  const rebuilding = isFirerouterModelPattern(resolvedModel)
-    || catalogModelIds.some((id) => typeof id === "string" && id.startsWith("accounts/"));
-  if (rebuilding && previousManagedIds.length) {
-    const prior = new Set(previousManagedIds.map(fullFireworksResourceId));
+  const plan = catalogPlan ?? planPiCatalogUpdate(
+    resolvedModel,
+    catalogModelIds,
+    previousManagedIds,
+    {
+      modelRequested,
+      catalogAvailable,
+      existingModelIds: models.map((model) => model.id),
+      initialized,
+    },
+  );
+  if (plan.remove.length) {
+    const removed = new Set(plan.remove);
     models = models.filter(
-      (model) => !prior.has(fullFireworksResourceId(model.id)),
+      (model) => !removed.has(fullFireworksResourceId(model.id)),
     );
     for (const id of Object.keys(modelOverrides)) {
-      if (prior.has(fullFireworksResourceId(id))) {
+      if (removed.has(fullFireworksResourceId(id))) {
         delete modelOverrides[id];
       }
     }
   }
 
-  for (const entry of piModelsToRegister(resolvedModel, catalogModelIds)) {
+  // plan.refresh: managed rows re-rendered from the current spec/catalog
+  // (name, context limits, cost drift over time); plan.add keeps the existing
+  // row when one exists so an explicit --model never claims a user's own row.
+  const refreshIds = new Set((plan.refresh ?? []).map((entry) => fullFireworksResourceId(entry.id)));
+  for (const entry of [...plan.add, ...(plan.refresh ?? [])]) {
     const canonicalId = fullFireworksResourceId(entry.id);
     const customEntry = buildPiCustomFireworksModelEntry(
       entry.id,
@@ -253,7 +301,7 @@ export function mergePiFireworksRouterModels(config, resolvedModel, managedHeade
     models = models.filter(
       (model) => fullFireworksResourceId(model.id) !== canonicalId,
     );
-    const merged = { ...(existing ?? {}), ...customEntry };
+    const merged = refreshIds.has(canonicalId) ? customEntry : (existing ?? customEntry);
     if (firepass) {
       // Subscription: never inherit a metered cost from a previous row.
       delete merged.cost;

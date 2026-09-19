@@ -35,19 +35,14 @@ describe("harness option validation", () => {
 
   it("requires explicit FireRouter before accepting routing-only options", async () => {
     await withTempHome("option-firerouter-", async (home) => {
-      // A bare `claude on` with an fw_ key now lands FireRouter on the Opus slot
-      // by default, so it satisfies this requirement on its own. Pin Opus to a
-      // concrete model to take FireRouter out of the mapping — that is the state
-      // the guard exists for.
       await rejects(
         home,
         [
           "claude", "on",
           "--api-key", "fw_test_key_12345",
-          "--opus", "deepseek-pro-latest",
           "--routing-preference", "balanced",
         ],
-        /--routing-preference requires a Claude slot set to firerouter/,
+        /--routing-preference requires `--model firerouter`/,
       );
       await rejects(
         home,
@@ -114,14 +109,14 @@ describe("harness option validation", () => {
     });
   });
 
-  it("allows independent Claude primary and alias models", async () => {
-    await withTempHome("option-firerouter-slots-", async (home) => {
+  it("accepts Claude FireRouter with routing preference and no Anthropic BYOK", async () => {
+    await withTempHome("option-claude-firerouter-", async (home) => {
       const result = await runCli(
         [
-          "claude", "on", "--api-key", "fw_test_key_12345",
-          "--model", "firerouter", "--opus", "glm-fast-latest",
-          "--sonnet", "glm-latest",
-          "--anthropic-api-key", "sk-ant-test",
+          "claude", "on",
+          "--api-key", "fw_test_key_12345",
+          "--model", "firerouter",
+          "--routing-preference", "balanced",
         ],
         { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" } },
       );
@@ -134,8 +129,8 @@ describe("harness option validation", () => {
       await rejects(home, ["pi", "on", "--force"], /--force is only supported/);
       await rejects(home, ["cursor", "on", "--mode", "composer"], /Unknown argument: --mode/);
       await rejects(home, ["cursor", "on", "--slot", "main"], /Unknown argument: --slot/);
-      await rejects(home, ["pi", "on", "--opus", "glm-latest"], /apply only to .*claude on/);
-      await rejects(home, ["cursor", "on", "--subagent", "glm-latest"], /apply only to .*claude on/);
+      await rejects(home, ["pi", "on", "--opus", "glm-latest"], /--opus.*not supported/);
+      await rejects(home, ["cursor", "on", "--subagent", "glm-latest"], /--subagent.*not supported/);
       await rejects(home, ["opencode", "on", "--non-interactive"], /applies only to .*claude on/);
       await rejects(home, ["opencode", "on", "--interactive"], /applies only to .*claude on/);
       await rejects(
@@ -146,12 +141,12 @@ describe("harness option validation", () => {
       await rejects(
         home,
         ["claude", "on", "--interactive", "--opus", "glm-latest"],
-        /cannot be combined with model flags/,
+        /--interactive is not supported/,
       );
       await rejects(
         home,
         ["claude", "on", "--interactive"],
-        /requires a terminal/,
+        /--interactive is not supported/,
       );
     });
   });

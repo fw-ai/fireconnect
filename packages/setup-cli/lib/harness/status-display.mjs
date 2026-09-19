@@ -8,6 +8,8 @@ const HARNESS_LABELS = {
   pi: "Pi",
   cursor: "Cursor",
   vscode: "VS Code",
+  "copilot-app": "Copilot app",
+  "copilot-cli": "Copilot CLI",
   deepseek: "DeepSeek Harness",
 };
 
@@ -90,6 +92,7 @@ export function harnessConnectionFromProvider(provider) {
  *   mappingRows?: Array<{ slot: string, value?: string, detail?: string, dim?: boolean }>,
  *   registeredModels?: string[],
  *   keySource?: string,
+ *   routing?: string|null,
  * }} [options]
  */
 export function printStructuredHarnessStatus(harnessId, {
@@ -103,6 +106,7 @@ export function printStructuredHarnessStatus(harnessId, {
   mappingRows = [],
   registeredModels = [],
   keySource = "",
+  routing = null,
 } = {}) {
   /** @type {StatusField[]} */
   const fields = [];
@@ -111,18 +115,23 @@ export function printStructuredHarnessStatus(harnessId, {
     value: formatOnOff(connected ?? harnessConnectionFromProvider(provider)),
   });
   fields.push({ label: "Provider", value: formatProvider(provider) });
-  fields.push({
-    label: "Auth",
-    value: formatAuthStatusValue(authMode, keyConfigured),
-  });
+  if (routing) {
+    fields.push({ label: "Routing", value: routing });
+  }
+  // One auth line: when routed with a key in place, the specific key-source
+  // text subsumes the generic auth-mode label ("stored in config" adds nothing
+  // next to "experimental_bearer_token in config.toml"). A missing credential
+  // must still surface as such — keySource is a static location label and
+  // doesn't know whether a key is actually present.
+  const authValue = keySource && keyConfigured
+    ? keySource
+    : formatAuthStatusValue(authMode, keyConfigured);
+  fields.push({ label: "Auth", value: authValue });
   if (endpoint) {
     fields.push({ label: "Endpoint", value: endpoint });
   }
   if (model !== undefined && mappingRows.length === 0) {
     fields.push({ label: modelLabel, value: shortModelId(model) });
-  }
-  if (keySource) {
-    fields.push({ label: "Key source", value: keySource });
   }
 
   /** @type {StatusSection[]} */

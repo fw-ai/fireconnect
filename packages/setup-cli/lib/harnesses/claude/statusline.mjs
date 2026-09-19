@@ -1,5 +1,6 @@
 /**
- * Claude Code status line: the Fireworks model actually being routed, plus a
+ * Claude Code status line: the Fireworks model actually being routed (plus the
+ * applied FireRouter routing level when a firerouter slot is active), plus a
  * cost computed from Fireworks rates.
  *
  * Claude Code's own `cost.total_cost_usd` prices every call against Anthropic's
@@ -16,6 +17,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { shellQuote } from "../../cli/path.mjs";
+import { routingPreferenceFromCustomHeaders, routingPreferenceLevelLabel } from "../../firerouter/core.mjs";
+import { readJsonIfExists } from "../../io/json.mjs";
 import {
   appendLatestRouterSuffix,
   lookupModelSpec,
@@ -24,9 +27,9 @@ import {
   specShortIdFromModelRef,
 } from "../../fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
-import { providerListPricing } from "../../demo/list-pricing.mjs";
-import { isAnthropicModelId, isAutoModelId, isClaudeNativeModel } from "../../fireworks/model-id.mjs";
-import { autoDisplayName, prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
+import { isOpenAiPricedModelId, providerListPricing } from "../../demo/list-pricing.mjs";
+import { isAnthropicModelId, isAutoModelId, isClaudeNativeModel, isFirerouterModel, isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
+import { autoDisplayName, firerouterDisplayName, prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
 import { UNPRICED_TEXT, addUsage } from "./usage/cost.mjs";
 import {
   formatUsageCost,
@@ -79,14 +82,24 @@ export function isFireconnectStatusLine(statusLine) {
 
 /**
  * Add the managed status line, preserving a user's own.
+ *
+ * A stale FireConnect command (absolute helper path from a previous install
+ * location) is refreshed: after an upgrade/reinstall the old path no longer
+ * exists, so keeping it would silently break the line.
  * @param {Record<string, unknown>} settings
  * @returns {Record<string, unknown>}
  */
 export function withClaudeStatusLine(settings) {
-  if (Object.hasOwn(settings, "statusLine") && !isFireconnectStatusLine(settings.statusLine)) {
-    return settings;
+  const current = claudeStatusLineSettings();
+  if (Object.hasOwn(settings, "statusLine")) {
+    if (!isFireconnectStatusLine(settings.statusLine)) {
+      return settings;
+    }
+    if (settings.statusLine.command === current.command) {
+      return settings;
+    }
   }
-  return { ...settings, statusLine: claudeStatusLineSettings() };
+  return { ...settings, statusLine: current };
 }
 
 /**
@@ -194,6 +207,13 @@ export function claudeStatusLineModelLabel(modelId) {
   if (isAutoModelId(id)) {
     return autoDisplayName(id);
   }
+  // FireRouter compounds pin their own targets ("firerouter/astra" is the
+  // Astra leg, not the bare router), so they read as the compound the
+  // canonical display helper already builds. Bare `firerouter` renders as
+  // "FireRouter" through that same helper, unchanged.
+  if (isFirerouterModelPattern(id)) {
+    return firerouterDisplayName(id);
+  }
   const live = resolveFireworksModelLabel(id);
   if (live) {
     return stripViaFireworksSuffix(live);
@@ -210,6 +230,12 @@ export function claudeStatusLineModelLabel(modelId) {
     const anthropic = providerListPricing({ provider: "anthropic", modelId: id });
     if (anthropic?.label && !anthropic.estimated) {
       return anthropic.label;
+    }
+  }
+  if (isOpenAiPricedModelId(id)) {
+    const openai = providerListPricing({ provider: "openai", modelId: id });
+    if (openai?.label && !openai.estimated) {
+      return openai.label;
     }
   }
   const shortId = specShortIdFromModelRef(id) || id;
@@ -303,6 +329,37 @@ export async function claudeStatusLineUsage(transcriptPath, { home = process.env
 const MODEL_BAR_WIDTH = 16;
 
 /**
+ * Applied FireRouter routing level for the session, e.g. `max-intelligence (1)`,
+ * read back from the `x-routing-preference` header line `on` writes into
+ * `~/.claude/settings.json`. Only the bare `firerouter` slot reports one —
+ * `auto` and `firerouter/*` compounds pin their own targets, so the preference
+ * doesn't apply there. Returns null otherwise, and the status line then reads
+ * exactly as before. Best-effort: any unreadable/malformed settings file
+ * simply yields null.
+ * @param {string} slotModelId
+ * @param {string} home
+ * @returns {Promise<string|null>}
+ */
+export async function claudeRoutingPreferenceLabel(slotModelId, home = "") {
+  if (!isFirerouterModel(slotModelId)) {
+    return null;
+  }
+  const dir = String(home ?? "").trim();
+  if (!dir) {
+    return null;
+  }
+  try {
+    const settings = await readJsonIfExists(path.join(dir, ".claude", "settings.json"));
+    return routingPreferenceLevelLabel(
+      routingPreferenceFromCustomHeaders(settings.env?.ANTHROPIC_CUSTOM_HEADERS),
+      { defaultLevel: null },
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the two-line status line from Claude Code's stdin payload.
  * @param {{
  *   model?: { id?: string, display_name?: string },
@@ -313,9 +370,14 @@ const MODEL_BAR_WIDTH = 16;
  */
 export async function renderClaudeStatusLine(input = {}, { home = process.env.HOME ?? "" } = {}) {
   const slotModelId = input.model?.id ?? "";
-  const slotLabel = isClaudeNativeModel(slotModelId)
+  const baseLabel = isClaudeNativeModel(slotModelId)
     ? (input.model?.display_name || "Claude default")
     : claudeStatusLineModelLabel(slotModelId);
+  // Surface the applied routing level inside Claude Code itself: the /model
+  // picker only shows the firerouter model id, so without this the preference
+  // set via --routing-preference is invisible in-session.
+  const routingLabel = await claudeRoutingPreferenceLabel(slotModelId, home);
+  const slotLabel = routingLabel ? `${baseLabel} · ${routingLabel}` : baseLabel;
 
   let usage = null;
   try {
@@ -331,6 +393,9 @@ export async function renderClaudeStatusLine(input = {}, { home = process.env.HO
     : "";
   const line1 = joinParts([
     bar || paint("secondary", slotLabel),
+    // The spend bar displaces the slot label after the first billed call, so
+    // re-attach the routing level as its own segment to keep it visible.
+    bar ? routingLabel : null,
     usage && (usage.cost == null
       ? paint("secondary", `cost ${UNPRICED_TEXT}`)
       : `${usage.estimated ? "~" : ""}${COLOR ? COLOR.bold : ""}${paint("primary", formatUsageCost(usage.cost))}`),

@@ -48,9 +48,29 @@ describe("structured harness status output", () => {
     assert.match(lines.join("\n"), /Pi/);
     assert.match(lines.join("\n"), /Connection: .*on/);
     assert.match(lines.join("\n"), /Provider: .*Fireworks/);
-    assert.match(lines.join("\n"), /Auth: stored in config/);
     assert.match(lines.join("\n"), /Model: firerouter/);
-    assert.match(lines.join("\n"), /Key source: literal key in auth\.json/);
+    assert.match(lines.join("\n"), /Auth: literal key in auth\.json/);
+    assert.doesNotMatch(lines.join("\n"), /Key source/);
+  });
+
+  it("shows missing even when a key source is known but the credential is gone", () => {
+    // Regression: keySource is a static location label — a routed install whose
+    // key was cleared must not present it as authenticated.
+    const lines = [];
+    const original = console.log;
+    console.log = (line = "") => lines.push(String(line));
+    try {
+      printStructuredHarnessStatus("claude", {
+        provider: "fireworks",
+        keyConfigured: false,
+        authMode: "customHeader",
+        keySource: "X-Fireworks-Api-Key header in settings.json",
+      });
+    } finally {
+      console.log = original;
+    }
+    assert.match(lines.join("\n"), /Auth: missing/);
+    assert.doesNotMatch(lines.join("\n"), /X-Fireworks-Api-Key/);
   });
 
   it("shows missing for literal auth when no key is present", () => {
@@ -122,5 +142,46 @@ describe("structured harness status output", () => {
     assert.match(lines.join("\n"), /Model mapping:/);
     assert.match(lines.join("\n"), /main\s+-> glm-5p2-fast/);
     assert.match(lines.join("\n"), /\$1\.4 \/ \$4\.4/);
+  });
+
+  it("prints the routing level between provider and auth when set", () => {
+    const lines = [];
+    const original = console.log;
+    console.log = (line = "") => lines.push(String(line));
+    try {
+      printStructuredHarnessStatus("claude", {
+        connected: true,
+        provider: "fireworks",
+        routing: "max-intelligence (1)",
+        keyConfigured: true,
+        authMode: "customHeader",
+      });
+    } finally {
+      console.log = original;
+    }
+    const output = lines.join("\n");
+    assert.match(output, /Provider: .*Fireworks/);
+    assert.match(output, /Routing: max-intelligence \(1\)/);
+    assert.ok(
+      output.indexOf("Provider:") < output.indexOf("Routing:")
+        && output.indexOf("Routing:") < output.indexOf("Auth:"),
+    );
+  });
+
+  it("omits the routing line when unset", () => {
+    const lines = [];
+    const original = console.log;
+    console.log = (line = "") => lines.push(String(line));
+    try {
+      printStructuredHarnessStatus("claude", {
+        connected: true,
+        provider: "fireworks",
+        keyConfigured: true,
+        authMode: "customHeader",
+      });
+    } finally {
+      console.log = original;
+    }
+    assert.doesNotMatch(lines.join("\n"), /Routing:/);
   });
 });

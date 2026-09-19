@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
 import { describe, it } from "node:test";
 
-import { finalizeInstallOrUpgrade } from "../../lib/system/finalize-install.mjs";
-import { withTempHome } from "../helpers.mjs";
+import { finalizeInstallOrUpgrade, refreshServerlessCatalog } from "../../lib/system/finalize-install.mjs";
+import {
+  readCatalogCache,
+  setServerlessCatalogSnapshot,
+} from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import { mockServerlessModel, withTempHome } from "../helpers.mjs";
 
 describe("finalizeInstallOrUpgrade", () => {
   it("ensures deps, reprobes storage, and reconciles (injectable)", async () => {
@@ -27,14 +35,14 @@ describe("finalizeInstallOrUpgrade", () => {
         },
         reconcile: async (h) => {
           calls.push(["reconcile", h]);
-          return ["Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up."];
+          return ["Rebaked Claude Code API key — restart Claude Code to pick it up."];
         },
       });
 
       assert.equal(result.migrated, true);
       assert.deepEqual(result.notes, [
         "Enabled MCP tool search for Claude Code (ENABLE_TOOL_SEARCH) — restart Claude Code to pick it up.",
-        "Updated Claude websearch MCP auth (baked Bearer token) — restart Claude Code to pick it up.",
+        "Rebaked Claude Code API key — restart Claude Code to pick it up.",
       ]);
       assert.deepEqual(
         calls.filter(([name]) => name !== "log").map(([name]) => name),
@@ -42,7 +50,7 @@ describe("finalizeInstallOrUpgrade", () => {
       );
       assert.ok(calls.some(([name, msg]) => name === "log" && /Moved Fireworks API key/.test(String(msg))));
       assert.ok(calls.some(([name, msg]) => name === "log" && /ENABLE_TOOL_SEARCH/.test(String(msg))));
-      assert.ok(calls.some(([name, msg]) => name === "log" && /websearch MCP/.test(String(msg))));
+      assert.ok(calls.some(([name, msg]) => name === "log" && /Rebaked Claude Code/.test(String(msg))));
     });
   });
 
@@ -95,5 +103,74 @@ describe("finalizeInstallOrUpgrade", () => {
     assert.deepEqual(calls, []);
     assert.equal(result.migrated, false);
     assert.deepEqual(result.notes, []);
+  });
+});
+
+describe("refreshServerlessCatalog", () => {
+  it("refreshes the cache when a key resolves and the fetch succeeds", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "fc-refresh-"));
+    const prevHome = process.env.HOME;
+    const prevKey = process.env.FIREWORKS_API_KEY;
+    const previousFetch = globalThis.fetch;
+    process.env.HOME = home;
+    process.env.FIREWORKS_API_KEY = "fw_test_refresh_key";
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ object: "list", data: [mockServerlessModel()] }),
+    });
+    try {
+      assert.equal(await refreshServerlessCatalog(home), true);
+      assert.ok(
+        readCatalogCache()?.snapshot.entries.some((entry) => entry.shortId === "glm-5p2"),
+        "fetched rows are persisted",
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (prevKey === undefined) delete process.env.FIREWORKS_API_KEY;
+      else process.env.FIREWORKS_API_KEY = prevKey;
+      process.env.HOME = prevHome;
+      setServerlessCatalogSnapshot(null);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("skips silently with no resolvable key", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "fc-refresh-nokey-"));
+    const prevHome = process.env.HOME;
+    const prevKey = process.env.FIREWORKS_API_KEY;
+    process.env.HOME = home;
+    delete process.env.FIREWORKS_API_KEY;
+    try {
+      assert.equal(await refreshServerlessCatalog(home), false);
+      assert.equal(readCatalogCache(), null);
+    } finally {
+      if (prevKey === undefined) delete process.env.FIREWORKS_API_KEY;
+      else process.env.FIREWORKS_API_KEY = prevKey;
+      process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the old cache when the fetch fails", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), "fc-refresh-offline-"));
+    const prevHome = process.env.HOME;
+    const prevKey = process.env.FIREWORKS_API_KEY;
+    const previousFetch = globalThis.fetch;
+    process.env.HOME = home;
+    process.env.FIREWORKS_API_KEY = "fw_test_refresh_key";
+    globalThis.fetch = async () => {
+      throw new Error("network unreachable");
+    };
+    try {
+      assert.equal(await refreshServerlessCatalog(home), false);
+      assert.equal(readCatalogCache(), null);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (prevKey === undefined) delete process.env.FIREWORKS_API_KEY;
+      else process.env.FIREWORKS_API_KEY = prevKey;
+      process.env.HOME = prevHome;
+      setServerlessCatalogSnapshot(null);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

@@ -46,8 +46,8 @@ describe("opencode firerouter status", () => {
       assert.match(human.stdout, /Connection: .*on/);
       assert.match(human.stdout, /Provider: .*Fireworks/);
       assert.match(human.stdout, /Model: firerouter/);
-      assert.match(human.stdout, /Auth: stored in config/);
-      assert.match(human.stdout, /Key source: literal apiKey in opencode\.json/);
+      assert.match(human.stdout, /Auth: literal apiKey in opencode\.json/);
+      assert.doesNotMatch(human.stdout, /Key source/);
     });
   });
 

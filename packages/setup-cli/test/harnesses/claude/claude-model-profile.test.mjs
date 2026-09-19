@@ -2,20 +2,21 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  canOnboardingSelectFirerouter,
   resolveClaudeActivationPlan,
 } from "../../../lib/harnesses/claude/activation.mjs";
 import {
-  CLAUDE_FIREWORKS_PINNED_DEFAULTS,
   CLAUDE_MODEL_SLOTS,
   defaultClaudeModelMapping,
-  FIRST_CONNECT_AUTOMATIC_SONNET_MODEL,
   inferClaudeActiveKeyType,
+  mappingUsesBareFirerouter,
   migrateLegacyClaudeModelMapping,
   normalizeClaudeProfiles,
   savedClaudeModelMapping,
   withSavedClaudeModelMapping,
 } from "../../../lib/harnesses/claude/model-profile.mjs";
+import {
+  claudeExtraPickerModelFromCtx,
+} from "../../../lib/harnesses/claude/connect.mjs";
 import { CLAUDE_NATIVE_MODEL_ID } from "../../../lib/fireworks/model-id.mjs";
 
 const EMPTY_OVERRIDES = {
@@ -136,7 +137,7 @@ describe("Claude model profiles", () => {
     assert.deepEqual(plan.mapping, firepass);
   });
 
-  it("keeps a live Sonnet pin when Opus is already FireRouter", () => {
+  it("leaves fireworks tier slots native regardless of saved live mapping", () => {
     const persisted = {
       ...defaultClaudeModelMapping("fireworks"),
       opus: "firerouter",
@@ -149,96 +150,30 @@ describe("Claude model profiles", () => {
       activeKeyType: "fireworks",
       snapshot: { profiles, intent: { mapping: persisted } },
     });
-    assert.equal(plan.mapping.sonnet, "deepseek-pro-latest");
+    assert.deepEqual(plan.mapping, defaultClaudeModelMapping("fireworks"));
   });
 
-  it("honors explicit --sonnet overrides and live custom Sonnet pins", () => {
-    const live = {
-      ...defaultClaudeModelMapping("fireworks"),
-      opus: "firerouter",
-      sonnet: "kimi-latest",
-    };
+  it("tracks --model as a picker addition without pinning tier slots", () => {
+    const ctx = { ...EMPTY_OVERRIDES, main: "glm-latest" };
+    assert.equal(claudeExtraPickerModelFromCtx(ctx), "glm-latest");
     const plan = resolveClaudeActivationPlan({
-      ctx: EMPTY_OVERRIDES,
+      ctx,
       keyType: "fireworks",
-      activeKeyType: "fireworks",
-      snapshot: { profiles: {}, intent: { mapping: live } },
+      activeKeyType: "",
+      snapshot: { profiles: {}, intent: null },
     });
-    assert.equal(plan.mapping.sonnet, "kimi-latest");
-
-    const explicit = resolveClaudeActivationPlan({
-      ctx: { ...EMPTY_OVERRIDES, sonnet: "deepseek-pro-latest" },
-      keyType: "fireworks",
-      activeKeyType: "fireworks",
-      snapshot: {
-        profiles: {},
-        intent: {
-          mapping: {
-            ...defaultClaudeModelMapping("fireworks"),
-            opus: "firerouter",
-          },
-        },
-      },
-    });
-    assert.equal(explicit.mapping.sonnet, "deepseek-pro-latest");
+    assert.deepEqual(plan.mapping, defaultClaudeModelMapping("fireworks"));
   });
 
-  it("does not rewrite an unpinned native Sonnet slot under FireRouter Opus", () => {
-    const live = {
-      ...defaultClaudeModelMapping("fireworks"),
-      opus: "firerouter",
-      sonnet: CLAUDE_NATIVE_MODEL_ID,
-    };
-    const plan = resolveClaudeActivationPlan({
-      ctx: EMPTY_OVERRIDES,
-      keyType: "fireworks",
-      activeKeyType: "fireworks",
-      snapshot: { profiles: {}, intent: { mapping: live } },
-    });
-    assert.equal(plan.mapping.sonnet, CLAUDE_NATIVE_MODEL_ID);
-  });
-
-  it("moves Sonnet to GLM when Opus switches to FireRouter without a Sonnet override", () => {
-    const live = {
-      ...defaultClaudeModelMapping("fireworks"),
-      opus: "glm-latest",
-      sonnet: "deepseek-pro-latest",
-    };
-    const plan = resolveClaudeActivationPlan({
-      ctx: { ...EMPTY_OVERRIDES, opus: "firerouter" },
-      keyType: "fireworks",
-      activeKeyType: "fireworks",
-      snapshot: { profiles: {}, intent: { mapping: live } },
-    });
-    assert.equal(plan.mapping.opus, "firerouter");
-    assert.equal(plan.mapping.sonnet, FIRST_CONNECT_AUTOMATIC_SONNET_MODEL);
-  });
-
-  it("auto-pins Opus to firerouter on first connect when FireRouter auth is available", () => {
+  it("leaves tier slots native on first connect", () => {
     const plan = resolveClaudeActivationPlan({
       ctx: EMPTY_OVERRIDES,
       keyType: "fireworks",
       activeKeyType: "",
-      automaticFirerouter: true,
       snapshot: { profiles: {}, intent: null },
     });
-    assert.equal(plan.mapping.opus, "firerouter");
-    assert.equal(plan.mapping.sonnet, FIRST_CONNECT_AUTOMATIC_SONNET_MODEL);
-  });
-
-  it("defers routing validation only when the wizard can add FireRouter", () => {
-    assert.equal(canOnboardingSelectFirerouter({
-      shouldRunOnboarding: true,
-      keyType: "fireworks",
-      hasFirerouterAuth: true,
-    }), true);
-    for (const options of [
-      { shouldRunOnboarding: false, keyType: "fireworks", hasFirerouterAuth: true },
-      { shouldRunOnboarding: true, keyType: "fireworks", hasFirerouterAuth: false },
-      { shouldRunOnboarding: true, keyType: "firepass", hasFirerouterAuth: true },
-    ]) {
-      assert.equal(canOnboardingSelectFirerouter(options), false);
-    }
+    assert.equal(plan.mapping.opus, CLAUDE_NATIVE_MODEL_ID);
+    assert.equal(plan.mapping.sonnet, CLAUDE_NATIVE_MODEL_ID);
   });
 
   it("migrates legacy pinned deepseek-v4-flash slots to the deepseek-flash-latest router alias", () => {
@@ -269,49 +204,38 @@ describe("Claude model profiles", () => {
     assert.deepEqual(clean.mapping, defaultClaudeModelMapping("fireworks"));
   });
 
-  it("migrates baked-in legacy slots but honors explicit per-run overrides", async () => {
-    // An existing install has deepseek-v4-flash baked into its live mapping.
-    const profiles = withSavedClaudeModelMapping({}, "fireworks", {
-      ...defaultClaudeModelMapping("fireworks"),
+  it("migrates baked-in legacy slots for firepass profiles", () => {
+    const profiles = withSavedClaudeModelMapping({}, "firepass", {
+      ...defaultClaudeModelMapping("firepass"),
       haiku: "deepseek-v4-flash",
       subagent: "deepseek-v4-flash",
     });
     const plan = resolveClaudeActivationPlan({
       ctx: EMPTY_OVERRIDES,
-      keyType: "fireworks",
+      keyType: "firepass",
       snapshot: {
         profiles,
         intent: {
           mapping: {
-            ...defaultClaudeModelMapping("fireworks"),
+            ...defaultClaudeModelMapping("firepass"),
             haiku: "deepseek-v4-flash",
             subagent: "deepseek-v4-flash",
           },
         },
       },
-      activeKeyType: "fireworks",
+      activeKeyType: "firepass",
     });
     assert.equal(plan.mapping.haiku, "deepseek-flash-latest");
     assert.equal(plan.mapping.subagent, "deepseek-flash-latest");
+  });
 
-    // An explicit --haiku deepseek-v4-pro override is honored (not migrated),
-    // while the still-default subagent still migrates from the baked-in slug.
-    const overridden = resolveClaudeActivationPlan({
-      ctx: { ...EMPTY_OVERRIDES, haiku: "deepseek-v4-pro" },
-      keyType: "fireworks",
-      snapshot: {
-        profiles,
-        intent: {
-          mapping: {
-            ...defaultClaudeModelMapping("fireworks"),
-            haiku: "deepseek-v4-flash",
-            subagent: "deepseek-v4-flash",
-          },
-        },
-      },
-      activeKeyType: "fireworks",
-    });
-    assert.equal(overridden.mapping.haiku, "deepseek-v4-pro");
-    assert.equal(overridden.mapping.subagent, "deepseek-flash-latest");
+  it("scopes bare-firerouter detection to the firerouter model only", () => {
+    const mapping = defaultClaudeModelMapping("fireworks");
+    assert.equal(mappingUsesBareFirerouter({ ...mapping, opus: "firerouter" }), true);
+    assert.equal(mappingUsesBareFirerouter({ ...mapping, opus: "firerouter[1m]" }), true);
+    // Compounds pin their own targets; auto routes open models only.
+    assert.equal(mappingUsesBareFirerouter({ ...mapping, opus: "firerouter/kimi-k3" }), false);
+    assert.equal(mappingUsesBareFirerouter({ ...mapping, opus: "auto" }), false);
+    assert.equal(mappingUsesBareFirerouter(mapping), false);
   });
 });

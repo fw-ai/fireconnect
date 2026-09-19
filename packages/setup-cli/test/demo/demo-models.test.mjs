@@ -14,6 +14,37 @@ import {
   ANTHROPIC_SLOT_CONCRETE_IDS,
 } from "../../lib/demo/demo-models.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import { buildServerlessCatalogSnapshot } from "../../lib/fireworks/models.mjs";
+import { mockServerlessModel } from "../helpers.mjs";
+
+// Alias routers (`glm-latest`, `kimi-fast-latest`, …) are API-reported per-row
+// `aliases` now, so warm a snapshot to populate the offline demo picker.
+const DEMO_ALIAS_ROWS = [
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p2",
+    aliases: [
+      "accounts/fireworks/routers/glm-latest",
+      "accounts/fireworks/routers/glm-fast-latest",
+    ],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/kimi-k3",
+    usage_identifier: "accounts/fireworks/routers/kimi-k3-fast",
+    aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+  }),
+];
+
+/** Warm the demo picker from a catalog carrying the latest alias routers. */
+function withDemoCatalog(fn) {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(DEMO_ALIAS_ROWS));
+  refreshDemoPickerFromServerlessCatalog();
+  try {
+    return fn();
+  } finally {
+    setServerlessCatalogSnapshot(null);
+    refreshDemoPickerFromServerlessCatalog();
+  }
+}
 
 test("demoFireworksPickerIdsFromCatalog: keeps latest aliases, drops pinned glm-5p1", () => {
   const ids = demoFireworksPickerIdsFromCatalog([
@@ -48,7 +79,7 @@ test("refreshDemoPickerFromServerlessCatalog: reads warmed snapshot", () => {
   }
 });
 
-test("demoModelCatalog: Anthropic slots first, then latest Fireworks picks", () => {
+test("demoModelCatalog: Anthropic slots first, then latest Fireworks picks", () => withDemoCatalog(() => {
   const catalog = demoModelCatalog();
   const ids = catalog.map((m) => m.id);
   assert.equal(catalog[0].id, "opus");
@@ -59,7 +90,7 @@ test("demoModelCatalog: Anthropic slots first, then latest Fireworks picks", () 
   assert.ok(!ids.includes("glm-5p2-fast"));
   assert.ok(!ids.includes("kimi-k3-fast"));
   assert.ok(!ids.includes("deepseek-v4-flash"));
-});
+}));
 
 test("demoModelRates: resolves pricing for Fireworks, FireRouter, and Anthropic slots", () => {
   const fw = demoModelRates("glm-5p2-fast");
@@ -98,6 +129,17 @@ test("demoModelRates: resolves pricing for Fireworks, FireRouter, and Anthropic 
   }
 });
 
+test("demoModelRates: auto mixes resolve to an unpriced shape, never null", () => {
+  for (const id of ["auto", "auto-instant"]) {
+    const rates = demoModelRates(id);
+    assert.ok(rates, `${id} must resolve rates instead of crashing resolveSideRates`);
+    assert.equal(rates.inputPerMillion, null);
+    assert.equal(rates.outputPerMillion, null);
+    assert.equal(rates.tier, "unpriced");
+    assert.equal(rates.estimated, true);
+  }
+});
+
 test("demoModelRates: uses live serverless catalog when warmed", () => {
   setServerlessCatalogSnapshot({
     entries: [],
@@ -133,6 +175,15 @@ test("demoModelRates: uses live serverless catalog when warmed", () => {
     const router = demoModelRates("firerouter");
     assert.equal(router?.inputPerMillion, 0.66);
     assert.equal(router?.estimated, undefined);
+    // A published FireRouter rate must not stand in for the auto mixes.
+    for (const id of ["auto", "auto-instant"]) {
+      const auto = demoModelRates(id);
+      assert.equal(auto?.inputPerMillion, null, `${id} stays unpriced`);
+      assert.equal(auto?.outputPerMillion, null, `${id} stays unpriced`);
+      assert.equal(auto?.tier, "unpriced");
+      assert.match(auto?.label, /auto/i);
+      assert.doesNotMatch(auto?.label, /firerouter/i);
+    }
   } finally {
     setServerlessCatalogSnapshot(null);
   }

@@ -447,10 +447,13 @@ export function prettyClaudeLabel(modelId) {
 export { providerListPricing };
 
 /**
- * Look up incumbent list pricing for a detected model.
+ * Look up incumbent list pricing for a detected model. Pass `inputTokens` for
+ * OpenAI's length-tiered models (GPT-5.5 / 5.6 / 6-Astra bill long-context
+ * rates once input reaches 272K); omitted resolves to the short tier.
  * @param {Incumbent} incumbent
- * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, source: string, label: string, estimated: boolean }}
+ * @param {{ inputTokens?: number | null }} [opts]
+ * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, contextTier: string, source: string, label: string, estimated: boolean }}
  */
-export function incumbentPricing(incumbent) {
-  return providerListPricing({ provider: incumbent.kind, modelId: incumbent.modelId });
+export function incumbentPricing(incumbent, { inputTokens = null } = {}) {
+  return providerListPricing({ provider: incumbent.kind, modelId: incumbent.modelId, inputTokens });
 }

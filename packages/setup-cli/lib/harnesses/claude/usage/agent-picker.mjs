@@ -175,7 +175,7 @@ export async function promptClaudeUsageAgent({
         // go back to" is answerable from the list alone. Both branches spend the
         // same two columns (pointer/blank + mark) so the rows stay aligned.
         const live = trackingId && agent.id === trackingId;
-        const mark = live ? paint(METER.gold, "•", output) : " ";
+        const mark = live ? paint(METER.gold, symbols.bullet, output) : " ";
         return active
           ? `${accent(symbols.pointer, output)}${mark} ${body}`
           : ` ${mark} ${body}`;

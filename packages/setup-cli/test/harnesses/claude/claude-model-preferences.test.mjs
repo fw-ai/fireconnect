@@ -19,9 +19,55 @@ import {
   withSavedClaudeModelMapping,
 } from "../../../lib/harnesses/claude/model-profile.mjs";
 import { readJsonIfExists, writeJson } from "../../../lib/io/json.mjs";
-import { FPK_KEY, runFireconnect } from "../../helpers.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { cacheServerlessCatalogSnapshot, setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import {
+  FPK_KEY,
+  mockServerlessModel,
+  mockServerlessModelRows,
+  runFireconnect,
+  assertClaudeNativeTierSlots,
+  assertClaudeRegisterablePicker,
+} from "../../helpers.mjs";
 
 const FIREWORKS_KEY = "fw_test_key_12345";
+
+/** Persist the alias catalog a spawned CLI child validates and resolves slots through. */
+function seedCatalogFor(home) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        name: "accounts/fireworks/models/glm-5p3",
+        displayName: "GLM 5.3",
+        aliases: ["accounts/fireworks/routers/glm-latest"],
+      }),
+      ...mockServerlessModelRows({
+        name: "accounts/fireworks/models/glm-5p2",
+        aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/kimi-k3",
+        displayName: "Kimi K3",
+        input_modalities: ["text", "image"],
+        aliases: ["accounts/fireworks/routers/kimi-latest", "accounts/fireworks/routers/kimi-fast-latest"],
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/deepseek-v4-flash",
+        displayName: "DeepSeek V4 Flash",
+        aliases: ["accounts/fireworks/routers/deepseek-flash-latest"],
+      }),
+    ]));
+  } finally {
+    process.env.HOME = prevHome;
+    setServerlessCatalogSnapshot(null);
+  }
+}
 
 function cliEnv(home, apiKey = FIREWORKS_KEY) {
   return {
@@ -55,62 +101,45 @@ async function hideManagedKeyMetadata(home) {
 }
 
 describe("Claude model preferences", () => {
-  it("merges defaults → stored → live → flags and survives off/on", async () => {
+  it("merges stored profiles, keeps native tiers, and survives off/on", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-model-prefs-"));
+    seedCatalogFor(home);
     const env = cliEnv(home);
-    const initial = {
-      main: "glm-latest",
-      opus: "glm-fast-latest",
-      sonnet: "kimi-latest",
-      haiku: "deepseek-v4-pro",
-      fable: "kimi-fast-latest",
-      subagent: "deepseek-v4-flash",
-    };
     await writeJson(userSettingsPath(home), {
       env: { ANTHROPIC_API_KEY: "sk-ant-native-test" },
     });
     const first = await runFireconnect([
       "claude", "on",
-      "--model", initial.main,
-      "--opus", initial.opus,
-      "--sonnet", initial.sonnet,
-      "--haiku", initial.haiku,
-      "--fable", initial.fable,
-      "--subagent", initial.subagent,
+      "--model", "glm-latest",
     ], env);
     assert.equal(first.code, 0, first.stderr);
 
-    // Make stored preferences stale. The active managed settings must win for
-    // untouched slots, while the new CLI flag must still win for opus.
+    const settingsAfterFirst = await readJsonIfExists(userSettingsPath(home));
+    assert.equal(settingsAfterFirst.model, "firerouter[1m]");
+    assertClaudeNativeTierSlots(settingsAfterFirst);
+    assertClaudeRegisterablePicker(settingsAfterFirst, { includes: ["glm-latest[1m]"] });
+
     const storedConfig = await readGlobalConfig(home);
     const staleProfiles = withSavedClaudeModelMapping(
       storedConfig.harnesses.claude.profiles,
       "fireworks",
       {
-      ...initial,
-      sonnet: "glm-fast-latest",
-      haiku: "glm-fast-latest",
+        ...defaultClaudeModelMapping("fireworks"),
+        main: "kimi-fast-latest",
       },
     );
     await setHarnessState(home, "claude", { profiles: staleProfiles });
     const reon = await runFireconnect(
-      ["claude", "on", "--opus", "kimi-fast-latest"],
+      ["claude", "on", "--model", "kimi-fast-latest"],
       env,
     );
     assert.equal(reon.code, 0, reon.stderr);
-    // Persisted state is migrated on re-on, so the stored deepseek-v4-flash
-    // subagent comes back as its -latest router alias. Only explicit per-run
-    // flags escape the migration, and this re-on passes just --opus.
-    const expected = {
-      ...initial,
-      opus: "kimi-fast-latest",
-      subagent: "deepseek-flash-latest",
-    };
-    assert.deepEqual(await activeMapping(home), expected);
-    let config = await readGlobalConfig(home);
+    const settingsAfterReon = await readJsonIfExists(userSettingsPath(home));
+    assert.equal(settingsAfterReon.model, "firerouter[1m]");
+    assertClaudeRegisterablePicker(settingsAfterReon, { includes: ["kimi-fast-latest[1m]"] });
     assert.deepEqual(
-      savedClaudeModelMapping(config.harnesses.claude.profiles, "fireworks"),
-      expected,
+      savedClaudeModelMapping((await readGlobalConfig(home)).harnesses.claude.profiles, "fireworks"),
+      defaultClaudeModelMapping("fireworks"),
     );
 
     const off = await runFireconnect(["claude", "off"], env);
@@ -120,22 +149,25 @@ describe("Claude model preferences", () => {
       cliEnv(home, FPK_KEY),
     );
     assert.equal(firepass.code, 0, firepass.stderr);
-    const firepassMapping = Object.fromEntries(
-      Object.keys(expected).map((slot) => [slot, "kimi-fast-latest"]),
-    );
+    const firepassMapping = defaultClaudeModelMapping("firepass");
     assert.deepEqual(await activeMapping(home), firepassMapping);
 
     assert.equal((await runFireconnect(["claude", "off"], cliEnv(home, FPK_KEY))).code, 0);
     const onAgain = await runFireconnect(["claude", "on", "--non-interactive"], env);
     assert.equal(onAgain.code, 0, onAgain.stderr);
     assert.match(onAgain.stdout, /Manage models/);
-    assert.match(onAgain.stdout, /fireconnect claude (?:on )?--interactive/);
-    assert.deepEqual(await activeMapping(home), expected);
+    assert.match(onAgain.stdout, /fireconnect claude --model <id>/);
+    // Live main reflects the pinned FireRouter default; the saved profile
+    // mapping stays native (checked above).
+    assert.deepEqual(await activeMapping(home), {
+      ...defaultClaudeModelMapping("fireworks"),
+      main: "firerouter",
+    });
     const settings = await readJsonIfExists(userSettingsPath(home));
-    assert.equal(settings.model, "glm-latest[1m]");
+    assert.equal(settings.model, "firerouter[1m]");
     assert.equal(settings.env.ANTHROPIC_MODEL, undefined);
 
-    config = await readGlobalConfig(home);
+    const config = await readGlobalConfig(home);
     assert.deepEqual(
       savedClaudeModelMapping(config.harnesses.claude.profiles, "firepass"),
       firepassMapping,
@@ -150,7 +182,7 @@ describe("Claude model preferences", () => {
       env: { ANTHROPIC_API_KEY: "sk-ant-native-test" },
     });
     const enabled = await runFireconnect(
-      ["claude", "on", "--opus", "firerouter"],
+      ["claude", "on", "--model", "firerouter"],
       env,
     );
     assert.equal(enabled.code, 0, enabled.stderr);
@@ -163,10 +195,11 @@ describe("Claude model preferences", () => {
     );
     assert.equal(restored.code, 0, restored.stderr);
     const settings = await readJsonIfExists(settingsPath);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "firerouter[1m]");
+    assertClaudeNativeTierSlots(settings);
+    assertClaudeRegisterablePicker(settings, { includes: ["firerouter[1m]"] });
   });
 
-  it("preserves live customizations when the managed key is temporarily unreadable", async () => {
+  it("reconnects with native tiers when the managed key is temporarily unreadable", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-live-prefs-"));
     const settingsPath = userSettingsPath(home);
     const env = cliEnv(home);
@@ -194,36 +227,29 @@ describe("Claude model preferences", () => {
       env,
     );
     assert.equal(reon.code, 0, reon.stderr);
-    assert.equal((await activeMapping(home)).main, "glm-latest");
+    const after = await readJsonIfExists(settingsPath);
+    assert.equal(after.model, "firerouter[1m]");
+    assertClaudeNativeTierSlots(after);
   });
 
-  it("scopes unreadable Fire Pass mappings without leaking them into fireworks", async () => {
+  it("scopes Fire Pass mappings without leaking them into fireworks", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-fpk-live-"));
     const firepassEnv = cliEnv(home, FPK_KEY);
     const customized = await runFireconnect(
-      [
-        "claude", "on", "--non-interactive",
-        "--model", "glm-latest",
-        "--opus", "kimi-fast-latest",
-      ],
-      firepassEnv,
-    );
-    assert.equal(customized.code, 0, customized.stderr);
-
-    await hideManagedKeyMetadata(home);
-    const firepassReon = await runFireconnect(
       ["claude", "on", "--non-interactive"],
       firepassEnv,
     );
-    assert.equal(firepassReon.code, 0, firepassReon.stderr);
-    assert.equal((await activeMapping(home)).main, "glm-latest");
+    assert.equal(customized.code, 0, customized.stderr);
+    assert.equal((await activeMapping(home)).opus, "kimi-fast-latest");
 
-    await hideManagedKeyMetadata(home);
     const fireworksSwitch = await runFireconnect(
       ["claude", "on", "--non-interactive"],
       cliEnv(home),
     );
     assert.equal(fireworksSwitch.code, 0, fireworksSwitch.stderr);
-    assert.deepEqual(await activeMapping(home), defaultClaudeModelMapping("fireworks"));
+    assert.deepEqual(await activeMapping(home), {
+      ...defaultClaudeModelMapping("fireworks"),
+      main: "firerouter",
+    });
   });
 });

@@ -130,6 +130,14 @@ const HARNESS_KEY_SOURCE = {
     readsFrom: "Cursor SQLite / safeStorage",
     storage: "Cursor Electron safeStorage (secret://, encrypted; legacy plaintext fallback)",
   },
+  "copilot-app": {
+    readsFrom: "Authorization header on the BYOK provider row",
+    storage: "Copilot data.db (owner-only)",
+  },
+  "copilot-cli": {
+    readsFrom: "apiKey in the BYOK provider entry",
+    storage: "~/.copilot/providers.json (owner-only)",
+  },
 };
 
 /**

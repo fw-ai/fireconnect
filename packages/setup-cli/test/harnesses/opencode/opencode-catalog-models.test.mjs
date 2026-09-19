@@ -14,6 +14,8 @@ import {
   setModelsDevFireworksRegistry,
 } from "../../../lib/fireworks/models-dev-registry.mjs";
 import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { mockServerlessModel } from "../../helpers.mjs";
 
 process.env.FIRECONNECT_TEST ??= "1";
 
@@ -85,12 +87,11 @@ describe("opencode catalog model handling", () => {
       dataDir,
       apiKey: "fw_test_key_12345",
       effectiveApiKey: "fw_test_key_12345",
-      modelId: "deepseek-v4-flash",
       catalogModelIds,
     });
 
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    assert.equal(config.model, "fireworks-ai/accounts/fireworks/models/deepseek-v4-flash");
+    assert.equal(config.model, "fireworks-ai/auto");
     const models = config.provider["fireworks-ai"].models;
     assert.equal(models["deepseek-v4-flash"], undefined);
     assert.equal(models["glm-5p2-fast"], undefined);
@@ -161,7 +162,7 @@ describe("opencode catalog model handling", () => {
     assert.equal(entry.limit.output, 131_072);
   });
 
-  it("re-on with catalog rebuilds idempotently and drops duplicate legacy keys", async () => {
+  it("plain re-on only removes models missing from the catalog", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-reon-idempotent-"));
     const configPath = path.join(home, "opencode.json");
     const dataDir = path.join(home, "data");
@@ -179,6 +180,7 @@ describe("opencode catalog model handling", () => {
       apiKey: "fpk_test_firepass_key",
       effectiveApiKey: "fpk_test_firepass_key",
       catalogModelIds,
+      catalogAvailable: true,
     });
 
     // Legacy builds wrote catalog models and mixed full-id keys alongside short slugs.
@@ -197,20 +199,17 @@ describe("opencode catalog model handling", () => {
       apiKey: "fpk_test_firepass_key",
       effectiveApiKey: "fpk_test_firepass_key",
       catalogModelIds,
+      catalogAvailable: true,
+      catalogInitialized: true,
     });
 
     const models = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models;
-    assert.deepEqual(Object.keys(models).sort(), [
-      "glm-fast-latest",
-      "glm-latest",
-      "kimi-fast-latest",
-    ]);
-    assert.equal(models["accounts/fireworks/routers/glm-fast-latest"], undefined);
-    assert.equal(models["fireworks-ai/glm-fast-latest"], undefined);
+    assert.ok(models["accounts/fireworks/routers/glm-fast-latest"]);
+    assert.ok(models["fireworks-ai/glm-fast-latest"]);
     assert.equal(models["deepseek-v4-flash"], undefined);
   });
 
-  it("firepass re-on drops metered cost inherited from a previous row", async () => {
+  it("plain re-on refreshes existing model metadata", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-firepass-cost-"));
     const configPath = path.join(home, "opencode.json");
     const dataDir = path.join(home, "data");
@@ -218,31 +217,44 @@ describe("opencode catalog model handling", () => {
 
     const catalogModelIds = ["accounts/fireworks/routers/glm-latest"];
 
-    await enableOpencodeFireworks({
-      configPath,
-      dataDir,
-      apiKey: "fw_test_key_12345",
-      effectiveApiKey: "fw_test_key_12345",
-      catalogModelIds,
-    });
+    // glm-latest resolves from the API-reported alias on the GLM 5.2 row.
+    setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        aliases: ["accounts/fireworks/routers/glm-latest"],
+      }),
+    ]));
+    try {
+      await enableOpencodeFireworks({
+        configPath,
+        dataDir,
+        apiKey: "fw_test_key_12345",
+        effectiveApiKey: "fw_test_key_12345",
+        catalogModelIds,
+      });
 
-    const withCost = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
-    assert.ok(withCost?.cost?.input, "standard key registers metered cost");
+      const withCost = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
+      assert.ok(withCost?.cost?.input, "standard key registers metered cost");
 
-    await enableOpencodeFireworks({
-      configPath,
-      dataDir,
-      apiKey: "fpk_test_firepass_key",
-      effectiveApiKey: "fpk_test_firepass_key",
-      catalogModelIds,
-    });
+      await enableOpencodeFireworks({
+        configPath,
+        dataDir,
+        apiKey: "fpk_test_firepass_key",
+        effectiveApiKey: "fpk_test_firepass_key",
+        catalogModelIds,
+        catalogInitialized: true,
+      });
 
-    const entry = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
-    assert.equal(entry.cost, undefined, "firepass row carries no metered cost");
-    assert.ok(entry.limit.context >= 1_000_000, "limits still resolved");
+      const entry = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
+      // Re-`on` refreshes entries from the catalog; a Fire Pass key carries no
+      // metered cost, so the re-rendered row drops it (same as Pi's refresh).
+      assert.equal(entry.cost?.input, undefined);
+      assert.ok(entry.limit.context >= 1_000_000, "limits still resolved");
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
   });
 
-  it("offline re-on collapses legacy provider-prefixed provider.models keys", async () => {
+  it("offline re-on leaves existing provider model keys unchanged", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-offline-legacy-"));
     const configPath = path.join(home, "opencode.json");
     const dataDir = path.join(home, "data");
@@ -266,15 +278,17 @@ describe("opencode catalog model handling", () => {
       apiKey: "fw_test_key_12345",
       effectiveApiKey: "fw_test_key_12345",
       catalogModelIds: [],
+      catalogInitialized: true,
     });
 
     const models = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models;
-    assert.deepEqual(Object.keys(models).sort(), ["glm-fast-latest", "kimi-fast-latest"]);
-    assert.equal(models["fireworks-ai/glm-fast-latest"], undefined);
-    assert.equal(models["accounts/fireworks/routers/kimi-fast-latest"], undefined);
+    assert.deepEqual(Object.keys(models).sort(), [
+      "accounts/fireworks/routers/kimi-fast-latest",
+      "fireworks-ai/glm-fast-latest",
+    ]);
   });
 
-  it("rebuilds router overrides offline instead of copying stale provider.models", async () => {
+  it("explicit model adds no unrelated entries or metadata refresh", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-offline-"));
     const configPath = path.join(home, "opencode.json");
     const dataDir = path.join(home, "data");
@@ -292,22 +306,44 @@ describe("opencode catalog model handling", () => {
       },
     })}\n`);
 
-    await enableOpencodeFireworks({
-      configPath,
-      dataDir,
-      apiKey: "fw_test_key_12345",
-      effectiveApiKey: "fw_test_key_12345",
-      modelId: "kimi-latest",
-      catalogModelIds: [],
-    });
+    // Alias routers resolve from API-reported `aliases`; seed the vision-capable
+    // Kimi K3 row and the fast GLM 5.2 row the catalog reports.
+    setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        aliases: ["accounts/fireworks/routers/kimi-latest"],
+        input_modalities: ["text", "image"],
+        context_length: 1_040_000,
+      }),
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p2",
+        display_name: "GLM 5.2",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+        aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+        context_length: 1_048_575,
+      }),
+    ]));
+    try {
+      await enableOpencodeFireworks({
+        configPath,
+        dataDir,
+        apiKey: "fw_test_key_12345",
+        effectiveApiKey: "fw_test_key_12345",
+        modelId: "kimi-latest",
+        catalogModelIds: [],
+      });
 
-    const config = JSON.parse(await readFile(configPath, "utf8"));
-    const models = config.provider["fireworks-ai"].models;
-    assert.deepEqual(models["kimi-latest"].modalities, { input: ["text", "image"] });
-    assert.equal(models["glm-fast-latest"].modalities, undefined);
-    assert.equal(models["glm-fast-latest"].limit.context, 1_048_575);
-    assert.equal(models["glm-fast-latest"].limit.output, 131_072);
-    assert.equal(models["kimi-latest"].limit.context, 1_040_000);
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      const models = config.provider["fireworks-ai"].models;
+      assert.equal(models["kimi-latest"].modalities, undefined);
+      assert.equal(models["glm-fast-latest"].modalities, undefined);
+      assert.equal(models["glm-fast-latest"].limit, undefined);
+      assert.equal(models["kimi-latest"].limit, undefined);
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
   });
 
   it("requires inkling override when models.dev registry is unknown", () => {

@@ -2,7 +2,7 @@ import { access, mkdtemp, readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { FIREROUTER_ROUTER_ID } from "../../../lib/fireworks/model-id.mjs";
@@ -24,8 +24,10 @@ import {
   setOpenAiBaseUrl,
   setUseOpenAiKey,
 } from "../../../lib/harnesses/cursor/core.mjs";
-import { isFireworksModelId } from "../../../lib/fireworks/model-id.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { isCachedServerlessModelRef, setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import {
+  mockServerlessModel,
   runCli,
   runCliJson,
   runFireconnect,
@@ -136,7 +138,27 @@ const itIfSqlite = HAS_SQLITE ? it : it.skip;
 /* Unit tests — pure blob transforms (no I/O)                                  */
 /* -------------------------------------------------------------------------- */
 
+const SERVABLE_CATALOG_ROWS = [
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p2",
+    context_length: 1_048_576,
+    aliases: ["accounts/fireworks/routers/glm-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/kimi-k3",
+    context_length: 1_048_576,
+    aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+  }),
+];
+
 describe("cursor-core pure transforms", () => {
+  before(() => {
+    setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(SERVABLE_CATALOG_ROWS));
+  });
+
+  after(() => {
+    setServerlessCatalogSnapshot(null);
+  });
   it("addUserModel dedupes, enables, and tracks ownership", () => {
     let b = baseBlob({ aiSettings: { userAddedModels: ["mine"], modelConfig: {} } });
     b = addUserModel(b, "accounts/fireworks/routers/glm-5p2");
@@ -283,7 +305,7 @@ describe("cursor-core pure transforms", () => {
 
   const servableOnly = (...ids) => {
     const set = new Set(ids);
-    return (id) => set.has(id) || isFireworksModelId(id);
+    return (id) => set.has(id) || isCachedServerlessModelRef(id);
   };
 
   it("pruneUnservableAddedModels drops only unservable fireconnect-tracked ids", () => {
@@ -416,10 +438,46 @@ describe("cursor harness integration", () => {
       const blob = readBlob(dbPath);
       assert.equal(blob.openAIBaseUrl, CURSOR_FIREWORKS_BASE_URL);
       assert.equal(blob.useOpenAIKey, true);
-      assert.ok(blob.aiSettings.userAddedModels.includes("kimi-fast-latest"));
-      assert.ok(blob.aiSettings.fireconnectAddedModels.includes("kimi-fast-latest"));
-      assert.equal(cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE), "kimi-fast-latest");
+      assert.ok(blob.aiSettings.userAddedModels.includes("auto"));
+      assert.ok(blob.aiSettings.fireconnectAddedModels.includes("auto"));
+      assert.equal(cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE), "auto");
       assert.equal(readKey(dbPath), "fw_test_key_12345");
+    });
+  });
+
+  itIfSqlite("plain re-on backfills a missing `auto` row on an existing install", async () => {
+    // Regression: an install routed before `auto` became the default has the
+    // catalog registered but no `auto` row, while the plain-`on` default
+    // SELECTS auto — leaving the picker with no entry for the active model.
+    // A re-`on` adds nothing on an already-routed install, so `auto` must be
+    // backfilled explicitly (mirroring `upgrade`'s ensureCursorAuto).
+    await withTempHome("cursor-auto-backfill-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+
+      const first = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
+        { home },
+      );
+      assert.equal(first.code, 0, `stderr: ${first.stderr}`);
+
+      // Simulate the pre-auto install: routed, catalog registered, no auto row.
+      const stale = readBlob(dbPath);
+      stale.aiSettings.userAddedModels = stale.aiSettings.userAddedModels.filter((id) => id !== "auto");
+      stale.aiSettings.fireconnectAddedModels = (stale.aiSettings.fireconnectAddedModels ?? [])
+        .filter((id) => id !== "auto");
+      writeCursorDb(dbPath, stale);
+
+      const rerun = await runCli(
+        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
+        { home },
+      );
+      assert.equal(rerun.code, 0, `stderr: ${rerun.stderr}`);
+
+      const blob = readBlob(dbPath);
+      assert.ok(blob.aiSettings.userAddedModels.includes("auto"), "auto backfilled into userAddedModels");
+      assert.ok((blob.aiSettings.fireconnectAddedModels ?? []).includes("auto"), "auto tracked as fireconnect-owned");
+      assert.ok(blob.aiSettings.modelOverrideEnabled.includes("auto"), "auto enabled in the picker");
     });
   });
 
@@ -470,6 +528,22 @@ describe("cursor harness integration", () => {
     });
   });
 
+  it("on works against a never-launched profile (missing state.vscdb)", async () => {
+    await withTempHome("cursor-fresh-profile-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      const r = await runCli(
+        ["cursor", "on", "--api-key", "fw_cataloged_v1_adversarial000000", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+
+      const status = await runCliJson(["cursor", "status", "--db-path", dbPath, "--json"], { home });
+      assert.equal(status.code, 0, `stderr: ${status.stderr}`);
+      assert.equal(status.json.provider, "fireworks");
+      assert.ok(status.json.registeredModels.includes("auto"));
+    });
+  });
+
   itIfSqlite("on sets every existing mode to the default model", async () => {
     await withTempHome("cursor-allmodes-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
@@ -485,9 +559,9 @@ describe("cursor harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const after = readBlob(dbPath);
-      assert.equal(after.aiSettings.modelConfig.composer.modelName, "kimi-fast-latest");
-      assert.equal(after.aiSettings.modelConfig["cmd-k"].modelName, "kimi-fast-latest");
-      assert.equal(after.aiSettings.modelConfig["background-composer"].modelName, "kimi-fast-latest");
+      assert.equal(after.aiSettings.modelConfig.composer.modelName, "auto");
+      assert.equal(after.aiSettings.modelConfig["cmd-k"].modelName, "auto");
+      assert.equal(after.aiSettings.modelConfig["background-composer"].modelName, "auto");
       // no new modes created beyond the three that existed
       assert.deepEqual(Object.keys(after.aiSettings.modelConfig).sort(), ["background-composer", "cmd-k", "composer"]);
     });
@@ -544,7 +618,7 @@ describe("cursor harness integration", () => {
       assert.equal(r.json.provider, "fireworks");
       assert.equal(r.json.baseUrl, CURSOR_FIREWORKS_BASE_URL);
       assert.equal(r.json.hasKey, true);
-      assert.equal(r.json.current.main, "kimi-fast-latest");
+      assert.equal(r.json.current.main, "auto");
       assert.equal(r.json.defaultMode, undefined);
       assert.equal(r.json.modes, undefined);
     });
@@ -650,7 +724,7 @@ describe("cursor harness integration", () => {
       assert.equal(standard.code, 0, standard.stderr);
       assert.equal(
         readBlob(dbPath).aiSettings.modelConfig.composer.modelName,
-        "kimi-fast-latest",
+        "auto",
       );
     });
   });
@@ -683,11 +757,11 @@ describe("cursor harness integration", () => {
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.equal(second.code, 0, second.stderr);
-      assert.match(second.stdout, /Cursor → Fireworks · kimi-fast-latest/);
+      assert.match(second.stdout, /Cursor → Fireworks · auto/);
       assert.match(second.stdout, /Built-in "auto-smart" isn't on Fireworks/);
 
       const after = readBlob(dbPath);
-      assert.equal(after.aiSettings.modelConfig.composer.modelName, "kimi-fast-latest");
+      assert.equal(after.aiSettings.modelConfig.composer.modelName, "auto");
       // the stale native registration is pruned, not re-preserved
       assert.ok(!after.aiSettings.fireconnectAddedModels.includes("auto-smart"));
       assert.ok(!after.aiSettings.userAddedModels.includes("auto-smart"));
@@ -742,30 +816,63 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("explicit --model switching away from a servable pick prints no native-model note", async () => {
-    await withTempHome("cursor-reon-switch-", async (home) => {
+  itIfSqlite("explicit --model still removes stale Cursor-native registrations", async () => {
+    await withTempHome("cursor-explicit-prune-native-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-
       const first = await runCli(
         ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.equal(first.code, 0, first.stderr);
 
-      // User picks a servable Fireworks model in the IDE.
       const blob = readBlob(dbPath);
-      blob.aiSettings.modelConfig.composer.modelName = "glm-5p2";
-      blob.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "glm-5p2", parameters: [] }];
+      blob.availableDefaultModels2 = [{ name: "auto-smart" }];
+      blob.aiSettings.fireconnectAddedModels.push("auto-smart");
+      blob.aiSettings.userAddedModels.push("auto-smart");
       writeCursorDb(dbPath, blob);
 
       const second = await runCli(
-        ["cursor", "on", "--model", "deepseek-v4-flash", "--db-path", dbPath, "--force"],
+        [
+          "cursor", "on", "--model", "deepseek-v4-flash",
+          "--db-path", dbPath, "--force",
+        ],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(second.code, 0, second.stderr);
+
+      const after = readBlob(dbPath);
+      assert.ok(!after.aiSettings.fireconnectAddedModels.includes("auto-smart"));
+      assert.ok(!after.aiSettings.userAddedModels.includes("auto-smart"));
+      assert.ok(after.aiSettings.modelOverrideDisabled.includes("auto-smart"));
+      assert.ok(after.aiSettings.userAddedModels.includes("deepseek-v4-flash"));
+    });
+  });
+
+  itIfSqlite("explicit --model switching away from a servable pick prints no native-model note", async () => {
+    await withTempHome("cursor-reon-switch-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+      const apiKey = "fw_cataloged_v1_adversarial000000";
+
+      const first = await runCli(
+        ["cursor", "on", "--api-key", apiKey, "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.equal(first.code, 0, first.stderr);
+
+      // Simulate selecting another catalog model in Cursor.
+      const blob = readBlob(dbPath);
+      blob.aiSettings.modelConfig.composer.modelName = "kimi-latest";
+      blob.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "kimi-latest", parameters: [] }];
+      writeCursorDb(dbPath, blob);
+
+      const second = await runCli(
+        ["cursor", "on", "--model", "deepseek-v4-flash", "--api-key", apiKey, "--db-path", dbPath, "--force"],
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.equal(second.code, 0, second.stderr);
       assert.match(second.stdout, /Cursor → Fireworks · deepseek-v4-flash/);
-      // glm-5p2 IS on Fireworks — the native-model note must not appear
       assert.doesNotMatch(second.stdout, /isn't on Fireworks/);
       assert.equal(readBlob(dbPath).aiSettings.modelConfig.composer.modelName, "deepseek-v4-flash");
     });
@@ -923,7 +1030,7 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("cursor on footnote mentions workspace BYOK not ANTHROPIC_API_KEY", async () => {
+  itIfSqlite("plain cursor on prints no FireRouter note", async () => {
     await withTempHome("cursor-firerouter-footnote-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
@@ -932,9 +1039,8 @@ describe("cursor harness integration", () => {
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /FireRouter support for Cursor is still under development/);
-      assert.match(result.stdout, /Reach out to the Fireworks team if you're interested/);
-      assert.doesNotMatch(result.stdout, /ANTHROPIC_API_KEY/);
+      // Plain `on` never advertises FireRouter.
+      assert.doesNotMatch(result.stdout, /FireRouter/);
     });
   });
 
@@ -964,15 +1070,12 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("firerouter is rejected by Cursor on without workspace BYOK", async () => {
-    await withTempHome("cursor-reject-firerouter-", async (home) => {
+  itIfSqlite("pure-Fireworks firerouter path is allowed in Cursor with no BYOK", async () => {
+    await withTempHome("cursor-allow-firerouter-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      // A pure-Fireworks selection needs no Anthropic key, so without workspace
-      // BYOK it gets the general "enable FireRouter for your account" refusal.
-      const unsupported =
-        /Ask the Fireworks team to enable FireRouter for your account/;
-
+      // A pure-Fireworks selection needs no Anthropic key — and workspace BYOK
+      // is no longer consulted, so nothing else gates it.
       const selectOn = await runCli(
         [
           "cursor", "on", "--api-key", "fw_test_key_12345",
@@ -980,9 +1083,11 @@ describe("cursor harness integration", () => {
         ],
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
-      assert.notEqual(selectOn.code, 0);
-      assert.match(selectOn.stderr, unsupported);
-      await assert.rejects(access(path.join(home, ".fireconnect", ".secret-memory")));
+      assert.equal(selectOn.code, 0, selectOn.stderr);
+      assert.equal(
+        cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE),
+        "firerouter/kimi-k3",
+      );
     });
   });
 
@@ -1016,61 +1121,23 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("firerouter is allowed when workspace BYOK is enabled", async () => {
-    const { createServer } = await import("node:http");
-    const gateway = await new Promise((resolve) => {
-      const server = createServer((req, res) => {
-        if (req.url === "/verifyApiKey") {
-          res.writeHead(200, {
-            "x-fireworks-developer-email": "test@example.com",
-            "x-fireworks-account-id": "acct-workspace-byok",
-          });
-          res.end();
-          return;
-        }
-        if (/^\/v1\/accounts\/[^/]+\/featureFlags$/.test(req.url ?? "")) {
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({
-            featureFlags: [{
-              name: "accounts/acct-workspace-byok/featureFlags/enable-workspace-byok",
-              value: "true",
-            }],
-          }));
-          return;
-        }
-        res.writeHead(404);
-        res.end();
-      });
-      server.listen(0, "127.0.0.1", () => resolve({ server, url: `http://127.0.0.1:${server.address().port}` }));
+  itIfSqlite("bare firerouter is always refused without a forwardable Anthropic key", async () => {
+    // Workspace BYOK is no longer consulted on non-Claude harnesses; Cursor
+    // can't forward a local Anthropic key, so Anthropic-requiring firerouter
+    // selections (including bare firerouter) are refused outright.
+    await withTempHome("cursor-firerouter-refused-", async (home) => {
+      const dbPath = path.join(home, "state.vscdb");
+      writeCursorDb(dbPath, baseBlob());
+      const result = await runCli(
+        [
+          "cursor", "on", "--api-key", "fw_test_key_12345",
+          "--model", "firerouter", "--db-path", dbPath, "--force",
+        ],
+        { home, env: { FIREWORKS_API_KEY: "" } },
+      );
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /Anthropic API key Cursor can't forward/);
     });
-    try {
-      await withTempHome("cursor-firerouter-workspace-byok-", async (home) => {
-        const dbPath = path.join(home, "state.vscdb");
-        writeCursorDb(dbPath, baseBlob());
-        const result = await runCli(
-          [
-            "cursor", "on", "--api-key", "fw_test_key_12345",
-            "--model", "firerouter", "--db-path", dbPath, "--force",
-          ],
-          {
-            home,
-            env: {
-              FIREWORKS_API_KEY: "",
-              FIRECONNECT_GATEWAY_URL: gateway.url,
-              FIRECONNECT_GATEWAY_GRPC_WEB_URL: `${gateway.url}/grpc`,
-            },
-          },
-        );
-        assert.equal(result.code, 0, result.stderr);
-        assert.equal(
-          cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE),
-          "firerouter",
-        );
-        assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
-      });
-    } finally {
-      gateway.server.close();
-    }
   });
 
   itIfSqlite("on replaces a stale active firerouter model with the supported default", async () => {
@@ -1100,7 +1167,7 @@ describe("cursor harness integration", () => {
       assert.equal(result.code, 0, result.stderr);
       assert.equal(
         cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE),
-        "kimi-fast-latest",
+        "auto",
       );
     });
   });

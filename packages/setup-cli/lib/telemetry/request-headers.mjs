@@ -16,6 +16,8 @@ const HARNESS_TITLES = Object.freeze({
   [HARNESS.CODEX]: "Codex",
   [HARNESS.PI]: "Pi",
   [HARNESS.VSCODE]: "VS Code Chat",
+  [HARNESS.COPILOT_APP]: "GitHub Copilot",
+  [HARNESS.COPILOT_CLI]: "GitHub Copilot CLI",
 });
 
 function normalizedVersion(value) {

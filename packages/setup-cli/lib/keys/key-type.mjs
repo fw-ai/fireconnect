@@ -20,3 +20,8 @@ export function detectApiKeyType(key) {
     ? "firepass"
     : "fireworks";
 }
+
+/** Whether a key is a Fire Pass key (anything else counts as standard). */
+export function isFirepassKey(key) {
+  return detectApiKeyType(key) === "firepass";
+}

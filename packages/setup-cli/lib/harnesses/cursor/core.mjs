@@ -4,13 +4,16 @@ import os from "node:os";
 import { chmod, mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import {
+  AUTO_MODEL_ID,
   defaultMainModel,
   fullFireworksResourceId,
-  isFireworksModelId,
+  isAutoModelId,
   isFirerouterModelPattern,
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
+import { isCachedServerlessModelRef } from "../../fireworks/serverless-catalog-cache.mjs";
+import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import {
   detectApiKeyType,
@@ -29,6 +32,7 @@ import {
 import {
   applyCursorWrites,
   deleteCursorValue,
+  ensureCursorTable,
   readCursorValue,
   writeCursorValue,
 } from "./sqlite.mjs";
@@ -359,11 +363,17 @@ function servableChecker(servableIds, { includeKnownFireworks = true } = {}) {
       .filter(Boolean),
   );
   return (id) => {
-    const ref = shortFireworksModelRef(String(id ?? "").trim());
+    const raw = String(id ?? "").trim();
+    const ref = shortFireworksModelRef(raw);
     if (!ref) {
       return false;
     }
-    return set.has(ref) || (includeKnownFireworks && isFireworksModelId(ref));
+    return set.has(ref)
+      || (includeKnownFireworks && (
+        isCachedServerlessModelRef(raw)
+        || isAutoModelId(ref)
+        || isFirerouterModelPattern(ref)
+      ));
   };
 }
 
@@ -669,8 +679,8 @@ function dedupe(arr) {
 
 /**
  * Default model id fireconnect registers for Cursor. Fire Pass keys are
- * restricted to the glm-fast-latest router; regular keys default to the shared
- * Fireworks main model (kimi-fast-latest when Kimi K3 is serverless-listed).
+ * restricted to the Fire Pass router; regular keys default to the shared
+ * Fireworks main model (`auto`).
  * `on --model` ensures an explicit model is registered and selected.
  * @param {"fireworks" | "firepass"} keyType
  * @returns {string}
@@ -683,7 +693,7 @@ export function defaultModelIdFor(keyType) {
 
 /**
  * Resolve a user-supplied model id (`--model`) for `on`. Fire Pass keys are
- * restricted to the glm-fast-latest router regardless of `--model`; otherwise the
+ * restricted to the Fire Pass router regardless of `--model`; otherwise the
  * id is normalized like OpenCode/Codex (e.g. `glm-5p2` ->
  * `accounts/fireworks/models/glm-5p2`), falling back to the key-type default.
  * @param {string | undefined} modelId
@@ -845,12 +855,21 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
       .map((model) => model?.name)
       .filter(Boolean),
   );
+  const includeResolvedModel = Boolean(requestedModel)
+    || catalogUnavailable
+    || providerStatus !== "fireworks"
+    || !hasBackup;
   const servable = servableChecker([
-    resolveCursorModelId(requestedModel, resolvedKeyType),
+    ...(includeResolvedModel
+      ? [resolveCursorModelId(requestedModel, resolvedKeyType)]
+      : []),
     ...extraModels,
     ...(catalogUnavailable
       ? fireconnectRegisteredModels(blob).filter(
-        (id) => !cursorBuiltinNames.has(id) || isFireworksModelId(id),
+        (id) => !cursorBuiltinNames.has(id)
+          || isCachedServerlessModelRef(id)
+          || isAutoModelId(id)
+          || isFirerouterModelPattern(id),
       )
       : []),
   ]);
@@ -887,14 +906,43 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
 
   let next = setOpenAiBaseUrl(blob, CURSOR_FIREWORKS_BASE_URL);
   next = setUseOpenAiKey(next, true);
-  // Self-heal registrations an earlier version made from Cursor-native picks.
-  // Capture them first: pruning drops them from the picker lists, but they
-  // should still end up hidden via modelOverrideDisabled below.
+  const keepRegistered = (id) => (
+    servable(id) || (requestedModel && !cursorBuiltinNames.has(id))
+  );
   const staleRegistered = (next.aiSettings?.fireconnectAddedModels ?? [])
-    .filter((id) => !servable(id));
-  next = pruneUnservableAddedModels(next, { servable });
-  // Register the resolved active model plus the caller's preferred catalog.
-  for (const id of [resolvedModel, ...extraModels]) {
+    .filter((id) => !keepRegistered(id));
+  next = pruneUnservableAddedModels(next, { servable: keepRegistered });
+  // The `auto` mix has no serverless listing — the gateway serves it without
+  // one — so an install from before `auto` became the default would end up
+  // SELECTING auto (the plain-on default) with no picker row for it, and a
+  // re-`on` adds nothing to an already-routed install. Backfill it like
+  // `upgrade`'s ensureCursorAuto so the row always exists on a fireworks key.
+  const registeredShortIds = new Set(
+    (next.aiSettings?.userAddedModels ?? [])
+      .map((id) => shortFireworksModelRef(String(id ?? "")))
+      .filter(Boolean),
+  );
+  const autoBackfill = resolvedKeyType === "firepass" || registeredShortIds.has(AUTO_MODEL_ID)
+    ? []
+    : [AUTO_MODEL_ID];
+  // Shared catalog-refresh policy: prune unservable ids (above) AND register
+  // newly served ones, so the picker tracks the live catalog instead of going
+  // stale until the next fresh setup or upgrade. addUserModel dedupes, so
+  // overlapping ids (auto in both lists) are added once.
+  const missingCatalog = resolvedKeyType === "firepass"
+    ? []
+    : planCatalogRefresh({
+      currentIds: [...registeredShortIds],
+      freshIds: extraModels
+        .map((id) => shortFireworksModelRef(String(id ?? "")))
+        .filter(Boolean),
+    }).added;
+  const modelsToAdd = requestedModel
+    ? [resolvedModel, ...autoBackfill]
+    : hasBackup && providerStatus === "fireworks"
+      ? [...autoBackfill, ...missingCatalog]
+      : [resolvedModel, ...extraModels];
+  for (const id of modelsToAdd) {
     if (id) {
       next = addUserModel(next, id);
     }
@@ -906,6 +954,8 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
 
   const blobRaw = JSON.stringify(next);
   const { writes, obfuscatedKey } = cursorKeyWrites(dbPath, blobRaw, apiKey);
+  // A never-launched profile has no state.vscdb yet — create it, like VS Code.
+  await ensureCursorTable(dbPath);
   await applyCursorWrites(dbPath, writes);
 
   return {
@@ -1004,6 +1054,7 @@ export async function enableCursorAzure({ dbPath, dataDir, apiKey, baseUrl, mode
   // fallback, exactly like the gateway path — otherwise a key the user cleared
   // in the IDE would keep winning over the Azure key.
   const blobRaw = JSON.stringify(next);
+  await ensureCursorTable(dbPath);
   await applyCursorWrites(dbPath, cursorKeyWrites(dbPath, blobRaw, effectiveApiKey).writes);
 
   return { model: resolvedModel, baseUrl: normalizedBaseUrl, apiKeyMode: "literal" };

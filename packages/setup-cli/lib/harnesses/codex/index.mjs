@@ -25,7 +25,7 @@ import {
   readCodexTomlIfExists,
 } from "./core.mjs";
 import { DEFAULT_AZURE_MODEL, AZURE_PROVIDER_LABEL } from "../../fireworks/azure-core.mjs";
-import { isFireworksKey } from "../../keys/key-type.mjs";
+import { detectApiKeyType, isFireworksKey } from "../../keys/key-type.mjs";
 import { finishEnvHarnessOn } from "../../harness/env-hook.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
 import {
@@ -120,8 +120,9 @@ export default defineHarnessProfile({
     if (exclusionReason) {
       throw new Error(exclusionReason);
     }
-    const { codexCatalog } = await loadCodexCatalogBundle(effectiveKey, {
+    const { codexCatalog, snapshot, catalogAvailable } = await loadCodexCatalogBundle(effectiveKey, {
       includeFirerouter,
+      modelId,
     });
     return enableCodexFireworks({
       configPath: paths.configPath,
@@ -132,6 +133,8 @@ export default defineHarnessProfile({
       keyType,
       catalogPath: paths.catalogPath,
       catalog: codexCatalog,
+      catalogSnapshot: snapshot,
+      catalogAvailable,
       envHttpHeaders: byokHeaders,
       telemetryHeaders,
     });
@@ -193,13 +196,16 @@ export default defineHarnessProfile({
 
     const model = codexCurrentModelId(doc);
     const storedAuth = codexStoredAuthRef(doc);
+    const statusKeyType = detectApiKeyType(
+      effectiveCodexApiKey(storedAuth) || process.env.FIREWORKS_API_KEY || "",
+    );
     const payload = {
       harness: HARNESS.CODEX,
       provider,
       baseUrl: CODEX_FIREWORKS_BASE_URL,
       modelProvider: CODEX_FIREWORKS_PROVIDER_ID,
       hasAuthToken: Boolean(storedAuth || process.env.FIREWORKS_API_KEY),
-      defaults: { main: defaultMainModel() },
+      defaults: { main: defaultMainModel(statusKeyType) },
       current: { main: model },
       modelCatalog: {
         set: Boolean(doc.root.model_catalog_json),

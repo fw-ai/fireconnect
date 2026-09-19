@@ -15,10 +15,9 @@ import {
   FIREWORKS_PRICING_DOCS_URL,
   lookupModelSpec,
   pricingMatchesModelRefTier,
+  requiresFastTierPricing,
   resolveFireworksModelLabel,
-  resolveRouterSpecAliasTarget,
-  ROUTER_SPEC_ALIASES,
-  routerIdsForTargetSlug,
+  resolveRouterEntryDisplayName,
 } from "./model-specs.mjs";
 import {
   cacheServerlessCatalogSnapshot,
@@ -191,23 +190,38 @@ export function firerouterDisplayName(modelId) {
 }
 
 /** Strip catalog/router suffix from a display label. */
-export function stripViaFireworksSuffix(label) {
-  return String(label).replace(/ via Fireworks$/i, "");
-}
+import { stripViaFireworksSuffix } from "./label-suffix.mjs";
+
+export { stripViaFireworksSuffix };
 
 async function fetchGatewayPage(path, apiKey) {
   // Same dev/test override as verify-api-key.mjs — lets the mock gateway
   // serve the catalog in specs.
   const gatewayUrl = process.env.FIRECONNECT_GATEWAY_URL?.trim() || FIREWORKS_GATEWAY_URL;
-  const response = await fetch(`${gatewayUrl}${path}`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-    },
-    signal: fireworksGatewayFetchSignal(),
-  });
+  // The serverless listing is read-only and occasionally returns a transient
+  // 5xx ("Error listing serverless models" from the control plane). Retry once
+  // so a single blip doesn't force every harness `on` into offline mode.
+  // Only HTTP 5xx responses are retried: client errors are final, and network
+  // errors propagate exactly as before this change — every caller degrades to
+  // cache (loadServerlessCatalog serves the stale snapshot; Codex warns and
+  // continues without catalog metadata), so retrying a 30s timeout here would
+  // only double the offline wait before those fallbacks run.
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    const response = await fetch(`${gatewayUrl}${path}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+      signal: fireworksGatewayFetchSignal(),
+    });
 
-  if (!response.ok) {
+    if (response.ok) {
+      return response.json();
+    }
     const body = await response.text().catch(() => "");
     const detail = body ? `: ${body.slice(0, 200)}` : "";
     if (response.status === 401 || response.status === 403) {
@@ -216,19 +230,27 @@ async function fetchGatewayPage(path, apiKey) {
         + "Check FIREWORKS_API_KEY and ensure the key can access account model listings.",
       );
     }
-    throw new Error(`Fireworks API ${response.status} ${response.statusText}${detail}`);
+    lastError = new Error(`Fireworks API ${response.status} ${response.statusText}${detail}`);
+    // Only retry server-side blips; client errors are final.
+    if (response.status < 500 || response.status > 599) {
+      throw lastError;
+    }
   }
-
-  return response.json();
+  throw lastError;
 }
 
 /**
- * @param {{ units?: string | number, nanos?: number }} [money]
+ * Flat serverless rows carry the amount as a plain string ("1.4"); the nested
+ * format used units/nanos. Accept both.
+ * @param {string | number | { units?: string | number, nanos?: number }} [money]
  * @returns {number}
  */
 export function moneyToUsd(money) {
-  if (!money) {
+  if (money === null || money === undefined) {
     return 0;
+  }
+  if (typeof money === "string" || typeof money === "number") {
+    return Number(money) || 0;
   }
   const units = Number(money.units ?? 0);
   const nanos = Number(money.nanos ?? 0);
@@ -304,32 +326,16 @@ export function inputModalitiesFromModel(model) {
 }
 
 /**
- * @param {{ name?: string }} mode
+ * Pricing tier of a flat serverless row, read off `serverless_mode`.
+ * @param {{ serverless_mode?: string, serverlessMode?: string }} model
  * @returns {string}
  */
-export function serverlessModeId(mode) {
-  const name = mode?.name ?? "";
-  return name.split("/").at(-1) ?? "";
-}
-
-function findServerlessMode(model, preferredModeId) {
-  const modes = model.serverlessModes ?? model.serverless_modes ?? [];
-  return modes.find((mode) => serverlessModeId(mode) === preferredModeId) ?? null;
-}
-
-/**
- * Serverless mode whose SKU prices the base model id (standard/default tier only).
- */
-function selectBaseModelPricingMode(model) {
-  return findServerlessMode(model, "default");
-}
-
-function pricingTierForMode(mode) {
-  const modeId = serverlessModeId(mode);
-  if (modeId === "fast") {
+function flatModeTier(model) {
+  const mode = model.serverless_mode ?? model.serverlessMode ?? "";
+  if (mode === "fast") {
     return "fast";
   }
-  if (modeId === "priority") {
+  if (mode === "priority") {
     return "priority";
   }
   return "standard";
@@ -354,6 +360,28 @@ function buildPricingRecord(id, label, rates, tier) {
   };
 }
 
+/** Newer `created` first; null timestamps sort last, then by shortId. */
+export function byRecencyThenShortId(left, right) {
+  const l = left?.created ?? 0;
+  const r = right?.created ?? 0;
+  if (l !== r) {
+    return r - l;
+  }
+  return (left?.shortId ?? "").localeCompare(right?.shortId ?? "");
+}
+
+/**
+ * The full list of individual (non-router) models in the catalog, newest
+ * first. No family collapsing: every version the API serves stays visible.
+ * @param {import("./models.mjs").CatalogEntry[]} catalog
+ * @returns {import("./models.mjs").CatalogEntry[]}
+ */
+export function allModelsByRecency(catalog) {
+  return catalog
+    .filter((entry) => entry.id?.includes("/models/"))
+    .sort(byRecencyThenShortId);
+}
+
 function normalizeModelEntry(model) {
   const name = model.name ?? model.id ?? "";
   if (!name.includes("/models/")) {
@@ -364,13 +392,19 @@ function normalizeModelEntry(model) {
     id: name,
     shortId: shortIdFromResourceName(name),
     displayName: stripViaFireworksSuffix(
-      model.displayName ?? model.display_name ?? prettyModelName(name),
+      lookupModelSpec(name)?.label
+        ?? model.display_name
+        ?? model.displayName
+        ?? prettyModelName(name),
     ),
     kind: KIND_SERVERLESS,
+    // Flat rows carry a `created` epoch seconds stamp — used to sort the
+    // model list newest-first.
+    created: typeof model.created === "number" ? model.created * 1000 : null,
   };
 }
 
-function normalizeRouterEntry({ usageId, baseModel, mode }) {
+function normalizeRouterEntry({ usageId, baseModel }) {
   const displayName = prettyModelName(usageId);
   return {
     id: usageId,
@@ -378,116 +412,64 @@ function normalizeRouterEntry({ usageId, baseModel, mode }) {
     displayName,
     baseModelId: baseModel.name ?? baseModel.id,
     kind: KIND_SERVERLESS,
-    serverlessMode: serverlessModeId(mode),
+    serverlessMode: baseModel.serverless_mode ?? baseModel.serverlessMode ?? "",
   };
 }
 
-// Alias synthesis keys off base-model *existence* in the catalog, not pricing:
-// an alias like `kimi-latest` should surface whenever its target model is
-// listed, even before pricing lands. Pricing is copied opportunistically below.
-function hasUsableCachedPricing(pricing) {
-  return pricing && (pricing.input > 0 || pricing.output > 0);
-}
+// Alias router rows now come straight from the API: each serverless entry may
+// carry `aliases` — full router resource names (`accounts/fireworks/routers/…`)
+// pointing at this entry as its target. No static mapping or fallback logic;
+// an alias the API doesn't report simply isn't offered. Runs once per model,
+// after all mode rows are processed, so an alias can borrow the tier-appropriate
+// row's rates: a fast-latest alias takes the fast router's pricing, a plain
+// -latest alias takes the base model's standard rates.
+function addApiAliasRouters(snapshot, baseModelId, aliases, entries, pricingById, fastRouterId) {
+  const modalities = snapshot.inputModalitiesById.get(baseModelId);
+  const contextLength = snapshot.contextLengthById.get(baseModelId);
+  const supportsTools = snapshot.supportsToolsById.get(baseModelId);
+  const basePricing = pricingById.get(baseModelId);
 
-function resolveAliasRouterSources(snapshot, targetSlug, modelIds, alias) {
-  const modelId = `accounts/fireworks/models/${targetSlug}`;
-  if (modelIds.has(modelId)) {
-    const pricing = snapshot.pricingById.get(modelId);
-    // Region-bound routers have their own documented premium. Never copy the
-    // base model's global rate into their cache entry.
-    const pricingSourceId = !alias.endsWith("-us")
-      && hasUsableCachedPricing(pricing)
-      && pricingMatchesModelRefTier(alias, pricing)
-      ? modelId
-      : null;
-    return { baseModelId: modelId, pricingSourceId };
-  }
-
-  // A geography-bound endpoint must never be synthesized against an older
-  // family router: that could send compliance traffic to the wrong model and
-  // attach the wrong regional price. Require its documented base model.
-  if (alias.endsWith("-us")) {
-    return null;
-  }
-
-  for (const routerId of routerIdsForTargetSlug(targetSlug)) {
-    const baseModelId = snapshot.routerBaseModelById.get(routerId);
-    if (baseModelId) {
-      const routerPricing = snapshot.pricingById.get(routerId);
-      const pricingSourceId = hasUsableCachedPricing(routerPricing) && pricingMatchesModelRefTier(alias, routerPricing)
-        ? routerId
-        : null;
-      return { baseModelId, pricingSourceId };
-    }
-  }
-
-  const baseSlug = targetSlug.replace(/-fast$/, "");
-  if (baseSlug !== targetSlug) {
-    const baseModelId = `accounts/fireworks/models/${baseSlug}`;
-    if (modelIds.has(baseModelId)) {
-      // Fast alias resolved to its non-fast base model: borrow metadata only.
-      // Its standard-tier pricing must not attach to a fast router — leave
-      // pricing to the static fast-tier spec.
-      return { baseModelId, pricingSourceId: null };
-    }
-  }
-
-  return null;
-}
-
-function addAliasRouterMetadata(snapshot) {
-  const entryIds = new Set(snapshot.entries.map((entry) => entry.id));
-
-  for (const alias of Object.keys(ROUTER_SPEC_ALIASES)) {
-    const routerId = `accounts/fireworks/routers/${alias}`;
-    if (entryIds.has(routerId)) {
+  for (const aliasRouterId of aliases) {
+    if (typeof aliasRouterId !== "string" || !aliasRouterId.includes("/routers/")) {
       continue;
     }
-
-    const targetSlug = resolveRouterSpecAliasTarget(alias, entryIds);
-    if (!targetSlug) {
-      continue;
-    }
-    const sources = resolveAliasRouterSources(snapshot, targetSlug, entryIds, alias);
-    if (!sources) {
-      continue;
-    }
-    const { baseModelId, pricingSourceId } = sources;
-
-    snapshot.entries.push({
-      id: routerId,
-      shortId: alias,
-      displayName: prettyModelName(routerId),
+    const shortId = shortIdFromResourceName(aliasRouterId);
+    entries.push({
+      id: aliasRouterId,
+      shortId,
+      displayName: prettyModelName(aliasRouterId),
       baseModelId,
       kind: KIND_SERVERLESS,
     });
-    entryIds.add(routerId);
-    snapshot.routerBaseModelById.set(routerId, baseModelId);
+    snapshot.routerBaseModelById.set(aliasRouterId, baseModelId);
 
-    const pricing = pricingSourceId ? snapshot.pricingById.get(pricingSourceId) : null;
-    if (pricing) {
-      snapshot.pricingById.set(routerId, {
-        ...pricing,
-        slug: alias,
-        label: pricing.label,
+    // Mirror the base model's metadata onto the alias so context/modality/
+    // tool lookups resolve without a second fetch. Pricing only lands on the
+    // alias when the alias's expected tier matches (a fast-latest alias
+    // borrows the fast mode router's rates, never the base model's standard
+    // ones), and the label carries the same fast/latest suffix policy as
+    // entry display names.
+    const wantsFast = requiresFastTierPricing(shortId);
+    const sourcePricing = wantsFast
+      ? (fastRouterId ? pricingById.get(fastRouterId) : undefined)
+      : basePricing;
+    if (sourcePricing && pricingMatchesModelRefTier(shortId, sourcePricing)) {
+      pricingById.set(aliasRouterId, {
+        ...sourcePricing,
+        slug: shortId,
+        label: resolveRouterEntryDisplayName(aliasRouterId, sourcePricing.label),
       });
     }
-
-    const modalities = snapshot.inputModalitiesById.get(baseModelId);
     if (modalities) {
-      snapshot.inputModalitiesById.set(routerId, modalities);
+      snapshot.inputModalitiesById.set(aliasRouterId, modalities);
     }
-    const contextLength = snapshot.contextLengthById.get(baseModelId);
     if (contextLength) {
-      snapshot.contextLengthById.set(routerId, contextLength);
+      snapshot.contextLengthById.set(aliasRouterId, contextLength);
     }
-    const supportsTools = snapshot.supportsToolsById.get(baseModelId);
     if (supportsTools !== undefined) {
-      snapshot.supportsToolsById.set(routerId, supportsTools);
+      snapshot.supportsToolsById.set(aliasRouterId, supportsTools);
     }
   }
-
-  snapshot.entries = dedupeCatalog(snapshot.entries);
 }
 
 function refreshRouterDisplayNames(snapshot) {
@@ -506,6 +488,10 @@ function refreshRouterDisplayNames(snapshot) {
 }
 
 /**
+ * Build the catalog snapshot from flat `/v1/serverless/models` rows. Each row
+ * is one (model, serverless_mode) pair; `usage_identifier` carries the mode's
+ * router and `aliases` lists the stable `-latest` router aliases whose target
+ * is this row's model.
  * @param {object[]} apiModels
  */
 export function buildServerlessCatalogSnapshot(apiModels) {
@@ -515,16 +501,29 @@ export function buildServerlessCatalogSnapshot(apiModels) {
   const routerBaseModelById = new Map();
   const contextLengthById = new Map();
   const supportsToolsById = new Map();
+  const snapshot = {
+    entries,
+    pricingById,
+    inputModalitiesById,
+    routerBaseModelById,
+    contextLengthById,
+    supportsToolsById,
+  };
+  const seenModelIds = new Set();
+  // Every alias the API reported per model, plus the id of each model's
+  // fast-mode router (`usage_identifier` of its fast row) — alias synthesis
+  // runs once per model after the row loop, borrowing rates from the model's
+  // own mode routers, never a same-family sibling's.
+  const aliasRowsByModel = new Map();
+  const fastRouterByModel = new Map();
 
   for (const model of apiModels) {
     const modelId = model.name ?? model.id ?? "";
+    const tier = flatModeTier(model);
     const modelEntry = normalizeModelEntry(model);
     if (!modelEntry) {
       continue;
     }
-
-    entries.push(modelEntry);
-
     // The cache must hold only facts the API actually reports. Fabricating a
     // default (tool support = true, modalities = text-only) and caching it lets
     // the cache silently override curated static specs — e.g. flipping
@@ -534,34 +533,51 @@ export function buildServerlessCatalogSnapshot(apiModels) {
     const contextLength = model.contextLength ?? model.context_length ?? 0;
     const supportsTools = model.supportsTools ?? model.supports_tools ?? null;
 
-    if (modalities) {
-      inputModalitiesById.set(modelId, modalities);
+    if (!seenModelIds.has(modelId)) {
+      seenModelIds.add(modelId);
+      entries.push(modelEntry);
+      if (modalities) {
+        inputModalitiesById.set(modelId, modalities);
+      }
+      if (contextLength) {
+        contextLengthById.set(modelId, contextLength);
+      }
+      if (supportsTools !== null) {
+        supportsToolsById.set(modelId, supportsTools);
+      }
     }
-    if (contextLength) {
-      contextLengthById.set(modelId, contextLength);
-    }
-    if (supportsTools !== null) {
-      supportsToolsById.set(modelId, supportsTools);
+    if (Array.isArray(model.aliases) && model.aliases.length > 0) {
+      // Different mode rows may report different aliases for one model
+      // (e.g. the fast row carries `*-fast-latest`); union them so no
+      // mode-row's aliases are lost.
+      const merged = aliasRowsByModel.get(modelId) ?? [];
+      aliasRowsByModel.set(modelId, [...new Set([...merged, ...model.aliases])]);
     }
 
-    const basePricingMode = selectBaseModelPricingMode(model);
-    if (basePricingMode) {
-      const rates = parseSkuPricing(basePricingMode.skuInfos ?? basePricingMode.sku_infos);
-      const pricing = buildPricingRecord(modelId, modelEntry.displayName, rates, pricingTierForMode(basePricingMode));
+    // Bare model ids carry standard-tier pricing only; a mode-specific rate
+    // belongs to that mode's usage_identifier router below.
+    const rates = tier === "priority" ? null : parseSkuPricing(model.pricing ?? []);
+    if (tier === "standard" && rates) {
+      const pricing = buildPricingRecord(modelId, modelEntry.displayName, rates, tier);
       if (pricing) {
         pricingById.set(modelId, pricing);
       }
     }
 
-    for (const mode of model.serverlessModes ?? model.serverless_modes ?? []) {
-      const usageId = mode.usageIdentifier ?? mode.usage_identifier ?? "";
-      if (!usageId.includes("/routers/")) {
-        continue;
-      }
-
-      const routerEntry = normalizeRouterEntry({ usageId, baseModel: model, mode });
+    const usageId = model.usageIdentifier ?? model.usage_identifier ?? "";
+    if (usageId.includes("/routers/")) {
+      const routerEntry = normalizeRouterEntry({ usageId, baseModel: model });
       entries.push(routerEntry);
       routerBaseModelById.set(usageId, modelId);
+      if (tier === "fast") {
+        fastRouterByModel.set(modelId, usageId);
+      }
+      if (rates) {
+        const pricing = buildPricingRecord(usageId, routerEntry.displayName, rates, tier);
+        if (pricing) {
+          pricingById.set(usageId, pricing);
+        }
+      }
       if (modalities) {
         inputModalitiesById.set(usageId, modalities);
       }
@@ -571,28 +587,14 @@ export function buildServerlessCatalogSnapshot(apiModels) {
       if (supportsTools !== null) {
         supportsToolsById.set(usageId, supportsTools);
       }
-
-      const rates = parseSkuPricing(mode.skuInfos ?? mode.sku_infos);
-      const tier = pricingTierForMode(mode);
-      if (tier === "priority") {
-        continue;
-      }
-      const pricing = buildPricingRecord(usageId, routerEntry.displayName, rates, tier);
-      if (pricing) {
-        pricingById.set(usageId, pricing);
-      }
     }
   }
 
-  const snapshot = {
-    entries: dedupeCatalog(entries),
-    pricingById,
-    inputModalitiesById,
-    routerBaseModelById,
-    contextLengthById,
-    supportsToolsById,
-  };
-  addAliasRouterMetadata(snapshot);
+  for (const [modelId, aliases] of aliasRowsByModel) {
+    addApiAliasRouters(snapshot, modelId, aliases, entries, pricingById, fastRouterByModel.get(modelId));
+  }
+
+  snapshot.entries = dedupeCatalog(entries);
   refreshRouterDisplayNames(snapshot);
   return snapshot;
 }
@@ -613,6 +615,7 @@ export async function fetchServerlessCatalog(apiKey) {
   const updatedAt = cacheServerlessCatalogSnapshot(snapshot);
   return {
     catalog: snapshot.entries,
+    rawModels: models,
     routersUnavailable: false,
     updatedAt,
   };
@@ -653,15 +656,12 @@ export async function fetchServerlessCatalogRaw(apiKey) {
   let pageToken = "";
 
   do {
-    const query = new URLSearchParams({
-      format: "nested",
-      use_cases: SERVERLESS_CODING_USE_CASE,
-    });
+    const query = new URLSearchParams({ use_cases: SERVERLESS_CODING_USE_CASE });
     if (pageToken) {
       query.set("pageToken", pageToken);
     }
     const page = await fetchGatewayPage(`/v1/serverless/models?${query}`, apiKey);
-    models.push(...(page.models ?? []));
+    models.push(...(page.data ?? []));
     pageToken = page.nextPageToken ?? page.next_page_token ?? "";
   } while (pageToken);
 
@@ -840,35 +840,13 @@ export function preferLatestAliases(catalog) {
 }
 
 /**
- * Newest concrete model of every family the catalog carries.
- *
- * Families are still named after the catalog's own `-latest` alias rows, but
- * the winning version is read off the catalog itself rather than from an
- * alias's pinned target. A `ROUTER_SPEC_ALIASES` entry left on an older
- * version therefore cannot hide a model the API is already serving, and
- * families with no alias at all (gpt-oss-120b) are still represented.
+ * Preferred model ids for harness provider catalogs. The served catalog
+ * already carries the `auto` mix (see `loadServerlessCatalog`); FireRouter is
+ * included only when explicitly requested via `on --model firerouter`.
  * @param {import("./models.mjs").CatalogEntry[]} catalog
- * @returns {import("./models.mjs").CatalogEntry[]}
- */
-export function newestModelsByFamily(catalog) {
-  const parsed = parseCatalogFamilies(catalog)
-    .filter(({ entry, latest }) => !latest && entry.id?.includes("/models/"));
-  const newestByFamily = newestVersionByFamily(parsed);
-
-  return parsed
-    .filter(({ family, version }) => {
-      const newest = newestByFamily.get(family);
-      return !newest || compareVersions(version, newest) === 0;
-    })
-    .map(({ entry }) => entry);
-}
-
-/**
- * Preferred model ids for harness provider catalogs. FireRouter is included
- * automatically only when eligible; explicit `on --model firerouter` remains
- * independent.
- * @param {{ apiKey: string, includeFirerouter?: boolean }} opts
- * @returns {Promise<{ ids: string[], keyType: string }>}
+ * @param {string} keyType
+ * @param {{ includeFirerouter?: boolean }} [opts]
+ * @returns {string[]}
  */
 export function registerableModelIds(catalog, keyType, { includeFirerouter = false } = {}) {
   return catalogWithAutomaticFirerouter(
@@ -879,10 +857,10 @@ export function registerableModelIds(catalog, keyType, { includeFirerouter = fal
 }
 
 /**
- * Whether a catalog row is one of the auto routers, by either the short id or
- * the final segment of the resource name. They're selectable with `--model` but
- * aren't listable catalog rows, so they're dropped before any picker pass and
- * re-added by `model list` itself.
+ * Whether a catalog row is one of the auto mixes, by either the short id or
+ * the final segment of the resource name. The served catalog carries them as
+ * list members; display passes split them back out (`model list` sections,
+ * the Claude picker).
  * @param {CatalogEntry} entry
  */
 export function isAutoCatalogEntry(entry) {
@@ -894,26 +872,48 @@ export function catalogWithAutomaticFirerouter(
   keyType,
   { includeFirerouter = false } = {},
 ) {
-  // Every decision below compares against the auto-free list, so a catalog that
-  // ships an `auto` row can't make the "firerouter already present" check
-  // misfire and return the unfiltered catalog.
-  const listable = catalog.filter((entry) => !isAutoCatalogEntry(entry));
-  const withoutFirerouter = listable.filter((entry) => entry.id !== FIREROUTER_ROUTER_ID);
-  if (!includeFirerouter || keyType === "firepass") {
+  const withoutFirerouter = catalog.filter((entry) => entry.id !== FIREROUTER_ROUTER_ID);
+  if (keyType === "firepass") {
+    // Fire Pass serves only its curated routers — never FireRouter or auto.
+    return withoutFirerouter.filter((entry) => !isAutoCatalogEntry(entry));
+  }
+  if (!includeFirerouter) {
     return withoutFirerouter;
   }
   // The catalog carried its own firerouter row: keep it in place rather than
   // prepending a synthesized duplicate.
-  if (withoutFirerouter.length !== listable.length) {
-    return listable;
+  if (withoutFirerouter.length !== catalog.length) {
+    return catalog;
   }
   return [firerouterCatalogEntry(), ...withoutFirerouter];
 }
 
+/**
+ * Treat the `auto` mix like a serverless list member. The gateway serves it
+ * without listing it, so the served catalog synthesizes the row once, up
+ * front — every `on` path below (`registerableModelIds`, the Codex bundle,
+ * `model list`, the Claude picker) then receives it like any other entry.
+ * Fire Pass is excluded throughout: the mix needs no bare-slug entry there.
+ * Empty lists stay empty so an unreachable catalog still reads as
+ * unavailable (and model validation keeps skipping it) instead of
+ * validating against a one-row list.
+ * @param {import("./models.mjs").CatalogEntry[]} catalog
+ * @param {string} keyType
+ * @returns {import("./models.mjs").CatalogEntry[]}
+ */
+export function catalogWithAutomaticAuto(catalog, keyType) {
+  if (keyType === "firepass"
+    || catalog.length === 0
+    || catalog.some((entry) => isAutoCatalogEntry(entry))) {
+    return catalog;
+  }
+  return [autoCatalogEntry(), ...catalog];
+}
+
 export async function loadRegisterableModels({ apiKey, includeFirerouter = false }) {
-  const { catalog, keyType } = await loadServerlessCatalog({ apiKey });
+  const { catalog, keyType, source } = await loadServerlessCatalog({ apiKey, refresh: true });
   const ids = registerableModelIds(catalog, keyType, { includeFirerouter });
-  return { ids, keyType };
+  return { ids, keyType, available: source !== "stale" };
 }
 
 export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = false }) {
@@ -933,6 +933,7 @@ export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = fa
       apiKey: resolvedKey,
       keyType: resolvedKeyType,
       catalog: filterCatalogForKeyType(FIREPASS_FALLBACK_ROUTERS, "firepass"),
+      rawModels: [],
       routersUnavailable: false,
       source: "firepass",
       updatedAt: null,
@@ -958,7 +959,11 @@ export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = fa
     return {
       apiKey: resolvedKey,
       keyType: resolvedKeyType,
-      catalog: filterCatalogForKeyType(cache.snapshot.entries, resolvedKeyType),
+      catalog: catalogWithAutomaticAuto(
+        filterCatalogForKeyType(cache.snapshot.entries, resolvedKeyType),
+        resolvedKeyType,
+      ),
+      rawModels: [],
       routersUnavailable: false,
       source: "cache",
       updatedAt: cache.cachedAt || null,
@@ -966,12 +971,13 @@ export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = fa
   }
 
   try {
-    const { catalog, routersUnavailable, updatedAt } = await fetchServerlessCatalog(resolvedKey);
+    const { catalog, rawModels, routersUnavailable, updatedAt } = await fetchServerlessCatalog(resolvedKey);
     const filteredCatalog = filterCatalogForKeyType(catalog, resolvedKeyType);
     return {
       apiKey: resolvedKey,
       keyType: resolvedKeyType,
-      catalog: filteredCatalog,
+      catalog: catalogWithAutomaticAuto(filteredCatalog, resolvedKeyType),
+      rawModels,
       routersUnavailable,
       source: "network",
       updatedAt,
@@ -982,7 +988,11 @@ export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = fa
       return {
         apiKey: resolvedKey,
         keyType: resolvedKeyType,
-        catalog: filterCatalogForKeyType(cache.snapshot.entries, resolvedKeyType),
+        catalog: catalogWithAutomaticAuto(
+          filterCatalogForKeyType(cache.snapshot.entries, resolvedKeyType),
+          resolvedKeyType,
+        ),
+        rawModels: [],
         routersUnavailable: false,
         source: "stale",
         updatedAt: cache.cachedAt || null,

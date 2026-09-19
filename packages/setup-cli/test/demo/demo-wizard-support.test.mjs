@@ -12,7 +12,11 @@ import {
 import { resolveDemoWizardDefaults } from "../../lib/demo/demo-defaults.mjs";
 import {
   defaultLeftModel,
+  refreshDemoPickerFromServerlessCatalog,
 } from "../../lib/demo/demo-models.mjs";
+import { buildServerlessCatalogSnapshot } from "../../lib/fireworks/models.mjs";
+import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import { mockServerlessModel } from "../helpers.mjs";
 import {
   assessDemoReadiness,
   formatReadinessError,
@@ -23,6 +27,35 @@ import {
   demoMatchupOptionIds,
   demoMatchupPreset,
 } from "../../lib/demo/demo-matchups.mjs";
+
+// Alias routers (`glm-fast-latest`, `kimi-fast-latest`, `glm-latest`) are only
+// offered via the API's per-row `aliases` after the refactor, so warm the demo
+// picker with them before resolving wizard defaults against them.
+const WIZARD_ALIAS_ROWS = [
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p2",
+    aliases: [
+      "accounts/fireworks/routers/glm-latest",
+      "accounts/fireworks/routers/glm-fast-latest",
+    ],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/kimi-k3",
+    aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+  }),
+];
+
+/** Run `fn` with the demo picker warmed from a catalog of latest aliases. */
+function withDemoCatalog(fn) {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(WIZARD_ALIAS_ROWS));
+  refreshDemoPickerFromServerlessCatalog();
+  try {
+    return fn();
+  } finally {
+    setServerlessCatalogSnapshot(null);
+    refreshDemoPickerFromServerlessCatalog();
+  }
+}
 
 test("demoMatchupOptionIds: lists presets then custom", () => {
   const ids = demoMatchupOptionIds();
@@ -48,7 +81,7 @@ test("demoMatchupPreset: default preset uses clear model names in label", () => 
   assert.doesNotMatch(preset.label, /subscription/i);
 });
 
-test("resolveDemoWizardDefaults: CLI overrides beat saved prefs", () => {
+test("resolveDemoWizardDefaults: CLI overrides beat saved prefs", () => withDemoCatalog(() => {
   const resolved = resolveDemoWizardDefaults({
     cliLeft: "sonnet",
     cliRight: "kimi-fast-latest",
@@ -61,7 +94,7 @@ test("resolveDemoWizardDefaults: CLI overrides beat saved prefs", () => {
   assert.equal(resolved.leftModel, "sonnet");
   assert.equal(resolved.rightModel, "kimi-fast-latest");
   assert.equal(resolved.matchupPresetId, CUSTOM_MATCHUP_ID);
-});
+}));
 
 test("resolveDemoWizardDefaults: saved matchup applies when no CLI models", () => {
   const resolved = resolveDemoWizardDefaults({
@@ -140,7 +173,7 @@ test("resolveDemoWizardDefaults: fresh run ignores live status mapping drift", (
   assert.equal(resolved.rightModel, "glm-fast-latest");
 });
 
-test("resolveDemoWizardDefaults: dedupes identical default-right pairs", () => {
+test("resolveDemoWizardDefaults: dedupes identical default-right pairs", () => withDemoCatalog(() => {
   const resolved = resolveDemoWizardDefaults({
     cliLeft: "glm-fast-latest",
     cliRight: "glm-fast-latest",
@@ -149,7 +182,7 @@ test("resolveDemoWizardDefaults: dedupes identical default-right pairs", () => {
   assert.equal(resolved.rightModel, defaultLeftModel());
   assert.notEqual(resolved.leftModel, resolved.rightModel);
   assert.equal(resolved.matchupPresetId, CUSTOM_MATCHUP_ID);
-});
+}));
 
 test("resolveDemoWizardDefaults: saved custom default-right pair is deduped", () => {
   const resolved = resolveDemoWizardDefaults({
@@ -163,7 +196,7 @@ test("resolveDemoWizardDefaults: saved custom default-right pair is deduped", ()
   assert.equal(resolved.matchupPresetId, CUSTOM_MATCHUP_ID);
 });
 
-test("resolveDemoWizardDefaults: sanitize that flips orientation marks custom", () => {
+test("resolveDemoWizardDefaults: sanitize that flips orientation marks custom", () => withDemoCatalog(() => {
   const resolved = resolveDemoWizardDefaults({
     cliLeft: "glm-fast-latest",
     cliRight: "glm-fast-latest",
@@ -172,7 +205,7 @@ test("resolveDemoWizardDefaults: sanitize that flips orientation marks custom", 
   assert.equal(resolved.leftModel, "glm-fast-latest");
   assert.equal(resolved.rightModel, "opus");
   assert.equal(resolved.matchupPresetId, CUSTOM_MATCHUP_ID);
-});
+}));
 
 test("resolveDemoWizardDefaults: keeps curated id when models still match", () => {
   const resolved = resolveDemoWizardDefaults({

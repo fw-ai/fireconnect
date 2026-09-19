@@ -22,14 +22,9 @@ import {
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
-import {
-  appendLatestRouterSuffix,
-  lookupModelSpec,
-  resolveFireworksCatalog,
-  resolveFireworksModelLabel,
-  ROUTER_SPEC_ALIASES,
-} from "../../fireworks/model-specs.mjs";
-import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
+import { resolveManagedDisplayName } from "../../fireworks/model-display.mjs";
+import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { resolveFireworksCatalog } from "../../fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
 import {
   assumedModelsDevListed,
@@ -89,7 +84,7 @@ export const OPENCODE_AZURE_PROVIDER_ID = "fireworks-azure";
 
 /**
  * Whether FireConnect should write a provider.models entry for this model.
- * FireRouter, `auto` / `auto-*`, ROUTER_SPEC_ALIASES "latest" routers, and catalog models
+ * FireRouter, `auto` / `auto-*`, `-latest` router aliases, and catalog models
  * absent from models.dev need provider overrides (display name, modalities,
  * limits). Standard catalog entries on models.dev only need config.model.
  * @param {string} modelId
@@ -102,7 +97,7 @@ export function opencodeNeedsProviderModelOverride(modelId) {
     return true;
   }
   const slug = fireworksModelSlug(normalizeModelId(modelId));
-  if (Object.hasOwn(ROUTER_SPEC_ALIASES, slug)) {
+  if (slug.endsWith("-latest") || slug.endsWith("-fast-latest")) {
     return true;
   }
 
@@ -141,24 +136,6 @@ export function opencodeConfigModelRef(modelId) {
     return stored;
   }
   return fullFireworksResourceId(modelId);
-}
-
-function opencodeFireworksDisplayName(modelId) {
-  if (isFirerouterModelPattern(modelId)) {
-    return firerouterDisplayName(modelId);
-  }
-  if (isAutoModelId(modelId)) {
-    return autoDisplayName(modelId);
-  }
-  const liveLabel = resolveFireworksModelLabel(modelId);
-  if (liveLabel) {
-    return liveLabel;
-  }
-  const spec = lookupModelSpec(modelId);
-  if (spec?.label) {
-    return appendLatestRouterSuffix(modelId, spec.label);
-  }
-  return prettyModelName(modelId);
 }
 
 export function effectiveOpencodeApiKey(storedKey) {
@@ -272,7 +249,7 @@ export function buildOpencodeModelEntry(modelId, { firepass = false } = {}) {
   // Fire Pass is a subscription — no per-model metered cost.
   const pricing = firepass ? null : lookupFireworksPricing(normalized);
   return {
-    name: opencodeFireworksDisplayName(normalized),
+    name: resolveManagedDisplayName(normalized),
     limit: {
       context: limits.contextWindow,
       output: limits.maxTokens,
@@ -347,6 +324,8 @@ export async function enableOpencodeFireworks({
   byokHeaders = {},
   telemetryHeaders = {},
   catalogModelIds = [],
+  catalogAvailable = catalogModelIds.length > 0,
+  catalogInitialized,
 }) {
   if (!apiKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
@@ -400,6 +379,7 @@ export async function enableOpencodeFireworks({
     || providerStatus === "azure";
   const home = homeFromDataDir(dataDir);
   const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
+  const initialized = catalogInitialized ?? wasGloballyEnabled;
   const shouldSnapshot = !hasBackup
     ? !hasFireconnectRouting || !wasGloballyEnabled
     : !hasFireconnectRouting;
@@ -444,13 +424,11 @@ export async function enableOpencodeFireworks({
   } else {
     delete nextOptions.headers;
   }
-  // Register the models FireConnect manages for OpenCode's `/model` picker.
-  // Rebuild the set from the current catalog on every `on` so the live config
-  // always matches the latest catalog (no accumulation across re-runs). When the
-  // catalog can't be fetched (offline), keep the existing set so a transient
-  // failure doesn't wipe the picker. FireRouter routes server-side → only the
-  // firerouter model.
-  const catalog = catalogModelIds.filter((id) => typeof id === "string" && id.startsWith("accounts/"));
+  // The registerable set carries bare `auto` (see catalogWithAutomaticAuto);
+  // keep it alongside the accounts/ rows so the picker can offer it.
+  const catalog = catalogModelIds.filter(
+    (id) => typeof id === "string" && (id.startsWith("accounts/") || isAutoModelId(id)),
+  );
   const firepass = resolvedKeyType === "firepass";
   const buildModels = (ids) => {
     /** @type {Record<string, { name: string, modalities?: { input: string[] } }>} */
@@ -467,25 +445,27 @@ export async function enableOpencodeFireworks({
     }
     return out;
   };
-  let models;
-  if (isFirerouterModelPattern(storedModel)) {
-    models = buildModels([storedModel]);
-  } else if (catalog.length) {
+  let models = { ...(existing.models ?? {}) };
+  if (modelId) {
+    models = { ...buildModels([storedModel]), ...models };
+  } else if (!initialized) {
     models = buildModels([storedModel, ...catalog]);
-  } else {
-    models = {};
-    for (const [id] of Object.entries(existing.models ?? {})) {
-      if (!opencodeNeedsProviderModelOverride(id)) {
-        continue;
-      }
-      const normalized = normalizeModelId(id);
-      const stored = opencodeProviderModelKey(id);
-      models[stored] = buildOpencodeModelEntry(normalized, { firepass });
-    }
-    const activeModelKey = opencodeProviderModelKey(storedModel);
-    if (storedModel && opencodeNeedsProviderModelOverride(storedModel) && !models[activeModelKey]) {
-      models[activeModelKey] = buildOpencodeModelEntry(storedModel, { firepass });
-    }
+  } else if (catalogAvailable) {
+    // Shared catalog-refresh policy: prune delisted ids, add newly served
+    // ones, and re-render kept rows from the fresh catalog (name, context
+    // limits, cost all drift as the serverless catalog evolves).
+    const keyOf = (id) => fullFireworksResourceId(opencodeProviderModelKey(id));
+    const plan = planCatalogRefresh({
+      currentIds: Object.keys(models).map(keyOf),
+      freshIds: catalog.map(fullFireworksResourceId),
+      keepUnserved: (id) => isFirerouterModelPattern(id) || isAutoModelId(id),
+    });
+    const keepSet = new Set(plan.kept);
+    models = Object.fromEntries(
+      Object.entries(models).filter(([id]) => keepSet.has(keyOf(id))),
+    );
+    // Fresh entries overwrite kept rows (metadata refresh) and fill the gaps.
+    models = { ...models, ...buildModels(catalog) };
   }
   provider[OPENCODE_FIREWORKS_PROVIDER_ID] = {
     ...existing,

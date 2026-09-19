@@ -2,12 +2,15 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { userSettingsPath } from "../../../lib/harnesses/claude/core.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import { lookupFireworksPricing } from "../../../lib/fireworks/pricing.mjs";
 import {
+  claudeRoutingPreferenceLabel,
   claudeStatusLineCommand,
   claudeStatusLineModelLabel,
   claudeStatusLineSettings,
@@ -17,9 +20,48 @@ import {
   stripClaudeStatusLine,
   withClaudeStatusLine,
 } from "../../../lib/harnesses/claude/statusline.mjs";
-import { runFireconnect, withTempHome } from "../../helpers.mjs";
+import { mockServerlessModel, runFireconnect, withTempHome } from "../../helpers.mjs";
 
 const USER_STATUS_LINE = { type: "command", command: "~/my-own-statusline.sh" };
+
+// Flat catalog rows the status line resolves router aliases through. Alias
+// routers now come only from the API's per-row `aliases` field (the static
+// alias table was deleted), so the suite seeds the rows it asserts on:
+//   glm-latest        -> glm-5p3       (standard, text-only)
+//   glm-fast-latest   -> glm-5p2 fast  ("GLM 5.2 Fast")
+//   kimi-fast-latest  -> kimi-k3       (vision)
+const STATUSLINE_CATALOG_ROWS = [
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p3",
+    displayName: "GLM 5.3",
+    aliases: ["accounts/fireworks/routers/glm-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p2",
+    aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/glm-5p2",
+    serverless_mode: "fast",
+    usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+    pricing: [
+      { sku: "LLM input tokens (uncached)", amount: "2.1", unit: "1M tokens" },
+      { sku: "LLM input tokens (cached)", amount: "0.21", unit: "1M tokens" },
+      { sku: "LLM output tokens", amount: "6.6", unit: "1M tokens" },
+    ],
+    aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+  }),
+  mockServerlessModel({
+    name: "accounts/fireworks/models/kimi-k3",
+    displayName: "Kimi K3",
+    input_modalities: ["text", "image"],
+    aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+  }),
+];
+
+before(() => {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(STATUSLINE_CATALOG_ROWS));
+});
 
 /** Strip ANSI color sequences so assertions compare visible text. */
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -48,6 +90,16 @@ describe("claude status line", () => {
     // No metadata for the id: the bare slug, never a crash.
     assert.equal(claudeStatusLineModelLabel("not-a-real-model"), "not-a-real-model");
     assert.equal(claudeStatusLineModelLabel(""), "unknown model");
+  });
+
+  it("labels FireRouter compounds and OpenAI ids instead of collapsing them", () => {
+    // A compound pins its own target, so it reads as the compound — the bare
+    // router label would merge the Astra leg with every other FireRouter leg.
+    assert.equal(claudeStatusLineModelLabel("firerouter/astra"), "FireRouter · Astra");
+    assert.equal(claudeStatusLineModelLabel("firerouter/kimi-k3"), "FireRouter · Kimi K3");
+    // A served Astra id reads off the OpenAI list-price table.
+    assert.equal(claudeStatusLineModelLabel("gpt-6-astra"), "GPT-6 Astra");
+    assert.equal(claudeStatusLineModelLabel("astra"), "GPT-6 Astra");
   });
 
   it("reads an id back without claiming to have recognised it", () => {
@@ -110,6 +162,34 @@ describe("claude status line", () => {
     });
   });
 
+  it("prices Astra legs in the status line, short and long tiers", async () => {
+    await withTempHome("statusline-astra-priced", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "gpt-6-astra", input: 42000, output: 2500, cacheRead: 8000 }),
+        assistantLine({ id: "m2", model: "gpt-6-astra", input: 300000, output: 4000, cacheRead: 10000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 1, usage.models.map((m) => m.label).join(", "));
+      // Short leg (42000*10 + 8000*1 + 2500*50) plus the 310K-input long-tier
+      // leg (300000*20 + 10000*2 + 4000*75), each over 1e6.
+      assert.equal(usage.models[0].label, "GPT-6 Astra");
+      assert.equal(usage.models[0].cost, 0.553 + 6.32);
+      assert.equal(usage.cost, 0.553 + 6.32);
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter/astra" },
+        transcript_path: transcript,
+      }, { home }));
+      // The spend bar displaces the slot label, so the priced legs read here
+      // as the GPT-6 Astra legend row plus the billed total — never cost n/a.
+      assert.doesNotMatch(plain, /cost n\/a/, plain);
+      assert.match(plain, /GPT-6 Astra/, plain);
+      assert.match(plain, /\$6\.873/, plain);
+    });
+  });
+
   it("invokes the helper with an absolute node and script path", () => {
     const command = claudeStatusLineCommand();
     // Claude Code spawns through a shell whose PATH need not contain our Node.
@@ -145,6 +225,16 @@ describe("claude status line", () => {
     const stripped = stripClaudeStatusLine(twice);
     assert.equal(stripped.changed, true);
     assert.equal(Object.hasOwn(stripped.settings, "statusLine"), false);
+  });
+
+  it("refreshes a stale FireConnect command from a previous install path", () => {
+    const stale = {
+      type: "command",
+      command: "/old/install/node /old/install/bin/claude-statusline.mjs",
+    };
+    assert.equal(isFireconnectStatusLine(stale), true);
+    const refreshed = withClaudeStatusLine({ statusLine: stale });
+    assert.deepEqual(refreshed.statusLine, claudeStatusLineSettings());
   });
 
   it("prices a transcript at Fireworks rates, not Anthropic's", async () => {
@@ -506,6 +596,95 @@ describe("claude status line", () => {
       assert.equal(plain, "GLM 5.2 Fast (Latest)");
       // No transcript must not read as a free session.
       assert.doesNotMatch(plain, /\$/, plain);
+    });
+  });
+
+  it("shows the applied routing level beside the firerouter slot", async () => {
+    await withTempHome("statusline-routing", async (home) => {
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+      await writeFile(
+        path.join(home, ".claude", "settings.json"),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_CUSTOM_HEADERS:
+              "X-Fireworks-Api-Key: fw_test\nx-routing-preference: 1",
+          },
+        }),
+      );
+      assert.equal(
+        await claudeRoutingPreferenceLabel("firerouter[1m]", home),
+        "max-intelligence (1)",
+      );
+      const line = await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        // A brand-new session: Claude Code names a transcript before writing it.
+        transcript_path: path.join(home, "does-not-exist.jsonl"),
+      }, { home });
+      assert.equal(stripAnsi(line), "FireRouter · max-intelligence (1)");
+    });
+  });
+
+  it("leaves the slot label alone without a routing preference", async () => {
+    await withTempHome("statusline-no-routing", async (home) => {
+      assert.equal(await claudeRoutingPreferenceLabel("firerouter[1m]", home), null);
+      assert.equal(await claudeRoutingPreferenceLabel("glm-latest", home), null);
+      const line = await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: path.join(home, "does-not-exist.jsonl"),
+      }, { home });
+      assert.equal(stripAnsi(line), "FireRouter");
+    });
+  });
+
+  it("keeps the routing level visible once the spend bar takes over", async () => {
+    await withTempHome("statusline-routing-bar", async (home) => {
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+      await writeFile(
+        path.join(home, ".claude", "settings.json"),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_CUSTOM_HEADERS:
+              "X-Fireworks-Api-Key: fw_test\nx-routing-preference: 1",
+          },
+        }),
+      );
+      const transcript = path.join(home, "session.jsonl");
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "accounts/fireworks/models/deepseek-v4-flash", output: 1_000_000 }),
+      ].join("\n"));
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter[1m]" },
+        transcript_path: transcript,
+      }, { home }));
+      const [line1] = plain.split("\n");
+      // The bar displaces the slot label, but the applied level must survive it.
+      assert.match(line1, /max-intelligence \(1\)/, plain);
+      assert.match(line1, /\$/, plain);
+    });
+  });
+
+  it("never reports a routing level for auto or firerouter compounds", async () => {
+    await withTempHome("statusline-no-compound-routing", async (home) => {
+      await mkdir(path.join(home, ".claude"), { recursive: true });
+      await writeFile(
+        path.join(home, ".claude", "settings.json"),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_CUSTOM_HEADERS:
+              "X-Fireworks-Api-Key: fw_test\nx-routing-preference: 3",
+          },
+        }),
+      );
+      // The header is honored for bare firerouter only — compounds pin their
+      // own targets and auto routes open models, so neither may claim it.
+      assert.equal(await claudeRoutingPreferenceLabel("firerouter/kimi-k3", home), null);
+      assert.equal(await claudeRoutingPreferenceLabel("auto", home), null);
+      const line = await renderClaudeStatusLine({
+        model: { id: "firerouter/kimi-k3" },
+        transcript_path: path.join(home, "does-not-exist.jsonl"),
+      }, { home });
+      assert.doesNotMatch(stripAnsi(line), /max-intelligence|balanced|savings/, line);
     });
   });
 

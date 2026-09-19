@@ -12,6 +12,7 @@ import {
   printOpenCodeRestartHint,
   printPiRestartHint,
 } from "../../lib/cli/messages.mjs";
+import { symbols } from "../../lib/ui/style.mjs";
 import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 
 function nonemptyLines(output) {
@@ -33,9 +34,10 @@ describe("compact harness command output", () => {
     assert.match(output, /fireconnect model list/);
     // `fireconnect claude <flag>` and `fireconnect claude on <flag>` are both
     // valid; the hints print the shorter form.
-    assert.match(output, /fireconnect claude (?:on )?--interactive/);
-    assert.match(output, /fireconnect claude (?:on )?--opus <model>/);
-    assert.match(output, /--model --sonnet --haiku --fable --subagent/);
+    assert.match(output, /fireconnect claude --model <id>/);
+    // FireRouter stays discoverable via --model help, not a standing hint row.
+    assert.doesNotMatch(output, /--model firerouter/);
+    assert.doesNotMatch(output, /--opus|--interactive/);
     assert.doesNotMatch(output, /Also in your model list/);
   });
 
@@ -50,17 +52,7 @@ describe("compact harness command output", () => {
       ]);
       printFirerouterNote({ harnessId: "pi", included: true });
       printModelsAdded(["accounts/fireworks/routers/glm-latest"]);
-      printFirerouterNote({ harnessId: "pi", supportsEnvByok: true });
-      printFirerouterNote({ harnessId: "pi", supportsEnvByok: true, eligible: true });
-      printFirerouterNote({
-        harnessId: "pi",
-        supportsEnvByok: true,
-        workspaceByokLookup: {
-          enabled: false,
-          unavailable: true,
-          reason: "network down",
-        },
-      });
+      printFirerouterNote({ harnessId: "pi" });
       printFirerouterNote({ harnessId: "pi", firepass: true });
       printClaudeModelActivationHint();
       printCodexRestartHint();
@@ -73,19 +65,16 @@ describe("compact harness command output", () => {
     assert.equal(lines[0], "Also in your model list: glm-latest, firerouter");
     assert.match(lines[1], /FireRouter is on\. Routes each request between Claude and open models/);
     assert.equal(lines[2], "Also in your model list: glm-latest");
-    assert.match(lines[3], /FireRouter wasn't turned on \(no Anthropic API key\)/);
-    assert.match(lines[3], /fireconnect pi --model firerouter/);
-    assert.match(lines[4], /FireRouter is available/);
-    assert.match(lines[4], /fireconnect pi --model firerouter/);
-    assert.match(lines[5], /couldn't verify workspace BYOK \(network down\)/);
-    assert.match(lines[6], /FireRouter needs a regular Fireworks API key/);
-    assert.equal(lines[7], "Restart Claude Code to use the new setup.");
-    assert.match(lines[8], /Quit & reopen the ChatGPT app/);
-    assert.match(lines[9], /^To resume existing Codex sessions with Fireworks:\n/);
-    assert.match(lines[9], /^ {2}codex resume <id> -c model_provider="fireworks-ai"/m);
-    assert.equal(lines[10], "Restart Pi to use the new setup.");
-    assert.equal(lines[11], "Restart DeepSeek Harness to use the new setup.");
-    assert.equal(lines[12], "Restart OpenCode to use the new setup.");
+    // Nothing selected → the note stays quiet (no advertisement); the next
+    // printed line is the Fire Pass refusal from the case after it.
+    assert.match(lines[3], /FireRouter needs a regular Fireworks API key/);
+    assert.equal(lines[4], "Restart Claude Code to use the new setup.");
+    assert.match(lines[5], /Quit & reopen the ChatGPT app/);
+    assert.match(lines[6], /^To resume existing Codex sessions with Fireworks:\n/);
+    assert.match(lines[6], /^ {2}codex resume <id> -c model_provider="fireworks-ai"/m);
+    assert.equal(lines[7], "Restart Pi to use the new setup.");
+    assert.equal(lines[8], "Restart DeepSeek Harness to use the new setup.");
+    assert.equal(lines[9], "Restart OpenCode to use the new setup.");
   });
 
   it("prints outcome, FireRouter help, and one apply action for routine on", async () => {
@@ -102,14 +91,12 @@ describe("compact harness command output", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      assert.equal(lines.length, 3, result.stdout);
+      // Success line + restart hint only — no FireRouter advertisement.
+      assert.equal(lines.length, 2, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks · deepseek-v4-flash/);
-      assert.match(lines[1], /FireRouter wasn't turned on \(no Anthropic API key\)/);
-      assert.match(lines[1], /fireconnect opencode --model firerouter/);
-      assert.equal(lines[2], "Restart OpenCode to use the new setup.");
+      assert.equal(lines[1], "Restart OpenCode to use the new setup.");
       assert.doesNotMatch(result.stdout, /Next →|Revert anytime|Tip:|API key written/);
-      assert.match(result.stdout, /FireRouter wasn't turned on/);
-      assert.match(result.stdout, /Restart OpenCode to use the new setup\./);
+      assert.doesNotMatch(result.stdout, /FireRouter/);
     });
   });
 
@@ -126,9 +113,9 @@ describe("compact harness command output", () => {
         },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /OpenCode → Fireworks · kimi-fast-latest/);
-      assert.match(result.stdout, /FireRouter is available/);
-      assert.doesNotMatch(result.stdout, /FireRouter is on/);
+      assert.match(result.stdout, /OpenCode → Fireworks · auto/);
+      // A plain `on` never advertises FireRouter — even with a key present.
+      assert.doesNotMatch(result.stdout, /FireRouter/);
       assert.doesNotMatch(result.stdout, /Change routing:/);
     });
   });
@@ -173,16 +160,35 @@ describe("compact harness command output", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      assert.equal(lines.length, 5, result.stdout);
+      assert.equal(lines.length, 6, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks · firerouter/);
       assert.match(lines[1], /FireRouter is on\. Routes each request between Claude and open models/);
-      assert.match(lines[2], /Change routing: fireconnect opencode --model firerouter --routing-preference balanced/);
-      assert.match(lines[3], /Other levels: max-intelligence \(1\).*more-savings \(4\), max-savings \(5\)/);
-      assert.equal(lines[4], "Restart OpenCode to use the new setup.");
+      assert.match(lines[2], /Routing: balanced \(3\) \(applies to firerouter slots\)/);
+      assert.match(lines[3], /Change routing: fireconnect opencode --model firerouter --routing-preference balanced/);
+      assert.match(lines[4], /Other levels: max-intelligence \(1\).*more-savings \(4\), max-savings \(5\)/);
+      assert.equal(lines[5], "Restart OpenCode to use the new setup.");
     });
   });
 
-  it("uses FireRouter by default when Claude has configured BYOK", async () => {
+  it("omits the routing confirmation for firerouter compounds", async () => {
+    await withTempHome("compact-compound-routing-pref-", async (home) => {
+      const result = await runCli(
+        ["opencode", "on", "--model", "firerouter/kimi-k3", "--routing-preference", "balanced"],
+        {
+          home,
+          env: {
+            FIREWORKS_API_KEY: "fw_compact_output_key",
+            ANTHROPIC_API_KEY: "sk-ant-configured",
+          },
+        },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      assert.doesNotMatch(result.stdout, /Routing:/);
+      assert.match(result.stdout, /Change routing: fireconnect opencode --model firerouter --routing-preference balanced/);
+    });
+  });
+
+  it("uses Claude default tier slots when BYOK is configured without explicit flags", async () => {
     await withTempHome("compact-claude-byok-", async (home) => {
       await writeGlobalConfig(home, { anthropicApiKey: "sk-ant-configured" });
       const result = await runCli(
@@ -197,17 +203,14 @@ describe("compact harness command output", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      assert.equal(lines[0], "✓ Claude Code → Fireworks");
-      assert.doesNotMatch(result.stdout, /Claude Code → Fireworks ·/);
-      assert.match(result.stdout, /Model mapping/);
-      // Main is never pinned, so it has no mapping row; Sonnet uses the Fireworks default.
-      assert.doesNotMatch(result.stdout, /Main\s+→/);
-      assert.match(result.stdout, /Sonnet\s+→ glm-latest/);
-      assert.match(result.stdout, /Opus\s+→ firerouter/);
-      assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.equal(lines[0], `${symbols.ok} Claude Code → Fireworks · firerouter`);
+      assert.match(result.stdout, /Model picker/);
+      assert.match(result.stdout, /Anthropic model slots.*unchanged/);
+      assert.match(result.stdout, /Fireworks catalog.*appended/);
+      assert.doesNotMatch(result.stdout, /Opus\s+→/);
+      assert.doesNotMatch(result.stdout, /FireRouter is on/);
       assert.doesNotMatch(result.stdout, /no Anthropic key found/);
-      assert.match(result.stdout, /Change routing: fireconnect claude --opus firerouter --routing-preference balanced/);
-      assert.match(result.stdout, /Other levels: max-intelligence \(1\)/);
+      assert.match(result.stdout, /Restart Claude Code to use the new setup/);
     });
   });
 
@@ -218,7 +221,7 @@ describe("compact harness command output", () => {
         [
           "claude", "on",
           "--api-key", "fw_compact_output_key",
-          "--opus", "firerouter",
+          "--model", "firerouter",
           "--routing-preference", "balanced",
         ],
         {
@@ -231,14 +234,14 @@ describe("compact harness command output", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      assert.equal(lines[0], "✓ Claude Code → Fireworks");
-      assert.doesNotMatch(result.stdout, /Claude Code → Fireworks ·/);
-      assert.match(result.stdout, /Model mapping/);
-      assert.match(result.stdout, /Opus\s+→ firerouter/);
+      assert.equal(lines[0], `${symbols.ok} Claude Code → Fireworks · firerouter`);
+      assert.match(result.stdout, /Model picker/);
+      assert.match(result.stdout, /Added via --model.*firerouter/);
       assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.match(result.stdout, /Routing: balanced \(3\) \(applies to firerouter slots\)/);
       assert.match(
         lines.find((line) => line.startsWith("Change routing:")),
-        /Change routing: fireconnect claude --opus firerouter --routing-preference balanced/,
+        /Change routing: fireconnect claude --model firerouter --routing-preference balanced/,
       );
       assert.match(result.stdout, /Restart Claude Code to use the new setup/);
     });

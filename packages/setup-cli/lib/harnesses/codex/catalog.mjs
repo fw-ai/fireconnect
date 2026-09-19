@@ -1,7 +1,14 @@
 import {
   FIREROUTER_TAGLINE,
 } from "../../firerouter/core.mjs";
-import { MODEL_API_OVERRIDES as MODEL_OVERRIDES, lookupModelSpec, resolveFireworksModelLabel } from "../../fireworks/model-specs.mjs";
+import {
+  MODEL_API_OVERRIDES as MODEL_OVERRIDES,
+  DEFAULT_FIREWORKS_MODEL_LIMITS,
+  DEFAULT_MODEL_CAPABILITIES,
+  lookupModelSpec,
+  resolveFireworksModelLabel,
+} from "../../fireworks/model-specs.mjs";
+import { reasoningConfigFor } from "../../fireworks/reasoning.mjs";
 import { autoDisplayName, buildServerlessCatalogSnapshot, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import {
   AUTO_INSTANT_MODEL_ID,
@@ -14,6 +21,8 @@ import {
   isFirerouterModel,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
+import { rowSupportsImageInput } from "../../fireworks/vision.mjs";
+import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
 
 export { MODEL_OVERRIDES };
 
@@ -21,7 +30,12 @@ export const CODEX_CONSTANT_FIELDS = {
   shell_type: "shell_command",
   visibility: "list",
   supported_in_api: true,
-  prefer_websockets: true,
+  // Fireworks gateway serves /v1/responses over HTTP SSE only — it has no
+  // websocket upgrade — so Codex must not try websockets first. With true,
+  // Codex desktop attempts wss, retries ("Reconnecting 5/5"), then fails the
+  // turn with "stream disconnected before completion: stream closed before
+  // response.completed".
+  prefer_websockets: false,
   support_verbosity: true,
   default_verbosity: "low",
   supports_reasoning_summaries: true,
@@ -32,115 +46,27 @@ export const CODEX_CONSTANT_FIELDS = {
   truncation_policy: { mode: "tokens", limit: 10000 },
   minimal_client_version: "0.0.1",
   supports_search_tool: true,
-  auto_compact_token_limit: null,
 };
 
-export const REASONING_DESCRIPTIONS = {
-  low: "Fast responses with lighter reasoning",
-  medium: "Balances speed and reasoning depth for everyday tasks",
-  high: "Greater reasoning depth for complex problems",
-  max: "Extra high reasoning depth for complex problems",
-};
-
-function reasoningLevel(effort) {
-  return { effort, description: REASONING_DESCRIPTIONS[effort] };
-}
-
-/** Standard ladder: every reasoning model offers at least these three tiers. */
-const STANDARD_LEVELS = [reasoningLevel("low"), reasoningLevel("medium"), reasoningLevel("high")];
-/** Ladder for models that also expose the deepest tier. */
-const MAX_LEVELS = [...STANDARD_LEVELS, reasoningLevel("max")];
-
-/*
- * Per-model reasoning tiers offered in the Codex/ChatGPT app effort picker.
- *
- * The app only renders a selectable Effort row when a model advertises more than
- * one tier, so every entry exposes the full low/medium/high ladder (the Fireworks
- * API accepts these values for reasoning models) and adds `max` only where the
- * docs confirm it (GLM 5.2, DeepSeek V4 Pro/Flash). Some models may treat the
- * lower tiers as a no-op; the tier is still selectable rather than absent.
- *
- * `default` stays `high` for every model.
- */
-export const MODEL_REASONING = {
-  "accounts/fireworks/models/glm-5p2": {
-    default: "high",
-    levels: MAX_LEVELS,
-  },
-  "accounts/fireworks/models/deepseek-v4-flash": {
-    default: "high",
-    levels: MAX_LEVELS,
-  },
-  "accounts/fireworks/models/deepseek-v4-pro": {
-    default: "high",
-    levels: MAX_LEVELS,
-  },
-  "accounts/fireworks/models/kimi-k2p6": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  "accounts/fireworks/models/kimi-k2p7-code": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  "accounts/fireworks/models/minimax-m2p7": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  "accounts/fireworks/models/minimax-m3": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  "accounts/fireworks/models/gpt-oss-120b": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  "accounts/fireworks/models/nemotron-3-ultra-nvfp4": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  "accounts/fireworks/models/qwen3p7-plus": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-  // Kimi K3 / K3 Fast (current Kimi generation; supersedes kimi-k2p6 / kimi-k2p7-code).
-  "accounts/fireworks/models/kimi-k3": {
-    default: "high",
-    levels: STANDARD_LEVELS,
-  },
-};
-
-const DEFAULT_REASONING = {
-  default: "high",
-  levels: STANDARD_LEVELS,
-};
+// Auto-compact at 80% of the window, not Codex's 90% default for an unset
+// limit: the compaction RPC resends the full history plus instructions/tool
+// schemas (~130k tokens of overhead on 1M-token sessions), so at 90% it
+// already exceeds the gateway limit and the session can never compact again.
+// 80% also passes through Codex's 90% clamp on explicit limits unclamped.
+export const CODEX_AUTO_COMPACT_FRACTION = 0.8;
 
 /**
- * Resolve the reasoning config for a model. Tries the exact full ref, then —
- * because the live serverless catalog returns versioned slugs (e.g.
- * `deepseek-v4-flash-0731`) while {@link MODEL_REASONING} is keyed by the
- * unversioned base ref (`deepseek-v4-flash`) — strips a trailing pure-numeric
- * version suffix and retries. Falls back to {@link DEFAULT_REASONING}.
- * @param {string} modelRef full model ref, e.g. `accounts/fireworks/models/deepseek-v4-flash-0731`
- * @returns {{ default: string, levels: object[] }}
+ * Explicit auto-compact threshold for one catalog row. Never 0, which Codex
+ * reads as "disable auto-compaction" — unknown windows get null instead.
+ * @param {number} contextLength
+ * @returns {number | null}
  */
-function reasoningConfigFor(modelRef) {
-  if (MODEL_REASONING[modelRef]) {
-    return MODEL_REASONING[modelRef];
+export function codexAutoCompactTokenLimit(contextLength) {
+  if (!Number.isFinite(contextLength) || contextLength <= 0) {
+    return null;
   }
-  const baseRef = modelRef.replace(/-\d+$/, "");
-  if (baseRef !== modelRef && MODEL_REASONING[baseRef]) {
-    return MODEL_REASONING[baseRef];
-  }
-  return DEFAULT_REASONING;
+  return Math.floor(contextLength * CODEX_AUTO_COMPACT_FRACTION);
 }
-
-export const DEPRECATED_MODELS = new Set([
-  "accounts/fireworks/models/glm-5p1",
-  "accounts/fireworks/routers/glm-5p1-fast",
-  "accounts/fireworks/models/kimi-k2p5",
-  "accounts/fireworks/models/qwen3p6-plus",
-]);
 
 /**
  * Why MiniMax models are omitted from the Codex catalog and rejected on `codex on`.
@@ -170,12 +96,26 @@ function routerDisplayName(routerId) {
   return resolveFireworksModelLabel(routerId) ?? prettyModelName(routerId);
 }
 
+/** First usable context window: 0 means "unknown", so fall through to the next source. */
+function firstUsableContextLength(...values) {
+  return values.find((value) => Number.isFinite(value) && value > 0)
+    ?? DEFAULT_FIREWORKS_MODEL_LIMITS.contextWindow;
+}
+
 function effectiveModelFields(model) {
   const overrides = MODEL_OVERRIDES[model.name] ?? {};
   return {
-    contextLength: overrides.contextLength ?? model.contextLength ?? 0,
-    supportsImageInput: overrides.supportsImageInput ?? model.supportsImageInput ?? false,
-    supportsTools: overrides.supportsTools ?? model.supportsTools ?? false,
+    contextLength: firstUsableContextLength(
+      overrides.contextLength,
+      model.contextLength,
+      model.context_length,
+    ),
+    supportsImageInput: overrides.supportsImageInput
+      ?? rowSupportsImageInput(model),
+    supportsTools: overrides.supportsTools
+      ?? model.supportsTools
+      ?? model.supports_tools
+      ?? DEFAULT_MODEL_CAPABILITIES.toolCalling,
   };
 }
 
@@ -199,6 +139,7 @@ export function buildCodexCatalogEntry(model) {
     supports_image_detail_original: supportsImageInput,
     context_window: contextLength,
     max_context_window: contextLength,
+    auto_compact_token_limit: codexAutoCompactTokenLimit(contextLength),
   };
 }
 
@@ -254,33 +195,100 @@ export function buildCodexAutoCatalogEntry(modelId = AUTO_MODEL_ID) {
   };
 }
 
+/** Whether a catalog row has a usable context window. */
+export function codexRowHasUsableContext(row) {
+  return (row?.context_window ?? row?.max_context_window ?? 0) > 0;
+}
+
+function findSnapshotEntry(snapshot, modelId) {
+  if (!modelId) {
+    return null;
+  }
+  if (modelId.startsWith("accounts/fireworks/")) {
+    return (snapshot?.entries ?? []).find((entry) => entry?.id === modelId) ?? null;
+  }
+  return (snapshot?.entries ?? []).find((entry) => entry?.shortId === modelId) ?? null;
+}
+
+function codexRowMatchesModelId(row, modelId) {
+  return codexCatalogContainsModel({ models: [row] }, modelId);
+}
+
+/** Remove rows no longer present in the serverless catalog. */
+export function pruneCodexCatalogRows(models = [], snapshot = null) {
+  return models.filter((row) => {
+    const slug = typeof row?.slug === "string" ? row.slug : "";
+    if (!slug || isCodexUnsupportedMiniMaxModel(slug)) {
+      return false;
+    }
+    return isFirerouterModelPattern(slug)
+      || isAutoModelId(slug)
+      || Boolean(findSnapshotEntry(snapshot, slug));
+  });
+}
+
 /**
- * Models the gateway serves without a serverless catalog row (`firerouter*`
- * patterns, `auto` / `auto-*`) get a spec-derived metadata row appended so Codex can
- * resolve their context window.
+ * Re-`on` refresh of a managed catalog, per the shared catalog-refresh policy:
+ * prune delisted rows, append rows newly served by serverless, and re-render
+ * kept rows from the fresh catalog (display names / context windows drift).
+ * The catalog file is fireconnect-owned, so the picker tracks the live catalog
+ * instead of going stale until the next fresh setup or upgrade.
+ * Kept rows keep their position; only their metadata is replaced.
  */
-export function ensureCodexOffCatalogEntry(catalog, modelId) {
-  if (codexCatalogContainsModel(catalog, modelId)) {
-    return catalog;
+export function refreshCodexCatalogRows(models = [], snapshot = null, freshModels = []) {
+  const freshBySlug = new Map();
+  for (const row of freshModels) {
+    const slug = typeof row?.slug === "string" ? row.slug : "";
+    if (slug && !freshBySlug.has(slug)) {
+      freshBySlug.set(slug, row);
+    }
   }
-  const entry = isFirerouterModelPattern(modelId)
-    ? buildCodexFirerouterCatalogEntry(modelId)
-    : (isAutoModelId(modelId) ? buildCodexAutoCatalogEntry(modelId) : null);
-  if (!entry) {
-    return catalog;
+  const plan = planCatalogRefresh({
+    currentIds: models.map((row) => (typeof row?.slug === "string" ? row.slug : "")),
+    freshIds: [...freshBySlug.keys()],
+    keepUnserved: (slug) => (
+      !isCodexUnsupportedMiniMaxModel(slug)
+      && (isFirerouterModelPattern(slug)
+        || isAutoModelId(slug)
+        || Boolean(findSnapshotEntry(snapshot, slug)))
+    ),
+  });
+  const keptSet = new Set(plan.kept);
+  const emitted = new Set();
+  return [
+    ...models
+      .filter((row) => {
+        const slug = typeof row?.slug === "string" ? row.slug : "";
+        if (!keptSet.has(slug) || emitted.has(slug)) {
+          return false;
+        }
+        emitted.add(slug);
+        return true;
+      })
+      .map((row) => freshBySlug.get(row.slug) ?? row),
+    ...plan.added.map((slug) => freshBySlug.get(slug)).filter(Boolean),
+  ];
+}
+
+/** Add the selected model without changing existing rows. */
+export function addCodexSelectedModel(models, catalog, modelId) {
+  if (models.some((row) => codexRowMatchesModelId(row, modelId))) {
+    return models;
   }
-  return {
-    ...(catalog ?? {}),
-    models: [...(catalog?.models ?? []), entry],
-  };
+  let entry;
+  if (isFirerouterModelPattern(modelId)) {
+    entry = buildCodexFirerouterCatalogEntry(modelId);
+  } else if (isAutoModelId(modelId)) {
+    entry = buildCodexAutoCatalogEntry(modelId);
+  } else {
+    entry = catalog?.models?.find((row) => codexRowMatchesModelId(row, modelId));
+  }
+  return entry ? [...models, entry] : models;
 }
 
 const EXCLUDED_KINDS = new Set(["EMBEDDING_MODEL", "FLUMINA_BASE_MODEL"]);
 
 function isCodexSuitable(model) {
-  if (DEPRECATED_MODELS.has(model.name)) {
-    return false;
-  }
   if (isCodexUnsupportedMiniMaxModel(model.name)) {
     return false;
   }
@@ -298,15 +306,22 @@ export function buildCodexCatalog(apiModels) {
   return buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot(apiModels), apiModels);
 }
 
-/**
- * Build the Codex metadata catalog from an already-parsed serverless snapshot.
- * The snapshot is the single source of truth for which base models and routers
- * (including synthesized `-latest` aliases) exist; this pass only layers Codex
- * presentation metadata (reasoning levels, modalities) on top.
- *
- * @param {import("../../fireworks/serverless-catalog-cache.mjs").ServerlessCatalogSnapshot} snapshot
- * @param {object[]} apiModels Raw API models, for full base-model metadata.
- */
+function snapshotModelMetadata(snapshot, modelId) {
+  const entry = snapshot.entries.find((candidate) => candidate.id === modelId);
+  if (!entry) {
+    return null;
+  }
+  const inputModalities = snapshot.inputModalitiesById.get(modelId) ?? [];
+  return {
+    name: modelId,
+    displayName: entry.displayName,
+    contextLength: snapshot.contextLengthById.get(modelId) ?? 0,
+    supportsImageInput: rowSupportsImageInput({ inputModalities }),
+    supportsTools: snapshot.supportsToolsById.get(modelId) ?? DEFAULT_MODEL_CAPABILITIES.toolCalling,
+  };
+}
+
+/** Build Codex metadata from the serverless snapshot. */
 export function buildCodexCatalogFromSnapshot(snapshot, apiModels) {
   const byName = new Map();
   for (const model of apiModels) {
@@ -318,6 +333,15 @@ export function buildCodexCatalogFromSnapshot(snapshot, apiModels) {
 
   const models = [];
   for (const entry of snapshot.entries) {
+    // The registerable set synthesizes the `auto` mix (see
+    // catalogWithAutomaticAuto); it has no serverless row to borrow metadata
+    // from, so it gets its static-spec row like an explicit `--model auto`.
+    if (isAutoModelId(entry.id) || isAutoModelId(entry.shortId)) {
+      models.push(buildCodexAutoCatalogEntry(
+        canonicalAutoModelId(entry.shortId) || canonicalAutoModelId(entry.id) || AUTO_MODEL_ID,
+      ));
+      continue;
+    }
     if (entry.id === FIREROUTER_ROUTER_ID) {
       models.push(buildCodexFirerouterCatalogEntry(FIREROUTER_ROUTER_ID));
       continue;
@@ -327,16 +351,19 @@ export function buildCodexCatalogFromSnapshot(snapshot, apiModels) {
         || isCodexUnsupportedMiniMaxModel(entry.baseModelId)) {
         continue;
       }
-      const baseModel = byName.get(entry.baseModelId);
+      const baseModel = byName.get(entry.baseModelId)
+        ?? snapshotModelMetadata(snapshot, entry.baseModelId);
       if (baseModel) {
+        // Flat API rows are keyed `id`, not `name`; stamp the resource id on so
+        // the catalog entry builder (reasoningConfigFor etc.) sees a model ref.
         models.push(
-          buildCodexCatalogEntryForRouter(entry.id, baseModel, routerDisplayName(entry.id)),
+          buildCodexCatalogEntryForRouter(entry.id, { ...baseModel, name: entry.baseModelId }, routerDisplayName(entry.id)),
         );
       }
       continue;
     }
 
-    const model = byName.get(entry.id);
+    const model = byName.get(entry.id) ?? snapshotModelMetadata(snapshot, entry.id);
     if (model && isCodexSuitable({ ...model, name: entry.id })) {
       models.push(buildCodexCatalogEntry({ ...model, name: entry.id }));
     }
@@ -371,8 +398,7 @@ export function codexCatalogContainsModel(catalog, modelId) {
     return false;
   }
   const stored = shortFireworksModelRef(modelId);
-  const last = fireworksModelSlug(modelId);
   return catalog.models.some(
-    (entry) => entry.slug === stored || fireworksModelSlug(entry.slug) === last,
+    (entry) => shortFireworksModelRef(entry.slug) === stored,
   );
 }

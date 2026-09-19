@@ -10,6 +10,7 @@ import {
   resolveAnthropicKey,
   buildClaudeCustomHeaders,
   normalizeRoutingPreference,
+  routingPreferenceFromCustomHeaders,
   routingPreferenceLevelName,
   routingPreferenceLevelLabel,
   routingPreferenceOptionsList,
@@ -156,6 +157,29 @@ describe("firerouter-core", () => {
       routingPreferenceOptionsList({ excludeLevel: "balanced" }),
       /balanced \(3\)/,
     );
+  });
+
+  it("reports only the configured routing level with a null default", () => {
+    assert.equal(routingPreferenceLevelLabel("max-intelligence", { defaultLevel: null }), "max-intelligence (1)");
+    assert.equal(routingPreferenceLevelLabel(1, { defaultLevel: null }), "max-intelligence (1)");
+    assert.equal(routingPreferenceLevelLabel("balanced", { defaultLevel: null }), "balanced (3)");
+    assert.equal(routingPreferenceLevelLabel(null, { defaultLevel: null }), null);
+    assert.equal(routingPreferenceLevelLabel(undefined, { defaultLevel: null }), null);
+    assert.equal(routingPreferenceLevelLabel("nonsense", { defaultLevel: null }), null);
+  });
+
+  it("reads the applied routing preference back from custom headers", () => {
+    assert.equal(
+      routingPreferenceFromCustomHeaders("X-Fireworks-Api-Key: fw_test\nx-routing-preference: 1"),
+      1,
+    );
+    assert.equal(
+      routingPreferenceFromCustomHeaders("X-Fireworks-Api-Key: fw_test"),
+      null,
+    );
+    assert.equal(routingPreferenceFromCustomHeaders(""), null);
+    assert.equal(routingPreferenceFromCustomHeaders(undefined), null);
+    assert.equal(routingPreferenceFromCustomHeaders("x-routing-preference: 9"), null);
   });
 
   it("resolves Anthropic key: flag beats global/env, else global, else settings", async () => {

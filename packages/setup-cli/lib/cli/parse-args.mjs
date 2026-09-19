@@ -1,7 +1,7 @@
 import process from "node:process";
 import { FIREWORKS_BASE_URL } from "../fireworks/model-id.mjs";
 import { ROUTING_PREFERENCE_LEVELS, normalizeRoutingPreference } from "../firerouter/core.mjs";
-import { HARNESSES, HARNESS_ALIASES, resolveHarnessAlias } from "../harness/id.mjs";
+import { HARNESSES, HARNESS_ALIASES, AMBIGUOUS_COPILOT_MESSAGE, resolveHarnessAlias } from "../harness/id.mjs";
 import { parseDemoArgs, findDemoInvocation } from "../demo/parse-demo-args.mjs";
 import { withSuggestion } from "../ui.mjs";
 
@@ -37,7 +37,7 @@ const KNOWN_FLAGS = [
   "--data-dir", "--api-key", "--base-url", "--azure", "--provider",
   "--anthropic-api-key", "--model", "--opus",
   "--sonnet", "--haiku", "--fable", "--subagent", "--search", "--refresh",
-  "--db-path", "--vscode-path", "--force", "--stored-only",
+  "--db-path", "--vscode-path", "--providers-path", "--force", "--stored-only",
   "--last-n", "--plain", "--verbose", "--routing-preference", "--session", "--days",
   "--account", "--anthropic", "--paste", "--revoke", "--with-token",
   "--interactive", "--non-interactive",
@@ -203,6 +203,7 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--last-n": ctx.lastN = requireValue(arg, next); return true;
     case "--db-path": ctx.dbPath = requireValue(arg, next); return true;
     case "--vscode-path": ctx.vscodePath = requireValue(arg, next); return true;
+    case "--providers-path": ctx.providersPath = requireValue(arg, next); return true;
     default: return null;
   }
 }
@@ -374,6 +375,11 @@ export function parseCli(argv) {
       throw new Error(`${first} does not accept positional arguments. ${helpHint()}`);
     }
     return { kind: "global", command: first, ctx };
+  }
+
+  // `copilot` names two products, so it is never guessed at — say which.
+  if (first === "copilot") {
+    throw new Error(AMBIGUOUS_COPILOT_MESSAGE);
   }
 
   if (HARNESSES.includes(first)) {

@@ -1,5 +1,7 @@
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { warmTestCatalogSnapshot } from "../../helpers.mjs";
+import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import {
   patchCodexCatalogRefRaw,
   patchCodexModelRaw,
@@ -20,6 +22,14 @@ const ROUTING = {
 };
 
 describe("codex-toml-patch", () => {
+  before(() => {
+    warmTestCatalogSnapshot();
+  });
+
+  after(() => {
+    setServerlessCatalogSnapshot(null);
+  });
+
   it("preserves array-of-tables through patch and strip", () => {
     const input = [
       'model_provider = "openai"',
@@ -75,7 +85,7 @@ describe("codex-toml-patch", () => {
     assert.equal(codexCurrentModelId(doc), "glm-5p1");
   });
 
-  it("does not treat a non-Fireworks root model as managed when a Fireworks provider table remains", () => {
+  it("uses the provider table, not model classification, to detect managed routing", () => {
     const doc = parseToml([
       'model_provider = "fireworks-ai"',
       'model = "gpt-4.1"',
@@ -86,8 +96,28 @@ describe("codex-toml-patch", () => {
       'experimental_bearer_token = "fw_test_key_12345"',
       "",
     ].join("\n"));
-    assert.equal(fireconnectManaged(doc), false);
-    assert.equal(codexCurrentModelId(doc), null);
+    assert.equal(fireconnectManaged(doc), true);
+    assert.equal(codexCurrentModelId(doc), "gpt-4.1");
+  });
+
+  it("treats Fireworks gpt-oss models as managed", () => {
+    for (const model of [
+      "gpt-oss-120b",
+      "gpt-oss-20b",
+      "accounts/fireworks/models/gpt-oss-120b",
+    ]) {
+      const doc = parseToml([
+        'model_provider = "fireworks-ai"',
+        `model = "${model}"`,
+        "",
+        "[model_providers.fireworks-ai]",
+        'name = "Fireworks"',
+        'base_url = "https://api.fireworks.ai/inference/v1"',
+        'env_key = "FIREWORKS_API_KEY"',
+        "",
+      ].join("\n"));
+      assert.equal(fireconnectManaged(doc), true, model);
+    }
   });
 
   it("recognizes legacy canonical root models as managed", () => {
@@ -233,47 +263,19 @@ describe("codex-toml-patch", () => {
     assert.doesNotMatch(stripped, /\[model_providers\.fireworks-ai\]/);
   });
 
-  it("patchCodexCatalogRefRaw inserts model_catalog_json after model_provider when missing", () => {
-    const input = patchFireconnectRoutingRaw("", ROUTING);
-    const patched = patchCodexCatalogRefRaw(input, "~/.codex/fireworks-model-catalog.json");
-    const lines = patched.split("\n");
-    const providerIndex = lines.findIndex((line) => line.startsWith('model_provider = '));
-    const catalogIndex = lines.findIndex((line) => line.startsWith('model_catalog_json = '));
-    const modelIndex = lines.findIndex((line) => line.startsWith('model = '));
-    assert.ok(catalogIndex > providerIndex);
-    assert.ok(modelIndex > catalogIndex);
-    assert.match(patched, /model_catalog_json = "~\/\.codex\/fireworks-model-catalog\.json"/);
-  });
-
-  it("patchFireconnectRoutingRaw writes web_search = disabled when webSearch option is set", () => {
-    const patched = patchFireconnectRoutingRaw("", { ...ROUTING, webSearch: "disabled" });
-    assert.match(patched, /^web_search = "disabled"$/m);
-    assert.equal(parseToml(patched).root.web_search, "disabled");
-  });
-
-  it("patchFireconnectRoutingRaw omits web_search when webSearch option is absent", () => {
-    const patched = patchFireconnectRoutingRaw("", ROUTING);
-    assert.doesNotMatch(patched, /web_search/);
-  });
-
-  it("patchFireconnectRoutingRaw overrides an existing web_search line without duplicating", () => {
+  it("patchFireconnectRoutingRaw removes stale web_search = disabled written by #320", () => {
     const input = [
       'model_provider = "openai"',
       'model = "gpt-4.1"',
-      'web_search = "live"',
+      'web_search = "disabled"',
+      'web_search = "disabled" # stale fireconnect override',
       "",
     ].join("\n");
-    const patched = patchFireconnectRoutingRaw(input, { ...ROUTING, webSearch: "disabled" });
-    assert.equal(
-      (patched.match(/^web_search = .+$/gm) ?? []).length,
-      1,
-      "should not duplicate web_search",
-    );
-    assert.match(patched, /^web_search = "disabled"$/m);
-    assert.equal(parseToml(patched).root.web_search, "disabled");
+    const patched = patchFireconnectRoutingRaw(input, ROUTING);
+    assert.doesNotMatch(patched, /web_search/);
   });
 
-  it("stripFireconnectRoutingRaw with stripRootRouting removes fireconnect-managed web_search", () => {
+  it("stripFireconnectRoutingRaw with stripRootRouting removes stale web_search lines", () => {
     const input = [
       'model_provider = "fireworks-ai"',
       'model = "accounts/fireworks/routers/glm-latest"',
@@ -288,6 +290,31 @@ describe("codex-toml-patch", () => {
     ].join("\n");
     const stripped = stripFireconnectRoutingRaw(input, { stripRootRouting: true });
     assert.doesNotMatch(stripped, /web_search/);
+  });
+
+  it("user-set web_search values are not fireconnect-owned and survive routing patches", () => {
+    const input = [
+      'model_provider = "openai"',
+      'model = "gpt-4.1"',
+      'web_search = "live"',
+      "",
+    ].join("\n");
+    const patched = patchFireconnectRoutingRaw(input, ROUTING);
+    assert.match(patched, /^web_search = "live"$/m);
+    const stripped = stripFireconnectRoutingRaw(input, { stripRootRouting: true });
+    assert.match(stripped, /^web_search = "live"$/m);
+  });
+
+  it("patchCodexCatalogRefRaw inserts model_catalog_json after model_provider when missing", () => {
+    const input = patchFireconnectRoutingRaw("", ROUTING);
+    const patched = patchCodexCatalogRefRaw(input, "~/.codex/fireworks-model-catalog.json");
+    const lines = patched.split("\n");
+    const providerIndex = lines.findIndex((line) => line.startsWith('model_provider = '));
+    const catalogIndex = lines.findIndex((line) => line.startsWith('model_catalog_json = '));
+    const modelIndex = lines.findIndex((line) => line.startsWith('model = '));
+    assert.ok(catalogIndex > providerIndex);
+    assert.ok(modelIndex > catalogIndex);
+    assert.match(patched, /model_catalog_json = "~\/\.codex\/fireworks-model-catalog\.json"/);
   });
 
   it("patchCodexCatalogRefRaw updates an existing model_catalog_json line", () => {

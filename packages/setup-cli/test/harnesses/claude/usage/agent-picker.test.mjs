@@ -11,6 +11,7 @@ import {
   formatClaudeUsageAgentChoice,
   promptClaudeUsageAgent,
 } from "../../../../lib/harnesses/claude/usage/agent-picker.mjs";
+import { symbols } from "../../../../lib/ui/style.mjs";
 import {
   formatSubagentLabel,
   formatUsageCachePct,
@@ -1352,9 +1353,12 @@ describe("agent picker tracking cues", () => {
     const mainRow = rows.find((l) => /Main/.test(l) && /\$/.test(l));
     const subRow = rows.find((l) => /Explore/.test(l) && /\$/.test(l));
     assert.ok(mainRow && subRow, `both rows present:\n${fromSub}`);
-    assert.match(mainRow, /^❯/, "cursor on Main");
-    assert.doesNotMatch(mainRow, /•/, "Main is not the tracked agent here");
-    assert.match(subRow, /•/, "bullet marks the tracked subagent");
+    // Glyphs degrade to ASCII (`>`, `*`) in a non-UTF-8 locale (Linux test
+    // container), and `*` is a regex metacharacter — escape whatever we get.
+    const re = (glyph) => new RegExp(glyph.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    assert.match(mainRow, new RegExp(`^${re(symbols.pointer).source}`), "cursor on Main");
+    assert.doesNotMatch(mainRow, re(symbols.bullet), "Main is not the tracked agent here");
+    assert.match(subRow, re(symbols.bullet), "bullet marks the tracked subagent");
     // Row LENGTHS differ (the labels do), so align on where the cost cell
     // starts: the pointer and the bullet must occupy the same two columns.
     assert.equal(
