@@ -122,7 +122,7 @@ describe("configure to harness on propagation", () => {
 
     const onResult = await runFireconnect(
       [
-        "claude", "on", "--opus", "firerouter",
+        "claude", "on", "--model", "firerouter",
         "--api-key", "fw_test_key_12345",
         "--anthropic-api-key", "sk-ant-global-key-12345",
       ],
@@ -140,7 +140,7 @@ describe("configure to harness on propagation", () => {
 
     const onResult = await runFireconnect(
       [
-        "claude", "on", "--opus", "firerouter",
+        "claude", "on", "--model", "firerouter",
         "--api-key", "fw_test_key_12345",
         "--anthropic-api-key", "fw_not_anthropic",
       ],

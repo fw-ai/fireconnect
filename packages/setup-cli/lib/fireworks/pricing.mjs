@@ -62,6 +62,14 @@ export function formatPricingInOut(pricing) {
   return `${formatUsd(pricing.input)} / ${formatUsd(pricing.output)}`;
 }
 
+/** Claude Code /model picker: "$2/$10 per Mtok" (input/output only). */
+export function formatAnthropicStylePerMtok(pricing) {
+  if (!pricing) {
+    return null;
+  }
+  return `${formatUsd(pricing.input)}/${formatUsd(pricing.output)} per Mtok`;
+}
+
 /** Full standard-tier line for status output. */
 export function formatPricingLine(pricing) {
   if (!pricing) {

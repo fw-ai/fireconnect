@@ -203,8 +203,8 @@ function printStorage(summary, source) {
   if (summary.backend === "file" && summary.keychainPresent) {
     console.log("");
     console.log(muted(
-      "Sandbox/CI tip: Claude websearch MCP and file-config harnesses bake the API key "
-        + "into their config files. In non-interactive shells you can still export "
+      "Sandbox/CI tip: file-config harnesses bake the API key into their config files. "
+        + "In non-interactive shells you can still export "
         + "FIREWORKS_API_KEY directly (the key is in the encrypted file above).",
     ));
   }

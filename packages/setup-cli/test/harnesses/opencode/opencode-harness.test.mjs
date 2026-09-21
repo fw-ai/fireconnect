@@ -13,7 +13,12 @@ import {
   opencodeDataDir,
 } from "../../../lib/harnesses/opencode/core.mjs";
 import { readJsonIfExists } from "../../../lib/io/json.mjs";
-import { FIRECONNECT_REFERER, GLM_FAST_LATEST } from "../../helpers.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  setServerlessCatalogSnapshot,
+} from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import { FIRECONNECT_REFERER, GLM_FAST_LATEST, mockServerlessModel } from "../../helpers.mjs";
 import { seedOnCommandCatalog } from "../../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "fireconnect.mjs");
@@ -41,6 +46,23 @@ function runFireconnect(args, env = {}) {
   });
 }
 
+/**
+ * Persist a flat-row catalog snapshot into `home`'s scoped cache so a spawned
+ * CLI resolves API-reported router aliases offline. `seedOnCommandCatalog`
+ * skips its empty default when a snapshot is already present.
+ */
+function seedServerlessCatalogRows(home, rows) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(rows));
+  } finally {
+    process.env.HOME = prevHome;
+    // Don't leak the seed into this process's in-memory snapshot.
+    setServerlessCatalogSnapshot(null);
+  }
+}
+
 describe("opencode harness integration", () => {
   it("on/off round-trip restores opencode.json", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-"));
@@ -49,6 +71,14 @@ describe("opencode harness integration", () => {
     const configPath = opencodeConfigPath(home);
     const original = JSON.stringify({ model: "openai/gpt-4", provider: {} }, null, 2) + "\n";
     await writeFile(configPath, original);
+
+    // Alias routers resolve from API-reported `aliases`; seed the GLM 5.2 row
+    // the flat catalog reports for glm-fast-latest.
+    seedServerlessCatalogRows(home, [
+      mockServerlessModel({
+        aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+      }),
+    ]);
 
     const onResult = await runFireconnect(
       [
@@ -162,6 +192,18 @@ describe("opencode harness integration", () => {
     const configPath = opencodeConfigPath(home);
     await writeFile(configPath, JSON.stringify({ model: "openai/gpt-4", provider: {} }, null, 2) + "\n");
 
+    // Seed the vision-capable Kimi K3 row so the kimi-fast-latest alias the
+    // Fire Pass fallback registers resolves its image modalities.
+    seedServerlessCatalogRows(home, [
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
+        input_modalities: ["text", "image"],
+        context_length: 1_040_000,
+      }),
+    ]);
+
     // A Fire Pass key resolves an offline catalog (no network), so the full set
     // registers deterministically.
     const onResult = await runFireconnect(
@@ -184,6 +226,7 @@ describe("opencode harness integration", () => {
     assert.equal(models["glm-fast-latest"].modalities, undefined);
     assert.ok(!ids.includes("glm-5p2-fast"));
     assert.ok(!ids.includes("kimi-k3-fast"));
+    // Fire Pass pins kimi-fast-latest (not the fireworks-key default, `auto`).
     assert.equal(enabled.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/kimi-fast-latest`);
 
     const offResult = await runFireconnect(["opencode", "off"], { HOME: home });
@@ -192,8 +235,8 @@ describe("opencode harness integration", () => {
     assert.equal(restored.provider[OPENCODE_FIREWORKS_PROVIDER_ID], undefined);
   });
 
-  it("rebuilds the model set on re-on so stale catalog entries don't accumulate", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-rebuild-"));
+  it("prunes missing models on re-on", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-prune-"));
     await mkdir(path.join(home, ".config/opencode"), { recursive: true });
     const configPath = opencodeConfigPath(home);
     await writeFile(configPath, JSON.stringify({ model: "openai/gpt-4", provider: {} }, null, 2) + "\n");
@@ -209,7 +252,7 @@ describe("opencode harness integration", () => {
     config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].models["deepseek-v4-flash"] = { name: "deepseek-v4-flash" };
     await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
 
-    // Re-on rebuilds from the current catalog — stale and catalog-model entries drop.
+    // Re-on removes entries absent from the current catalog.
     on = await runFireconnect(["opencode", "on", "--api-key", "fpk_test_firepass_key"], { HOME: home, FIREWORKS_API_KEY: "" });
     assert.equal(on.code, 0, on.stderr);
     const models = JSON.parse(await readFile(configPath, "utf8")).provider[OPENCODE_FIREWORKS_PROVIDER_ID].models;

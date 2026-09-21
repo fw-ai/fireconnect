@@ -16,7 +16,7 @@ import {
 } from "../../keys/api-key.mjs";
 import { shouldSkipEnvKeyAutoPersist } from "../../config/secret-storage-policy.mjs";
 
-const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE, HARNESS.CODEX]);
+const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE, HARNESS.CODEX, HARNESS.COPILOT_APP]);
 
 /**
  * Fail on parsed flags the selected harness/command cannot use. The parser is
@@ -35,6 +35,10 @@ function validateHarnessOptions(route, ctx) {
     ? claudeModels.some((modelId) => isFirerouterModelPattern(modelId))
     : isFirerouterModelPattern(ctx.main);
 
+  if (isOn && harnessId !== HARNESS.CLAUDE && /\[1m\]$/i.test(ctx.main?.trim() ?? "")) {
+    throw new Error("[1m] model suffixes are only supported by Claude Code.");
+  }
+
   if (ctx.provider && !ctx.azure) {
     throw new Error(
       "--provider is configure-only. For a one-off harness switch, use --azure; "
@@ -48,14 +52,23 @@ function validateHarnessOptions(route, ctx) {
     throw new Error("--base-url on this harness requires --azure.");
   }
   if (ctx.force && !IDE_HARNESSES.has(harnessId)) {
-    throw new Error("--force is only supported for Cursor, VS Code, and Codex.");
+    throw new Error("--force is only supported for Cursor, VS Code, the Copilot app, and Codex.");
+  }
+  if (onboardingMode === "prompt" && harnessId === HARNESS.CLAUDE && isOn) {
+    throw new Error(
+      "--interactive is not supported for Claude Code. Use `--model <id>` to add a Fireworks "
+        + "model to the /model picker.",
+    );
   }
   if (onboardingMode !== "auto" && !(harnessId === HARNESS.CLAUDE && isOn)) {
     const flag = onboardingMode === "prompt" ? "--interactive" : "--non-interactive";
     throw new Error(`${flag} applies only to \`fireconnect claude on\`.`);
   }
-  if (claudeAliases.some(Boolean) && !(harnessId === HARNESS.CLAUDE && isOn)) {
-    throw new Error("--opus/--sonnet/--haiku/--fable/--subagent apply only to `fireconnect claude on`.");
+  if (claudeAliases.some(Boolean)) {
+    throw new Error(
+      "--opus/--sonnet/--haiku/--fable/--subagent are not supported. "
+        + "Tier slots stay on Claude defaults; use `--model <id>` on `fireconnect claude on`.",
+    );
   }
   if (ctx.main && !isOn) {
     throw new Error("--model applies only to `<harness> on`.");
@@ -92,11 +105,14 @@ function validateHarnessOptions(route, ctx) {
   if (ctx.configPath && !FILE_CONFIG_HARNESS_SET.has(harnessId)) {
     throw new Error("--config-path is supported only by OpenCode, Codex, Pi, and DeepSeek Harness.");
   }
-  if (ctx.dbPath && harnessId !== HARNESS.CURSOR) {
-    throw new Error("--db-path is supported only by Cursor.");
+  if (ctx.dbPath && harnessId !== HARNESS.CURSOR && harnessId !== HARNESS.COPILOT_APP) {
+    throw new Error("--db-path is supported only by Cursor and the Copilot app.");
   }
   if (ctx.vscodePath && harnessId !== HARNESS.VSCODE) {
     throw new Error("--vscode-path is supported only by VS Code.");
+  }
+  if (ctx.providersPath && harnessId !== HARNESS.COPILOT_CLI) {
+    throw new Error("--providers-path is supported only by the Copilot CLI.");
   }
   if (ctx.anthropic || ctx.storedOnly || ctx.withToken || ctx.revoke || ctx.paste || ctx.account) {
     throw new Error("This option belongs to a global login/logout/key command, not a harness command.");
@@ -106,7 +122,7 @@ function validateHarnessOptions(route, ctx) {
     if (!isOn || (harnessId !== HARNESS.CLAUDE && !firerouterRequested)) {
       throw new Error(
         harnessId === HARNESS.CLAUDE
-          ? "--routing-preference requires a Claude slot set to firerouter."
+          ? "--routing-preference requires `fireconnect claude on --model firerouter`."
           : "--routing-preference requires `<harness> on --model firerouter`.",
       );
     }

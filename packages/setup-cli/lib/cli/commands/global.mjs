@@ -28,6 +28,8 @@ import {
 import {
   VSCODE_DATA_RELATIVE_DIR,
 } from "../../harnesses/vscode/core.mjs";
+import { COPILOT_DATA_RELATIVE_DIR as COPILOT_APP_DATA_RELATIVE_DIR } from "../../harnesses/copilot-app/core.mjs";
+import { COPILOT_CLI_DATA_RELATIVE_DIR } from "../../harnesses/copilot-cli/config.mjs";
 import { globalConfigPath } from "../../config/global-config.mjs";
 import { isHarnessRouted } from "../../harness/engine.mjs";
 import { getHarness, listHarnesses } from "../../harness/registry.mjs";
@@ -66,6 +68,8 @@ const HARNESS_DATA_DIR = {
   [HARNESS.DEEPSEEK]: DEEPSEEK_DATA_RELATIVE_DIR,
   [HARNESS.CURSOR]: CURSOR_DATA_RELATIVE_DIR,
   [HARNESS.VSCODE]: VSCODE_DATA_RELATIVE_DIR,
+  [HARNESS.COPILOT_APP]: COPILOT_APP_DATA_RELATIVE_DIR,
+  [HARNESS.COPILOT_CLI]: COPILOT_CLI_DATA_RELATIVE_DIR,
 };
 
 const CLI_NAME = "fireconnect";
@@ -133,16 +137,10 @@ function claudeHelp() {
     optBlock("Options for on", [
       ["--api-key <key>", "Fireworks API key (also saves ~/.fireconnect/config.json)."],
       ["--base-url <url>", "Anthropic-compatible gateway URL override."],
-      ["--model <id>", "Primary/default model."],
-      ["--opus <id>", "Model for the opus alias."],
-      ["--sonnet <id>", "Model for the sonnet alias."],
-      ["--haiku <id>", "Model for the haiku alias."],
-      ["--fable <id>", "Model for the fable alias."],
-      ["--subagent <id>", "Model for subagents."],
-      ["--interactive", "Open the model mapping wizard, including after setup."],
-      ["--non-interactive", "Skip first-run model onboarding; use saved preferences or defaults."],
-      ["--routing-preference <p>", `FireRouter tradeoff (${ROUTING_PREF}); needs a firerouter slot.`],
-      ["--anthropic-api-key <key>", "Anthropic BYOK key for firerouter slots."],
+      ["--model <id>", "Add a Fireworks model to Claude Code's /model picker (does not override tier slots)."],
+      ["--non-interactive", "Non-interactive connect (default)."],
+      ["--routing-preference <p>", `FireRouter tradeoff (${ROUTING_PREF}); requires --model firerouter.`],
+      ["--anthropic-api-key <key>", "Optional: store sk-ant-… for Claude Code native auth (not required for FireRouter)."],
     ]),
     "",
     optBlock("Options for usage", [
@@ -253,6 +251,8 @@ export function mainCommandsHelp() {
       ["pi", "Pi"],
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
+      ["copilot-app", "GitHub Copilot desktop app"],
+      ["copilot-cli", "GitHub Copilot CLI"],
       ["deepseek", "DeepSeek Harness (dsh)"],
     ]),
     "",
@@ -314,6 +314,24 @@ export function printHelp(topic = "") {
       pathDesc: "Explicit chatLanguageModels.json path.",
       note: "If VS Code is running, on/off wait for you to quit (press Enter or auto-detect). Restart after. status is read-only.",
     }),
+    "copilot-app": ideHarnessHelp("copilot-app", "Copilot app", {
+      pathFlag: "--db-path <path>",
+      pathDesc: "Explicit Copilot data.db path (default: ~/.copilot/data.db).",
+      note: "Adds a Fireworks BYOK provider to the GitHub Copilot desktop app; its built-in "
+        + "models keep working. Quit the app before on/off (Cmd-Q). status is read-only. "
+        + "For the `copilot` command-line tool, use `fireconnect copilot-cli`.",
+    }),
+    "copilot-cli": helpLines(
+      configHarnessHelp("copilot-cli", "Copilot CLI", {
+        configPath: "--providers-path <path>",
+        configPathNote: "Explicit providers.json path (default: ~/.copilot/providers.json).",
+      }),
+      "",
+      "Writes the Fireworks BYOK provider to providers.json and selects it in settings.json.",
+      "The CLI addresses BYOK models by a provider-qualified id (fireworks/<model>); a bare",
+      "id is rejected. Switch with `copilot --model fireworks/<id>` or `/model`.",
+      "For the desktop app, use `fireconnect copilot-app`.",
+    ),
     deepseek: configHarnessHelp("deepseek", "DeepSeek Harness (dsh)", {
       configPath: "--config-path <path>",
       configPathNote: "Explicit ~/.dsh/settings.yaml path.",
@@ -395,6 +413,8 @@ export function printHelp(topic = "") {
       ["pi", "Pi"],
       ["cursor", "Cursor IDE"],
       ["vscode", "VS Code Chat"],
+      ["copilot-app", "GitHub Copilot desktop app"],
+      ["copilot-cli", "GitHub Copilot CLI"],
       ["deepseek", "DeepSeek Harness (dsh)"],
     ]),
     "",
@@ -873,7 +893,7 @@ function printFarewell(restoredLabels) {
 function printUninstallSummary({ offErrors, removalFailures }) {
   const hasErrors = offErrors.length > 0 || removalFailures.length > 0;
   if (!hasErrors) {
-    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, DeepSeek Harness) to fully apply.");
+    console.log("FireConnect has been uninstalled. Restart any running harnesses (Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, Copilot, DeepSeek Harness) to fully apply.");
     return;
   }
   for (const { harnessId, label, message } of offErrors) {

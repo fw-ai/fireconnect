@@ -2,15 +2,15 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fw-ai/fireconnect/blob/main/LICENSE)
 
-> Use [Fireworks AI](https://fireworks.ai) models in Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, and DeepSeek Harness.
+> Use [Fireworks AI](https://fireworks.ai) models inside the coding harnesses you already use: Claude Code, OpenCode, Codex, Pi, Cursor, VS Code, GitHub Copilot (app and CLI), and DeepSeek Harness.
 
-One CLI points your existing AI coding tools at Fireworks. `on` rewrites the tool's own config,
-`off` restores your original file **byte-for-byte** — no proxy to run, no wrapper to launch.
+One command points a harness at Fireworks. `on` edits that harness's own settings, `off` puts your original file back **exactly as it was**: nothing to host, nothing to launch.
 
 **Contents:** [Quick start](#quick-start) · [Supported harnesses](#supported-harnesses) ·
 [Default models](#default-models) · [Claude Code](#claude-code) · [Codex](#codex) ·
 [OpenCode](#opencode) · [Pi](#pi) · [Cursor](#cursor) · [VS Code Chat](#vs-code-chat) ·
-[DeepSeek Harness](#deepseek-harness) · [FireRouter](#firerouter) · [Models](#models) ·
+[GitHub Copilot app](#github-copilot-app) · [GitHub Copilot CLI](#github-copilot-cli) · [DeepSeek Harness](#deepseek-harness) ·
+[FireRouter](#firerouter) · [Models](#models) ·
 [Azure / Foundry](#azure-microsoft-foundry-endpoints) · [CLI reference](#cli-reference) ·
 [Keys and storage](#keys-and-storage) · [Troubleshooting](#troubleshooting) ·
 [Upgrade and uninstall](#upgrade-and-uninstall)
@@ -32,24 +32,19 @@ fireconnect login        # browser sign-in, or paste a fw_… / fpk_… key
 **3. Connect a harness**
 
 ```bash
-fireconnect claude       # first run opens the model mapping wizard
+fireconnect claude       # routes through Fireworks, appends the catalog to /model
 ```
 
 ```text
 ✓ Claude Code → Fireworks
-Model mapping
-  Fable     → glm-flash-latest
-  Opus      → firerouter
-  Sonnet    → deepseek-pro-latest
-  Haiku     → deepseek-flash-latest
-  Subagents → deepseek-flash-latest
-
-✓ Web search → fireworks-websearch (installed)
+Model picker
+  Anthropic tiers → unchanged
+  Fireworks catalog → appended in /model
 
 Restart Claude Code to use the new setup.
 ```
 
-**4. Restart the tool, then verify**
+**4. Restart the harness, then check**
 
 ```bash
 fireconnect claude status
@@ -59,30 +54,30 @@ fireconnect claude status
 Claude Code
 Connection: on
 Provider: Fireworks
-Auth: custom header in settings.json
+Auth: X-Fireworks-Api-Key header in settings.json
+Model: auto
 
-Model mapping:
-  main     -> firerouter
+Registered models:
+  firerouter
+  auto
+  deepseek-flash-latest
+  ...
 ```
 
-`claude status` lists only overrides — unpinned native slots and slots still on the
-default Fireworks mapping are omitted. With the recommended defaults, the mapping
-section may be empty until you pin a slot.
+`status` shows the model serving requests (`auto` when the main slot is left on
+Claude Code's default) and the serverless catalog registered in `/model`.
 
-Swap `claude` for any harness: `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepseek`.
-Run `fireconnect help` or `fireconnect <harness> help` for every option.
+Use any harness name in place of `claude`: `opencode`, `codex`, `pi`, `cursor`, `vscode`, `copilot-app`, `copilot-cli`, `deepseek`.
+Run `fireconnect help` or `fireconnect <harness> help` to see every option.
 
 ### Install notes
 
-- Requires **bash** and **Node.js 18+**. Missing or too old Node: installed via Homebrew on macOS, otherwise the
-  installer prints nvm / nodejs.org / NodeSource instructions.
-- Clones the CLI to `~/.fireconnect/cli`, installs the launcher into `~/.local/bin`, and adds it
-  to your shell `PATH`.
-- Runs the same finalize as `fireconnect upgrade` (reprobe secret storage; rebake enabled harness
-  keys and the Claude websearch MCP Bearer token).
-- Does **not** sign you in or touch harness settings — that's steps 2 and 3.
+- You need **bash** and **Node.js 18+**. If Node is missing or too old, the installer sets it up via Homebrew on macOS, or points you to nvm / nodejs.org / NodeSource elsewhere.
+- The installer puts the CLI in `~/.fireconnect/cli`, adds a launcher to `~/.local/bin`, and adds it to your shell `PATH`.
+- It also runs the same cleanup as `fireconnect upgrade`: re-checks key storage, re-saves keys for harnesses you've already connected, and removes the retired Claude WebSearch MCP.
+- It doesn't sign you in or change any harness settings. That's steps 2 and 3.
 
-**Windows:** run from Git Bash with the same command above. Piping through PowerShell corrupts line endings
+**Windows:** run the install command from Git Bash. Piping it through PowerShell breaks line endings
 (`set: pipefail\r: invalid option name`).
 
 **From an SSH checkout:**
@@ -93,254 +88,214 @@ mkdir -p ~/.fireconnect && git clone git@github.com:fw-ai/fireconnect.git ~/.fir
 
 ## Supported harnesses
 
-| Harness | Command | Config it writes | Key storage | Before `on` / `off` |
+| Harness | Command | Settings file it edits | Where your key goes | Before `on` / `off` |
 |---------|---------|------------------|-------------|---------------------|
-| [Claude Code](#claude-code) | `fireconnect claude` | `~/.claude/settings.json` | Baked header literal (`0600`) | Restart after |
-| [Codex](#codex) | `fireconnect codex` / `fireconnect chatgpt` | `~/.codex/config.toml` | Baked bearer literal (`0600`) | Restart after |
-| [OpenCode](#opencode) | `fireconnect opencode` | `~/.config/opencode/opencode.json` | Baked literal (`0600`) | Restart after |
-| [Pi](#pi) | `fireconnect pi` | `~/.pi/agent/{settings,models,auth}.json` | Baked literal (`0600`) | Restart after |
-| [Cursor](#cursor) | `fireconnect cursor` | `state.vscdb` (SQLite) | IDE `safeStorage` | **Quit Cursor first** |
-| [VS Code Chat](#vs-code-chat) | `fireconnect vscode` | `chatLanguageModels.json` + `state.vscdb` | IDE `safeStorage` | **Quit VS Code first** |
-| [DeepSeek Harness](#deepseek-harness) | `fireconnect deepseek` | `~/.dsh/settings.yaml` + `.credentials.yaml` | Baked credential (`0600`) | Restart `dsh` after |
+| [Claude Code](#claude-code) | `fireconnect claude` | `~/.claude/settings.json` | Saved in the file itself (locked down to you only) | Restart after |
+| [Codex](#codex) | `fireconnect codex` / `fireconnect chatgpt` | `~/.codex/config.toml` | Saved in the file itself (locked down to you only) | Restart after |
+| [OpenCode](#opencode) | `fireconnect opencode` | `~/.config/opencode/opencode.json` | Saved in the file itself (locked down to you only) | Restart after |
+| [Pi](#pi) | `fireconnect pi` | `~/.pi/agent/{settings,models,auth}.json` | Saved in the file itself (locked down to you only) | Restart after |
+| [Cursor](#cursor) | `fireconnect cursor` | `state.vscdb` (SQLite) | IDE's own secure storage | **Quit Cursor first** |
+| [VS Code Chat](#vs-code-chat) | `fireconnect vscode` | `chatLanguageModels.json` + `state.vscdb` | IDE's own secure storage | **Quit VS Code first** |
+| [GitHub Copilot app](#github-copilot-app) | `fireconnect copilot-app` | `~/.copilot/data.db` (SQLite) | Saved in the file itself (locked down to you only) | **Quit Copilot first** |
+| [GitHub Copilot CLI](#github-copilot-cli) | `fireconnect copilot-cli` | `~/.copilot/providers.json` + `settings.json` | Saved in the file itself (locked down to you only) | Restart `copilot` after |
+| [DeepSeek Harness](#deepseek-harness) | `fireconnect deepseek` | `~/.dsh/settings.yaml` + `.credentials.yaml` | Saved in the file itself (locked down to you only) | Restart `dsh` after |
 
-Every harness supports `on`, `off`, `status`, and `help`. `off` restores your pre-connect
-configuration — file-based harnesses byte-for-byte from a snapshot under `~/.fireconnect/`,
-and the IDEs by removing only what FireConnect registered.
+Every harness supports `on`, `off`, `status`, and `help`. `off` brings back how things were before you connected.
+File-based harnesses restore from a snapshot kept under `~/.fireconnect/`, and the IDEs just drop what FireConnect added.
 
 ## Default models
 
-| Slot / harness | Default |
+| Slot / harness | What you get |
 |----------------|---------|
-| Claude `main` | Claude default (unpinned) |
-| Claude `opus` | `firerouter` on first connect with a standard key; otherwise `glm-latest` |
-| Claude `sonnet` | `deepseek-pro-latest` |
-| Claude `fable` | `glm-flash-latest` (vision) |
-| Claude `haiku` | `deepseek-flash-latest` (text-only) |
-| Claude `subagent` | `deepseek-flash-latest` (text-only; tool runner) |
-| OpenCode, Codex, Pi, Cursor, VS Code, DeepSeek Harness | `kimi-fast-latest` |
+| Claude tiers (`opus` / `sonnet` / `haiku` / `fable` / subagents) | Claude's own defaults (left alone); pick Fireworks entries in `/model` |
+| Claude `/model` picker | Serverless catalog appended (`auto`, routers, `firerouter` when eligible) |
+| OpenCode, Codex, Pi, Cursor, VS Code, Copilot, DeepSeek Harness | `auto` |
 | Fire Pass (`fpk_...`) | `kimi-fast-latest` everywhere |
 
-Fire Pass keys are detected automatically — no flags needed. Saved Claude mappings are
-key-scoped (Fireworks vs Fire Pass) and silently restored after `claude off` → `claude`.
-Override anytime with flags or the [wizard](#model-mapping).
+Fire Pass keys are detected on their own. No flags needed. Your saved Claude picks are kept separately
+per key type (Fireworks vs Fire Pass) and come back quietly after `claude off` → `claude`.
+Add a Fireworks model to the picker anytime with `fireconnect claude --model <id>`.
+
+Re-running `fireconnect <harness>` refreshes the registered catalog in every harness: retired
+models are pruned, newly served ones are added, and pricing / context / display metadata is
+re-rendered in place. Your own models and picks are untouched.
 
 ## Claude Code
 
 ```bash
-fireconnect claude                       # wizard on first setup; flags work anytime
-fireconnect claude --interactive         # reopen the model mapping wizard
+fireconnect claude                       # connect; catalog lands in /model
+fireconnect claude --model <id>          # ensure one model appears in /model
 fireconnect claude status                # mapping, auth, and per-slot rates
 fireconnect claude usage                 # pick session → live meter (Tab agents, Esc sessions, q quit)
-fireconnect claude usage --days 7        # widen the session list's lookback (default 3)
+fireconnect claude usage --days 7        # look back further in the session list (default 3)
 fireconnect claude usage --session <id>  # start on one session; Esc still opens the list
 fireconnect claude usage --plain         # one-shot snapshot, no interactive picker
 fireconnect claude live                  # tmux split: Claude Code left, live usage meter right
-fireconnect claude demo                  # race two models on a prompt (requires routing on)
+fireconnect claude demo                  # race two models on a prompt (needs routing on)
 fireconnect claude off
 ```
 
-Scripting and cost reporting — `status` and `usage` both emit machine-readable JSON:
+For scripts and cost reporting, `status` and `usage` both print JSON:
 
 ```bash
 fireconnect claude status --json         # provider, auth, mapping
 fireconnect claude usage --last-n 5 --json  # snapshot the 5 latest sessions
-fireconnect claude usage --verbose       # request-level rows and per-request rates
+fireconnect claude usage --verbose       # per-request rows and per-request rates
 ```
 
-Settings apply per session: to pick up a new mapping, exit and resume with
-`claude --resume <id>`, or start a new session.
+Settings apply per session: exit and resume with `claude --resume <id>`, or just
+start a new session.
 
-### Model mapping
+### Model picker
 
-Claude Code has six model slots. FireConnect owns the mapping and prints it after every
-successful activation. Configure it three ways:
+Claude Code has Anthropic tier rows in `/model` plus Fireworks entries. On connect, FireConnect
+routes through Fireworks, **does not override** Opus / Sonnet / Haiku / Fable / subagent slots,
+and **appends the registerable serverless catalog** (same set as Cursor and OpenCode) via
+`settings.json` → `modelPicker`.
+
+Use **`--model`** only when you want an extra picker row (for example `firerouter` or a router
+not yet in the live catalog). It does **not** pin the main default or tier aliases.
 
 ```bash
-# 1. Interactive wizard — first connect, or anytime
-fireconnect claude --interactive
-
-# 2. Slot flags — scriptable, combine freely
-fireconnect claude --model kimi-fast-latest
-fireconnect claude --opus glm-fast-latest --sonnet glm-fast-latest
-fireconnect claude --haiku deepseek-flash-latest --subagent deepseek-flash-latest
-
-# 3. Saved prefs / defaults, no prompts — CI and scripts
-fireconnect claude --non-interactive
+fireconnect claude                              # catalog in /model, tiers native
+fireconnect claude --model firerouter           # FireRouter row + routing headers
+fireconnect claude --model glm-latest           # ensure that router appears in the picker
 ```
-
-`--interactive` opens the wizard at any time, not just on first connect. It is Fable-first,
-shows every slot on one screen, and needs a terminal — use the flags above in CI.
-
-| Flag | Writes |
-|------|--------|
-| `--model` | top-level `model` (Claude's main / the `/model` "Default" row) |
-| `--opus`, `--sonnet`, `--haiku`, `--fable` | matching `ANTHROPIC_DEFAULT_*_MODEL` |
-| `--subagent` | `CLAUDE_CODE_SUBAGENT_MODEL` |
-
-Slots are independent — `--opus firerouter` changes only Opus and leaves main alone.
-Use `native` as a slot value to leave it unpinned so Claude Code picks Anthropic's
-default for that role (still routed through Fireworks). `on` is optional.
-
-```bash
-fireconnect claude --opus native --sonnet native   # native Opus/Sonnet
-fireconnect claude --model claude-sonnet-4-5       # pin a specific Anthropic model
-```
-
-On first connect, the wizard opens on a single Fable-first mapping screen. Re-running
-`fireconnect claude` without model flags preserves the current main when FireConnect is
-already active (including `/model` changes made inside Claude Code), and otherwise
-restores your saved key-scoped mapping.
 
 ### What gets written
 
-Claude authenticates with a static `X-Fireworks-Api-Key` custom header
-(`ANTHROPIC_CUSTOM_HEADERS`), **not** `apiKeyHelper`. `main` stays native (unpinned).
-Every other slot is pinned in `env` to a Fireworks router alias unless you pick
-`native` or `claude-default` for that slot in the wizard.
+Claude Code signs in with a static `X-Fireworks-Api-Key` header
+(`ANTHROPIC_CUSTOM_HEADERS`), **not** `apiKeyHelper`. On a standard key, `main` and
+every tier slot default to **native** (unpinned): Anthropic's own picker rows stay
+as-is. Pick Fireworks models from the extra `/model` entries FireConnect adds (`auto`,
+routers, `firerouter`, etc.). Tier slot flags are retired — slots stay native.
 
-Baseline pinned slots (before any first-connect FireRouter auto-pin on Opus):
+| Slot | Default (standard `fw_` keys) |
+|------|---------------------------|
+| Main, Opus, Sonnet, Haiku, Fable, Subagents | native (never overridden by `on`) |
+| `/model` picker | + full registerable serverless catalog |
+| `--model <id>` | adds one Fireworks id to the picker (optional) |
 
-| Slot | Default |
-|------|---------|
-| Opus | `glm-latest` |
-| Sonnet | `deepseek-pro-latest` |
-| Fable | `glm-flash-latest` |
-| Haiku | `deepseek-flash-latest` |
-| Subagents | `deepseek-flash-latest` |
+Fire Pass (`fpk_`) keys are the exception: every slot pins its curated router
+(`kimi-fast-latest` everywhere, including `main`), and no catalog picker is written.
 
-On **first connect** with a standard `fw_` key and FireRouter auth, Opus is auto-pinned to
-`firerouter` and Sonnet to `glm-latest` (GLM moves off the Opus slot). Example settings after
-that first connect:
+After `fireconnect claude on`, settings look roughly like this (tier env pins omitted;
+serverless models listed in `modelPicker`):
 
 ```json
 {
+  "modelPicker": {
+    "fireconnectManaged": true,
+    "replaceBuiltInOptions": false,
+    "options": [
+      { "model": "auto[1m]", "label": "Auto", "description": "…" },
+      { "model": "glm-latest[1m]", "label": "GLM 5.3 (Latest)", "description": "…" }
+    ]
+  },
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.fireworks.ai/inference",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "firerouter[1m]",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-latest[1m]",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash-latest[1m]",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL": "glm-flash-latest[1m]",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash-latest[1m]",
     "ANTHROPIC_CUSTOM_HEADERS": "X-Fireworks-Api-Key: fw_..."
   }
 }
 ```
 
-When FireRouter is not selected, `opus` uses `glm-latest[1m]`. `main` remains unpinned.
+`firerouter` is already a picker row on a standard key; passing
+`--model firerouter` additionally sends routing headers with each request
+(used for `--routing-preference`). Tier slots stay on Claude Code defaults
+either way — pick a Fireworks entry in `/model` when you want a Fireworks
+model. `main` stays unpinned on standard keys.
 
-**Why the custom header?** The gateway authenticates via `X-Fireworks-Api-Key`, which wins over
-any `x-api-key` / `Authorization` a stray `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` would
-send — so a leftover Anthropic key can't silently break routing. The trade-off is a plaintext
-Fireworks key in `settings.json` (mode `0600`); the OS keychain stays the source of truth for
-`key export` and other harnesses. FireConnect keeps a byte-for-byte backup for `off`, and
-pre-approves a stray `ANTHROPIC_API_KEY` in `~/.claude.json` so Claude Code doesn't prompt on
-first launch.
+**Why a header?** The gateway checks `X-Fireworks-Api-Key` first, ahead of any `x-api-key` /
+`Authorization` a leftover `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` might send, so a stray
+Anthropic key can't quietly break routing. The trade-off: your Fireworks key sits in plaintext in
+`settings.json` (readable only by you). The OS keychain stays the source of truth for
+`key export` and other harnesses. FireConnect keeps an exact backup for `off`, and pre-approves a
+stray `ANTHROPIC_API_KEY` in `~/.claude.json` so Claude Code doesn't nag you on first launch.
 
 `on` also:
 
-- Adds `WebSearch` / `WebFetch` to `permissions.deny` — Anthropic **server-side** tools the
-  gateway can't run. Your own rules are preserved; the deny entries are removed on `off`. If
-  your account is entitled to Fireworks web search, a `fireworks-websearch` MCP server is
-  installed as the working replacement, with `Authorization: Bearer <key>` baked into
-  `~/.claude.json` (same shape as `claude mcp add --header`).
-- Installs a `statusLine` showing the routed model and Fireworks-rate session cost (see
-  [Status line](#status-line)). An existing `statusLine` of your own is never replaced.
-- Sends privacy-safe attribution headers where the harness supports them: `X-Title: <harness>`
-  and `HTTP-Referer: fireconnect/v<version>`. `User-Agent` is never overridden, and these carry
-  no user, account, path, repo, prompt, session, or credential data. Cursor and DeepSeek Harness
-  expose no custom-header surface, so they skip attribution.
+- Keeps Claude's own `WebSearch` and `WebFetch` working through the Fireworks Messages endpoint.
+  Old `fireworks-websearch` MCP entries and tool denials from earlier FireConnect versions are
+  removed; your own MCPs and permission rules are untouched.
+- Adds a `statusLine` to `settings.json` showing which model served the session and what it cost
+  at Fireworks rates (see [Status line](#status-line)). If you already have your own
+  `statusLine`, it's never replaced.
+- Labels requests with privacy-safe headers where the harness allows it: `X-Title: <harness>` and
+  `HTTP-Referer: fireconnect/v<version>`. No `User-Agent` override, and nothing identifying you,
+  your account, files, repos, prompts, sessions, or keys. Cursor and DeepSeek Harness have no
+  header support, so they skip this.
 
-**Model IDs and `[1m]`.** Short slugs are accepted everywhere and canonical
-`accounts/fireworks/...` IDs are shortened before write. The `[1m]` suffix is
-applied **per model ID** when the resolved serverless context window is at least
-1M tokens (live catalog cache when available, otherwise static specs), plus any
-`firerouter*` gateway pattern. Router aliases such as `deepseek-flash-latest`
-resolve to their base model before the limit check.
-Every slot is tagged the same way, `CLAUDE_CODE_SUBAGENT_MODEL` included: Claude Code
-reads the tag to size the context window and strips it before the request, so the
-gateway still sees a real model ID. Without the tag Claude Code sizes an unrecognized
-model at the 200K it assumes and auto-compacts the session down to fit, which is what
-starves subagents on a 1M model.
-The `[1m]` tag is Claude Code only; other harnesses (Cursor, etc.) should use the bare
-model ID without the suffix.
+**Model IDs and `[1m]`.** Short names work everywhere; long `accounts/fireworks/...` IDs are
+shortened before saving. Picker rows carry a `[1m]` tag when the model's context window is 1M
+tokens or more (checked against the live catalog when available, else built-in specs), plus any
+`firerouter*` gateway name. Claude Code reads the tag to size the context window and strips it
+before sending, so the gateway still sees a real model ID. Without the tag, Claude Code assumes
+200K and squeezes the session to fit. The tag is Claude Code only. Other harnesses (Cursor, etc.)
+take the bare name.
 
 ### Text-only models and images
 
-Claude Code has no way to mark a model as non-vision. Pasting or attaching an image while a
-text-only slot is active can break the session — recover with `/rewind`. Activation prints a
-one-line warning:
+Claude Code can't tell which models see images. Pasting or attaching an image while a text-only
+model is active can break the session. Recover with `/rewind`. Adding a text-only model with
+`--model` prints a one-line heads-up:
 
 ```text
-Text-only: deepseek-flash-latest, glm-fast-latest · Avoid images; recover with /rewind.
+Text-only: glm-fast-latest · Avoid images; recover with /rewind.
 ```
 
-The wizard and `fireconnect claude status` label every model `vision` or `text-only`.
+`fireconnect claude status` marks every model `vision` or `text-only`.
 
 ### Pricing estimates
 
-Claude Code's `/model` picker and session cost estimates use **Anthropic list prices**, while
-Fireworks bills at **serverless rates** — the in-app estimate can look far higher than your real
-bill. Use `fireconnect claude status` and `fireconnect model list` for Fireworks rates, check
+Claude Code's `/model` picker and session estimates use **Anthropic list prices**, while
+Fireworks bills at **serverless rates**, so the in-app number can look much higher than your real
+bill. Trust `fireconnect claude status` and `fireconnect model list` for Fireworks rates, check
 [serverless pricing](https://docs.fireworks.ai/serverless/pricing), and see the
-[billing dashboard](https://app.fireworks.ai/account/billing) for actual spend.
+[billing dashboard](https://app.fireworks.ai/account/billing) for what you actually spent. For a
+per-session view at Fireworks rates, use the optional [status line](#status-line) or
+`fireconnect claude usage`.
 
 ### Status line
 
-`on` installs a `statusLine` in `settings.json` that shows the models actually serving the session
-and its cost at Fireworks rates:
+`on` adds a `statusLine` to `settings.json` showing what served the session and what it cost at
+Fireworks rates:
 
 ```text
 ━━━━━━━━━━━━ ━ ━ · $70.39
 ━ Claude Opus 5 $62.91 98% cache · ━ GLM 5.2 $7.35 96% cache · ━ DeepSeek V4 Flash $0.13 87% cache
 ```
 
-The first line is a **multi-color bar of where the money went** — one colored segment per backend
-model, sized by its share of the session's spend — followed by the session total. FireRouter routes
-each call dynamically, so rather than naming only the latest model the bar shows the whole mix at a
-glance, weighted by what each one actually cost. Above, Opus 5 takes 47% of the calls but nearly the
-whole bar, because it is 89% of the bill; that gap is the thing worth seeing, and a bar drawn by
-call count would have hidden it. The bar carries no text on purpose: spend share is the one figure
-without a natural unit, so printing it as a bare `%` beside the cache percentages made the line
-ambiguous. Width says "how much of the spend"; the legend below names the models in the same order
-with the exact dollars.
+The top line is a **bar showing where the money went**: one colored slice per model, sized by
+its share of the bill, plus the session total. FireRouter switches models call by call, so the
+bar shows the whole mix instead of just the latest model. Above, Opus 5 took 47% of the calls
+but almost the whole bar, because it's 89% of the spend. That's the gap worth seeing. The bar
+carries no text on purpose: a bare `%` next to the cache percentages below would be confusing,
+so width means "share of spend" and the legend underneath names each model with exact dollars.
 
-The line deliberately carries **no context-window figure**. Everything on it is something only
-FireConnect can tell you — the model actually serving each call, its cost at Fireworks rates, its
-cache hit rate. Context usage is Claude Code's own number, which it already surfaces through
-`/context` and its auto-compact warnings, so repeating it here spent columns to say nothing new.
+There's deliberately **no context-window figure**. Everything here is something only FireConnect
+knows: which model served each call, what it cost at Fireworks rates, how often the cache hit.
+Context usage is Claude Code's own number, already visible via `/context` and its auto-compact
+warnings, so repeating it would waste columns. Before the first call there's no transcript yet,
+so the bar shows the slot name instead. `fireconnect claude usage` has the full token table.
 
-The second line attributes **spend and cache-hit rate per model**, each entry led by a swatch in its
-bar segment's color. An entry reads `<model> <its cost> <its cache hit>`, and every figure carries
-its unit (`$`, `% cache`) so nothing has to be inferred. That split is the point a single total
-hides: above, Opus 5 takes 47% of the calls but 89% of the bill, and the subagent model's 87% cache
-rate is a different story from the main thread's 96–98%. Cache is computed per model with the same
-helpers as the live meter's `cache%` column, so the two always agree. Before the first call lands
-there is no transcript to break down, so the bar is replaced by the slot alias.
-`fireconnect claude usage` has the full per-model token table.
+**Color is just identity.** Only the swatches and bar slices are colored; all words and numbers
+use your terminal's own color so the line fits your theme. `NO_COLOR` gives plain text.
 
-**Color carries identity only.** The swatches and bar segments are the sole colored elements; every
-label and number stays in the terminal's own foreground so the line inherits your theme and the
-figures read at one weight. The series hues are the validated dark-surface categorical steps — they
-clear the lightness band, chroma floor, colorblind separation (worst adjacent ΔE 8.4), and 3:1
-contrast against the surface — and segments are separated by a blank cell so neighbouring models are
-distinguishable without relying on hue. `NO_COLOR` strips to plain text.
+The cost is **not** Claude Code's number. That one uses Anthropic's list prices for every call,
+so on the Fireworks gateway it reports money you'll never pay. FireConnect re-adds it from the
+session transcript with the same engine behind `fireconnect claude usage`, priced by whichever
+model actually served each call. Mid-session slot switches, FireRouter sessions that sent hard
+turns to Claude, and subagent calls all total correctly. A `~` prefix means some model had no
+published rate and fell back to a reference price. `97% cache` is the overall prompt-cache hit
+share. It's the same number the live meter prints.
 
-The cost is **not** Claude Code's own figure — that one prices every call against Anthropic's
-list, so on a Fireworks gateway it reports a number you are never billed. FireConnect recomputes
-it from the session transcript with the same engine behind `fireconnect claude usage`, which
-prices each call by the model that actually served it. A session that switched slots mid-flight
-(or a FireRouter session that sent hard turns to Claude) totals correctly, and subagent calls are
-included. A `~` prefix means some model in the session had no published rate and fell back to a
-reference price. `97% cache` is the cumulative prompt-cache hit share — the same figure the live
-usage meter prints.
-
-Rates come from the catalog cache `on` writes, so the line needs no network. `off` removes it.
-**If you already have a `statusLine`, FireConnect leaves it alone** — delete yours and re-run
+Rates come from the catalog cache `on` saves, so the line works offline. `off` removes it.
+**If you already have a `statusLine`, FireConnect leaves it alone.** Delete yours and re-run
 `fireconnect claude` to opt in.
 
 ## Codex
 
-Routes [OpenAI Codex CLI](https://developers.openai.com/codex) through Fireworks via the
+Sends [OpenAI Codex CLI](https://developers.openai.com/codex) through Fireworks via the
 Responses API.
 
 ```bash
@@ -350,42 +305,40 @@ fireconnect codex --model glm-latest      # switch model
 fireconnect codex off
 ```
 
-- Sets root `model_provider` / `model` for Codex 0.134+ (short slug) and adds a
-  `[model_providers.fireworks-ai]` block with `wire_api = "responses"` and a **baked**
-  `experimental_bearer_token` literal (mode `0600`). No shell hook needed.
-- Writes the preferred serverless catalog to `~/.codex/fireworks-model-catalog.json` and points
-  Codex at it via `model_catalog_json` (latest aliases preferred; embeddings, no-tool, and
-  deprecated models filtered out). `off` removes the file and reference.
-- Preserves unrelated settings (for example `[[mcp_servers]]`) via surgical TOML edits, and on
-  `off` reconciles the shell hook when nothing else needs `FIREWORKS_API_KEY`.
+- Sets root `model_provider` / `model` for Codex 0.134+ (short name) and adds a
+  `[model_providers.fireworks-ai]` block with `wire_api = "responses"` and your key saved
+  right in the file (readable only by you). No shell hook needed.
+- Saves the preferred serverless catalog to `~/.codex/fireworks-model-catalog.json` and points
+  Codex at it with `model_catalog_json` (newest names preferred; embeddings, no-tool, and retired
+  models filtered out). `off` deletes the file and the reference.
+- Leaves the rest of your config alone (like `[[mcp_servers]]`) with careful TOML edits, and on
+  `off` cleans up the shell hook when nothing else needs `FIREWORKS_API_KEY`.
 
-> **MiniMax is not supported on Codex.** Codex may insert assistant messages between
-> `tool_calls` and `tool_results`, which MiniMax chat templates reject. FireConnect fails
-> `codex --model minimax-latest` with an explanation. Use MiniMax on a Chat Completions harness
-> such as Claude Code or OpenCode.
+> **MiniMax doesn't work on Codex.** Codex sometimes puts assistant messages between
+> `tool_calls` and `tool_results`, which MiniMax templates reject. `codex --model minimax-latest`
+> fails with an explanation. Use MiniMax on a Chat Completions harness like Claude Code or OpenCode.
 
-`config.toml` updates immediately; exit Codex and `codex resume <id>` (or start a new session)
-to pick up the change. Use `--config-path <path>` for a non-default config.
+Edits take effect in the file right away; exit Codex and `codex resume <id>` (or start fresh)
+to load them. Use `--config-path <path>` for a config somewhere else.
 
-> **Resuming a prior session requires the matching provider to be on.**
-> `codex resume` resolves the session's recorded `model_provider` against the live
-> `config.toml`, so force the provider or it falls back to OpenAI:
+> **Resuming an old session needs the matching provider on.**
+> `codex resume` looks up the session's saved `model_provider` in the live
+> `config.toml`, so say which provider or it falls back to OpenAI:
 >
 > ```bash
 > codex resume <id> -c model_provider="fireworks-ai"        # Fireworks gateway
 > codex resume <id> -c model_provider="fireworks-azure"     # Azure/Foundry
 > ```
 >
-> The provider table is removed by `fireconnect codex off`, so resume only
-> resolves while the matching route is on.
+> `fireconnect codex off` removes the provider table, so resume only works while that route is on.
 
-`fireconnect chatgpt` is an alias for the same harness — `codex` and `chatgpt` share
+`fireconnect chatgpt` is the same thing under another name. `codex` and `chatgpt` share
 `~/.codex`, so one command routes both the Codex CLI and the ChatGPT desktop app. Like the
 IDEs, it asks you to quit the app first; `--force` writes anyway (not recommended).
 
 ## OpenCode
 
-Routes [OpenCode](https://opencode.ai) through Fireworks.
+Sends [OpenCode](https://opencode.ai) through Fireworks.
 
 ```bash
 fireconnect opencode
@@ -394,17 +347,17 @@ fireconnect opencode --model glm-latest
 fireconnect opencode off
 ```
 
-- Merges a `provider.fireworks-ai` block into `~/.config/opencode/opencode.json`, sets the
-  default `model` to `fireworks-ai/<slug>`, and keys provider models by short slug.
-  `options.apiKey` is a **baked plaintext literal** (mode `0600`).
-- Registers the preferred serverless catalog in the provider's `models` for OpenCode's `/model`
-  picker, falling back to the active model when the catalog can't be fetched (offline).
+- Adds a `provider.fireworks-ai` block to `~/.config/opencode/opencode.json`, sets the default
+  `model` to `fireworks-ai/<name>`, and lists provider models by short name. Your key is saved
+  right in the file (readable only by you).
+- Lists the preferred serverless catalog in the provider's `models` for OpenCode's `/model`
+  picker. If the catalog can't be fetched (offline), it falls back to the active model.
 
-Use `--config-path <path>` for a non-default config.
+Use `--config-path <path>` for a config somewhere else.
 
 ## Pi
 
-Routes [Pi](https://pi.dev) through Fireworks.
+Sends [Pi](https://pi.dev) through Fireworks.
 
 ```bash
 fireconnect pi
@@ -413,23 +366,21 @@ fireconnect pi --model glm-latest
 fireconnect pi off
 ```
 
-- Sets `defaultProvider` / `defaultModel` in `~/.pi/agent/settings.json` and stores a **baked
-  plaintext literal** in `fireworks.key` (`auth.json`, mode `0600`). `on` applies
-  `kimi-fast-latest` unless you pass `--model`.
-- Registers the preferred serverless catalog in `~/.pi/agent/models.json` for Pi's `/model`
-  picker. Managed IDs are canonical `accounts/fireworks/...` ids, so each entry overrides Pi's
-  built-in catalog row in place with context, pricing, reasoning, and vision metadata from the
-  shared Fireworks specs. Falls back to the last cached catalog offline.
-- Snapshots and restores all three files (`settings.json`, `auth.json`, `models.json`). The
-  registered model ids are tracked in `~/.fireconnect/config.json`
-  (`harnesses.pi.profiles.managedModelIds`) so repeat `on` rebuilds exactly and `off` strips
-  only what FireConnect added.
+- Sets `defaultProvider` / `defaultModel` in `~/.pi/agent/settings.json` and saves your key in
+  `auth.json` (readable only by you). Without `--model` you get `auto`.
+- Lists the preferred serverless catalog in `~/.pi/agent/models.json` for Pi's `/model` picker.
+  Entries use full `accounts/fireworks/...` IDs so they line up with Pi's built-in rows, with
+  context, pricing, reasoning, and vision info from the shared Fireworks specs. Offline, the last
+  cached catalog is used.
+- Backs up all three files (`settings.json`, `auth.json`, `models.json`). Which model IDs were
+  added is tracked in `~/.fireconnect/config.json`, so repeat `on` rebuilds exactly and `off`
+  removes only what FireConnect added.
 
-Use `--settings-path <path>` for a non-default settings file.
+Use `--settings-path <path>` for a settings file somewhere else.
 
 ## Cursor
 
-Cursor stores AI settings in SQLite (`state.vscdb`), so FireConnect writes there directly:
+Cursor keeps its AI settings in SQLite (`state.vscdb`), so FireConnect writes there directly:
 
 | Setting | Key |
 |---------|-----|
@@ -447,24 +398,24 @@ fireconnect cursor --db-path <path>      # non-default state.vscdb (e.g. Cursor 
 fireconnect cursor off
 ```
 
-`cursor --model <id>` registers the model and sets **every mode that already exists** in
-`modelConfig` — it won't create modes you don't have. Direct Fireworks IDs are stored as short
-slugs; legacy canonical entries migrate on the next `on`.
+`cursor --model <id>` registers the model and applies it to **every mode you already have** in
+`modelConfig` will not invent modes you don't use. Full Fireworks IDs are shortened on save;
+old long-form entries migrate on the next `on`.
 
-> **Quit Cursor (`Cmd-Q` / File > Quit) before `on` or `off`.** Otherwise Cursor's in-memory
-> state overwrites the write on its next flush. In an interactive terminal FireConnect waits for
-> you to quit (press Enter to confirm, or auto-detect); after ~90s it offers continue-anyway.
-> `--force` writes anyway.
+> **Quit Cursor (`Cmd-Q` / File > Quit) before `on` or `off`.** A running Cursor overwrites your
+> edit with its in-memory state the next time it saves. In a terminal FireConnect waits for you
+> to quit (press Enter to confirm, or it auto-detects); after ~90s it offers to continue anyway.
+> `--force` skips the wait.
 
-**While FireConnect is on, only Fireworks models work** — Cursor's built-in models (Auto,
-subscription models, Opus modes) are hidden from the picker and won't respond.
-`fireconnect cursor off` restores them, and only removes models FireConnect registered.
+**While connected, only Fireworks models work.** Cursor's built-ins (Auto, subscription models,
+Opus modes) are hidden and won't answer. `fireconnect cursor off` brings them back, and removes
+only models FireConnect added.
 
 ## VS Code Chat
 
 FireConnect adds a `Fireworks` provider to `chatLanguageModels.json` (vendor `customendpoint`,
-`apiType: chat-completions`) pointing at `https://api.fireworks.ai/inference` — VS Code appends
-`/v1/chat/completions`. Azure/Foundry mode also uses `apiType: chat-completions`.
+`apiType: chat-completions`) pointing at `https://api.fireworks.ai/inference`. VS Code adds
+`/v1/chat/completions` itself. Azure/Foundry mode uses `apiType: chat-completions` too.
 
 ```bash
 fireconnect vscode --api-key fw_...       # quit VS Code first
@@ -474,30 +425,95 @@ fireconnect vscode --vscode-path <path>   # non-default chatLanguageModels.json
 fireconnect vscode off
 ```
 
-The API key is **not** in the JSON: VS Code resolves `${input:chat.lm.secret.<id>}` through
-Electron `safeStorage` in its application-scoped `state.vscdb`. `on` writes both the provider
-entry and the encrypted key under a `chat.lm.secret.fw-*` id. Same quit / `--force` rules as
-Cursor.
+Your key is **not** in the JSON: VS Code looks up `${input:chat.lm.secret.<id>}` in its
+application-scoped `state.vscdb`, encrypted with Electron `safeStorage`. `on` writes the provider
+entry plus the encrypted key under a `chat.lm.secret.fw-*` id. Same quit-first / `--force` rules
+as Cursor.
 
-`safeStorage` by platform:
+`safeStorage` per platform:
 
-- **macOS** — master key in the login Keychain (`<App> Safe Storage`); open VS Code once first.
+- **macOS**: master key in the login Keychain (`<App> Safe Storage`); open VS Code once first.
   Insiders is auto-detected (`Code - Insiders Safe Storage`).
-- **Windows** — AES-256-GCM with a DPAPI-protected key in VS Code's `Local State`.
-- **Linux** — needs `libsecret` (`secret-tool`) for real encryption. Without it Chromium falls
-  back to a hardcoded password (obfuscated, not encrypted); FireConnect still writes and warns.
+- **Windows**: AES-256-GCM with a DPAPI-protected key in VS Code's `Local State`.
+- **Linux**: needs `libsecret` (`secret-tool`) for real encryption. Without it Chromium falls
+  back to a fixed password (hidden, not encrypted); FireConnect still writes, with a warning.
 
-`off` restores `chatLanguageModels.json` byte-for-byte and deletes the `chat.lm.secret.fw-*`
-row; providers you configured yourself are preserved.
+`off` restores `chatLanguageModels.json` exactly and deletes the `chat.lm.secret.fw-*` row;
+providers you set up yourself are untouched.
 
 Per-model `toolCalling` / `vision` / token limits live in
-`packages/setup-cli/lib/fireworks/model-specs.mjs`. Unmapped models default to
-`toolCalling: true`, `vision: false`, with limits omitted until the model is added.
+`packages/setup-cli/lib/fireworks/model-specs.mjs`. Models not listed there default to
+`toolCalling: true`, `vision: false`, with limits left out until the model is added.
+
+## GitHub Copilot app
+
+`fireconnect copilot-app` routes the **GitHub Copilot desktop app** through Fireworks. The app's
+BYOK providers live in SQLite at `~/.copilot/data.db` (movable via `COPILOT_HOME`):
+
+| Table | What FireConnect writes |
+|-------|-------------------------|
+| `model_providers` | One row, id starting `fc-`, named `Fireworks`, type `openai` |
+| `settings_json` | `baseUrl` → `https://api.fireworks.ai/inference/v1`, `wireApi: completions`, your key as an `Authorization` header |
+| `provider_models` | One row per model: model name, display name, token limits, reasoning efforts |
+
+```bash
+fireconnect copilot-app --api-key fw_...        # quit Copilot first
+fireconnect copilot-app status                  # read-only; safe while Copilot is open
+fireconnect copilot-app --model glm-latest
+fireconnect copilot-app --db-path <path>        # non-default ~/.copilot/data.db
+fireconnect copilot-app off
+```
+
+**Your built-in Copilot models keep working.** FireConnect's provider is added alongside them,
+so the app's own models stay in the picker. And because only our own rows are added, `off` is
+exact: it deletes the `fc-` provider and its models and touches nothing else.
+
+> **Quit GitHub Copilot (`Cmd-Q` / File > Quit) before `on` or `off`**, same deal as Cursor and
+> VS Code: wait in the terminal, continue-anyway after a bit, or `--force`.
+
+Each model shows its display name, model name, token limits, and reasoning efforts
+(`low`/`medium`/`high`/`max`) in Settings → Model providers → Edit model. Three things BYOK
+models don't get in the desktop app: image input, the hover card's Context row, and AI-credits
+pricing (BYOK bills through Fireworks, so GitHub has no price to show).
+
+## GitHub Copilot CLI
+
+`fireconnect copilot-cli` routes the **`copilot` command** (`@github/copilot`) through Fireworks.
+The CLI shares the `~/.copilot` folder with the desktop app but never reads its database. Its
+BYOK config is plain JSON:
+
+| File | What FireConnect writes |
+|------|-------------------------|
+| `providers.json` | One `providers[]` entry named `fireworks` plus one `models[]` entry per model (token limits, per-model vision, `reasoningEffort` as an on/off toggle) |
+| `settings.json` | The selected `model`: a BYOK provider has no default and the CLI won't start without one |
+
+```bash
+fireconnect copilot-cli --api-key fw_...
+fireconnect copilot-cli status
+fireconnect copilot-cli --model glm-latest
+fireconnect copilot-cli --providers-path <path>   # non-default providers.json
+fireconnect copilot-cli off
+```
+
+**Pick models with the provider name attached**: `fireworks/glm-latest`, not `glm-latest`. A bare
+name is rejected ("Model … is not available") and quietly falls back to something else. Switch with
+`copilot --model fireworks/<name>` or `/model`.
+
+Unlike the desktop app, the CLI supports **per-model image input** (`capabilities.supports.vision`),
+taken from the serverless catalog. What the CLI doesn't show for BYOK models: context size,
+reasoning levels, or pricing — `providers.json` records token limits and a `reasoningEffort`
+toggle, but the CLI's UI doesn't render either, and BYOK bills through Fireworks so there's no
+price to show anyway. `providers.json` is yours to edit, so `off` restores it exactly
+from a snapshot (or deletes it if FireConnect created it); providers and models you added yourself
+survive both directions.
+
+The two are independent. GitHub ships both under one brand but they share no settings. Turn on
+either, both, or neither.
 
 ## DeepSeek Harness
 
-Routes [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) through Fireworks
-via a custom OpenAI-compatible provider in `$DSH_HOME` (default `~/.dsh`).
+Sends [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) through Fireworks
+with a custom OpenAI-compatible provider in `$DSH_HOME` (default `~/.dsh`).
 
 ```bash
 fireconnect deepseek
@@ -508,53 +524,51 @@ fireconnect deepseek off
 
 - Writes `llm-pi-ai.providers.fireworks` and `agent-default-model` into `~/.dsh/settings.yaml`
   pointing at `https://api.fireworks.ai/inference/v1`.
-- Stores the Fireworks key as `FIREWORKS_API_KEY` in `~/.dsh/.credentials.yaml` (mode `0600`).
-- Sets the default model for new sessions to the selected Fireworks model.
+- Saves your Fireworks key as `FIREWORKS_API_KEY` in `~/.dsh/.credentials.yaml` (readable only by you).
+- Makes the chosen Fireworks model the default for new sessions.
 
-Use `--config-path <path>` for a non-default `settings.yaml` (credentials stay beside that file).
+Use `--config-path <path>` for a `settings.yaml` somewhere else (credentials stay next to that file).
 
 ## FireRouter
 
-FireRouter routes each request between Claude and Fireworks open models — simpler work stays on
-open models, harder work can use Claude when you have BYOK. It's a normal **`firerouter` model**
-on the Fireworks gateway — not a separate mode.
-Select it like any other model.
+FireRouter sends each request to either Claude or a Fireworks open model. Easy work stays on
+open models, hard work can use Claude when you've connected your Anthropic key. It's just a
+**`firerouter` model** on the Fireworks gateway, not a separate mode.
+Pick it like any other model.
 
 ```bash
 fireconnect <harness> --model firerouter       # any harness
-fireconnect claude --opus firerouter           # or a single Claude slot
 ```
 
 | | |
 |--|--|
-| **Keys** | Standard Fireworks (`fw_...`) only — not Fire Pass |
+| **Keys** | Standard Fireworks (`fw_...`) only, not Fire Pass |
 | **Catalog** | Always in `fireconnect model list` for a standard key |
-| **Pickers** | Auto-included with workspace BYOK (`enable-workspace-byok`), or a forwardable `sk-ant-...` `ANTHROPIC_API_KEY` on harnesses that can attach one |
-| **Auto default** | Claude Code `opus` only — first connect with a standard key and no explicit model flags |
-| **No Anthropic key** | Still routes among Fireworks models |
+| **Pickers** | In the default set for standard keys; `on --model firerouter` additionally sends routing headers |
+| **No Anthropic key** | Still routes between Fireworks models; Claude Code attaches its own Anthropic auth |
 
-**BYOK for Anthropic frontier models.** With workspace BYOK, your Anthropic key is used
-server-side — no extra flags. Otherwise pass `--anthropic-api-key sk-ant-...` (or export
-`ANTHROPIC_API_KEY`) on a harness that can forward it. OpenAI BYOK is not supported.
+**Using Anthropic's frontier models.** Pass `--anthropic-api-key sk-ant-...` (or export
+`ANTHROPIC_API_KEY`) on a harness that can forward it. OpenAI BYOK isn't supported. On
+Claude Code the flag is optional native auth — FireRouter works without it.
 
-| Harness | Local Anthropic BYOK | `--routing-preference` | Notes |
+| Harness | Local Anthropic key | `--routing-preference` | Notes |
 |---------|----------------------|------------------------|-------|
-| Claude Code | Header value | Yes | Fireworks header still wins for gateway auth; only harness that can auto-default Opus to FireRouter |
+| Claude Code | Header value | Yes | Gateway header still wins for auth |
 | OpenCode | Header value | Yes | `--model firerouter` registers only that model |
 | Pi | Header value | Yes | Same Fireworks provider as other Pi models |
 | VS Code | Header value | Yes | Same provider (`apiType: chat-completions`) |
-| Codex | `ANTHROPIC_API_KEY` env reference | No | Export the key, or use workspace BYOK |
-| Cursor | Workspace BYOK only | No | Override UI can't attach a local Anthropic key |
-| DeepSeek Harness | Workspace BYOK only | No | Same BYOK shape as Cursor |
+| Codex | `ANTHROPIC_API_KEY` env reference | No | Export the key |
+| Cursor | Not forwardable | No | Settings screen can't attach a local Anthropic key |
+| DeepSeek Harness | Not forwardable | No | Custom provider can't attach a local Anthropic key |
 
-Tune the cost/quality tradeoff where supported:
+Tune cost vs quality where supported:
 
 ```bash
-fireconnect claude --opus firerouter --routing-preference balanced
+fireconnect claude --model firerouter --routing-preference balanced
 # max-intelligence (1) · more-intelligence (2) · balanced (3) · more-savings (4) · max-savings (5)
 ```
 
-> The old `--router` flag is retired — use `--model firerouter` or a Claude slot flag.
+> The old `--router` flag is gone. Use `--model firerouter`.
 
 More detail: [FireRouter overview](https://docs.fireworks.ai/ecosystem/firerouter/overview).
 
@@ -567,15 +581,14 @@ fireconnect model list --refresh
 fireconnect model list --json
 ```
 
-Fetches coding-tagged serverless models (`GET /v1/serverless/models?use_cases=coding`), adds the
-per-model fast routers the API reports, and merges version-tracking aliases whose targets are
-present: `glm-latest`, `glm-flash-latest`, `glm-fast-latest`, `kimi-latest`,
+Lists coding-ready serverless models (`GET /v1/serverless/models?use_cases=coding`), plus the
+fast per-model routers the API reports and version-tracking nicknames whose targets exist:
+`glm-latest`, `glm-flash-latest`, `glm-fast-latest`, `kimi-latest`,
 `kimi-fast-latest`, `minimax-latest`, `qwen-plus-latest`. Every row is tagged `serverless`.
-The catalog is cached for **1 hour**; `fireconnect model list --refresh` bypasses that TTL
-and refetches. If the network is unavailable, FireConnect keeps showing the last cached
-catalog instead of deleting it.
+The list is cached for **1 hour**; `--refresh` skips the cache and refetches. Offline, the last
+cached list is shown instead of an error.
 
-US-only serverless routers are listed in their own section and accept short IDs:
+US-only serverless routers get their own section and take short names:
 
 ```bash
 fireconnect claude on --model kimi-k3-us
@@ -583,159 +596,157 @@ fireconnect opencode on --model glm-5p2-fast-us
 fireconnect claude on --model glm-5p3-flash-us
 ```
 
-US-only endpoints launched from September 1, 2026 are priced at a 50% premium over the
-matching global row (`glm-5p3-flash-us`). Earlier routers keep their launch rates:
-`kimi-k3-us` at a 10% premium, `glm-5p2-fast-us` at parity with global GLM 5.2 Fast. See
+US-only endpoints launched from September 1, 2026 cost 50% more than the matching global row
+(`glm-5p3-flash-us`). Earlier routers keep their launch prices: `kimi-k3-us` at +10%,
+`glm-5p2-fast-us` at the same price as global GLM 5.2 Fast. See
 [US-only Serverless](https://docs.fireworks.ai/serverless/us-only-serverless).
 
-Key resolution order: `--api-key` → `FIREWORKS_API_KEY` → stored credential. Standard keys
-include `firerouter`; Fire Pass keys show only Fire Pass-supported routers (`glm-latest`,
+Which key is used, in order: `--api-key` → `FIREWORKS_API_KEY` → saved key. Standard keys see
+`firerouter`; Fire Pass keys see only Fire Pass routers (`glm-latest`,
 `glm-fast-latest`, `glm-5p2-fast`, `kimi-fast-latest`).
 
 | Command | Shows |
 |---------|--------|
-| `fireconnect claude status` | Provider, auth, alias mapping, **Fireworks rates** per slot |
+| `fireconnect claude status` | Provider, auth, name mapping, **Fireworks rates** per slot |
 | `fireconnect model list` | Serverless catalog with **IN / OUT pricing** where known |
 
-Short IDs and canonical `accounts/fireworks/...` IDs both work, and `-latest` router aliases
-(`glm-latest`, `kimi-fast-latest`, …) are recommended over pinned versions so you track new
-releases automatically. Most non-Claude harnesses store short slugs; Pi stores canonical
-`accounts/fireworks/...` ids — legacy configs migrate to each harness's format on the next
-`on`. Not sure what to pick? Start from [the defaults](#default-models), browse
-`fireconnect model list`, or run `fireconnect claude --interactive`. Foundry (Azure) uses
-deployment names instead — see [Azure](#azure-microsoft-foundry-endpoints).
+Short names and full `accounts/fireworks/...` IDs both work, and `-latest` nicknames
+(`glm-latest`, `kimi-fast-latest`, …) beat pinned versions. They follow new releases on their
+own. Most non-Claude harnesses store short names; Pi stores full `accounts/fireworks/...` IDs.
+Older configs migrate to each harness's format on the next `on`. Not sure? Start from
+[the defaults](#default-models) or browse `fireconnect model list`.
+Foundry (Azure) uses deployment names instead (see [Azure](#azure-microsoft-foundry-endpoints)).
 
 ## Azure (Microsoft Foundry) endpoints
 
 Fireworks models are also first-party models inside
 [Microsoft Foundry](https://docs.fireworks.ai/ecosystem/integrations/azure-foundry), billed
-through Azure and counting toward your MACC. Foundry exposes an **OpenAI-compatible** endpoint,
-so **OpenCode, Codex, Pi, Cursor, and VS Code** can route there instead of the
-Fireworks gateway.
+through Azure and counting toward your MACC. Foundry speaks an **OpenAI-compatible** API,
+so **OpenCode, Codex, Pi, Cursor, and VS Code** can point there instead of the Fireworks gateway.
 
-Configure once, then `<harness> on` uses it — no per-command flags:
+Set it once, then `<harness> on` uses it. No per-command flags:
 
 ```bash
 fireconnect configure --provider azure \
   --base-url https://<resource>.services.ai.azure.com \
   --api-key <azure-api-key>
 
-fireconnect opencode      # routes through the configured Foundry endpoint
+fireconnect opencode      # goes through your Foundry endpoint
 fireconnect codex
 ```
 
-`configure` stores a top-level `provider` and `azure` endpoint in `~/.fireconnect/config.json`.
-Switch back with `fireconnect configure --provider fireworks ...`. You can also opt in per
-command (or override the configured endpoint) with `--azure`:
+`configure` saves a top-level `provider` and `azure` endpoint in `~/.fireconnect/config.json`.
+Go back with `fireconnect configure --provider fireworks ...`. Or opt in per command (overrides
+the saved endpoint) with `--azure`:
 
 ```bash
 fireconnect opencode --azure --base-url https://<resource>.services.ai.azure.com \
   --api-key <azure-api-key> --model FW-GLM-5.2
 ```
 
-- **Endpoint.** FireConnect normalizes whatever you paste — bare resource root, portal project
-  endpoint (`.../api/projects/<name>`), or the `/models` route — to
+- **Endpoint.** FireConnect tidies up whatever you paste (a bare resource root, a portal project
+  endpoint (`.../api/projects/<name>`), or the `/models` route) into
   `https://<resource>.services.ai.azure.com/openai/v1`. Find it in the Foundry portal under
   **Project settings**.
-- **Auth.** Use your **Azure** API key (not `fw_`/`fpk_`). `--api-key` writes it literally;
-  exporting `AZURE_API_KEY` writes an environment reference instead.
-- **Model.** The id is your Foundry **deployment** name — the catalog model name without the
+- **Auth.** Use your **Azure** API key (not `fw_`/`fpk_`). `--api-key` saves it as-is;
+  exporting `AZURE_API_KEY` saves a reference to the variable instead.
+- **Model.** The id is your Foundry **deployment** name: the catalog model name without the
   `fireworks-ai/` prefix (e.g. `FW-GLM-5.2`, `FW-MiniMax-M2.5`). Defaults to `FW-GLM-5.2`.
-- **Isolation.** Each harness writes a dedicated `fireworks-azure` provider separate from the
-  Fireworks gateway; `off` restores byte-for-byte and switching modes replaces it cleanly.
+- **Separation.** Each harness gets its own `fireworks-azure` provider, separate from the Fireworks
+  gateway; `off` restores exactly, and switching modes swaps it cleanly.
 
 | Harness | Writes | Provider |
 |---------|--------|----------|
 | OpenCode | `provider.fireworks-azure` in `opencode.json` (`@ai-sdk/openai-compatible`, `options.baseURL` + `options.apiKey`) | `fireworks-azure/<deployment>` |
-| Codex | `[model_providers.fireworks-azure]` in `config.toml` (`wire_api = "chat"`, bearer or `env_key = "AZURE_API_KEY"`) | `fireworks-azure` |
-| Pi | custom `openai-completions` provider in `models.json` (`baseUrl`, `authHeader`, `apiKey` literal or `$AZURE_API_KEY`) + `defaultProvider` in `settings.json` | `fireworks-azure` |
+| Codex | `[model_providers.fireworks-azure]` in `config.toml` (`wire_api = "chat"`, key or `env_key = "AZURE_API_KEY"`) | `fireworks-azure` |
+| Pi | custom `openai-completions` provider in `models.json` (`baseUrl`, `authHeader`, key or `$AZURE_API_KEY`) + `defaultProvider` in `settings.json` | `fireworks-azure` |
 | Cursor | OpenAI-compatible URL, deployment, and key in `state.vscdb` | `<deployment>` |
 | VS Code | custom endpoint model in `chatLanguageModels.json`; key in `safeStorage` | `<deployment>` |
 
 `fireconnect <harness> status` reports `azure` as the provider with the endpoint and model.
 
-> Claude Code is intentionally excluded: it speaks the Anthropic Messages API, which Foundry
-> does not expose. `model list` reads the Fireworks catalog and isn't used in Azure mode —
-> select a deployment with `--model`.
+> Claude Code is left out on purpose: it speaks the Anthropic Messages API, which Foundry
+> doesn't offer. `model list` reads the Fireworks catalog and doesn't apply in Azure mode.
+> Pick a deployment with `--model`.
 
 ## CLI reference
 
 Harness-first: `fireconnect <harness> <command>`, plus a few global commands.
 
-**Per harness** (`claude`, `opencode`, `codex`, `pi`, `cursor`, `vscode`, `deepseek`)
+**Per harness** (`claude`, `opencode`, `codex`, `pi`, `cursor`, `vscode`, `copilot-app`, `copilot-cli`, `deepseek`)
 
 ```text
-fireconnect <harness> on           Route the harness through Fireworks (default if no command).
-fireconnect <harness> off          Restore your previous provider/config.
+fireconnect <harness> on           Send the harness through Fireworks (the default when no command given).
+fireconnect <harness> off          Bring back your previous provider/config.
 fireconnect <harness> status       Show the provider, auth, and model mapping.
-fireconnect <harness> status --json  Machine-readable state (CI checks).
-fireconnect <harness> help         Show help for that harness.
+fireconnect <harness> status --json  Same state as JSON (for CI checks).
+fireconnect <harness> help         Help for that harness.
 ```
 
-All model changes go through `<harness> on`. Claude adds `fireconnect claude usage`, `fireconnect claude live`, and `fireconnect claude demo`.
+Every model change goes through `<harness> on`. Claude adds `fireconnect claude usage`, `fireconnect claude live`, and `fireconnect claude demo`.
 
 **Global**
 
 ```text
-fireconnect login                  Sign in — browser (creates a key) or paste a key you have.
+fireconnect login                  Sign in: browser (creates a key) or paste a key you have.
 fireconnect logout                 Clear the stored key (keychain entry + config ref).
 fireconnect status                 Show sign-in state, machine environment, and key storage.
 fireconnect model list             Browse the serverless catalog.
 fireconnect configure              Set the provider (Azure/Foundry) and the Anthropic key.
 fireconnect claude demo              Race two models on the same prompt via Claude Code.
 fireconnect upgrade                Update FireConnect.
-fireconnect uninstall              Disable + restore all harnesses, then remove FireConnect.
+fireconnect uninstall              Switch off + restore every harness, then remove FireConnect.
 fireconnect --version              Print the installed CLI version (-V; --json for machine-readable).
 fireconnect help                   Show help.
 ```
 
-`login` asks one question: create an API key for this machine, or paste one you already have.
-Create opens the browser, mints `fireconnect-{hostname}`, and stores it in the OS keychain —
-confirming the account and where the key went. Paste masks input, validates live, and stores
-only on success. `--paste` skips the chooser; `--with-token` reads from stdin (CI);
+`login` asks one question: create a key for this machine, or paste one you already have.
+Create opens the browser, makes `fireconnect-{hostname}`, and stores it in the OS keychain.
+It then tells you which account and where the key went. Paste hides what you type, checks it live,
+and stores it only if valid. `--paste` skips the question; `--with-token` reads from stdin (CI);
 `--account <id>` signs into an enterprise SSO account. Already signed in? `login` asks before
-replacing the key — `--force` skips that confirmation for key rotation.
+swapping the key. `--force` skips that check for rotations.
 
-`logout` removes the local key and offers to revoke the machine key server-side — `--revoke`
-skips the question and revokes. You don't have to start with `login` — `fireconnect claude`
-runs the same sign-in inline when a key is needed.
+`logout` deletes the local key and offers to revoke the machine key on the server too (`--revoke`
+skips the question and revokes). You can skip `login` entirely: `fireconnect claude` signs you in
+inline when it needs a key.
 
 ## Keys and storage
 
-- `~/.fireconnect/config.json` holds a **reference** (`{keychain:fireworks-api-key}`), never a
-  literal key. Legacy installs may still have `{env:FIREWORKS_API_KEY}`.
-- The key itself lives in the OS keychain, or an encrypted-file / plaintext fallback tier when
-  no secret service is available (`fireconnect status` reports which).
-- `--home <path>` overrides HOME for config resolution and `--data-dir <path>` moves the
-  backup/state directory — useful for sandboxed runs and tests that must not touch your real
-  harness configs.
-- Harness configs hold **baked literals** for Claude's custom header, Codex, OpenCode, Pi, and
+- `~/.fireconnect/config.json` holds a **reference** (`{keychain:fireworks-api-key}`), never the
+  key itself. Older installs may still have `{env:FIREWORKS_API_KEY}`.
+- The key itself lives in the OS keychain, or in an encrypted-file / plaintext fallback when no
+  secret service exists (`fireconnect status` says which).
+- `--home <path>` overrides HOME for config lookup and `--data-dir <path>` moves the
+  backup/state folder. Handy for sandboxes and tests that must leave your real harness configs alone.
+- Harness configs hold **saved keys** for Claude's custom header, Codex, OpenCode, Pi, and
   DeepSeek Harness; Cursor and VS Code use IDE `safeStorage`.
-- Claude websearch MCP no longer uses a shell hook — the Bearer token is baked into
-  `~/.claude.json`. Re-running `install.sh` or `fireconnect upgrade` shares one finalize path
-  that rebakes enabled harness configs (and any existing websearch entry) to literals, including
-  legacy env-reference auth left on disk.
+- Re-running `install.sh` or `fireconnect upgrade` shares one cleanup that re-saves keys for
+  connected harnesses, removes the retired Claude WebSearch MCP, and migrates old env-reference auth
+  left on disk.
 
-**`FIREWORKS_API_KEY` interaction.** The env var and FireConnect-managed storage are mutually
-exclusive for **login and other explicit store paths**. When it's set, `login` verifies and uses
-it without copying it into the secret store, and combining `login` with a key-storing option
-(`--api-key`, `--with-token`, browser, paste) fails before anything changes — unset the variable
-first. `<harness> on` may still read it, persist it, and bake it into that harness's config.
+**`FIREWORKS_API_KEY` interaction.** The env var and FireConnect-managed storage don't mix for
+**login and other explicit key saves**. When it's set, `login` checks it and uses it without
+copying it into secret storage, and combining `login` with a key-saving option (`--api-key`,
+`--with-token`, browser, paste) fails before changing anything. Unset the variable first.
+`<harness> on` may still read it, save it, and bake it into that harness's config.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| Tool still uses the old model or provider | Fully restart the harness. In Claude Code, exit and `claude --resume <id>` — settings apply per session. |
-| Cursor / VS Code changes don't stick | Quit the IDE (`Cmd-Q`) **before** `on`/`off`; the running app flushes its own state over yours. |
-| Only Fireworks models respond in Cursor | Expected while FireConnect is on. `fireconnect cursor off` restores built-in models. |
-| Claude session breaks after pasting an image | A [text-only](#text-only-models-and-images) slot was active. `/rewind`, then map that slot to a vision model. |
+| Harness still uses the old model or provider | Fully restart the harness. In Claude Code, exit and `claude --resume <id>`. Settings apply per session. |
+| Cursor / VS Code changes don't stick | Quit the IDE (`Cmd-Q`) **before** `on`/`off`; the running app saves over your edit. |
+| Only Fireworks models answer in Cursor | That's expected while connected. `fireconnect cursor off` brings back built-ins. |
+| Claude session breaks after pasting an image | A [text-only](#text-only-models-and-images) slot was active. `/rewind`, then give that slot a vision model. |
+| `claude-fable-5-1` fails with `model_not_found` | The gateway serves Opus / Sonnet / Haiku by concrete id, but Fable needs data retention enabled on the upstream account — without it every Fable call 404s while connected. Pick another row with `/model`, or ask about account access. |
+| Resumed session says the model "could not be restored" | Normal with Fireworks models: the transcript records the serving backend (e.g. `accounts/fireworks/models/…`), which Claude doesn't recognize as a model id, so it falls back to your configured default. If no default is pinned, that means native Opus — check the status line for a fresh Opus slice and re-pick your row if so. |
 | Claude Code shows a scary cost estimate | It uses [Anthropic list prices](#pricing-estimates). Check `fireconnect claude status` for real Fireworks rates. |
-| `firerouter` missing from a picker | Needs workspace BYOK or a forwardable `ANTHROPIC_API_KEY`; otherwise select it explicitly with `on --model firerouter`. Not available on Fire Pass keys. |
-| `login` fails with a key-storage conflict | `FIREWORKS_API_KEY` is set. Unset it to let FireConnect store a key. |
-| `/model` picker ignores your main model | A legacy `env.ANTHROPIC_MODEL` is overriding it — re-run `fireconnect claude` once to migrate. |
+| `firerouter` missing from a picker | It's opt-in — pick it directly with `on --model firerouter`. Not on Fire Pass keys. |
+| `login` fails with a key-storage conflict | `FIREWORKS_API_KEY` is set. Unset it so FireConnect can store a key. |
+| `/model` picker ignores your main model | An old `env.ANTHROPIC_MODEL` is overriding it. Re-run `fireconnect claude` once to migrate. |
 | PowerShell install fails (`set: pipefail\r`) | Install from [Git Bash](#install-notes). |
-| Linux warns the key isn't encrypted | Install `libsecret` (`secret-tool`); Chromium's fallback is obfuscation, not encryption. |
+| Linux warns the key isn't encrypted | Install `libsecret` (`secret-tool`); Chromium's fallback only hides, not encrypts. |
 | Something else | `fireconnect status` shows sign-in, environment, storage tier, and every harness's state. |
 
 ## Upgrade and uninstall
@@ -746,23 +757,23 @@ fireconnect upgrade
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh)"
 ```
 
-Interactive terminals also offer an upgrade prompt when a newer version is cached
-(`Upgrade now?`); declining snoozes it for a day.
+Interactive terminals also offer an upgrade when a newer version is cached
+(`Upgrade now?`); saying no snoozes it for a day.
 
-Upgrading from **before 0.9.0** with Claude Code connected asks before temporarily restoring
+Upgrading from **before 0.9.0** with Claude Code connected asks before briefly restoring
 your original settings, then tells you to reconnect with `fireconnect claude`. From **0.9.0**
-onward, reinstall and upgrade leave harness settings alone apart from key rebaking and small
-forward migrations (currently: VS Code's provider `apiType`, and adding `ENABLE_TOOL_SEARCH` to
-managed Claude Code settings). Other harness settings and your stored API key are preserved
-either way.
+on, reinstalls and upgrades leave harness settings alone except re-saving keys and small forward
+migrations (currently: VS Code's provider `apiType`, adding `ENABLE_TOOL_SEARCH` to
+managed Claude Code settings, and registering / refreshing the Fireworks catalog in each
+connected harness's picker). Your other settings and stored API key are kept either way.
 
-After updating the checkout, `fireconnect upgrade` runs its finalizer in a fresh process so
-migrations are loaded from the new version rather than the old process's module cache. For the
-transition from older upgraders, the changed package lock makes their existing upgrade path run
-`npm install`; a durable-install-only postinstall hook runs that same new finalizer. Repository
-and global npm installs do not match the durable layout and skip the hook.
+After fetching the update, `fireconnect upgrade` runs its final step in a fresh process so
+migrations come from the new version, not the old process's cache. For the move off older
+updaters, the changed package lock makes their existing upgrade path run `npm install`; a
+durable-install-only postinstall hook runs that same new final step. Plain repo and global npm
+installs don't match the durable layout and skip the hook.
 
 ```bash
 fireconnect uninstall    # restores every harness, then removes ~/.fireconnect and the launcher
-fireconnect uninstall --force   # no prompts — force-restore everything (CI / scripts)
+fireconnect uninstall --force   # no questions: force-restore everything (CI / scripts)
 ```

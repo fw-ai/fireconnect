@@ -258,6 +258,48 @@ describe("claude usage", () => {
     assert.equal(row.cost, 2);
   });
 
+  it("prices GPT-6 Astra legs from the OpenAI list, short tier", () => {
+    for (const model of ["gpt-6-astra", "firerouter/astra"]) {
+      const row = computeClaudeUsageCost(model, {
+        input_tokens: 42000,
+        cache_read_input_tokens: 8000,
+        output_tokens: 2500,
+      });
+      assert.equal(row.priced, true, model);
+      assert.equal(row.fireworks, false, model);
+      assert.equal(row.estimated, false, model);
+      assert.equal(row.rates.label, "GPT-6 Astra", model);
+      assert.equal(row.cost, (42000 * 10 + 8000 * 1 + 2500 * 50) / 1_000_000, model);
+    }
+  });
+
+  it("prices Astra input at the long-context tier once input reaches 272K", () => {
+    const row = computeClaudeUsageCost("gpt-6-astra", {
+      input_tokens: 300000,
+      cache_read_input_tokens: 10000,
+      output_tokens: 4000,
+    });
+    assert.equal(row.priced, true);
+    assert.deepEqual(
+      {
+        input: row.rates.inputPerMillion,
+        read: row.rates.cacheReadPerMillion,
+        output: row.rates.outputPerMillion,
+      },
+      { input: 20, read: 2, output: 75 },
+    );
+    assert.equal(row.cost, (300000 * 20 + 10000 * 2 + 4000 * 75) / 1_000_000);
+  });
+
+  it("still withholds cost for OpenAI ids with no list row", () => {
+    for (const model of ["gpt-99-future", "gpt-5.6", "o3-mini"]) {
+      const row = computeClaudeUsageCost(model, { input_tokens: 1_000_000 });
+      assert.equal(row.cost, null, model);
+      assert.equal(row.priced, false, model);
+      assert.equal(row.rates, null, model);
+    }
+  });
+
   it("uses exact published cache rates for Anthropic fast mode", () => {
     const row = computeClaudeUsageCost("claude-opus-5", {
       speed: "fast",

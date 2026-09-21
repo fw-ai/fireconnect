@@ -24,6 +24,13 @@ import {
 } from "../harnesses/pi/core.mjs";
 import { cursorStateDbPath, cursorDataDir } from "../harnesses/cursor/core.mjs";
 import { chatLanguageModelsPath, vscodeDataDir, vscodeStateDbPath } from "../harnesses/vscode/core.mjs";
+import { copilotDataDir } from "../harnesses/copilot-app/core.mjs";
+import { copilotDataDbPath } from "../harnesses/copilot-app/sqlite.mjs";
+import {
+  copilotCliDataDir,
+  copilotProvidersPath,
+  copilotSettingsPath,
+} from "../harnesses/copilot-cli/config.mjs";
 
 /** @typedef {import("./types.mjs").HarnessContext} HarnessContext */
 
@@ -95,6 +102,29 @@ export function vscodePathsFor(ctx) {
 /**
  * @param {HarnessContext} ctx
  */
+export function copilotAppPathsFor(ctx) {
+  return {
+    dbPath: copilotDataDbPath({ home: ctx.home, dbPath: ctx.dbPath }),
+    dataDir: copilotDataDir(ctx.home, ctx.dataDir),
+  };
+}
+
+/**
+ * The CLI harness's paths live in its own data dir so its backup can never
+ * collide with the desktop harness's.
+ * @param {HarnessContext} ctx
+ */
+export function copilotCliPathsFor(ctx) {
+  return {
+    providersPath: copilotProvidersPath({ home: ctx.home, providersPath: ctx.providersPath }),
+    settingsPath: copilotSettingsPath({ home: ctx.home }),
+    dataDir: copilotCliDataDir(ctx.home, ctx.dataDir),
+  };
+}
+
+/**
+ * @param {HarnessContext} ctx
+ */
 export function deepseekPathsFor(ctx) {
   const settingsPath = deepseekSettingsPath(ctx.home, ctx.configPath);
   return {
@@ -111,13 +141,16 @@ const HOME_VALIDATION = {
   codex: { fields: ["configPath"], flag: "--config-path" },
   pi: { fields: ["settingsPath", "configPath"], flag: "--settings-path" },
   cursor: { fields: ["dbPath"], flag: "--db-path" },
+  "copilot-app": { fields: ["dbPath"], flag: "--db-path" },
+  "copilot-cli": { fields: ["providersPath"], flag: "--providers-path" },
   vscode: { fields: ["vscodePath"], flag: "--vscode-path" },
+  copilot: { fields: ["dbPath"], flag: "--db-path" },
   deepseek: { fields: ["configPath"], flag: "--config-path" },
 };
 
 /**
  * @param {HarnessContext} ctx
- * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "deepseek"} harnessId
+ * @param {"claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "copilot" | "deepseek"} harnessId
  */
 export function ensureHomeForHarness(ctx, harnessId) {
   const req = HOME_VALIDATION[harnessId] ?? HOME_VALIDATION.claude;

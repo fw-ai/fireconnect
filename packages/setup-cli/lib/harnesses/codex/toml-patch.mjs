@@ -12,8 +12,10 @@ const ROOT_PROFILE_LINE = /^profile\s*=.+$/;
 const ROOT_MODEL_PROVIDER_LINE = /^model_provider\s*=.+$/;
 const ROOT_MODEL_LINE = /^model\s*=.+$/;
 const ROOT_MODEL_CATALOG_LINE = /^model_catalog_json\s*=.+$/;
-// fireconnect-owned root key: disables codex's default-on web_search tool (#320).
-const ROOT_WEB_SEARCH_LINE = /^web_search\s*=.+$/;
+// fireconnect-owned cleanup: removes only the stale web_search = "disabled"
+// override written by earlier releases (#320) so re-enabling restores defaults.
+// User-set values (live, cached, …) are not fireconnect-owned and are kept.
+const ROOT_WEB_SEARCH_DISABLED_LINE = /^web_search\s*=\s*["']disabled["']\s*(#.*)?$/;
 const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
 
@@ -100,6 +102,19 @@ function transformRootLines(raw, onRootLine, hooks = {}) {
 }
 
 /**
+ * Remove only the stale root override written by FireConnect 0.9.6.
+ * @param {string} raw
+ */
+export function stripStaleCodexWebSearchDisabledRaw(raw) {
+  if (!rootHasMatchingLine(raw, ROOT_WEB_SEARCH_DISABLED_LINE)) {
+    return raw;
+  }
+  return transformRootLines(raw, ({ trimmed }) => (
+    ROOT_WEB_SEARCH_DISABLED_LINE.test(trimmed) ? "drop" : "keep"
+  ));
+}
+
+/**
  * @param {string} raw
  * @param {{ stripRootRouting?: boolean }} [options]
  */
@@ -119,7 +134,7 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
         || ROOT_MODEL_PROVIDER_LINE.test(trimmed)
         || ROOT_MODEL_CATALOG_LINE.test(trimmed)
         || ROOT_MODEL_LINE.test(trimmed)
-        || ROOT_WEB_SEARCH_LINE.test(trimmed)) {
+        || ROOT_WEB_SEARCH_DISABLED_LINE.test(trimmed)) {
         continue;
       }
     }
@@ -155,7 +170,6 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
  *   wireApi?: string,
  *   providerName?: string,
  *   authEnvKey?: string,
- *   webSearch?: string,
  *   httpHeaders?: Record<string, string>,
  *   envHttpHeaders?: Record<string, string>,
  * }} routing
@@ -170,7 +184,6 @@ export function patchFireconnectRoutingRaw(raw, {
   wireApi = "responses",
   providerName = "Fireworks",
   authEnvKey = "FIREWORKS_API_KEY",
-  webSearch = "",
   httpHeaders = {},
   envHttpHeaders = {},
 }) {
@@ -179,7 +192,6 @@ export function patchFireconnectRoutingRaw(raw, {
     `model_provider = "${providerId}"`,
     ...(catalogPath ? [`model_catalog_json = "${catalogPath}"`] : []),
     `model = "${modelId}"`,
-    ...(webSearch ? [`web_search = "${webSearch}"`] : []),
   ].join("\n");
   const tablesBlock = [
     `[model_providers.${providerId}]`,

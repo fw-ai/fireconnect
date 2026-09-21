@@ -1,25 +1,34 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  addCodexSelectedModel,
   buildCodexCatalog,
   buildCodexCatalogFromSnapshot,
   buildCodexCatalogEntry,
   buildCodexCatalogEntryForRouter,
+  CODEX_AUTO_COMPACT_FRACTION,
   CODEX_CONSTANT_FIELDS,
   CODEX_MINIMAX_UNSUPPORTED_NOTE,
+  codexAutoCompactTokenLimit,
   codexCatalogContainsModel,
   codexModelExclusionReason,
-  DEPRECATED_MODELS,
-  ensureCodexOffCatalogEntry,
+  codexRowHasUsableContext,
   filterPickerCatalogForCodex,
   MODEL_OVERRIDES,
-  MODEL_REASONING,
-  REASONING_DESCRIPTIONS,
+  pruneCodexCatalogRows,
+  refreshCodexCatalogRows,
 } from "../../../lib/harnesses/codex/catalog.mjs";
 import {
+  MODEL_REASONING,
+  REASONING_DESCRIPTIONS,
+} from "../../../lib/fireworks/reasoning.mjs";
+import {
+  autoCatalogEntry,
   buildServerlessCatalogSnapshot,
   firerouterCatalogEntry,
+  inputModalitiesFromModel,
 } from "../../../lib/fireworks/models.mjs";
+import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import { mockServerlessModel } from "../../helpers.mjs";
 
 function mockModel(overrides = {}) {
@@ -43,7 +52,7 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     assert.equal(entry.display_name, "GLM 5.2");
     assert.equal(entry.context_window, 1048576);
     assert.equal(entry.max_context_window, 1048576);
-    assert.equal(entry.auto_compact_token_limit, null);
+    assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text"]);
     assert.equal(entry.supports_parallel_tool_calls, true);
     assert.equal(entry.reasoning_summary_format, "experimental");
@@ -53,6 +62,15 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     for (const [key, value] of Object.entries(CODEX_CONSTANT_FIELDS)) {
       assert.deepEqual(entry[key], value, `expected CODEX_CONSTANT_FIELDS.${key}`);
     }
+  });
+
+  it("compacts at 80% of the window so the compaction RPC fits under the gateway limit", () => {
+    assert.equal(CODEX_AUTO_COMPACT_FRACTION, 0.8);
+    assert.equal(codexAutoCompactTokenLimit(1048576), 838860);
+    assert.equal(codexAutoCompactTokenLimit(1048575), 838860);
+    assert.equal(codexAutoCompactTokenLimit(262144), 209715);
+    assert.equal(codexAutoCompactTokenLimit(0), null);
+    assert.equal(codexAutoCompactTokenLimit(Number.NaN), null);
   });
 
   it("applies MODEL_OVERRIDES for qwen3p7-plus", () => {
@@ -71,6 +89,9 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
 
   for (const [modelName, defaultLevel, efforts, summaryFormat] of [
     ["accounts/fireworks/models/glm-5p2", "high", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/glm-5p3", "high", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/glm-5p3-fast", "high", ["low", "medium", "high", "max"], "experimental"],
+    ["accounts/fireworks/models/glm-5p3-flash", "high", ["low", "medium", "high", "max"], "experimental"],
     ["accounts/fireworks/models/minimax-m2p7", "high", ["low", "medium", "high"], "experimental"],
   ]) {
     it(`uses correct reasoning config for ${modelName.split("/").pop()}`, () => {
@@ -86,6 +107,112 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
     assert.equal(entry.web_search_tool_type, "text_and_image");
     assert.equal(entry.supports_image_detail_original, true);
+  });
+
+  it("reads image support from the inputModalities array when no boolean is present", () => {
+    // Raw API rows carry modalities only as an array (no supportsImageInput).
+    const entry = buildCodexCatalogEntry(mockServerlessModel({
+      name: "accounts/fireworks/models/deepseek-v4p1-flash",
+      displayName: "DeepSeek V4.1 Flash",
+      inputModalities: ["text", "image"],
+    }));
+    assert.deepEqual(entry.input_modalities, ["text", "image"]);
+    assert.equal(entry.web_search_tool_type, "text_and_image");
+    assert.equal(entry.supports_image_detail_original, true);
+  });
+
+  it("reads image support from the snake_case input_modalities array", () => {
+    const entry = buildCodexCatalogEntry(mockServerlessModel({
+      name: "accounts/fireworks/models/deepseek-v4p1-flash",
+      display_name: "DeepSeek V4.1 Flash",
+      input_modalities: ["text", "image"],
+    }));
+    assert.deepEqual(entry.input_modalities, ["text", "image"]);
+    assert.equal(entry.supports_image_detail_original, true);
+  });
+
+  it("stays text-only for an array without image and no boolean", () => {
+    const entry = buildCodexCatalogEntry(mockServerlessModel({
+      name: "accounts/fireworks/models/deepseek-v4-flash-0731",
+      inputModalities: ["text"],
+    }));
+    assert.deepEqual(entry.input_modalities, ["text"]);
+    assert.equal(entry.supports_image_detail_original, false);
+  });
+
+  it("keeps explicit boolean precedence over a contradicting array", () => {
+    const boolWins = buildCodexCatalogEntry(mockServerlessModel({
+      name: "accounts/fireworks/models/glm-5p2",
+      supportsImageInput: false,
+      inputModalities: ["text", "image"],
+    }));
+    assert.deepEqual(boolWins.input_modalities, ["text"]);
+  });
+
+  it("falls through zero context lengths to the next source", () => {
+    const entry = buildCodexCatalogEntry(mockServerlessModel({
+      name: "accounts/fireworks/models/glm-5p2",
+      contextLength: 0,
+      context_length: 1048576,
+    }));
+    assert.equal(entry.context_window, 1048576);
+  });
+
+  it("falls back to the 1M default when every context source is zero or missing", () => {
+    const entry = buildCodexCatalogEntry(mockServerlessModel({
+      name: "accounts/fireworks/models/zero-ctx",
+      contextLength: 0,
+      context_length: 0,
+    }));
+    assert.equal(entry.context_window, 1_000_000);
+  });
+
+  it("inherits the max ladder via the live router base-model mapping", () => {
+    setServerlessCatalogSnapshot({
+      entries: [],
+      pricingById: new Map(),
+      inputModalitiesById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/glm-5p3-fast", "accounts/fireworks/models/glm-5p3"],
+        ["accounts/fireworks/routers/glm-5p3-flash-us", "accounts/fireworks/models/glm-5p3-flash"],
+        ["accounts/fireworks/routers/glm-5p2-fast", "accounts/fireworks/models/glm-5p2"],
+      ]),
+      contextLengthById: new Map(),
+      supportsToolsById: new Map(),
+    });
+    try {
+      for (const name of [
+        "accounts/fireworks/routers/glm-5p3-fast",
+        "accounts/fireworks/routers/glm-5p3-flash-us",
+        "accounts/fireworks/routers/glm-5p2-fast",
+      ]) {
+        const entry = buildCodexCatalogEntry(mockModel({ name }));
+        assert.equal(entry.default_reasoning_level, "high", name);
+        assert.deepEqual(
+          entry.supported_reasoning_levels.map((level) => level.effort),
+          ["low", "medium", "high", "max"],
+          name,
+        );
+      }
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
+  });
+
+  it("advertises max on GLM 5.3 routers via their base model", () => {
+    const base = mockModel({ name: "accounts/fireworks/models/glm-5p3", contextLength: 1048576 });
+    for (const routerId of [
+      "accounts/fireworks/routers/glm-latest",
+      "accounts/fireworks/routers/glm-fast-latest",
+      "accounts/fireworks/routers/glm-5p3-fast",
+    ]) {
+      const entry = buildCodexCatalogEntryForRouter(routerId, base, "GLM Router");
+      assert.deepEqual(
+        entry.supported_reasoning_levels.map((level) => level.effort),
+        ["low", "medium", "high", "max"],
+        routerId,
+      );
+    }
   });
 
   it("uses default reasoning config for an unknown model", () => {
@@ -135,7 +262,7 @@ describe("codex-catalog buildCodexCatalogEntryForRouter", () => {
     assert.equal(entry.display_name, "GLM Latest");
     assert.equal(entry.context_window, 1048576);
     assert.equal(entry.max_context_window, 1048576);
-    assert.equal(entry.auto_compact_token_limit, null);
+    assert.equal(entry.auto_compact_token_limit, 838860);
   });
 });
 
@@ -150,6 +277,7 @@ describe("codex-catalog buildCodexCatalog", () => {
       "Routes each request between Claude and open models.",
     );
     assert.equal(catalog.models[0].context_window, 1_048_575);
+    assert.equal(catalog.models[0].auto_compact_token_limit, 838860);
     assert.equal(catalog.models[0].supports_parallel_tool_calls, true);
     assert.deepEqual(catalog.models[0].input_modalities, ["text", "image"]);
     assert.equal(catalog.models[0].supports_image_detail_original, true);
@@ -157,66 +285,123 @@ describe("codex-catalog buildCodexCatalog", () => {
 
   it("dynamically adds firerouter* entries with shared FireRouter metadata", () => {
     const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
-    const catalog = ensureCodexOffCatalogEntry(base, "firerouter/x");
-    const entry = catalog.models.find((model) => model.slug === "firerouter/x");
+    const models = addCodexSelectedModel(base.models, base, "firerouter/x");
+    const entry = models.find((model) => model.slug === "firerouter/x");
     assert.ok(entry);
     assert.equal(entry.context_window, 1_048_575);
+    assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
     assert.equal(entry.supports_parallel_tool_calls, true);
     assert.equal(
       entry.description,
       "Routes each request between Claude and open models.",
     );
-    assert.equal(codexCatalogContainsModel(catalog, "firerouter/x"), true);
+    assert.equal(codexCatalogContainsModel({ models }, "firerouter/x"), true);
     assert.equal(
-      ensureCodexOffCatalogEntry(catalog, "firerouter/x"),
-      catalog,
+      addCodexSelectedModel(models, base, "firerouter/x"),
+      models,
       "idempotent when already present",
     );
   });
 
   it("dynamically adds an auto entry so Codex can resolve its context", () => {
     const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
-    const catalog = ensureCodexOffCatalogEntry(base, "auto");
-    const entry = catalog.models.find((model) => model.slug === "auto");
+    const models = addCodexSelectedModel(base.models, base, "auto");
+    const entry = models.find((model) => model.slug === "auto");
     assert.ok(entry);
     assert.equal(entry.display_name, "Auto");
     assert.equal(entry.context_window, 1_048_575);
+    assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
     assert.equal(entry.supports_parallel_tool_calls, true);
-    assert.equal(codexCatalogContainsModel(catalog, "auto"), true);
+    assert.equal(codexCatalogContainsModel({ models }, "auto"), true);
     assert.equal(
-      ensureCodexOffCatalogEntry(catalog, "auto"),
-      catalog,
+      addCodexSelectedModel(models, base, "auto"),
+      models,
       "idempotent when already present",
     );
   });
 
   it("dynamically adds an auto-* entry so Codex can resolve its context", () => {
     const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
-    const catalog = ensureCodexOffCatalogEntry(base, "auto-instant");
-    const entry = catalog.models.find((model) => model.slug === "auto-instant");
+    const models = addCodexSelectedModel(base.models, base, "auto-instant");
+    const entry = models.find((model) => model.slug === "auto-instant");
     assert.ok(entry);
     assert.equal(entry.display_name, "Auto Instant");
     assert.equal(entry.context_window, 1_048_575);
+    assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
-    assert.equal(codexCatalogContainsModel(catalog, "auto-instant"), true);
+    assert.equal(codexCatalogContainsModel({ models }, "auto-instant"), true);
+  });
+
+  it("builds the synthesized auto catalog entry from the registerable set", () => {
+    // loadCodexCatalogBundle prepends the auto mix to the registerable entries;
+    // the snapshot builder must turn that entry into a full auto row (the
+    // default `on` registers auto without an explicit --model).
+    const snapshot = buildServerlessCatalogSnapshot([mockModel()]);
+    const entries = [...snapshot.entries, autoCatalogEntry()];
+    const catalog = buildCodexCatalogFromSnapshot({ ...snapshot, entries }, [mockModel()]);
+    const entry = catalog.models.find((model) => model.slug === "auto");
+    assert.ok(entry, "auto is missing from the Codex catalog");
+    assert.equal(entry.display_name, "Auto");
+    assert.equal(entry.context_window, 1_048_575);
+    assert.equal(entry.auto_compact_token_limit, 838860);
+    assert.deepEqual(entry.input_modalities, ["text", "image"]);
+    assert.equal(entry.supports_parallel_tool_calls, true);
+    assert.equal(codexCatalogContainsModel(catalog, "auto"), true);
   });
 
   it("leaves the catalog alone for an ordinary off-catalog model", () => {
     const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
-    assert.equal(ensureCodexOffCatalogEntry(base, "not-a-real-model"), base);
+    assert.equal(addCodexSelectedModel(base.models, base, "not-a-real-model"), base.models);
   });
 
-  it("filters out deprecated models", () => {
+  it("sets a usable auto-compact limit on every catalog row", () => {
+    const catalog = buildCodexCatalog([
+      mockModel(),
+      mockModel({
+        name: "accounts/fireworks/models/qwen3p7-plus",
+        contextLength: 0,
+        supportsImageInput: false,
+      }),
+    ]);
+    assert.ok(catalog.models.length > 0);
+    for (const entry of catalog.models) {
+      assert.ok(entry.auto_compact_token_limit > 0, `${entry.slug} must auto-compact`);
+      assert.ok(
+        entry.auto_compact_token_limit < entry.context_window,
+        `${entry.slug} must compact before hitting the limit`,
+      );
+    }
+  });
+
+  it("synthesizes a served concrete router collapsed out of the picker list", () => {
+    const rows = [
+      mockModel({
+        name: "accounts/fireworks/models/glm-5p3",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p3-fast",
+      }),
+    ];
+    const catalog = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot(rows), rows);
+    const models = addCodexSelectedModel([], catalog, "glm-5p3-fast");
+    const entry = models.find((model) => model.slug === "glm-5p3-fast");
+    assert.ok(entry);
+    assert.equal(entry.context_window, 1048576);
+  });
+
+  it("does not add a catalog row for MiniMax", () => {
+    const base = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot([]), []);
+    assert.equal(addCodexSelectedModel(base.models, base, "minimax-m3"), base.models);
+  });
+
+  it("keeps a superseded generation the snapshot still serves", () => {
     const catalog = buildCodexCatalog([
       mockModel({ name: "accounts/fireworks/models/glm-5p2" }),
-      mockModel({ name: "accounts/fireworks/models/glm-5p1" }),
       mockModel({ name: "accounts/fireworks/models/kimi-k2p5" }),
     ]);
     const slugs = catalog.models.map((entry) => entry.slug);
-    assert.ok(!slugs.includes("glm-5p1"));
-    assert.ok(!slugs.includes("kimi-k2p5"));
+    assert.ok(slugs.includes("kimi-k2p5"));
     assert.ok(slugs.includes("glm-5p2"));
   });
 
@@ -244,38 +429,120 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(codexModelExclusionReason("glm-5p2"), "");
   });
 
-  it("filters out embedding, flux, no-tools, and zero-context models", () => {
+  it("filters out embedding, flux, and no-tools models", () => {
     const catalog = buildCodexCatalog([
       mockModel({ name: "accounts/fireworks/models/glm-5p2" }),
       mockModel({ name: "accounts/fireworks/models/embedding-x", kind: "EMBEDDING_MODEL" }),
       mockModel({ name: "accounts/fireworks/models/flux-x", kind: "FLUMINA_BASE_MODEL" }),
       mockModel({ name: "accounts/fireworks/models/no-tools", supportsTools: false }),
-      mockModel({ name: "accounts/fireworks/models/zero-ctx", contextLength: 0 }),
     ]);
     const slugs = catalog.models.map((entry) => entry.slug);
     assert.ok(slugs.includes("glm-5p2"));
     assert.ok(!slugs.includes("embedding-x"));
     assert.ok(!slugs.includes("flux-x"));
     assert.ok(!slugs.includes("no-tools"));
-    assert.ok(!slugs.includes("zero-ctx"));
+  });
+
+  it("keeps unknown-window models with the 1M default instead of filtering them", () => {
+    const catalog = buildCodexCatalog([
+      mockModel({ name: "accounts/fireworks/models/zero-ctx", contextLength: 0, context_length: 0 }),
+    ]);
+    const entry = catalog.models.find((row) => row.slug === "zero-ctx");
+    assert.ok(entry, "unknown-window row must be kept");
+    assert.equal(entry.context_window, 1_000_000);
+  });
+
+  it("defaults missing tool support to true instead of filtering the row", () => {
+    const row = mockServerlessModel({ name: "accounts/fireworks/models/new-model" });
+    delete row.supportsTools;
+    delete row.supports_tools;
+    const catalog = buildCodexCatalog([row]);
+    const entry = catalog.models.find((item) => item.slug === "new-model");
+    assert.ok(entry, "row without a tools signal must be kept");
+    assert.equal(entry.supports_parallel_tool_calls, true);
+  });
+
+  it("reads snake_case API fields from flat serverless rows", () => {
+    const catalog = buildCodexCatalog([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k2p7-code",
+        display_name: "Kimi K2.7 Code",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+        aliases: ["accounts/fireworks/routers/kimi-latest"],
+        supports_tools: true,
+        input_modalities: ["text", "image"],
+      }),
+    ]);
+    const slugs = catalog.models.map((entry) => entry.slug);
+    assert.ok(slugs.includes("kimi-k2p7-code"));
+    assert.ok(slugs.includes("kimi-latest"));
+    const base = catalog.models.find((entry) => entry.slug === "kimi-k2p7-code");
+    const latest = catalog.models.find((entry) => entry.slug === "kimi-latest");
+    assert.equal(base.context_window, 1_048_576);
+    assert.equal(latest.context_window, 1_048_576);
+    assert.equal(base.auto_compact_token_limit, 838860);
+    assert.equal(latest.auto_compact_token_limit, 838860);
+    assert.equal(base.supports_parallel_tool_calls, true);
+    assert.equal(latest.supports_parallel_tool_calls, true);
+  });
+
+  it("marks alias rows vision-capable from the API inputModalities array", () => {
+    // Regression: a boolean-only read rendered every -latest alias text-only
+    // while the matrix attached images (deepseek-flash-latest refused view_image).
+    const rows = [
+      mockServerlessModel({
+        name: "accounts/fireworks/models/deepseek-v4p1-flash",
+        display_name: "DeepSeek V4.1 Flash",
+        input_modalities: ["text", "image"],
+        aliases: ["accounts/fireworks/routers/deepseek-flash-latest"],
+      }),
+    ];
+    const catalog = buildCodexCatalogFromSnapshot(buildServerlessCatalogSnapshot(rows), rows);
+    const latest = catalog.models.find((entry) => entry.slug === "deepseek-flash-latest");
+    assert.ok(latest, "alias row must exist");
+    assert.deepEqual(latest.input_modalities, ["text", "image"]);
+    assert.equal(latest.supports_image_detail_original, true);
+    assert.equal(latest.web_search_tool_type, "text_and_image");
+  });
+
+  it("agrees with the snapshot modality mapping for every row shape", () => {
+    // Guard: entry and snapshot must read vision the same way, or the matrix
+    // attaches images Codex refuses. Real rows carry array or boolean, never both.
+    const legacyImage = mockServerlessModel({ supportsImageInput: true });
+    delete legacyImage.input_modalities;
+    const legacyText = mockServerlessModel({ supportsImageInput: false });
+    delete legacyText.input_modalities;
+    for (const row of [
+      mockServerlessModel({ name: "accounts/fireworks/models/deepseek-v4p1-flash", inputModalities: ["text", "image"] }),
+      mockServerlessModel({ name: "accounts/fireworks/models/deepseek-v4p1-flash", input_modalities: ["text", "image"] }),
+      mockServerlessModel({ name: "accounts/fireworks/models/deepseek-v4-flash-0731", inputModalities: ["text"] }),
+      { ...legacyImage, name: "accounts/fireworks/models/glm-5p2" },
+      { ...legacyText, name: "accounts/fireworks/models/glm-5p2" },
+    ]) {
+      const expected = inputModalitiesFromModel(row).includes("image");
+      const entry = buildCodexCatalogEntry(row);
+      assert.deepEqual(
+        entry.input_modalities,
+        expected ? ["text", "image"] : ["text"],
+        JSON.stringify(row),
+      );
+    }
   });
 
   it("includes router entries from usage_identifier when base models are present", () => {
     const catalog = buildCodexCatalog([
-      mockModel({ name: "accounts/fireworks/models/glm-5p2" }),
+      mockModel({
+        name: "accounts/fireworks/models/glm-5p2",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+      }),
       mockModel({
         name: "accounts/fireworks/models/kimi-k2p7-code",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
-            skuInfos: [],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-fast-latest",
-            skuInfos: [],
-          },
-        ],
+        displayName: "Kimi K2.7 Code",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+        aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
       }),
     ]);
     const routerSlugs = catalog.models.map((entry) => entry.slug);
@@ -283,24 +550,20 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.ok(routerSlugs.includes("kimi-fast-latest"));
     const glmFast = catalog.models.find((entry) => entry.slug === "glm-5p2-fast");
     assert.equal(glmFast.context_window, 1048576);
+    assert.equal(glmFast.auto_compact_token_limit, 838860);
     assert.equal(glmFast.display_name, "GLM 5.2 Fast");
   });
 
-  it("synthesizes kimi-latest when API exposes kimi-k2p7-code", () => {
+  it("registers the kimi latest aliases the API reports on kimi-k2p7-code", () => {
     const catalog = buildCodexCatalog([
       mockModel({
         name: "accounts/fireworks/models/kimi-k2p7-code",
         displayName: "Kimi K2.7 Code",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
-            skuInfos: [],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-fast-latest",
-            skuInfos: [],
-          },
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k2p7-code-fast",
+        aliases: [
+          "accounts/fireworks/routers/kimi-latest",
+          "accounts/fireworks/routers/kimi-fast-latest",
         ],
       }),
     ]);
@@ -309,22 +572,14 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.ok(slugs.includes("kimi-latest"));
   });
 
-  it("still synthesizes kimi-fast-latest when API exposes kimi-k3-fast", () => {
+  it("registers kimi-fast-latest when the API reports it on kimi-k3", () => {
     const catalog = buildCodexCatalog([
       mockModel({
         name: "accounts/fireworks/models/kimi-k3",
         displayName: "Kimi K3",
-        serverlessModes: [
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/default",
-            skuInfos: [],
-          },
-          {
-            name: "accounts/fireworks/models/kimi-k3/serverlessModes/fast",
-            usageIdentifier: "accounts/fireworks/routers/kimi-k3-fast",
-            skuInfos: [],
-          },
-        ],
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/kimi-k3-fast",
+        aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
       }),
     ]);
     const slugs = catalog.models.map((entry) => entry.slug);
@@ -333,9 +588,24 @@ describe("codex-catalog buildCodexCatalog", () => {
   });
 
   it("skips routers whose base models are missing from the API response", () => {
-    const catalog = buildCodexCatalog([
-      mockModel({ name: "accounts/fireworks/models/glm-5p2" }),
-    ]);
+    const rows = [
+      mockModel({
+        name: "accounts/fireworks/models/glm-5p2",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+      }),
+    ];
+    const snapshot = buildServerlessCatalogSnapshot(rows);
+    // A router row can outlive its base (e.g. after the base is retired); Codex
+    // must skip it rather than emit a router with no base metadata.
+    snapshot.entries.push({
+      id: "accounts/fireworks/routers/kimi-fast-latest",
+      shortId: "kimi-fast-latest",
+      displayName: "Kimi Fast (Latest)",
+      baseModelId: "accounts/fireworks/models/kimi-k3",
+      kind: "serverless",
+    });
+    const catalog = buildCodexCatalogFromSnapshot(snapshot, rows);
     const slugs = catalog.models.map((entry) => entry.slug);
     assert.ok(slugs.includes("glm-5p2-fast"));
     assert.ok(!slugs.includes("kimi-fast-latest"));
@@ -353,6 +623,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.ok(slugs.includes("qwen3p7-plus"));
     const entry = catalog.models.find((entry) => entry.slug === "qwen3p7-plus");
     assert.equal(entry.context_window, 262144);
+    assert.equal(entry.auto_compact_token_limit, 209715);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
   });
 
@@ -393,17 +664,156 @@ describe("codex-catalog buildCodexCatalog", () => {
     );
     assert.equal(codexCatalogContainsModel(canonicalCatalog, "glm-5p2"), true);
   });
+
+  it("does not collapse path-shaped model ids to their final segment", () => {
+    const catalog = { models: [{ slug: "test-model" }] };
+    assert.equal(codexCatalogContainsModel(catalog, "firerouter/test-model"), false);
+  });
+});
+
+describe("codex-catalog pruneCodexCatalogRows", () => {
+  function pruneRows({ existingModels, snapshot }) {
+    return pruneCodexCatalogRows(existingModels, snapshot);
+  }
+  function suitableRows() {
+    return [
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p2",
+        display_name: "GLM 5.2",
+        supports_tools: true,
+      }),
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p2",
+        display_name: "GLM 5.2",
+        supports_tools: true,
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+      }),
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p3",
+        display_name: "GLM-5.3",
+        supports_tools: true,
+        aliases: ["accounts/fireworks/routers/glm-latest"],
+      }),
+    ];
+  }
+
+  function snapshotFor(rows) {
+    return buildServerlessCatalogSnapshot(rows);
+  }
+
+  it("is a no-op when nothing changed", () => {
+    const rows = suitableRows();
+    const fresh = buildCodexCatalogFromSnapshot(snapshotFor(rows), rows).models;
+    const merged = pruneRows({
+      existingModels: JSON.parse(JSON.stringify(fresh)),
+      snapshot: snapshotFor(rows),
+    });
+    assert.deepEqual(merged, fresh);
+  });
+
+  it("does not add newly served models", () => {
+    const rows = suitableRows();
+    const fresh = buildCodexCatalogFromSnapshot(snapshotFor(rows), rows).models;
+    const existing = fresh.filter((entry) => entry.slug !== "glm-5p3");
+    const merged = pruneRows({
+      existingModels: existing,
+      snapshot: snapshotFor(rows),
+    });
+    assert.deepEqual(merged.map((entry) => entry.slug), existing.map((entry) => entry.slug));
+  });
+
+  it("keeps existing metadata for served rows", () => {
+    const rows = suitableRows();
+    const fresh = buildCodexCatalogFromSnapshot(snapshotFor(rows), rows).models;
+    const existing = JSON.parse(JSON.stringify(fresh)).map((entry) => (
+      entry.slug === "glm-5p2" ? { ...entry, display_name: "STALE" } : entry
+    ));
+    const merged = pruneRows({
+      existingModels: existing,
+      snapshot: snapshotFor(rows),
+    });
+    assert.equal(merged.find((entry) => entry.slug === "glm-5p2").display_name, "STALE");
+  });
+
+  it("keeps a served concrete router omitted from the preferred set", () => {
+    const rows = suitableRows();
+    const snapshot = snapshotFor(rows);
+    const carried = [{
+      ...buildCodexCatalogFromSnapshot(snapshot, rows).models
+        .find((entry) => entry.slug === "glm-5p2-fast"),
+      display_name: "STALE",
+    }];
+    const merged = pruneRows({
+      existingModels: carried,
+      snapshot,
+    });
+    const router = merged.find((entry) => entry.slug === "glm-5p2-fast");
+    assert.ok(router);
+    assert.equal(router.display_name, "STALE");
+    assert.equal(router.context_window, 1048576);
+  });
+
+  it("removes carried rows missing from serverless", () => {
+    const rows = suitableRows();
+    const snapshot = snapshotFor(rows);
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows).models;
+    const merged = pruneRows({
+      existingModels: [...fresh, { slug: "retired-x", display_name: "Retired", context_window: 10 }],
+      snapshot,
+    });
+    assert.ok(!merged.some((entry) => entry.slug === "retired-x"));
+  });
+
+  it("keeps synthetic auto and firerouter rows verbatim", () => {
+    const rows = suitableRows();
+    const snapshot = snapshotFor(rows);
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows).models;
+    const auto = { slug: "auto", display_name: "Auto", context_window: 1048575 };
+    const firerouter = { slug: "firerouter", display_name: "FireRouter", context_window: 1048575 };
+    const merged = pruneRows({
+      existingModels: [...fresh, auto, firerouter],
+      snapshot,
+    });
+    assert.deepEqual(merged.find((entry) => entry.slug === "auto"), auto);
+    assert.deepEqual(merged.find((entry) => entry.slug === "firerouter"), firerouter);
+  });
+
+  it("does not re-add a carried MiniMax row that serverless still serves", () => {
+    const rows = [
+      ...suitableRows(),
+      mockServerlessModel({
+        id: "accounts/fireworks/models/minimax-m3",
+        display_name: "MiniMax M3",
+        supports_tools: true,
+      }),
+    ];
+    const snapshot = snapshotFor(rows);
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows).models;
+    assert.ok(!fresh.some((entry) => entry.slug === "minimax-m3"), "fresh build excludes it");
+    const carriedMinimax = {
+      slug: "minimax-m3",
+      display_name: "MiniMax M3",
+      context_window: 1048576,
+      max_context_window: 1048576,
+    };
+    const merged = pruneRows({
+      existingModels: [...fresh, carriedMinimax],
+      snapshot,
+    });
+    assert.ok(!merged.some((entry) => entry.slug === "minimax-m3"));
+  });
+
 });
 
 describe("codex-catalog metadata tables", () => {
-  it("DEPRECATED_MODELS contains the expected ids", () => {
-    assert.ok(DEPRECATED_MODELS.has("accounts/fireworks/models/kimi-k2p5"));
-    assert.ok(DEPRECATED_MODELS.has("accounts/fireworks/models/qwen3p6-plus"));
-  });
-
   it("snapshot maps usage_identifier routers to base models", () => {
     const snapshot = buildServerlessCatalogSnapshot([
-      mockModel({ name: "accounts/fireworks/models/glm-5p2" }),
+      mockModel({
+        name: "accounts/fireworks/models/glm-5p2",
+        serverless_mode: "fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+      }),
     ]);
     assert.equal(
       snapshot.routerBaseModelById.get("accounts/fireworks/routers/glm-5p2-fast"),
@@ -414,6 +824,9 @@ describe("codex-catalog metadata tables", () => {
   it("MODEL_REASONING has entries for all documented models", () => {
     const expected = [
       "accounts/fireworks/models/glm-5p2",
+      "accounts/fireworks/models/glm-5p3",
+      "accounts/fireworks/models/glm-5p3-fast",
+      "accounts/fireworks/models/glm-5p3-flash",
       "accounts/fireworks/models/deepseek-v4-flash",
       "accounts/fireworks/models/deepseek-v4-pro",
       "accounts/fireworks/models/kimi-k2p6",
@@ -428,5 +841,57 @@ describe("codex-catalog metadata tables", () => {
     for (const id of expected) {
       assert.ok(MODEL_REASONING[id], `missing reasoning config for ${id}`);
     }
+  });
+});
+
+describe("codex-catalog refreshCodexCatalogRows", () => {
+  const rows = () => [
+    mockServerlessModel({
+      id: "accounts/fireworks/models/glm-5p2",
+      displayName: "GLM 5.2",
+      supports_tools: true,
+    }),
+    mockServerlessModel({
+      id: "accounts/fireworks/models/glm-5p3",
+      displayName: "GLM 5.3",
+      supports_tools: true,
+      aliases: ["accounts/fireworks/routers/glm-latest"],
+    }),
+  ];
+
+  it("re-renders kept rows from the fresh catalog (metadata refresh)", () => {
+    const snapshot = buildServerlessCatalogSnapshot(rows());
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows()).models;
+    const existing = JSON.parse(JSON.stringify(fresh)).map((entry) => (
+      entry.slug === "glm-5p3" ? { ...entry, display_name: "STALE" } : entry
+    ));
+    const merged = refreshCodexCatalogRows(existing, snapshot, fresh);
+    assert.equal(merged.find((entry) => entry.slug === "glm-5p3").display_name, "GLM 5.3");
+    assert.deepEqual(merged.map((entry) => entry.slug), existing.map((entry) => entry.slug),
+      "order preserved");
+  });
+
+  it("adds newly served rows, prunes delisted ones, keeps synthetic rows verbatim", () => {
+    const snapshot = buildServerlessCatalogSnapshot(rows());
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows()).models;
+    const auto = { slug: "auto", display_name: "Auto", context_window: 1048575 };
+    const existing = [
+      ...fresh.filter((entry) => entry.slug !== "glm-5p3"),
+      auto,
+      { slug: "retired-x", display_name: "Retired", context_window: 10 },
+    ];
+    const merged = refreshCodexCatalogRows(existing, snapshot, fresh);
+    const slugs = merged.map((entry) => entry.slug);
+    assert.ok(slugs.includes("glm-5p3"), "newly served row added");
+    assert.ok(!slugs.includes("retired-x"), "delisted row pruned");
+    assert.deepEqual(merged.find((entry) => entry.slug === "auto"), auto);
+    assert.equal(slugs.length, new Set(slugs).size, "no duplicate rows");
+  });
+
+  it("is a no-op when nothing changed", () => {
+    const snapshot = buildServerlessCatalogSnapshot(rows());
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows()).models;
+    const merged = refreshCodexCatalogRows(JSON.parse(JSON.stringify(fresh)), snapshot, fresh);
+    assert.deepEqual(merged, fresh);
   });
 });

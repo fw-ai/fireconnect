@@ -1,13 +1,10 @@
 import {
   CLAUDE_NATIVE_MODEL_ID,
-  CLAUDE_NATIVE_SLOT_ALIAS,
   DEFAULT_FIREPASS_MAIN_MODEL,
-  defaultMainModel,
   fireworksModelSlug,
   isClaudeNativeModel,
   isClaudeNativeSlotAlias,
-  isFirerouterModelPattern,
-  firerouterRequiresAnthropicKey,
+  isFirerouterModel,
   normalizeModelId,
   validateModelId,
 } from "../../fireworks/model-id.mjs";
@@ -21,26 +18,6 @@ export const CLAUDE_MODEL_SLOTS = Object.freeze([
   "subagent",
 ]);
 
-/** Pinned Fireworks router aliases for each Claude slot (main stays native). */
-export const CLAUDE_FIREWORKS_PINNED_DEFAULTS = Object.freeze({
-  opus: "glm-latest",
-  sonnet: "deepseek-pro-latest",
-  haiku: "deepseek-flash-latest",
-  fable: "glm-flash-latest",
-  subagent: "deepseek-flash-latest",
-});
-
-/** Opus override applied on first connect when FireRouter auth is available. */
-export const FIRST_CONNECT_AUTOMATIC_OPUS_MODEL = "firerouter";
-/** Sonnet companion when Opus is FireRouter — GLM moves off the Opus slot. */
-export const FIRST_CONNECT_AUTOMATIC_SONNET_MODEL = "glm-latest";
-
-export const DEFAULT_OPUS_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.opus;
-export const DEFAULT_FABLE_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.fable;
-export const DEFAULT_SONNET_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.sonnet;
-export const DEFAULT_HAIKU_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.haiku;
-export const DEFAULT_SUBAGENT_MODEL = CLAUDE_FIREWORKS_PINNED_DEFAULTS.subagent;
-
 const PROFILE_VERSION = 1;
 const KEY_TYPES = ["fireworks", "firepass"];
 
@@ -53,10 +30,9 @@ export function defaultClaudeModelMapping(keyType = "fireworks") {
   // Main is never pinned: Claude Code resolves an unset main through the
   // account-default alias (Opus/Sonnet), which the slots below already remap.
   // Pinning it would write settings.model and shadow the `/model` picker.
-  return {
-    main: CLAUDE_NATIVE_MODEL_ID,
-    ...CLAUDE_FIREWORKS_PINNED_DEFAULTS,
-  };
+  return Object.fromEntries(
+    CLAUDE_MODEL_SLOTS.map((slot) => [slot, CLAUDE_NATIVE_MODEL_ID]),
+  );
 }
 
 /**
@@ -98,20 +74,6 @@ export function migrateLegacyClaudeModelMapping(mapping = {}) {
   return { mapping: next, changed };
 }
 
-/** Whether a slot should appear in `claude status` (overrides only). */
-export function isClaudeMappingOverride(modelId, slot, keyType, defaults = defaultClaudeModelMapping(keyType)) {
-  if (!modelId) {
-    return false;
-  }
-  if (isClaudeNativeModel(modelId)) {
-    return false;
-  }
-  if (modelId === defaults[slot]) {
-    return false;
-  }
-  return true;
-}
-
 /** Merge model sources from lowest to highest precedence. */
 export function mergeClaudeModelMappings(...sources) {
   const merged = {};
@@ -123,16 +85,6 @@ export function mergeClaudeModelMappings(...sources) {
     }
   }
   return merged;
-}
-
-export function claudeModelOverridesFrom(ctx) {
-  return Object.fromEntries(
-    CLAUDE_MODEL_SLOTS.map((slot) => [slot, ctx[slot] ?? ""]),
-  );
-}
-
-export function hasClaudeModelOverrides(ctx) {
-  return Object.values(claudeModelOverridesFrom(ctx)).some(Boolean);
 }
 
 const CLAUDE_SLOT_FLAGS = Object.freeze({
@@ -156,17 +108,14 @@ const CLAUDE_SLOT_FLAGS = Object.freeze({
  * and {@link resolveClaudeModelMapping} canonicalizes those instead of failing.
  */
 export function assertClaudeModelOverrides(ctx) {
-  for (const [slot, value] of Object.entries(claudeModelOverridesFrom(ctx))) {
-    if (!value || isClaudeNativeSlotAlias(value)) {
-      continue;
-    }
-    if (!isClaudeNativeModel(normalizeModelId(value))) {
-      continue;
-    }
-    const flag = CLAUDE_SLOT_FLAGS[slot];
+  const value = ctx.main?.trim();
+  if (!value || isClaudeNativeSlotAlias(value)) {
+    return;
+  }
+  if (isClaudeNativeModel(normalizeModelId(value))) {
     throw new Error(
-      `${flag} ${value} is not a model id. Use \`${flag} ${CLAUDE_NATIVE_SLOT_ALIAS}\` `
-        + "to leave the slot on Claude Code's own default model.",
+      `--model ${value} is not a Fireworks model id. Tier slots stay on Claude defaults; `
+        + `\`--model\` adds a serverless model to the /model picker.`,
     );
   }
 }
@@ -183,13 +132,13 @@ export function resolveClaudeModelMapping(overrides = {}, keyType = "fireworks")
   return selected;
 }
 
-export function mappingUsesFirerouter(mapping) {
-  return Object.values(mapping).some((modelId) => isFirerouterModelPattern(modelId));
-}
-
-/** Whether any Claude slot is an Anthropic-requiring FireRouter selection. */
-export function mappingRequiresAnthropicKey(mapping) {
-  return Object.values(mapping).some((modelId) => firerouterRequiresAnthropicKey(modelId));
+/**
+ * Whether any Claude slot pins the bare `firerouter` model. The routing
+ * preference is only honored there — not for `auto` or `firerouter/*`
+ * compounds, which pin their own targets.
+ */
+export function mappingUsesBareFirerouter(mapping) {
+  return Object.values(mapping).some((modelId) => isFirerouterModel(modelId));
 }
 
 function completeMapping(raw) {

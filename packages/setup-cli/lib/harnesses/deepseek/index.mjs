@@ -19,6 +19,7 @@ import {
   resolveDeepseekApiKey,
 } from "./core.mjs";
 import { harnessFullKey } from "../../keys/harness-api-key.mjs";
+import { detectApiKeyType } from "../../keys/key-type.mjs";
 import { finishEnvHarnessOn } from "../../harness/env-hook.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
 import {
@@ -50,8 +51,8 @@ export default defineHarnessProfile({
   resolveKey: deepseekResolveKey,
   paths: (ctx) => deepseekPathsFor(ctx),
   keyEnvRef: DEEPSEEK_API_KEY_ENV,
-  // Custom providers cannot forward local BYOK headers; workspace BYOK can
-  // still auto-enable FireRouter.
+  // Custom providers cannot forward local BYOK headers, so Anthropic-requiring
+  // firerouter selections are refused here.
   firerouter: {
     byok: "none",
     autoCatalog: true,
@@ -118,7 +119,7 @@ export default defineHarnessProfile({
       modelProvider: DEEPSEEK_FIREWORKS_PROVIDER_ID,
       hasAuthToken: Boolean(resolvedKey),
       apiKeyMode,
-      defaults: { main: defaultMainModel() },
+      defaults: { main: defaultMainModel(detectApiKeyType(resolvedKey || "")) },
       current: { main: model },
     };
 

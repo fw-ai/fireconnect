@@ -6,7 +6,7 @@
  * is deliberately no reference-price fallback.
  */
 
-import { providerListPricing } from "../../../demo/list-pricing.mjs";
+import { isOpenAiPricedModelId, providerListPricing } from "../../../demo/list-pricing.mjs";
 import {
   isAnthropicModelId,
   isClaudeModelAlias,
@@ -39,15 +39,13 @@ function fireworksPriceFor(model) {
   };
 }
 
-function anthropicPriceFor(model, usage) {
-  const rate = providerListPricing({
-    provider: "anthropic",
-    modelId: model,
-    speed: usage.speed,
-  });
-  // providerListPricing returns a plausible reference row for unknown ids.
-  // That is useful for broad incumbent discovery, but not for measured usage:
-  // only a concrete list-price match may become a dollar figure.
+/**
+ * List-price lookup shared by the Anthropic and OpenAI branches. Only a
+ * concrete list-price match may become a dollar figure: the estimated fallback
+ * row is useful for broad incumbent discovery, but not for measured usage.
+ */
+function listPriceFor(provider, model, extra = {}) {
+  const rate = providerListPricing({ provider, modelId: model, ...extra });
   if (!rate || rate.tier === "subscription" || rate.estimated) {
     return null;
   }
@@ -63,23 +61,52 @@ function anthropicPriceFor(model, usage) {
   };
 }
 
+function anthropicPriceFor(model, usage) {
+  return listPriceFor("anthropic", model, { speed: usage.speed });
+}
+
+/** Total input tokens on a usage payload — what OpenAI's 272K length tier keys off. */
+function totalInputTokens(usage = {}) {
+  const cacheCreation = usage.cache_creation && typeof usage.cache_creation === "object"
+    ? usage.cache_creation
+    : null;
+  const cacheWrite5m = cacheCreation
+    ? numberValue(cacheCreation.ephemeral_5m_input_tokens)
+    : numberValue(usage.cache_creation_input_tokens);
+  const cacheWrite1h = cacheCreation
+    ? numberValue(cacheCreation.ephemeral_1h_input_tokens)
+    : 0;
+  return numberValue(usage.input_tokens)
+    + numberValue(usage.cache_read_input_tokens)
+    + cacheWrite5m
+    + cacheWrite1h;
+}
+
+function openaiPriceFor(model, usage) {
+  return listPriceFor("openai", model, { inputTokens: totalInputTokens(usage) });
+}
+
 /**
  * Rates for one call, or null when we have none.
  *
  * `providerListPricing` returns a Claude reference rate for any unknown id, so
- * it is only called after the id has been classified as Anthropic.
+ * the Anthropic and OpenAI tables are only consulted after the id has been
+ * classified as naming a model from that table.
  */
 function priceFor(model, usage) {
   const fireworksPrice = fireworksPriceFor(model);
-  const price = fireworksPrice
-    ?? ((isAnthropicModelId(model) || isClaudeModelAlias(model))
-      ? anthropicPriceFor(model, usage)
-      : null);
-  if (!price) {
-    return null;
+  if (fireworksPrice) {
+    return { ...fireworksPrice, fireworks: true };
   }
-
-  return { ...price, fireworks: Boolean(fireworksPrice) };
+  if (isAnthropicModelId(model) || isClaudeModelAlias(model)) {
+    const price = anthropicPriceFor(model, usage);
+    return price ? { ...price, fireworks: false } : null;
+  }
+  if (isOpenAiPricedModelId(model)) {
+    const price = openaiPriceFor(model, usage);
+    return price ? { ...price, fireworks: false } : null;
+  }
+  return null;
 }
 
 function numberValue(value) {

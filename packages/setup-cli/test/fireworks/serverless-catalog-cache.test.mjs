@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   cacheServerlessCatalogSnapshot,
   getServerlessCatalogSnapshot,
+  isCachedServerlessModelRef,
   isCatalogCacheFresh,
   readCatalogCache,
   setServerlessCatalogSnapshot,
@@ -39,6 +40,23 @@ function sampleSnapshot() {
     supportsToolsById: new Map([["glm-latest", true]]),
   };
 }
+
+it("matches full catalog refs exactly and bare refs by short id", () => {
+  setServerlessCatalogSnapshot(sampleSnapshot());
+  try {
+    assert.equal(isCachedServerlessModelRef("glm-latest"), true);
+    assert.equal(
+      isCachedServerlessModelRef("accounts/fireworks/routers/glm-latest"),
+      true,
+    );
+    assert.equal(
+      isCachedServerlessModelRef("accounts/fireworks/models/glm-latest"),
+      false,
+    );
+  } finally {
+    setServerlessCatalogSnapshot(null);
+  }
+});
 
 function withTempHome(fn) {
   const home = mkdtempSync(path.join(os.tmpdir(), "fc-cache-test-"));

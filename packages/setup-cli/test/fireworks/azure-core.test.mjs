@@ -272,6 +272,6 @@ describe("azure Foundry model slug resolution", () => {
   it("returns defaults for unknown deployment names", () => {
     assert.equal(resolveAzureFoundryModelSlug("custom-deployment"), null);
     const limits = lookupAzureFoundryModelLimits("FW-Kimi-K2-Instruct-0905");
-    assert.equal(limits.contextWindow, 128_000);
+    assert.equal(limits.contextWindow, 1_000_000);
   });
 });

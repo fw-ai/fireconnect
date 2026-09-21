@@ -2,17 +2,17 @@ import { resolveModelDisplayMetadata } from "./model-display.mjs";
 import { visionCapabilityLabel } from "./vision.mjs";
 import { attachPricing } from "./pricing.mjs";
 import {
+  allModelsByRecency,
   autoCatalogEntry,
   filterCatalogBySearch,
   catalogWithAutomaticFirerouter,
   isAutoCatalogEntry,
   loadServerlessCatalog,
-  newestModelsByFamily,
   preferLatestAliases,
+  stripViaFireworksSuffix,
 } from "./models.mjs";
 import { KNOWN_AUTO_MODEL_IDS, canonicalAutoModelId } from "./model-id.mjs";
 import { bold, dim, warn, withSpinner } from "../ui.mjs";
-import { stripViaFireworksSuffix } from "./models.mjs";
 
 function formatUsd(value) {
   if (!Number.isFinite(value)) {
@@ -93,10 +93,9 @@ export function organizeCatalogForDisplay(catalog) {
     !isFastLatestRouter(entry)
     && entry.shortId.endsWith("-latest")
   ));
-  // Read straight off the catalog rather than following each -latest router to
-  // its pinned base model: a stale ROUTER_SPEC_ALIASES target must not be able
-  // to hide the newest version the API is serving.
-  const models = newestModelsByFamily(catalog);
+  // Every versioned model the catalog serves, newest first — no family
+  // collapsing, so older versions stay visible for pinning.
+  const models = allModelsByRecency(catalog);
 
   return [
     {
@@ -121,8 +120,8 @@ export function organizeCatalogForDisplay(catalog) {
     },
     {
       title: "INDIVIDUAL MODELS",
-      description: "pinned versions",
-      entries: sortEntries(models),
+      description: "all versions, newest first",
+      entries: models,
     },
   ].filter((section) => section.entries.length > 0);
 }

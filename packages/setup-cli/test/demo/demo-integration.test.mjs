@@ -683,12 +683,75 @@ test("providerListPricing: Fable 5.1 uses reduced cache-read tier, not Fable 5",
 });
 
 test("providerListPricing: gpt-4o-mini does not match the gpt-4o tier", () => {
-  // Regression: substring matching by insertion order let `gpt-4o` shadow
-  // `gpt-4o-mini`, inflating cost ~17x. The longest-key match must win.
+  // Both are exact table rows, so each resolves to its own rates — a shorter
+  // key must never shadow a longer one it prefixes.
   const m = providerListPricing({ provider: "openai", modelId: "gpt-4o-mini" });
   assert.equal(m.inputPerMillion, 0.15);
   assert.equal(m.outputPerMillion, 0.6);
   assert.equal(m.label, "GPT-4o mini");
+  assert.equal(m.estimated, false);
+});
+
+test("providerListPricing: [1m] tag and snapshot dates resolve to the base row", () => {
+  // Regression (bugbot): strict matching dropped Claude Code's `[1m]`
+  // context tag and Anthropic snapshot dates, unpricing legs that used to
+  // resolve. Both normalize to the base row — never to a shorter key.
+  const tagged = providerListPricing({ provider: "anthropic", modelId: "claude-opus-4-8[1m]" });
+  assert.equal(tagged.estimated, false);
+  assert.equal(tagged.label, "Claude Opus 4.8");
+  assert.equal(tagged.inputPerMillion, 5);
+  const dated = providerListPricing({ provider: "anthropic", modelId: "claude-sonnet-5-20250901" });
+  assert.equal(dated.estimated, false);
+  assert.equal(dated.label, "Claude Sonnet 5");
+  // An unknown version is not a date and must not strip down to the alias.
+  const unknown = providerListPricing({ provider: "anthropic", modelId: "claude-opus-9" });
+  assert.equal(unknown.estimated, true);
+});
+
+test("providerListPricing: partial OpenAI ids stay estimated, never borrow rates", () => {
+  // Regression (bugbot): substring matching priced `gpt-5.6` at `gpt-5` rates
+  // and `o3-mini` at `o3` rates. Resolution is exact id, last path segment, or
+  // explicit alias only — anything else gets the estimated reference row.
+  for (const id of ["gpt-5.6", "o3-mini", "gpt-4o-2024-08-06", "gpt-5.1-codex", "my-gpt-5-wrapper"]) {
+    const r = providerListPricing({ provider: "openai", modelId: id });
+    assert.equal(r.estimated, true, id);
+    assert.equal(r.label, "GPT-4o (reference)", id);
+  }
+});
+
+test("providerListPricing: id normalization matrix (exact, segment, alias, tag, date)", () => {
+  // Exact rows, case/whitespace/prefix/segment/alias forms resolve real;
+  // partials, dashed snapshots, unknown versions, and degenerate inputs
+  // stay on the estimated reference row — never a shorter key's rates.
+  const cases = [
+    ["openai", "gpt-6-astra", false], ["openai", "GPT-6-ASTRA", false],
+    ["openai", "  gpt-4o  ", false], ["openai", "a/b/gpt-4o", false],
+    ["openai", "gpt-6", false], ["openai", "astra", false],
+    ["openai", "gpt-6-astra[1m]", false],
+    ["openai", "gpt-5.6", true], ["openai", "o3-mini", true],
+    ["openai", "gpt-4o-2024-08-06", true], ["openai", "gpt-6x", true],
+    ["openai", "astra2", true], ["openai", "", true],
+    ["openai", "firerouter/", true],
+    ["anthropic", "claude-opus-4-8[1m]", false],
+    ["anthropic", "claude-opus-4-8-20250901[1m]", false],
+    ["anthropic", "claude-sonnet-5-20250901", false],
+    ["anthropic", "anthropic/claude-opus-5", false],
+    ["anthropic", "claude-opus-9", true],
+    ["anthropic", "claude-opus-5-20251301", true],
+  ];
+  for (const [provider, modelId, estimated] of cases) {
+    assert.equal(providerListPricing({ provider, modelId }).estimated, estimated, modelId);
+  }
+});
+
+test("providerListPricing: provider prefixes and router paths resolve to the row", () => {
+  for (const id of ["openai/gpt-6-astra", "openai/gpt-4o", "anthropic/claude-opus-5"]) {
+    const provider = id.startsWith("anthropic/") ? "anthropic" : "openai";
+    const r = providerListPricing({ provider, modelId: id });
+    assert.equal(r.estimated, false, id);
+  }
+  assert.equal(providerListPricing({ provider: "openai", modelId: "openai/gpt-4o" }).label, "GPT-4o");
+  assert.equal(providerListPricing({ provider: "anthropic", modelId: "anthropic/claude-opus-5" }).label, "Claude Opus 5");
 });
 
 test("providerListPricing: new OpenAI flagships (GPT-5.5 / 5.4 / 5.4 mini) resolve", () => {
@@ -701,6 +764,78 @@ test("providerListPricing: new OpenAI flagships (GPT-5.5 / 5.4 / 5.4 mini) resol
   const mini = providerListPricing({ provider: "openai", modelId: "gpt-5.4-mini" });
   assert.equal(mini.inputPerMillion, 0.75);
   assert.equal(mini.outputPerMillion, 4.5);
+});
+
+test("providerListPricing: GPT-6 Astra resolves short-tier rates, not the fallback", () => {
+  // Regression: Astra had no table entry, so it fell back to the GPT-4o
+  // reference ($2.5/$10 estimated) — understating short-tier cost ~4-5x.
+  for (const id of ["gpt-6-astra", "gpt-6", "gpt6", "astra", "openai/gpt-6-astra", "GPT-6-Astra"]) {
+    const r = providerListPricing({ provider: "openai", modelId: id });
+    assert.equal(r.inputPerMillion, 10, `${id} input`);
+    assert.equal(r.outputPerMillion, 50, `${id} output`);
+    assert.equal(r.cachedInputPerMillion, 1, `${id} cached`);
+    assert.equal(r.cacheWrite5mPerMillion, 12.5, `${id} cache write`);
+    assert.equal(r.estimated, false, `${id} not estimated`);
+    assert.equal(r.contextTier, "standard", `${id} short tier`);
+    assert.equal(r.label, "GPT-6 Astra", `${id} label`);
+  }
+});
+
+test("providerListPricing: Astra long-context tier applies at 272K input", () => {
+  const short = providerListPricing({ provider: "openai", modelId: "gpt-6-astra", inputTokens: 271_999 });
+  assert.equal(short.contextTier, "standard");
+  assert.equal(short.inputPerMillion, 10);
+  assert.equal(short.outputPerMillion, 50);
+  // The long tier bills the FULL request at 2x input/cache + 1.5x output.
+  const long = providerListPricing({ provider: "openai", modelId: "gpt-6-astra", inputTokens: 272_000 });
+  assert.equal(long.contextTier, "long");
+  assert.equal(long.inputPerMillion, 20);
+  assert.equal(long.cachedInputPerMillion, 2);
+  assert.equal(long.cacheWrite5mPerMillion, 25);
+  assert.equal(long.outputPerMillion, 75);
+  assert.equal(long.estimated, false);
+});
+
+test("providerListPricing: GPT-5.6 family resolves (no gpt-5 shadowing) with long tiers", () => {
+  // Regression: "gpt-5.6-sol" substring-matched "gpt-5" ($1.25/$10).
+  const sol = providerListPricing({ provider: "openai", modelId: "gpt-5.6-sol" });
+  assert.equal(sol.inputPerMillion, 5);
+  assert.equal(sol.outputPerMillion, 30);
+  assert.equal(sol.label, "GPT-5.6 Sol");
+  const terra = providerListPricing({ provider: "openai", modelId: "gpt-5.6-terra" });
+  assert.equal(terra.inputPerMillion, 2);
+  assert.equal(terra.outputPerMillion, 12);
+  const luna = providerListPricing({ provider: "openai", modelId: "gpt-5.6-luna" });
+  assert.equal(luna.inputPerMillion, 0.2);
+  assert.equal(luna.outputPerMillion, 1.2);
+  const solLong = providerListPricing({ provider: "openai", modelId: "gpt-5.6-sol", inputTokens: 500_000 });
+  assert.equal(solLong.contextTier, "long");
+  assert.equal(solLong.inputPerMillion, 10);
+  assert.equal(solLong.outputPerMillion, 45);
+  const terraLong = providerListPricing({ provider: "openai", modelId: "gpt-5.6-terra", inputTokens: 500_000 });
+  assert.equal(terraLong.inputPerMillion, 4);
+  assert.equal(terraLong.outputPerMillion, 18);
+});
+
+test("providerListPricing: GPT-5.5 carries cache + long-context rates", () => {
+  const short = providerListPricing({ provider: "openai", modelId: "gpt-5.5" });
+  assert.equal(short.cachedInputPerMillion, 0.5);
+  assert.equal(short.cacheWrite5mPerMillion, 6.25);
+  assert.equal(short.contextTier, "standard");
+  const long = providerListPricing({ provider: "openai", modelId: "gpt-5.5", inputTokens: 300_000 });
+  assert.equal(long.contextTier, "long");
+  assert.equal(long.inputPerMillion, 10);
+  assert.equal(long.outputPerMillion, 45);
+});
+
+test("incumbentPricing: forwards inputTokens for length-tiered OpenAI models", () => {
+  const short = incumbentPricing({ kind: "openai", modelId: "gpt-6-astra" });
+  assert.equal(short.inputPerMillion, 10);
+  assert.equal(short.contextTier, "standard");
+  const long = incumbentPricing({ kind: "openai", modelId: "gpt-6-astra" }, { inputTokens: 300_000 });
+  assert.equal(long.inputPerMillion, 20);
+  assert.equal(long.outputPerMillion, 75);
+  assert.equal(long.contextTier, "long");
 });
 
 test("providerListPricing: anthropic cached input is 10% of input", () => {

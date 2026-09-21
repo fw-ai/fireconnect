@@ -4,8 +4,33 @@ import process from "node:process";
 
 import { reconcileHarnessConfigOnUpgrade } from "../keys/sync.mjs";
 import { reprobeKeyStorage } from "../keys/secret-store.mjs";
+import { resolveFireworksApiKeyValue } from "../keys/api-key.mjs";
+import { loadServerlessCatalog } from "../fireworks/models.mjs";
 import { ensureCliDependencies, resolveSetupCliDir } from "./ensure-cli-deps.mjs";
 import { runHarnessForwardMigrations } from "./forward-migrations.mjs";
+
+/**
+ * Best-effort serverless catalog refresh so upgrade/reinstall leave a fresh
+ * snapshot behind — otherwise the new models/aliases a release advertises
+ * only appear after the user's next online `on`. Silent in both directions:
+ * offline installs keep serving their last-known snapshot, and keyless
+ * installs (nothing to fetch with) skip entirely.
+ * @param {string} home
+ * @returns {Promise<boolean>} true when the cache was refreshed
+ */
+export async function refreshServerlessCatalog(home) {
+  const apiKey = await resolveFireworksApiKeyValue({ home });
+  if (!apiKey.trim()) {
+    return false;
+  }
+  try {
+    await loadServerlessCatalog({ apiKey: apiKey.trim(), refresh: true });
+    return true;
+  } catch {
+    // Offline or dead key — keep serving the last-known snapshot.
+    return false;
+  }
+}
 
 /**
  * Shared post-bootstrap repair for `install.sh` and `fireconnect upgrade`.
@@ -14,7 +39,8 @@ import { runHarnessForwardMigrations } from "./forward-migrations.mjs";
  * after the CLI bits are on disk goes through this path:
  *   1. ensure runtime npm deps
  *   2. re-probe secret storage / migrate plaintext → secure
- *   3. run key-independent harness migrations, then rebake keys / shell hook
+ *   3. refresh the serverless catalog snapshot (best-effort, silent)
+ *   4. run key-independent harness migrations, then rebake keys / shell hook
  *
  * Never throws for reconcile/shell failures (best-effort). Dep install and
  * key-storage probe may throw only if callers choose to surface them — this
@@ -27,6 +53,7 @@ import { runHarnessForwardMigrations } from "./forward-migrations.mjs";
  *   log?: (...args: unknown[]) => void,
  *   ensureDeps?: typeof ensureCliDependencies,
  *   reprobe?: typeof reprobeKeyStorage,
+ *   refreshCatalog?: typeof refreshServerlessCatalog,
  *   migrate?: typeof runHarnessForwardMigrations,
  *   reconcile?: typeof reconcileHarnessConfigOnUpgrade,
  * }} [options]
@@ -39,6 +66,7 @@ export async function finalizeInstallOrUpgrade({
   log = console.log,
   ensureDeps = ensureCliDependencies,
   reprobe = reprobeKeyStorage,
+  refreshCatalog = refreshServerlessCatalog,
   migrate = runHarnessForwardMigrations,
   reconcile = reconcileHarnessConfigOnUpgrade,
 } = {}) {
@@ -70,6 +98,12 @@ export async function finalizeInstallOrUpgrade({
       }
     } catch {
       // Best-effort: install/upgrade must not abort after the CLI is already on disk.
+    }
+
+    try {
+      await refreshCatalog(home);
+    } catch {
+      // Best-effort: an offline upgrade keeps serving the last-known snapshot.
     }
 
     try {

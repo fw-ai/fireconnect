@@ -3,6 +3,7 @@ import path from "node:path";
 import { HARNESS } from "./id.mjs";
 import { cursorStateDbPath } from "../harnesses/cursor/core.mjs";
 import { chatLanguageModelsPath } from "../harnesses/vscode/core.mjs";
+import { copilotDataDbPath } from "../harnesses/copilot-app/sqlite.mjs";
 
 /**
  * Best-effort detection of which harnesses look installed for `home`, by
@@ -30,6 +31,10 @@ export function detectInstalledHarnesses(home) {
     // The User dir exists on any VS Code install; chatLanguageModels.json
     // itself only appears once the user touches custom models.
     [HARNESS.VSCODE]: [path.dirname(chatLanguageModelsPath({ home }))],
+    // Both products keep their config in ~/.copilot, so the same probe finds
+    // either one; which is installed is the user's to say.
+    [HARNESS.COPILOT_APP]: [path.dirname(copilotDataDbPath({ home }))],
+    [HARNESS.COPILOT_CLI]: [path.dirname(copilotDataDbPath({ home }))],
     [HARNESS.DEEPSEEK]: [path.join(home, ".dsh")],
   };
 

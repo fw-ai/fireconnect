@@ -114,11 +114,11 @@ export default defineHarnessProfile({
     telemetryHeaders,
     includeFirerouter,
   }) => {
-    // Register the preferred catalog; firerouter is workspace-BYOK-gated.
+    // Register the preferred catalog; firerouter registers only when explicitly requested.
     // A TTL-cached snapshot serves offline fine; only a cold start with no
     // network throws here, and that must fail the `on` rather than register a
     // model list that was never fetched.
-    const { ids: catalogModelIds } = await loadRegisterableModels({
+    const { ids: catalogModelIds, available: catalogAvailable } = await loadRegisterableModels({
       apiKey: effectiveKey,
       includeFirerouter,
     });
@@ -132,6 +132,7 @@ export default defineHarnessProfile({
       byokHeaders,
       telemetryHeaders,
       catalogModelIds,
+      catalogAvailable,
     });
   },
   envHookOn: (ctx) => finishEnvHarnessOn(ctx.home, { harnessId: "pi" }),

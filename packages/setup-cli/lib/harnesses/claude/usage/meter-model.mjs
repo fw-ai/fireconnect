@@ -56,7 +56,11 @@ export function priceCall(model, usage) {
 export function labelFor(model, priced) {
   if (/claude|opus|sonnet|haiku|fable/i.test(model)) {
     const a = providerListPricing({ provider: "anthropic", modelId: model });
-    return anthropicLabel(model, priced.rates?.label ?? a?.label ?? model);
+    // Only a concrete list-price row may name the model; the estimated
+    // reference row ("Claude Sonnet (reference)") would mislabel an
+    // unrecognized id, so those rows read back their own id instead.
+    const reference = !a.estimated && a.label ? a.label : model;
+    return anthropicLabel(model, priced.rates?.label ?? reference);
   }
   return priced.rates?.label ?? fireworksModelSlug(model) ?? model;
 }

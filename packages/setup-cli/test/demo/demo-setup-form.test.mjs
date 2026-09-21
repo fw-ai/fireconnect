@@ -12,6 +12,9 @@ import {
 } from "../../lib/demo/setup-form.mjs";
 import { CUSTOM_MATCHUP_ID, demoMatchupOptionIds } from "../../lib/demo/demo-matchups.mjs";
 import { CUSTOM_DEMO_PROMPT_ID, demoPromptOptionIds } from "../../lib/demo/presets.mjs";
+import { buildServerlessCatalogSnapshot } from "../../lib/fireworks/models.mjs";
+import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
+import { mockServerlessModelRows } from "../helpers.mjs";
 
 const CUSTOM_MATCHUP_INDEX = demoMatchupOptionIds().indexOf(CUSTOM_MATCHUP_ID);
 const CUSTOM_PROMPT_INDEX = demoPromptOptionIds().indexOf(CUSTOM_DEMO_PROMPT_ID);
@@ -171,9 +174,21 @@ test("renderFormLines: uses consistent 3-step numbering", () => {
 });
 
 test("estimateRaceCost: returns a bounded range", () => {
-  const est = estimateRaceCost("opus", "glm-fast-latest");
-  assert.ok(est);
-  assert.ok(est.low < est.high);
+  // `glm-fast-latest` is an API-reported alias, so warm a fast-tier catalog row
+  // carrying it before pricing the challenger side.
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(
+    mockServerlessModelRows({
+      name: "accounts/fireworks/models/glm-5p2",
+      aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+    }),
+  ));
+  try {
+    const est = estimateRaceCost("opus", "glm-fast-latest");
+    assert.ok(est);
+    assert.ok(est.low < est.high);
+  } finally {
+    setServerlessCatalogSnapshot(null);
+  }
 });
 
 test("curatedDemoModels: includes Anthropic slots and latest Fireworks picks", () => {

@@ -130,14 +130,13 @@ export async function removeShellEnvHook(home) {
 }
 
 /**
- * Reconcile the singleton shell block from all managed consumers. Harness and
- * websearch callers never edit the block from partial local knowledge.
+ * Reconcile the singleton shell block from all managed consumers.
  * @param {string} home
  */
 export async function reconcileShellEnvHook(home) {
   const config = await readGlobalConfig(home);
-  // Claude websearch MCP and harness configs bake literals; no current consumer
-  // needs FIREWORKS_API_KEY in the shell. Codex may still need ANTHROPIC export.
+  // Harness configs bake literals; no current consumer needs FIREWORKS_API_KEY
+  // in the shell. Codex may still need ANTHROPIC export.
   const includeFireworks = await needsFireworksShellExport(
     home,
     config.harnesses,

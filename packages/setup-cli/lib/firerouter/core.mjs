@@ -74,13 +74,19 @@ export function routingPreferenceLevelName(routingPreference) {
 }
 
 /**
- * Named level with numeric alias, e.g. `balanced (3)`.
+ * Named level with numeric alias, e.g. `balanced (3)`. Falls back to
+ * `defaultLevel` when no preference is set; pass `{ defaultLevel: null }` to
+ * report only what is actually configured (null when unset), so `status` and
+ * the Claude Code status line never claim a level FireRouter wasn't told to use.
  * @param {number|string|null|undefined} routingPreference
- * @param {{ defaultLevel?: string }} [options]
- * @returns {string}
+ * @param {{ defaultLevel?: string|null }} [options]
+ * @returns {string|null}
  */
 export function routingPreferenceLevelLabel(routingPreference, { defaultLevel = "balanced" } = {}) {
   const levelName = routingPreferenceLevelName(routingPreference) ?? defaultLevel;
+  if (levelName === null) {
+    return null;
+  }
   return `${levelName} (${ROUTING_PREFERENCE_LEVELS[levelName]})`;
 }
 
@@ -94,6 +100,17 @@ export function routingPreferenceOptionsList({ excludeLevel } = {}) {
     .filter(([name]) => name !== excludeLevel)
     .map(([name, num]) => `${name} (${num})`)
     .join(", ");
+}
+
+/**
+ * Read the applied routing preference back out of an ANTHROPIC_CUSTOM_HEADERS
+ * value (the `x-routing-preference` line `on` writes). Returns the numeric wire
+ * value in [1,5], or null when unset/unrecognized.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function routingPreferenceFromCustomHeaders(value) {
+  return normalizeRoutingPreference(customHeaderValue(value, [ROUTING_PREFERENCE_HEADER]));
 }
 
 export const CLAUDE_FIREROUTER_ENV_KEYS = [
@@ -452,49 +469,35 @@ export async function resolveAnthropicKey({
 
 /**
  * Resolve the Anthropic BYOK key FireRouter forwards. If one is already
- * available (flag/global/env/settings), it's used as-is. When none is available,
- * the optional `resolveWorkspaceByok` seam is consulted first — if the workspace
- * provisions the key server-side (`enable-workspace-byok`), FireRouter works
- * with no user key and we never prompt. Otherwise prompts once (interactive
- * only; declining is fine — FireRouter still routes Fireworks models).
+ * available (flag/global/env/settings), it's used as-is. Otherwise prompts
+ * once (interactive only; declining is fine — FireRouter still routes
+ * Fireworks models).
  *
  * @param {{
  *   anthropicFlag?: string,
  *   settingsEnv?: Record<string, string>,
  *   home?: string,
- *   resolveWorkspaceByok?: () => Promise<boolean>,
  *   explicit?: boolean,
  *   allowPromptSkip?: boolean,
  * }} input
- * @returns {Promise<{
- *   anthropicKey: string,
- *   workspaceByokLookup: import("../config/feature-flags.mjs").FeatureFlagLookupResult|null,
- * }>}
+ * @returns {Promise<{ anthropicKey: string }>}
  */
 export async function resolveFirerouterByokKeys({
   anthropicFlag = "",
   settingsEnv = {},
   home = "",
-  resolveWorkspaceByok,
   explicit = false,
   allowPromptSkip = true,
 } = {}) {
   let anthropicKey = await resolveAnthropicKey({ apiKey: anthropicFlag, settingsEnv, home });
-  let workspaceByokLookup = null;
   if (!anthropicKey) {
-    const rawLookup = resolveWorkspaceByok ? await resolveWorkspaceByok() : false;
-    workspaceByokLookup = typeof rawLookup === "boolean"
-      ? { enabled: rawLookup, unavailable: false, reason: "" }
-      : rawLookup;
-    if (!workspaceByokLookup.enabled) {
-      anthropicKey = await promptOptionalAnthropicKey({
-        home,
-        explicit,
-        allowSkip: allowPromptSkip,
-      });
-    }
+    anthropicKey = await promptOptionalAnthropicKey({
+      home,
+      explicit,
+      allowSkip: allowPromptSkip,
+    });
   }
-  return { anthropicKey, workspaceByokLookup };
+  return { anthropicKey };
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   MISSING_FIREWORKS_API_KEY_MESSAGE,
 } from "../../keys/key-type.mjs";
 import { resolveModelDisplayMetadata } from "../../fireworks/model-display.mjs";
+import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
 import { FIREPASS_ROUTER_ID, autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import {
   AZURE_API_KEY_ENV,
@@ -409,8 +410,8 @@ export function removeFireconnectProvider(arr) {
 
 /**
  * Default model id fireconnect registers for VS Code. Fire Pass keys are
- * restricted to the glm-fast-latest router; regular keys default to the shared
- * Fireworks main model (kimi-fast-latest when Kimi K3 is serverless-listed).
+ * restricted to the Fire Pass router; regular keys default to the shared
+ * Fireworks main model (`auto`).
  * @param {"fireworks" | "firepass"} keyType
  * @returns {string}
  */
@@ -422,7 +423,7 @@ export function defaultModelIdFor(keyType) {
 
 /**
  * Resolve a user-supplied model id (`--model`). Fire Pass keys are restricted
- * to the glm-fast-latest router; otherwise the id is normalized.
+ * to the Fire Pass router; otherwise the id is normalized.
  * @param {string | undefined} modelId
  * @param {"fireworks" | "firepass"} keyType
  * @returns {string}
@@ -621,6 +622,7 @@ export async function enableVscodeFireworks({
   byokHeaders = {},
   telemetryHeaders = {},
   catalogModelIds = [],
+  catalogAvailable = false,
 }) {
   if (!apiKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
@@ -666,7 +668,13 @@ export async function enableVscodeFireworks({
   // Preserve previously registered models when re-running `on` (for example to
   // rotate a key). With `--model`, ensure that model is present; without it,
   // keep the existing list and only seed the default when the list is empty.
-  let models = computeVscodeModels(existing, modelId, resolvedModel, catalogModelIds);
+  let models = computeVscodeModels(
+    existing,
+    modelId,
+    resolvedModel,
+    catalogModelIds,
+    catalogAvailable,
+  );
   // FireRouter BYOK: attach x-anthropic-api-key as a per-model requestHeader on
   // the firerouter entry (VS Code sends it verbatim), even when it isn't the
   // active model. Telemetry applies to every FireConnect-managed model.
@@ -778,7 +786,7 @@ export async function enableVscodeAzure({
  * @param {string} resolvedModel the normalized default/`--model` model id
  * @returns {object[]}
  */
-function computeVscodeModels(existing, modelId, resolvedModel, catalogModelIds = []) {
+function computeVscodeModels(existing, modelId, resolvedModel, catalogModelIds = [], catalogAvailable = false) {
   const existingModels = (existing?.models ?? []).map((model) => ({
     ...model,
     id: shortFireworksModelRef(model.id),
@@ -790,15 +798,41 @@ function computeVscodeModels(existing, modelId, resolvedModel, catalogModelIds =
       byId.set(storedId, buildModelEntry(id));
     }
   };
-  // Preserve the original active-model seeding behavior...
-  if (modelId || existingModels.length === 0) {
+  if (modelId) {
     ensure(resolvedModel);
-  }
-  // ...then register the caller's preferred catalog.
-  for (const id of catalogModelIds) {
-    ensure(id);
+  } else if (!existing) {
+    ensure(resolvedModel);
+    for (const id of catalogModelIds) {
+      ensure(id);
+    }
+  } else if (catalogAvailable) {
+    // Shared catalog-refresh policy: prune delisted ids, add newly served
+    // ones, and re-render kept rows from the fresh entries (display metadata
+    // drifts as the serverless catalog evolves).
+    const plan = planCatalogRefresh({
+      currentIds: [...byId.keys()],
+      freshIds: catalogModelIds.map((id) => shortFireworksModelRef(id)).filter(Boolean),
+      keepUnserved: (id) => isFirerouterModelPattern(id) || isAutoModelId(id),
+    });
+    for (const id of plan.pruned) {
+      byId.delete(id);
+    }
+    for (const id of [...plan.kept, ...plan.added]) {
+      const fresh = buildModelEntry(id);
+      // Metadata refresh must not drop request headers the user (or an
+      // earlier run) set on the row — the write-time header merge updates
+      // telemetry on top of these.
+      const previous = byId.get(id);
+      if (previous?.requestHeaders) {
+        fresh.requestHeaders = previous.requestHeaders;
+      }
+      byId.set(id, fresh);
+    }
   }
   const merged = [...byId.values()];
+  if (existing && catalogAvailable && !modelId) {
+    return merged;
+  }
   return merged.length > 0 ? merged : [buildModelEntry(resolvedModel)];
 }
 

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { USER_SETTINGS_RELATIVE_PATH } from "../lib/harnesses/claude/core.mjs";
 import { OPENCODE_CONFIG_RELATIVE_PATH } from "../lib/harnesses/opencode/core.mjs";
 import { CODEX_CONFIG_RELATIVE_PATH } from "../lib/harnesses/codex/core.mjs";
+import { buildServerlessCatalogSnapshot } from "../lib/fireworks/models.mjs";
 import {
   cacheServerlessCatalogSnapshot,
   readCatalogCache,
@@ -22,63 +23,44 @@ const CLI = path.join(__dirname, "../bin/fireconnect.mjs");
 process.env.FIRECONNECT_SECRET_STORE ??= "memory";
 process.env.FIRECONNECT_TEST ??= "1";
 process.env.FIRECONNECT_TEST_CLAUDE_KEYCHAIN ??= "";
-// Isolate the persisted catalog cache from the developer's real ~/.fireconnect.
-// Every test process gets its own throwaway dir; spawned CLI children inherit
-// it, so they can read whatever a test seeded (offline registration / `off`
-// cleanup previously relied on a hardcoded router list).
+// Keep test catalog caches out of the developer's home.
 process.env.FIRECONNECT_CACHE_DIR ??= mkdtempSync(path.join(os.tmpdir(), "fc-cache-"));
 
 /**
- * Persist a serverless catalog snapshot to `home`'s scoped cache file so a CLI
- * child spawned with that HOME lazy-loads it (offline registration / `off`
- * cleanup previously relied on a hardcoded router list). Scoping by HOME keeps
- * each test's seed isolated from every other test's. Idempotent: a home that
- * already has a cache file is left untouched.
+ * Persist a catalog snapshot for CLI children using this home.
  * @param {string} home
- * @param {{ id: string, shortId: string, displayName: string, kind: string }[]} entries
+ * @param {object[]} apiModels flat serverless API rows
  */
-export function seedServerlessCatalogCache(home, entries) {
+export function seedServerlessCatalogCache(home, apiModels) {
   const prevHome = process.env.HOME;
   process.env.HOME = home;
   try {
     if (readCatalogCache()?.snapshot) {
       return;
     }
-    cacheServerlessCatalogSnapshot({
-      entries,
-      pricingById: new Map(),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
+    const snapshot = apiModels.length
+      ? buildServerlessCatalogSnapshot(apiModels)
+      : {
+        entries: [],
+        pricingById: new Map(),
+        inputModalitiesById: new Map(),
+        routerBaseModelById: new Map(),
+        contextLengthById: new Map(),
+        supportsToolsById: new Map(),
+      };
+    cacheServerlessCatalogSnapshot(snapshot);
   } finally {
     process.env.HOME = prevHome;
-    // The persisted file is what spawned CLIs lazy-load; leave this process's
-    // in-memory snapshot empty so it can't leak into unrelated tests.
+    // Avoid leaking the snapshot into unrelated tests.
     setServerlessCatalogSnapshot(null);
   }
 }
 
-// Default catalog a spawned `on` child gets when a test didn't seed one. An
-// EMPTY snapshot is enough: the cache-first loader serves it (so `on` is not a
-// cold start and doesn't hard-fail), harnesses register just the active model —
-// exactly matching the pre-cache behavior exercises depend on — and validation
-// skips ids it can't verify. Tests that need a specific catalog seed it
-// explicitly via seedServerlessCatalogCache.
-const DEFAULT_TEST_CATALOG_ENTRIES = [];
-
-/**
- * Seed a default (empty) catalog into `home` for an `on`-family command so it
- * isn't a cold start (which now hard-fails). Empty = harnesses register just the
- * active model and validation skips unverifiable ids — matching pre-cache test
- * behavior. Keys marked "cataloged" are skipped: the mock gateway serves them a
- * real catalog, and seeding (even empty) would short-circuit that fetch.
- */
+/** Seed an empty cache unless the mock gateway serves this key's catalog. */
 export function seedOnCommandCatalog(home, args = []) {
   const raw = Array.isArray(args) ? args.join(" ") : String(args ?? "");
   if (home && !/cataloged/i.test(raw)) {
-    seedServerlessCatalogCache(home, DEFAULT_TEST_CATALOG_ENTRIES);
+    seedServerlessCatalogCache(home, []);
   }
 }
 // Tests pass a temp HOME and expect it to isolate Claude credentials. But
@@ -131,37 +113,85 @@ export const FIREPASS_ROUTER = "accounts/fireworks/routers/kimi-fast-latest";
 // Default model for Fire Pass keys.
 export const FIREPASS_DEFAULT_ROUTER = FIREPASS_ROUTER;
 
+/**
+ * Flat `/v1/serverless/models` row: one (model, serverless_mode) pair. A
+ * standard+fast pair for the same model needs two rows (see
+ * mockServerlessModelRows). `aliases` carries the stable `-latest` router
+ * resource names whose target is this model. `id` (or legacy `name`) sets the
+ * model id; `display_name` (or legacy `displayName`) sets the label.
+ */
+export function defaultTestCatalogApiModels() {
+  return [
+    mockServerlessModel({
+      name: "accounts/fireworks/models/glm-5p1",
+      context_length: 1_048_576,
+    }),
+    mockServerlessModel({
+      name: "accounts/fireworks/models/glm-5p2",
+      context_length: 1_048_576,
+      aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+    }),
+    mockServerlessModel({
+      name: "accounts/fireworks/models/kimi-k3",
+      context_length: 1_048_576,
+      aliases: [
+        "accounts/fireworks/routers/kimi-fast-latest",
+        "accounts/fireworks/routers/kimi-latest",
+      ],
+    }),
+    mockServerlessModel({
+      name: "accounts/fireworks/models/deepseek-v4-flash",
+      context_length: 1_000_000,
+    }),
+    mockServerlessModel({
+      name: "accounts/fireworks/models/old-model",
+      context_length: 1_000_000,
+    }),
+  ];
+}
+
+/** Hydrate the in-process snapshot for unit tests that don't spawn the CLI. */
+export function warmTestCatalogSnapshot() {
+  setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(defaultTestCatalogApiModels()));
+}
+
 export function mockServerlessModel(overrides = {}) {
-  const name = overrides.name ?? "accounts/fireworks/models/glm-5p2";
+  const name = overrides.id ?? overrides.name ?? "accounts/fireworks/models/glm-5p2";
   const short = name.split("/").at(-1);
   return {
-    name,
-    displayName: overrides.displayName ?? "GLM 5.2",
-    contextLength: 1_048_576,
-    supportsTools: true,
-    supportsImageInput: false,
-    kind: "HF_BASE_MODEL",
-    serverlessModes: [
-      {
-        name: `accounts/fireworks/models/${short}/serverlessModes/default`,
-        skuInfos: [
-          { sku: "LLM input tokens (uncached)", amount: { units: "1", nanos: 400_000_000 } },
-          { sku: "LLM input tokens (cached)", amount: { nanos: 140_000_000 } },
-          { sku: "LLM output tokens", amount: { units: "4", nanos: 400_000_000 } },
-        ],
-      },
-      {
-        name: `accounts/fireworks/models/${short}/serverlessModes/fast`,
-        usageIdentifier: `accounts/fireworks/routers/${short}-fast`,
-        skuInfos: [
-          { sku: "LLM input tokens (uncached)", amount: { units: "2", nanos: 100_000_000 } },
-          { sku: "LLM input tokens (cached)", amount: { nanos: 210_000_000 } },
-          { sku: "LLM output tokens", amount: { units: "6", nanos: 600_000_000 } },
-        ],
-      },
+    id: name,
+    display_name: overrides.display_name ?? overrides.displayName ?? "GLM 5.2",
+    object: "model",
+    serverless_mode: "standard",
+    context_length: 1_048_576,
+    input_modalities: ["text"],
+    pricing: [
+      { sku: "LLM input tokens (uncached)", amount: "1.4", unit: "1M tokens" },
+      { sku: "LLM input tokens (cached)", amount: "0.14", unit: "1M tokens" },
+      { sku: "LLM output tokens", amount: "4.4", unit: "1M tokens" },
     ],
     ...overrides,
+    id: name, // last so a caller's explicit `id` can never be clobbered
   };
+}
+
+/** Standard + fast row pair for one model, mirroring the flat API's per-mode rows. */
+export function mockServerlessModelRows(overrides = {}) {
+  const name = overrides.id ?? overrides.name ?? "accounts/fireworks/models/glm-5p2";
+  const short = name.split("/").at(-1);
+  return [
+    mockServerlessModel(overrides),
+    mockServerlessModel({
+      ...overrides,
+      serverless_mode: "fast",
+      usage_identifier: `accounts/fireworks/routers/${short}-fast`,
+      pricing: [
+        { sku: "LLM input tokens (uncached)", amount: "2.1", unit: "1M tokens" },
+        { sku: "LLM input tokens (cached)", amount: "0.21", unit: "1M tokens" },
+        { sku: "LLM output tokens", amount: "6.6", unit: "1M tokens" },
+      ],
+    }),
+  ];
 }
 export const FIREWORKS_INFERENCE_URL = "https://api.fireworks.ai/inference";
 
@@ -191,6 +221,34 @@ export function assertClaudeMainModel(settings, expected, message = "") {
   const prefix = message ? `${message}: ` : "";
   assert.equal(settings.model, expected, `${prefix}top-level model`);
   assert.equal(settings.env?.ANTHROPIC_MODEL, undefined, `${prefix}ANTHROPIC_MODEL should be unset`);
+}
+
+const CLAUDE_SLOT_PIN_ENV_KEYS = [
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+];
+
+/** FireConnect default: Anthropic tier slots stay native (no env pin). */
+export function assertClaudeNativeTierSlots(settings, message = "") {
+  const prefix = message ? `${message}: ` : "";
+  for (const key of CLAUDE_SLOT_PIN_ENV_KEYS) {
+    assert.equal(settings.env?.[key], undefined, `${prefix}${key}`);
+    assert.equal(settings.env?.[`${key}_NAME`], undefined, `${prefix}${key}_NAME`);
+  }
+}
+
+/** Registerable serverless models appear in Claude Code's settings.modelPicker. */
+export function assertClaudeRegisterablePicker(settings, { includes = [] } = {}) {
+  assert.equal(settings.modelPicker?.fireconnectManaged, true);
+  assert.equal(settings.modelPicker?.replaceBuiltInOptions, false);
+  const models = settings.modelPicker?.options?.map((row) => row.model) ?? [];
+  for (const id of includes) {
+    assert.ok(models.includes(id), `picker missing ${id}: ${models.join(", ")}`);
+  }
+  return models;
 }
 
 export async function withTempHome(prefix, fn) {

@@ -7,44 +7,85 @@ import {
 } from "../../../lib/harnesses/opencode/core.mjs";
 import { lookupFireworksModelLimits } from "../../../lib/fireworks/model-specs.mjs";
 import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { mockServerlessModel } from "../../helpers.mjs";
 
 describe("opencode model entries", () => {
   it("adds image modalities for kimi latest router aliases", () => {
-    for (const modelId of [
-      "accounts/fireworks/routers/kimi-latest",
-      "accounts/fireworks/routers/kimi-fast-latest",
-      "kimi-latest",
-      "kimi-fast-latest",
-    ]) {
-      const entry = buildOpencodeModelEntry(modelId);
-      assert.deepEqual(
-        entry.modalities,
-        { input: ["text", "image"] },
-        modelId,
-      );
+    // Alias routers resolve only from API-reported `aliases`; seed the base row
+    // the way the flat catalog reports it (vision-capable Kimi K3).
+    setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/kimi-k3",
+        display_name: "Kimi K3",
+        aliases: [
+          "accounts/fireworks/routers/kimi-latest",
+          "accounts/fireworks/routers/kimi-fast-latest",
+        ],
+        input_modalities: ["text", "image"],
+        context_length: 1_040_000,
+      }),
+    ]));
+    try {
+      for (const modelId of [
+        "accounts/fireworks/routers/kimi-latest",
+        "accounts/fireworks/routers/kimi-fast-latest",
+        "kimi-latest",
+        "kimi-fast-latest",
+      ]) {
+        const entry = buildOpencodeModelEntry(modelId);
+        assert.deepEqual(
+          entry.modalities,
+          { input: ["text", "image"] },
+          modelId,
+        );
+      }
+    } finally {
+      setServerlessCatalogSnapshot(null);
     }
   });
 
   it("omits modalities for text-only routers", () => {
-    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-fast-latest");
+    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-5p2-fast");
     assert.equal(entry.modalities, undefined);
-    assert.equal(entry.name, "GLM 5.2 Fast (Latest)");
+    assert.equal(entry.name, "GLM 5.2 Fast");
   });
 
   it("sets OpenCode limit.context/output for latest router aliases absent from models.dev", () => {
-    for (const modelId of [
-      "glm-fast-latest",
-      "glm-latest",
-      "accounts/fireworks/routers/glm-fast-latest",
-      "accounts/fireworks/routers/glm-latest",
-    ]) {
-      const limits = lookupFireworksModelLimits(modelId);
-      const entry = buildOpencodeModelEntry(modelId);
-      assert.deepEqual(entry.limit, {
-        context: limits.contextWindow,
-        output: limits.maxTokens,
-      }, modelId);
-      assert.ok(entry.limit.context >= 1_000_000, modelId);
+    // -latest aliases are no longer statically mapped; seed the aliases the
+    // flat catalog reports so they resolve to their base models' limits.
+    setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p3",
+        display_name: "GLM 5.3",
+        aliases: ["accounts/fireworks/routers/glm-latest"],
+        context_length: 1_048_576,
+      }),
+      mockServerlessModel({
+        id: "accounts/fireworks/models/glm-5p3-flash",
+        display_name: "GLM 5.3 Flash",
+        aliases: ["accounts/fireworks/routers/glm-flash-latest"],
+        input_modalities: ["text", "image"],
+        context_length: 1_048_576,
+      }),
+    ]));
+    try {
+      for (const modelId of [
+        "glm-latest",
+        "glm-flash-latest",
+        "accounts/fireworks/routers/glm-latest",
+        "accounts/fireworks/routers/glm-flash-latest",
+      ]) {
+        const limits = lookupFireworksModelLimits(modelId);
+        const entry = buildOpencodeModelEntry(modelId);
+        assert.deepEqual(entry.limit, {
+          context: limits.contextWindow,
+          output: limits.maxTokens,
+        }, modelId);
+        assert.ok(entry.limit.context >= 1_000_000, modelId);
+      }
+    } finally {
+      setServerlessCatalogSnapshot(null);
     }
   });
 
@@ -133,7 +174,7 @@ describe("opencode model entries", () => {
   });
 
   it("emits OpenCode cost with snake_case cache_read for priced models", () => {
-    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-fast-latest");
+    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-5p2-fast");
     assert.deepEqual(entry.cost, {
       input: 2.1,
       output: 6.6,
@@ -147,7 +188,7 @@ describe("opencode model entries", () => {
   });
 
   it("omits cost for Fire Pass subscription keys", () => {
-    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-fast-latest", { firepass: true });
+    const entry = buildOpencodeModelEntry("accounts/fireworks/routers/glm-5p2-fast", { firepass: true });
     assert.equal(entry.cost, undefined);
     assert.ok(entry.limit.context >= 1_000_000);
   });

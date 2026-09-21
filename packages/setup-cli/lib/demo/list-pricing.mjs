@@ -58,10 +58,50 @@ const ANTHROPIC_LIST_RATES = {
 };
 
 /** USD per 1M tokens, list price. Embedded reference — verify at the source URL.
- * Verified 2026-07-06 against https://openai.com/api/pricing/. */
+ * Verified 2026-07-06 against https://openai.com/api/pricing/.
+ * GPT-5.5 / 5.6 / 6-Astra short tiers + the 272K long-context tier verified
+ * against the same card via firerouter/litellm.yaml (developers.openai.com
+ * pricing, 2026-08-02; Astra 2026-09-03): above 272K input tokens the full
+ * request bills at ~2x input/cache and 1.5x output. OpenAI prompt-cache reads
+ * bill at 0.1x input and cache writes at 1.25x input on these models (single
+ * automatic cache — no 5m/1h TTL split, so both write fields carry one rate).
+ * Older rows without explicit cache fields keep the legacy 0.5x cached-input
+ * fallback. */
+const OPENAI_LONG_CONTEXT_INPUT_TOKENS = 272_000;
+
 const OPENAI_LIST_RATES = {
+  // GPT-6 Astra (OpenAI 2026-09-03). Short-context rates below; the `long`
+  // tier applies to the FULL request once input exceeds 272K tokens.
+  // Aliases (gpt-6 / gpt6 / astra, per firerouter/litellm.yaml) live in
+  // OPENAI_ALIASES so there is one rate row to keep correct.
+  "gpt-6-astra": {
+    input: 10, cacheRead: 1.0, cacheWrite5m: 12.5, cacheWrite1h: 12.5, output: 50,
+    label: "GPT-6 Astra",
+    long: { input: 20, cacheRead: 2.0, cacheWrite5m: 25, cacheWrite1h: 25, output: 75 },
+  },
+  // GPT-5.6 family (sol / terra / luna trade price for quality). Same 272K
+  // long-context tiering as Astra.
+  "gpt-5.6-sol": {
+    input: 5, cacheRead: 0.5, cacheWrite5m: 6.25, cacheWrite1h: 6.25, output: 30,
+    label: "GPT-5.6 Sol",
+    long: { input: 10, cacheRead: 1.0, cacheWrite5m: 12.5, cacheWrite1h: 12.5, output: 45 },
+  },
+  "gpt-5.6-terra": {
+    input: 2, cacheRead: 0.2, cacheWrite5m: 2.5, cacheWrite1h: 2.5, output: 12,
+    label: "GPT-5.6 Terra",
+    long: { input: 4, cacheRead: 0.4, cacheWrite5m: 5.0, cacheWrite1h: 5.0, output: 18 },
+  },
+  "gpt-5.6-luna": {
+    input: 0.2, cacheRead: 0.02, cacheWrite5m: 0.25, cacheWrite1h: 0.25, output: 1.2,
+    label: "GPT-5.6 Luna",
+    long: { input: 0.4, cacheRead: 0.04, cacheWrite5m: 0.5, cacheWrite1h: 0.5, output: 1.8 },
+  },
   // Current flagships.
-  "gpt-5.5": { input: 5, output: 30, label: "GPT-5.5" },
+  "gpt-5.5": {
+    input: 5, cacheRead: 0.5, cacheWrite5m: 6.25, cacheWrite1h: 6.25, output: 30,
+    label: "GPT-5.5",
+    long: { input: 10, cacheRead: 1.0, cacheWrite5m: 12.5, cacheWrite1h: 12.5, output: 45 },
+  },
   "gpt-5.4": { input: 2.5, output: 15, label: "GPT-5.4" },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, label: "GPT-5.4 mini" },
   "gpt-5": { input: 1.25, output: 10, label: "GPT-5" },
@@ -74,20 +114,68 @@ const OPENAI_LIST_RATES = {
 const DEFAULT_ANTHROPIC_RATE = { input: 2, output: 10, label: "Claude Sonnet (reference)" };
 const DEFAULT_OPENAI_RATE = { input: 2.5, output: 10, label: "GPT-4o (reference)" };
 
+/** Short ids that name a table row without being one (gpt-6 / gpt6 / astra per firerouter/litellm.yaml). */
+const OPENAI_ALIASES = {
+  "gpt-6": "gpt-6-astra",
+  gpt6: "gpt-6-astra",
+  astra: "gpt-6-astra",
+};
+
 /**
- * Pick the most-specific rate-table key that the model id contains. Substring
- * matching by insertion order would let a shorter key shadow a longer one
- * (e.g. `gpt-4o` matching `gpt-4o-mini` before `gpt-4o-mini` is tried), so we
- * sort candidates by descending length and take the first hit.
- * @param {string} id lowercased model id
+ * Resolve an id to its rate-table key, or null when it names no known row.
+ * Exact id first, then the last `/`-separated segment (provider prefixes like
+ * `openai/gpt-6-astra` and router paths like `firerouter/astra` carry the
+ * model id last), then explicit aliases. Each candidate is also tried without
+ * Claude Code's `[1m]` context tag and without an Anthropic snapshot date
+ * (`-YYYYMMDD`), both of which real transcript ids carry. Deliberately NOT
+ * substring matching: `gpt-5.6` must not inherit `gpt-5` rates and `o3-mini`
+ * must not inherit `o3` — an unknown id stays unpriced (or
+ * estimated-reference upstream) rather than borrowing a shorter key's dollars.
+ * @param {string} modelId
  * @param {Record<string, any>} table
- * @returns {string | undefined}
+ * @param {Record<string, string>} [aliases]
+ * @returns {string | null}
  */
-function longestMatchKey(id, table) {
-  const keys = Object.keys(table).filter((k) => id.includes(k));
-  if (keys.length === 0) return undefined;
-  keys.sort((a, b) => b.length - a.length);
-  return keys[0];
+function strictTableKey(modelId, table, aliases = {}) {
+  const id = String(modelId ?? "").toLowerCase().trim();
+  const candidates = [id];
+  const untagged = id.replace(/\[1m\]$/i, "");
+  if (untagged !== id) {
+    candidates.push(untagged);
+  }
+  // Anthropic snapshot dates are exactly YYYYMMDD with a real month/day, so
+  // `claude-sonnet-5-20250901` resolves to its base row while an id that
+  // merely ends in digits (e.g. a future `claude-opus-9`) never strips down
+  // to a shorter key's rates.
+  const undated = untagged.replace(/-(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/, "");
+  if (undated !== untagged) {
+    candidates.push(undated);
+  }
+  for (const candidate of candidates) {
+    if (table[candidate]) {
+      return candidate;
+    }
+    const slug = candidate.split("/").pop() ?? candidate;
+    if (table[slug]) {
+      return slug;
+    }
+    const aliased = aliases[slug] ?? aliases[candidate];
+    if (aliased && table[aliased]) {
+      return aliased;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether an id resolves to a real OpenAI list-price row (not the estimated
+ * fallback). Single home for OpenAI id matching so the Claude cost engine and
+ * the status line classify ids the same way.
+ * @param {string} modelId
+ * @returns {boolean}
+ */
+export function isOpenAiPricedModelId(modelId) {
+  return strictTableKey(modelId, OPENAI_LIST_RATES, OPENAI_ALIASES) !== null;
 }
 
 /**
@@ -96,13 +184,19 @@ function longestMatchKey(id, table) {
  * same way. `provider` is "anthropic" | "openai"; anything else returns the
  * not-per-token subscription shape.
  *
- * @param {{ provider: string, modelId: string, speed?: string }} args
- * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, source: string, label: string, estimated: boolean }}
+ * OpenAI tiers GPT-5.5 / 5.6 / 6-Astra by input length: pass `inputTokens` and
+ * requests at or above 272K input resolve to the long-context tier (2x
+ * input/cache, 1.5x output, applied to the full request). Omitted (or below
+ * threshold) resolves to the short tier, so pre-run estimates without a token
+ * count keep the previous behavior.
+ *
+ * @param {{ provider: string, modelId: string, speed?: string, inputTokens?: number | null }} args
+ * @returns {{ inputPerMillion: number, outputPerMillion: number, cachedInputPerMillion: number, tier: string, contextTier: string, source: string, label: string, estimated: boolean }}
  */
-export function providerListPricing({ provider, modelId, speed = "standard" }) {
+export function providerListPricing({ provider, modelId, speed = "standard", inputTokens = null }) {
   if (provider === "anthropic") {
-    const id = String(modelId).toLowerCase();
-    const rate = ANTHROPIC_LIST_RATES[id] ?? ANTHROPIC_LIST_RATES[longestMatchKey(id, ANTHROPIC_LIST_RATES)];
+    const key = strictTableKey(modelId, ANTHROPIC_LIST_RATES);
+    const rate = key ? ANTHROPIC_LIST_RATES[key] : null;
     if (rate) {
       const selected = speed === "fast" && rate.fast
         ? { ...rate, ...rate.fast }
@@ -112,10 +206,20 @@ export function providerListPricing({ provider, modelId, speed = "standard" }) {
     return toRateShape(DEFAULT_ANTHROPIC_RATE, ANTHROPIC_PRICING_URL, 0.2, true);
   }
   if (provider === "openai") {
-    const id = String(modelId).toLowerCase();
-    const rate = OPENAI_LIST_RATES[id] ?? OPENAI_LIST_RATES[longestMatchKey(id, OPENAI_LIST_RATES)];
+    const key = strictTableKey(modelId, OPENAI_LIST_RATES, OPENAI_ALIASES);
+    const rate = key ? OPENAI_LIST_RATES[key] : null;
     if (rate) {
-      return toRateShape(rate, OPENAI_PRICING_URL, rate.input * 0.5, false);
+      const useLong = rate.long
+        && Number.isFinite(inputTokens)
+        && inputTokens >= OPENAI_LONG_CONTEXT_INPUT_TOKENS;
+      const selected = useLong ? { ...rate, ...rate.long } : rate;
+      return toRateShape(
+        selected,
+        OPENAI_PRICING_URL,
+        selected.cacheRead ?? selected.input * 0.5,
+        false,
+        useLong ? "long" : "standard",
+      );
     }
     return toRateShape(DEFAULT_OPENAI_RATE, OPENAI_PRICING_URL, 1.25, true);
   }
@@ -131,7 +235,7 @@ export function providerListPricing({ provider, modelId, speed = "standard" }) {
   };
 }
 
-function toRateShape(rate, source, cachedInput, estimated) {
+function toRateShape(rate, source, cachedInput, estimated, contextTier = "standard") {
   return {
     inputPerMillion: rate.input,
     outputPerMillion: rate.output,
@@ -144,6 +248,8 @@ function toRateShape(rate, source, cachedInput, estimated) {
     cacheWrite5mPerMillion: rate.cacheWrite5m ?? 0,
     cacheReadPerMillion: rate.cacheRead ?? cachedInput ?? 0,
     tier: "list",
+    // OpenAI long-context tier ("long") vs every other lookup ("standard").
+    contextTier,
     source,
     label: rate.label,
     estimated,

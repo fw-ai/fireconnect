@@ -21,7 +21,9 @@ import {
   removeFireconnectProvider,
   vscodeDataDir,
 } from "../../../lib/harnesses/vscode/core.mjs";
-import { FIRECONNECT_REFERER, runCli, runCliJson, withTempHome, itIfSqlite } from "../../helpers.mjs";
+import { FIRECONNECT_REFERER, runCli, runCliJson, withTempHome, itIfSqlite, mockServerlessModel } from "../../helpers.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import { setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 
 /** A non-fireconnect provider (user-managed) to prove ownership scoping. */
 function userProvider(name = "MyOther") {
@@ -72,14 +74,25 @@ function readStateSecret(vscodePath, secretId) {
 
 describe("vscode-core pure transforms", () => {
   it("buildModelEntry produces the VS Code schema shape with per-model limits", () => {
-    const m = buildModelEntry("accounts/fireworks/routers/glm-fast-latest");
-    assert.equal(m.id, "glm-fast-latest");
-    assert.equal(m.name, "GLM Fast Latest");
-    assert.equal(m.url, VSCODE_FIREWORKS_MODEL_URL);
-    assert.equal(m.toolCalling, true);
-    assert.equal(m.vision, false);
-    assert.equal(m.maxInputTokens, 1_048_575);
-    assert.equal(m.maxOutputTokens, 131072);
+    // The alias resolves from the API-reported `aliases` on the GLM 5.2 row.
+    setServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([
+      mockServerlessModel({
+        aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+        context_length: 1_048_575,
+      }),
+    ]));
+    try {
+      const m = buildModelEntry("accounts/fireworks/routers/glm-fast-latest");
+      assert.equal(m.id, "glm-fast-latest");
+      assert.equal(m.name, "GLM Fast Latest");
+      assert.equal(m.url, VSCODE_FIREWORKS_MODEL_URL);
+      assert.equal(m.toolCalling, true);
+      assert.equal(m.vision, false);
+      assert.equal(m.maxInputTokens, 1_048_575);
+      assert.equal(m.maxOutputTokens, 131072);
+    } finally {
+      setServerlessCatalogSnapshot(null);
+    }
     const other = buildModelEntry("accounts/fireworks/models/some-other");
     assert.equal(other.toolCalling, true);
     assert.equal(other.vision, false);
@@ -205,7 +218,7 @@ describe("vscode harness integration", () => {
       // Direct Fireworks gateway uses the chat-completions API in VS Code Chat.
       assert.equal(provider.apiType, "chat-completions");
       assert.match(provider.apiKey, /^\$\{input:chat\.lm\.secret\.fw-[0-9a-f]+\}$/);
-      assert.equal(provider.models[0].id, "kimi-fast-latest");
+      assert.equal(provider.models[0].id, "auto");
       assert.equal(provider.models[0].requestHeaders["User-Agent"], undefined);
       assert.equal(provider.models[0].requestHeaders["X-Title"], "VS Code Chat");
       assert.equal(
@@ -260,18 +273,23 @@ describe("vscode harness integration", () => {
       await writeFile(vscodePath, original);
 
       const first = await runCli(
-        ["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"],
+        [
+          "vscode", "on", "--api-key", "fw_cataloged_v1_adversarial000000",
+          "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force",
+        ],
         { home, env: secretEnv() },
       );
       assert.equal(first.code, 0, first.stderr);
       let models = await readJson(vscodePath);
       const provider = models.find(isFireconnectProvider);
-      provider.models[0].id = "accounts/fireworks/routers/glm-fast-latest";
-      provider.models[0].requestHeaders["X-User-Trace"] = "keep";
-      provider.models[0].requestHeaders["User-Agent"] = "custom-vscode/1.0";
-      provider.models[0].requestHeaders["X-FireRouter-Harness"] = "vscode";
-      provider.models[0].requestHeaders["Fireworks-Use-Case"] = "coding";
-      provider.models[0].requestHeaders["HTTP-Referer"] =
+      const existingModel = provider.models[0];
+      assert.ok(existingModel);
+      const modelId = existingModel.id;
+      existingModel.requestHeaders["X-User-Trace"] = "keep";
+      existingModel.requestHeaders["User-Agent"] = "custom-vscode/1.0";
+      existingModel.requestHeaders["X-FireRouter-Harness"] = "vscode";
+      existingModel.requestHeaders["Fireworks-Use-Case"] = "coding";
+      existingModel.requestHeaders["HTTP-Referer"] =
         "fireconnect/v0.7.0";
       await writeFile(vscodePath, `${JSON.stringify(models, null, 2)}\n`);
 
@@ -281,8 +299,10 @@ describe("vscode harness integration", () => {
       );
       assert.equal(repeat.code, 0, repeat.stderr);
       models = await readJson(vscodePath);
-      const migratedModel = models.find(isFireconnectProvider).models[0];
-      assert.equal(migratedModel.id, "glm-fast-latest");
+      const migratedModel = models.find(isFireconnectProvider).models
+        .find((model) => model.id === modelId);
+      assert.ok(migratedModel, JSON.stringify(models.find(isFireconnectProvider).models));
+      assert.equal(migratedModel.id, modelId);
       const headers = migratedModel.requestHeaders;
       assert.equal(headers["X-User-Trace"], "keep");
       assert.equal(headers["User-Agent"], "custom-vscode/1.0");
@@ -416,15 +436,17 @@ describe("vscode harness integration", () => {
   itIfSqlite("re-running on preserves models added via on --model", async () => {
     await withTempHome("vscode-reon-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
-      await runCli(["vscode", "on", "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
+      // Keep this sequence independent of automatic FireRouter registration.
+      const env = { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" };
+      await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env });
+      await runCli(["vscode", "on", "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force"], { home, env });
 
       // Re-run on (e.g. to rotate the key) without --model.
-      const r = await runCli(["vscode", "on", "--api-key", "fw_test_key_99999", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
+      const r = await runCli(["vscode", "on", "--api-key", "fw_test_key_99999", "--vscode-path", vscodePath, "--force"], { home, env });
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       const ids = arr.find(isFireconnectProvider).models.map((m) => m.id);
-      assert.deepEqual(ids, ["kimi-fast-latest", "deepseek-v4-flash"]);
+      assert.deepEqual(ids.sort(), ["auto", "deepseek-v4-flash"]);
       // Key was rotated in place under the same secretId.
       const secretId = fireconnectSecretIds(arr)[0];
       assert.equal(readStateSecret(vscodePath, secretId), "fw_test_key_99999");
@@ -441,7 +463,7 @@ describe("vscode harness integration", () => {
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       assert.ok(Array.isArray(arr));
-      assert.equal(arr.find(isFireconnectProvider).models[0].id, "kimi-fast-latest");
+      assert.equal(arr.find(isFireconnectProvider).models[0].id, "auto");
     });
   });
 

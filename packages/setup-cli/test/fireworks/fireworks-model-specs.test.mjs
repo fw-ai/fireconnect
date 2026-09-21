@@ -11,10 +11,8 @@ import {
   resolveFireworksCatalog,
   resolveFireworksModelLabel,
   resolveRouterEntryDisplayName,
-  resolveRouterSpecAliasTarget,
   resolveSpecSlug,
   isAutoModelId,
-  isFireworksRoutedModelRef,
 } from "../../lib/fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../lib/fireworks/pricing.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
@@ -70,7 +68,7 @@ describe("fireworks-model-specs", () => {
     );
   });
 
-  it("prefers kimi-k3 over static kimi-latest aliases when catalog lists Kimi K3", () => {
+  it("resolves kimi-latest through the catalog router base model", () => {
     setServerlessCatalogSnapshot({
       entries: [{
         id: "accounts/fireworks/models/kimi-k3",
@@ -80,22 +78,21 @@ describe("fireworks-model-specs", () => {
       }],
       pricingById: new Map(),
       inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/kimi-latest", "accounts/fireworks/models/kimi-k3"],
+      ]),
       contextLengthById: new Map(),
       supportsToolsById: new Map(),
     });
     try {
       assert.equal(resolveSpecSlug("kimi-latest"), "kimi-k3");
-      assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k3-fast");
-      assert.equal(resolveRouterSpecAliasTarget("kimi-latest"), "kimi-k3");
-      assert.equal(resolveRouterSpecAliasTarget("kimi-fast-latest"), "kimi-k3-fast");
       assert.equal(resolveFireworksModelLabel("kimi-latest"), "Kimi K3 (Latest)");
     } finally {
       setServerlessCatalogSnapshot(null);
     }
   });
 
-  it("maps kimi-fast-latest to kimi-k3-fast when catalog lists both Kimi K3 variants", () => {
+  it("resolves kimi-fast-latest to kimi-k3-fast when the catalog carries its router base", () => {
     setServerlessCatalogSnapshot({
       entries: [
         {
@@ -121,7 +118,6 @@ describe("fireworks-model-specs", () => {
     });
     try {
       assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k3-fast");
-      assert.equal(resolveRouterSpecAliasTarget("kimi-fast-latest"), "kimi-k3-fast");
       assert.equal(resolveFireworksModelLabel("kimi-fast-latest"), "Kimi K3 Fast (Latest)");
       const spec = lookupModelSpec("kimi-fast-latest");
       assert.equal(spec?.label, "Kimi K3 Fast");
@@ -134,226 +130,12 @@ describe("fireworks-model-specs", () => {
     }
   });
 
-  it("falls back to static kimi-k3-fast pricing when Kimi K3 is listed without API rates", () => {
-    setServerlessCatalogSnapshot({
-      entries: [{
-        id: "accounts/fireworks/models/kimi-k3",
-        shortId: "kimi-k3",
-        displayName: "Kimi K3",
-        kind: "serverless",
-      }],
-      pricingById: new Map(),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map([
-        ["accounts/fireworks/routers/kimi-fast-latest", "accounts/fireworks/models/kimi-k3"],
-      ]),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      const pricing = lookupFireworksPricing("kimi-fast-latest");
-      assert.equal(pricing?.tier, "fast");
-      assert.equal(pricing?.input, 4.50);
-      assert.equal(pricing?.output, 22.50);
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("prefers catalog-listed minimax and qwen-plus models for -latest aliases", () => {
-    setServerlessCatalogSnapshot({
-      entries: [
-        {
-          id: "accounts/fireworks/models/minimax-m2p7",
-          shortId: "minimax-m2p7",
-          displayName: "MiniMax 2.7",
-          kind: "serverless",
-        },
-        {
-          id: "accounts/fireworks/models/minimax-m3",
-          shortId: "minimax-m3",
-          displayName: "MiniMax M3",
-          kind: "serverless",
-        },
-        {
-          id: "accounts/fireworks/models/qwen3p6-plus",
-          shortId: "qwen3p6-plus",
-          displayName: "Qwen 3.6 Plus",
-          kind: "serverless",
-        },
-        {
-          id: "accounts/fireworks/models/qwen3p7-plus",
-          shortId: "qwen3p7-plus",
-          displayName: "Qwen 3.7 Plus",
-          kind: "serverless",
-        },
-      ],
-      pricingById: new Map(),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      assert.equal(resolveRouterSpecAliasTarget("minimax-latest"), "minimax-m3");
-      assert.equal(resolveRouterSpecAliasTarget("qwen-plus-latest"), "qwen3p7-plus");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("falls back to static minimax-latest and qwen-plus-latest targets without catalog context", () => {
+  it("does not invent a target for an alias without catalog router base or static spec", () => {
     setServerlessCatalogSnapshot(null);
-    assert.equal(resolveRouterSpecAliasTarget("minimax-latest"), "minimax-m3");
-    assert.equal(resolveRouterSpecAliasTarget("qwen-plus-latest"), "qwen3p7-plus");
-    assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
-    assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
-  });
-
-  it("maps deepseek-flash-latest to deepseek-v4-flash-0731 metadata", () => {
-    const flashPricing = {
-      slug: "deepseek-v4-flash-0731",
-      label: "DeepSeek V4 Flash (0731)",
-      input: 0.22,
-      cachedInput: 0.007,
-      output: 0.66,
-      tier: "standard",
-      source: "api",
-    };
-    setServerlessCatalogSnapshot({
-      entries: [{
-        id: "accounts/fireworks/models/deepseek-v4-flash-0731",
-        shortId: "deepseek-v4-flash-0731",
-        displayName: "DeepSeek V4 Flash (0731)",
-        kind: "serverless",
-      }],
-      pricingById: new Map([
-        ["accounts/fireworks/models/deepseek-v4-flash-0731", flashPricing],
-        ["accounts/fireworks/routers/deepseek-flash-latest", flashPricing],
-      ]),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map([
-        ["accounts/fireworks/routers/deepseek-flash-latest", "accounts/fireworks/models/deepseek-v4-flash-0731"],
-      ]),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      assert.equal(resolveSpecSlug("deepseek-flash-latest"), "deepseek-v4-flash-0731");
-      assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
-      assert.equal(resolveFireworksModelLabel("deepseek-flash-latest"), "DeepSeek V4 Flash (0731) (Latest)");
-      const spec = lookupModelSpec("deepseek-flash-latest");
-      assert.equal(spec?.label, "DeepSeek V4 Flash (0731)");
-      // The dated pin carries the documented sibling rates as an offline
-      // fallback; live catalog pricing still wins below.
-      assert.deepEqual(spec?.pricing, { input: 0.22, cachedInput: 0.007, output: 0.66 });
-      assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.output, 0.66);
-      assert.equal(lookupFireworksPricing("deepseek-flash-latest")?.source, "api");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("maps deepseek-pro-latest to deepseek-v4-pro-0813 metadata", () => {
-    const proPricing = {
-      slug: "deepseek-v4-pro-0813",
-      label: "DeepSeek V4 Pro (0813)",
-      input: 1.32,
-      cachedInput: 0.044,
-      output: 3.96,
-      tier: "standard",
-      source: "api",
-    };
-    setServerlessCatalogSnapshot({
-      entries: [{
-        id: "accounts/fireworks/models/deepseek-v4-pro-0813",
-        shortId: "deepseek-v4-pro-0813",
-        displayName: "DeepSeek V4 Pro (0813)",
-        kind: "serverless",
-      }],
-      pricingById: new Map([
-        ["accounts/fireworks/models/deepseek-v4-pro-0813", proPricing],
-        ["accounts/fireworks/routers/deepseek-pro-latest", proPricing],
-      ]),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map([
-        ["accounts/fireworks/routers/deepseek-pro-latest", "accounts/fireworks/models/deepseek-v4-pro-0813"],
-      ]),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      assert.equal(resolveSpecSlug("deepseek-pro-latest"), "deepseek-v4-pro-0813");
-      assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
-      assert.equal(resolveFireworksModelLabel("deepseek-pro-latest"), "DeepSeek V4 Pro (0813) (Latest)");
-      const spec = lookupModelSpec("deepseek-pro-latest");
-      assert.equal(spec?.label, "DeepSeek V4 Pro (0813)");
-      // The dated pin carries the documented sibling rates as an offline
-      // fallback; live catalog pricing still wins below.
-      assert.deepEqual(spec?.pricing, { input: 1.32, cachedInput: 0.044, output: 3.96 });
-      assert.equal(lookupFireworksPricing("deepseek-pro-latest")?.output, 3.96);
-      assert.equal(lookupFireworksPricing("deepseek-pro-latest")?.source, "api");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("prefers deepseek-v4-pro-0813 over deepseek-v4-pro for deepseek-pro-latest", () => {
-    setServerlessCatalogSnapshot({
-      entries: [
-        {
-          id: "accounts/fireworks/models/deepseek-v4-pro",
-          shortId: "deepseek-v4-pro",
-          displayName: "DeepSeek V4 Pro",
-          kind: "serverless",
-        },
-        {
-          id: "accounts/fireworks/models/deepseek-v4-pro-0813",
-          shortId: "deepseek-v4-pro-0813",
-          displayName: "DeepSeek V4 Pro (0813)",
-          kind: "serverless",
-        },
-      ],
-      pricingById: new Map(),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      assert.equal(resolveRouterSpecAliasTarget("deepseek-pro-latest"), "deepseek-v4-pro-0813");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
-  });
-
-  it("prefers deepseek-v4-flash-0731 over deepseek-v4-flash for deepseek-flash-latest", () => {
-    setServerlessCatalogSnapshot({
-      entries: [
-        {
-          id: "accounts/fireworks/models/deepseek-v4-flash",
-          shortId: "deepseek-v4-flash",
-          displayName: "DeepSeek V4 Flash",
-          kind: "serverless",
-        },
-        {
-          id: "accounts/fireworks/models/deepseek-v4-flash-0731",
-          shortId: "deepseek-v4-flash-0731",
-          displayName: "DeepSeek V4 Flash (0731)",
-          kind: "serverless",
-        },
-      ],
-      pricingById: new Map(),
-      inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
-      contextLengthById: new Map(),
-      supportsToolsById: new Map(),
-    });
-    try {
-      assert.equal(resolveRouterSpecAliasTarget("deepseek-flash-latest"), "deepseek-v4-flash-0731");
-    } finally {
-      setServerlessCatalogSnapshot(null);
-    }
+    assert.equal(resolveSpecSlug("minimax-latest"), "minimax-latest");
+    assert.equal(resolveSpecSlug("qwen-plus-latest"), "qwen-plus-latest");
+    assert.equal(lookupModelSpec("minimax-latest"), null);
+    assert.equal(resolveFireworksModelLabel("deepseek-pro-latest"), null);
   });
 
   it("ignores standard-tier cache on resolved fast slugs for fast-latest routers", () => {
@@ -461,7 +243,7 @@ describe("fireworks-model-specs", () => {
     assert.equal(isUsableCachedServerlessPricing("kimi-latest", priorityPricing), false);
   });
 
-  it("prefers live router base models over static alias slugs when catalog cache is warm", () => {
+  it("prefers live router base models over static spec slugs when catalog cache is warm", () => {
     setServerlessCatalogSnapshot({
       entries: [{
         id: "accounts/fireworks/models/kimi-k2p8-code",
@@ -480,7 +262,9 @@ describe("fireworks-model-specs", () => {
     try {
       assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k2p8-code-fast");
       assert.equal(resolveFireworksModelLabel("kimi-fast-latest"), "Kimi K2.8 Code Fast (Latest)");
-      assert.equal(lookupModelSpec("kimi-fast-latest")?.label, "Kimi K3 Fast");
+      // No static spec matches the derived slug: the alias is unpriced rather
+      // than borrowing an unrelated model's rates.
+      assert.equal(lookupModelSpec("kimi-fast-latest"), null);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
@@ -522,7 +306,9 @@ describe("fireworks-model-specs", () => {
       entries: [{ id, shortId: "glm-5p3-fast", displayName: "GLM 5.3 Fast", kind: "serverless" }],
       pricingById: new Map(),
       inputModalitiesById: new Map(),
-      routerBaseModelById: new Map(),
+      routerBaseModelById: new Map([
+        ["accounts/fireworks/routers/glm-fast-latest", "accounts/fireworks/models/glm-5p3-fast"],
+      ]),
       contextLengthById: new Map(),
       supportsToolsById: new Map(),
     });
@@ -533,21 +319,18 @@ describe("fireworks-model-specs", () => {
     ]) {
       setServerlessCatalogSnapshot(snapshot(id));
       try {
-        assert.equal(resolveRouterSpecAliasTarget("glm-fast-latest"), "glm-5p3-fast", id);
         assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-5p3-fast", id);
       } finally {
         setServerlessCatalogSnapshot(null);
       }
     }
 
-    // No GLM 5.3 fast tier is published today: the Fast lineup is GLM 5.2 Fast
-    // alone, so the alias must keep resolving there at the fast-tier rate.
-    assert.equal(resolveRouterSpecAliasTarget("glm-fast-latest"), "glm-5p2-fast");
-    assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-5p2-fast");
-    assert.equal(lookupFireworksPricing("glm-fast-latest")?.input, 2.10);
-    assert.equal(lookupFireworksPricing("glm-fast-latest")?.output, 6.60);
-    // And GLM 5.3 itself has no fast tier to fall into.
-    assert.equal(FIREWORKS_MODEL_SPECS["glm-5p3-fast"], undefined);
+    // The alias needs a live target; the concrete router has static rates.
+    assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-fast-latest");
+    assert.equal(lookupFireworksPricing("glm-fast-latest"), null);
+    assert.equal(FIREWORKS_MODEL_SPECS["glm-5p3-fast"]?.label, "GLM 5.3 Fast");
+    assert.equal(lookupFireworksPricing("glm-5p3-fast")?.input, 2.10);
+    assert.equal(lookupFireworksPricing("glm-5p3-fast")?.cachedInput, 0.39);
   });
 
   it("folds dotted served-model ids onto the canonical p-form slug", () => {
@@ -582,21 +365,19 @@ describe("fireworks-model-specs", () => {
       assert.equal(resolveSpecSlug(ref), ref, ref);
       assert.equal(lookupFireworksPricing(ref), null, ref);
     }
-    // The real `-latest` aliases keep resolving through the catalog and
-    // ROUTER_SPEC_ALIASES paths that own them.
-    assert.equal(resolveSpecSlug("glm-latest"), "glm-5p3");
-    assert.equal(resolveSpecSlug("glm-fast-latest"), "glm-5p2-fast");
-    assert.equal(resolveSpecSlug("glm-flash-latest"), "glm-5p3-flash");
-    assert.equal(resolveSpecSlug("kimi-fast-latest"), "kimi-k3-fast");
+    // The real `-latest` aliases resolve only through the catalog; with no
+    // snapshot warm they stay unresolved rather than guessing a target.
+    assert.equal(resolveSpecSlug("glm-latest"), "glm-latest");
+    assert.equal(resolveSpecSlug("glm-flash-latest"), "glm-flash-latest");
     assert.equal(resolveSpecSlug("not-real-latest"), "not-real-latest");
   });
 
-  it("prefers the live catalog over the static alias table", () => {
-    // ROUTER_SPEC_ALIASES is a build-time snapshot of where a floating router
-    // pointed, so it goes stale the moment a release lands. Whenever the catalog
-    // can say, it wins — otherwise a status line would report a version, and
-    // charge a cached-input rate, that no longer matches what served the call.
-    assert.equal(resolveSpecSlug("glm-latest"), "glm-5p3");
+  it("resolves -latest aliases from the live catalog router base", () => {
+    // The catalog's routerBaseModelById (fed by the API's aliases field) is the
+    // only alias resolver: whenever the catalog can say, it wins — otherwise a
+    // status line would report a version, and charge a cached-input rate, that
+    // no longer matches what served the call.
+    assert.equal(resolveSpecSlug("glm-latest"), "glm-latest");
     setServerlessCatalogSnapshot({
       entries: [
         { id: "accounts/fireworks/models/glm-5p2", shortId: "glm-5p2", displayName: "GLM 5.2", kind: "serverless" },
@@ -612,13 +393,14 @@ describe("fireworks-model-specs", () => {
     });
     try {
       assert.equal(resolveSpecSlug("glm-latest"), "glm-5p2");
-      // And the rate follows the observed model, not the stale snapshot: GLM 5.2
+      // And the rate follows the observed model, not the static spec: GLM 5.2
       // and 5.3 share input/output rates but differ on cached input.
       assert.equal(lookupFireworksPricing("glm-latest")?.cachedInput, 0.14);
     } finally {
       setServerlessCatalogSnapshot(null);
     }
-    assert.equal(lookupFireworksPricing("glm-latest")?.cachedInput, 0.26);
+    // No catalog, no static alias target: unpriced.
+    assert.equal(lookupFireworksPricing("glm-latest"), null);
   });
 
   it("resolves firerouter from the shared model spec like other routers", () => {
@@ -756,17 +538,4 @@ describe("fireworks-model-specs", () => {
     }
   });
 
-  it("isFireworksRoutedModelRef resolves specs, routers, and full ids", () => {
-    assert.equal(isFireworksRoutedModelRef("deepseek-v4-flash"), true);
-    assert.equal(isFireworksRoutedModelRef("deepseek-flash-latest"), true);
-    assert.equal(isFireworksRoutedModelRef("deepseek-pro-latest"), true);
-    assert.equal(isFireworksRoutedModelRef("kimi-fast-latest"), true);
-    assert.equal(isFireworksRoutedModelRef("accounts/fireworks/models/glm-5p2"), true);
-    assert.equal(isFireworksRoutedModelRef("firerouter"), true);
-    assert.equal(isFireworksRoutedModelRef("auto"), true);
-    assert.equal(isFireworksRoutedModelRef("auto-instant"), true);
-    assert.equal(isFireworksRoutedModelRef("auto-smart"), false);
-    assert.equal(isFireworksRoutedModelRef("claude-sonnet-5"), false);
-    assert.equal(isFireworksRoutedModelRef("unknown-user-model"), false);
-  });
 });

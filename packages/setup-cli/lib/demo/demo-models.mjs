@@ -8,11 +8,12 @@
 
 import {
   FIREROUTER_ROUTER_ID,
+  isAutoModelId,
   isFirerouterModelPattern,
 } from "../fireworks/model-id.mjs";
 import {
   FIREWORKS_MODEL_SPECS,
-  ROUTER_SPEC_ALIASES,
+  KNOWN_LATEST_ROUTER_ALIASES,
   catalogCacheCandidates,
   isUsableCachedServerlessPricing,
   resolveFireworksModelLabel,
@@ -87,7 +88,7 @@ function demoPickerSortKey(shortId) {
 
 /** Offline fallback when the serverless catalog has not been warmed yet. */
 function staticDemoFireworksPickerIds() {
-  const latestAliases = Object.keys(ROUTER_SPEC_ALIASES)
+  const latestAliases = [...KNOWN_LATEST_ROUTER_ALIASES]
     .filter(isDemoLatestRouterShortId)
     .sort((left, right) => demoPickerSortKey(left).localeCompare(demoPickerSortKey(right)));
   return ["firerouter", ...latestAliases];
@@ -218,6 +219,29 @@ function toDemoRateShape(pricing, { label, pricingRef }) {
 }
 
 /**
+ * Unpriced shape for a delegating router: no pre-run cost, priced after the
+ * run from the backend model that actually served the request.
+ * @param {string} id
+ * @param {string} labelPrefix Optional "Claude Opus (via …)" prefix for slots.
+ */
+function unpricedRouterRates(id, labelPrefix = null) {
+  return {
+    inputPerMillion: null,
+    outputPerMillion: null,
+    cachedInputPerMillion: null,
+    cacheWrite1hPerMillion: null,
+    cacheWrite5mPerMillion: null,
+    cacheReadPerMillion: null,
+    tier: "unpriced",
+    source: "",
+    label: labelPrefix
+      ? `${labelPrefix} (via ${demoModelLabel(id)})`
+      : demoModelLabel(id),
+    estimated: true,
+  };
+}
+
+/**
  * Resolve FireRouter pricing. FireRouter is a delegating router with no
  * per-token price of its own. If the catalog does not publish a rate for the
  * selected router, leave the pre-run rate unavailable; the demo runner prices
@@ -238,20 +262,18 @@ function firerouterRates(id, labelPrefix = null) {
       pricingRef: id,
     });
   }
-  return {
-    inputPerMillion: null,
-    outputPerMillion: null,
-    cachedInputPerMillion: null,
-    cacheWrite1hPerMillion: null,
-    cacheWrite5mPerMillion: null,
-    cacheReadPerMillion: null,
-    tier: "unpriced",
-    source: "",
-    label: labelPrefix
-      ? `${labelPrefix} (via ${demoModelLabel(id)})`
-      : demoModelLabel(id),
-    estimated: true,
-  };
+  return unpricedRouterRates(id, labelPrefix);
+}
+
+/**
+ * Resolve `auto`-mix pricing. The mixes are delegating routers like FireRouter,
+ * but they are not FireRouter: a published FireRouter catalog rate must never
+ * stand in for them, so they skip the `FIREROUTER_ROUTER_ID` fallback and stay
+ * unpriced until the run prices the serving backend.
+ * @param {string} id
+ */
+function autoMixRates(id) {
+  return unpricedRouterRates(id);
 }
 
 /**
@@ -290,6 +312,9 @@ export function demoModelRates(id, keyType = "fireworks", slotMapping = null) {
   }
   if (id === "firerouter" || isFirerouterModelPattern(id)) {
     return firerouterRates(id);
+  }
+  if (isAutoModelId(id)) {
+    return autoMixRates(id);
   }
   const p = lookupFireworksPricing(id);
   if (!p) {

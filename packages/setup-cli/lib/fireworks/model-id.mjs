@@ -1,9 +1,7 @@
 import {
   AUTO_INSTANT_MODEL_ID,
   AUTO_MODEL_ID,
-  FIREWORKS_MODEL_SPECS,
   KNOWN_AUTO_MODEL_IDS,
-  ROUTER_SPEC_ALIASES,
   canonicalAutoModelId,
   isAutoModelId,
   isFirerouterModelPattern,
@@ -42,32 +40,15 @@ export const DEEPSEEK_FLASH_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/deepseek-flash-latest";
 export const DEEPSEEK_PRO_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/deepseek-pro-latest";
-export const DEFAULT_MAIN_MODEL = "kimi-fast-latest";
-export const DEFAULT_FIREPASS_MAIN_MODEL = DEFAULT_MAIN_MODEL;
+export const DEFAULT_MAIN_MODEL = AUTO_MODEL_ID;
+// Fire Pass keeps a concrete router pin: the mix's auto router needs no bare-slug
+// catalog entry, and Fire Pass keys can't list the catalog to resolve one.
+export const DEFAULT_FIREPASS_MAIN_MODEL = "kimi-fast-latest";
 
 export function resolveDefaultMainModel() {
   return DEFAULT_MAIN_MODEL;
 }
 
-const FIREWORKS_ROUTER_SHORT_IDS = new Set([
-  ...Object.keys(ROUTER_SPEC_ALIASES),
-  "glm-latest",
-  "glm-fast-latest",
-  "glm-5p1-fast",
-  "glm-5p2-fast",
-  "kimi-fast-latest",
-  "kimi-k2p6-fast",
-  "kimi-k2p6-turbo",
-  "kimi-latest",
-  "firerouter",
-  AUTO_MODEL_ID,
-]);
-
-const KNOWN_FIREWORKS_SHORT_IDS = new Set([
-  ...FIREWORKS_ROUTER_SHORT_IDS,
-  ...Object.keys(FIREWORKS_MODEL_SPECS),
-  ...Object.keys(ROUTER_SPEC_ALIASES),
-]);
 const PUBLIC_FIREWORKS_MODEL_REF_RE =
   /^accounts\/fireworks\/(?:models|routers)\/([^/]+?)(\[1m\])?$/i;
 
@@ -271,16 +252,6 @@ export function validateModelId(model, flag) {
       `${flag} must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest`,
     );
   }
-}
-
-export function isFireworksModelId(model) {
-  if (typeof model !== "string") {
-    return false;
-  }
-  const ref = model.trim();
-  return ref.startsWith("accounts/fireworks/")
-    || KNOWN_FIREWORKS_SHORT_IDS.has(fireworksModelSlug(ref))
-    || isAutoModelId(ref);
 }
 
 export function defaultMainModel(keyType = "fireworks") {

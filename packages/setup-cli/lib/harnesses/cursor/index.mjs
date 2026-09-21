@@ -40,11 +40,6 @@ import {
 import { HARNESS } from "../../harness/id.mjs";
 import { isHarnessEnabled, readProviderSettings } from "../../config/global-config.mjs";
 import { harnessStatusKeySource } from "../../keys/api-key.mjs";
-import { harnessFullKey } from "../../keys/harness-api-key.mjs";
-import {
-  FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE,
-  resolveWorkspaceByokStatus,
-} from "../../firerouter/flag.mjs";
 import {
   linuxSafeStorageIsObfuscatedFallback,
   linuxSafeStorageObfuscatedKeyNote,
@@ -61,10 +56,6 @@ const CURSOR_FIREROUTER_ANTHROPIC_REQUIRED_MESSAGE =
   + "Anthropic API key Cursor can't forward. Anthropic BYOK support on the "
   + "Fireworks platform is coming soon.";
 
-function rejectCursorFirerouterWorkspaceByok() {
-  throw new Error(FIREROUTER_WORKSPACE_BYOK_REQUIRED_MESSAGE);
-}
-
 function rejectCursorFirerouterAzure() {
   throw new Error(CURSOR_FIREROUTER_AZURE_UNSUPPORTED);
 }
@@ -74,24 +65,15 @@ function rejectCursorFirerouterAnthropicKey() {
 }
 
 /**
- * Resolve whether Cursor may use FireRouter for this key. Workspace BYOK can
- * provision provider keys server-side (including Anthropic). Fails open when
- * the control-plane probe is unavailable — except for Anthropic-requiring
- * selections with no key, which are refused (Cursor can't forward a local key).
- * @param {string} apiKey
+ * Resolve whether Cursor may use FireRouter. Cursor can't forward a local
+ * Anthropic BYOK key, and workspace BYOK is no longer consulted on non-Claude
+ * harnesses, so Anthropic-requiring selections are always refused;
+ * pure-Fireworks firerouter paths are fine.
  * @param {boolean} requiresAnthropicKey
- * @returns {Promise<{enabled: boolean, unavailable: boolean}>}
+ * @returns {boolean}
  */
-async function cursorFirerouterAllowed(apiKey, requiresAnthropicKey) {
-  const key = apiKey?.trim() ?? "";
-  if (!key) {
-    return { enabled: !requiresAnthropicKey, unavailable: true };
-  }
-  const lookup = await resolveWorkspaceByokStatus(key);
-  if (lookup.unavailable) {
-    return { enabled: true, unavailable: true };
-  }
-  return { enabled: lookup.enabled, unavailable: false };
+function cursorFirerouterAllowed(requiresAnthropicKey) {
+  return !requiresAnthropicKey;
 }
 
 /**
@@ -125,15 +107,10 @@ async function cursorResolveOnContext(ctx) {
     rejectCursorFirerouterAzure();
   }
   const requiresAnthropicKey = firerouterRequiresAnthropicKey(ctx.main);
-  const apiKey = await harnessFullKey(ctx, cursorResolveKey);
-  const allowed = await cursorFirerouterAllowed(apiKey, requiresAnthropicKey);
-  if (allowed.enabled) {
+  if (cursorFirerouterAllowed(requiresAnthropicKey)) {
     return ctx;
   }
-  if (requiresAnthropicKey) {
-    rejectCursorFirerouterAnthropicKey();
-  }
-  rejectCursorFirerouterWorkspaceByok();
+  rejectCursorFirerouterAnthropicKey();
   return ctx;
 }
 
@@ -145,8 +122,8 @@ export default defineHarnessProfile({
   keyEnvRef: "${FIREWORKS_API_KEY}",
   getExistingHarnessKey: cursorResolveKey,
   paths: (ctx) => cursorPathsFor(ctx),
-  // FireRouter works in Cursor only when workspace BYOK provisions provider keys
-  // server-side; local BYOK headers are not attachable in Cursor's override UI.
+  // Cursor's override UI can't attach local BYOK headers, so only
+  // pure-Fireworks firerouter paths (no Anthropic model in them) are usable.
   firerouter: {
     byok: "none",
     autoCatalog: true,
@@ -178,12 +155,12 @@ export default defineHarnessProfile({
     restart: () => printRestartHint("Quit & reopen Cursor IDE for the change to take effect."),
   },
   enable: async ({ ctx, paths, effectiveKey, keyType, modelId, includeFirerouter = false }) => {
-    // Register the preferred catalog; firerouter is workspace-BYOK-gated. A
+    // Register the preferred catalog; firerouter registers only when explicitly requested. A
     // TTL-cached snapshot serves offline; a cold start with no network must
     // fail the `on` rather than register from an empty model list. When no
     // catalog entries are available at all, treat it as unavailable so a
     // previous online run's registered models are trusted instead of wiped.
-    const { ids: extraModels } = await loadRegisterableModels({
+    const { ids: extraModels, available: catalogAvailable } = await loadRegisterableModels({
       apiKey: effectiveKey,
       includeFirerouter,
     });
@@ -196,7 +173,7 @@ export default defineHarnessProfile({
       modelId,
       keyType,
       extraModels,
-      catalogUnavailable: extraModels.length === 0,
+      catalogUnavailable: !catalogAvailable,
     });
   },
   printConnected: ({ result }) => {

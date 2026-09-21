@@ -58,14 +58,14 @@ describe("model-servability isModelIdValidationApplicable", () => {
 });
 
 describe("model-servability assertRequestedModelsServable", () => {
-  // Catalog mock containing glm-5p2 (buildServerlessCatalogSnapshot synthesizes
-  // the glm-latest alias from ROUTER_SPEC_ALIASES).
+  // Catalog mock containing glm-5p2; its -latest alias comes from the row's
+  // `aliases` field, not from any static mapping.
   function withFetchMock(models, fn) {
     clearCatalogCache();
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async () => ({
       ok: true,
-      json: async () => ({ models }),
+      json: async () => ({ object: "list", data: models }),
     });
     return fn().finally(() => {
       globalThis.fetch = previousFetch;
@@ -73,7 +73,9 @@ describe("model-servability assertRequestedModelsServable", () => {
   }
 
   it("throws for an id not in the catalog", async () => {
-    await withFetchMock([mockServerlessModel()], async () => {
+    await withFetchMock([mockServerlessModel({
+      aliases: ["accounts/fireworks/routers/glm-latest"],
+    })], async () => {
       await assert.rejects(
         () => assertRequestedModelServable("not-a-real-model", {
           apiKey: "fw_test_key",
@@ -96,7 +98,9 @@ describe("model-servability assertRequestedModelsServable", () => {
   });
 
   it("allows a -latest alias resolved in the catalog", async () => {
-    await withFetchMock([mockServerlessModel()], async () => {
+    await withFetchMock([mockServerlessModel({
+      aliases: ["accounts/fireworks/routers/glm-latest"],
+    })], async () => {
       await assert.doesNotReject(() =>
         assertRequestedModelServable("glm-latest", {
           apiKey: "fw_test_key",
@@ -121,7 +125,7 @@ describe("model-servability assertRequestedModelsServable", () => {
     clearCatalogCache();
     let fetched = false;
     const previousFetch = globalThis.fetch;
-    globalThis.fetch = async () => { fetched = true; return { ok: true, json: async () => ({ models: [] }) }; };
+    globalThis.fetch = async () => { fetched = true; return { ok: true, json: async () => ({ object: "list", data: [] }) }; };
     try {
       await assertRequestedModelServable("firerouter", { apiKey: "fw_test_key", keyType: "fireworks" });
       await assertRequestedModelServable("auto", { apiKey: "fw_test_key", keyType: "fireworks" });
@@ -143,7 +147,7 @@ describe("model-servability assertRequestedModelsServable", () => {
     clearCatalogCache();
     let fetched = false;
     const previousFetch = globalThis.fetch;
-    globalThis.fetch = async () => { fetched = true; return { ok: true, json: async () => ({ models: [] }) }; };
+    globalThis.fetch = async () => { fetched = true; return { ok: true, json: async () => ({ object: "list", data: [] }) }; };
     try {
       // A bogus model with a Fire Pass key must not throw (can't enumerate).
       await assertRequestedModelServable("not-a-real-model", { apiKey: "fpk_test", keyType: "firepass" });
@@ -170,7 +174,7 @@ describe("model-servability assertRequestedModelsServable", () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async () => {
       fetchCount += 1;
-      return { ok: true, json: async () => ({ models: [mockServerlessModel()] }) };
+      return { ok: true, json: async () => ({ object: "list", data: [mockServerlessModel({ aliases: ["accounts/fireworks/routers/glm-latest"] })] }) };
     };
     try {
       // glm-5p2 + glm-latest are in the catalog; the bogus one must surface.

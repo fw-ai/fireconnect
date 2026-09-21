@@ -176,6 +176,15 @@ export function getServerlessCatalogSnapshot() {
   return activeSnapshot;
 }
 
+/** Reset the persisted and in-memory catalog cache. */
+export function deletePersistedCatalogCache() {
+  try {
+    rmSync(cacheFilePath(), { force: true });
+  } catch {}
+  activeSnapshot = null;
+  snapshotResolved = false;
+}
+
 // Lookups lazy-load the persisted snapshot for short-lived consumers such as
 // the statusline helper. An explicit setServerlessCatalogSnapshot(null) still
 // wins because it marks the snapshot resolved.
@@ -237,4 +246,17 @@ export function lookupCatalogEntryById(modelId) {
   }
   const normalized = modelId.replace(/\[1m\]$/i, "");
   return snapshot.entries.find((entry) => entry.id === normalized) ?? null;
+}
+
+/** Whether a model reference is present in the cached serverless catalog. */
+export function isCachedServerlessModelRef(modelRef) {
+  const snapshot = getServerlessCatalogSnapshot();
+  if (!snapshot || typeof modelRef !== "string" || !modelRef.trim()) {
+    return false;
+  }
+  const bare = modelRef.trim().replace(/\[1m\]$/i, "");
+  if (bare.startsWith("accounts/fireworks/")) {
+    return snapshot.entries.some((entry) => entry?.id === bare);
+  }
+  return snapshot.entries.some((entry) => entry?.shortId === bare);
 }

@@ -1,10 +1,20 @@
 /**
  * Extract a single self-contained HTML document from a model's raw output.
  *
- * Models are told to return only an HTML file with no fences, but in practice
- * they often wrap output in ```html ... ``` or add leading prose. This recovers
- * the document honestly: it never fabricates HTML that wasn't in the output.
+ * Models are told to return only an HTML file, but in practice they add
+ * fences or prose, and some "roleplay" a tool call — a JSON object whose
+ * content field carries the escaped document — leaving two copies in the
+ * output, only one of which is real HTML. This recovers the document
+ * honestly: it never fabricates HTML that wasn't in the output.
  */
+
+const DOCTYPE = "<!doctype html";
+const HTML_OPEN = "<html";
+const CLOSE = "</html>";
+// Fenced block whose closing fence matches its opening length (3+ backticks),
+// so ````-style fences used to dodge a "no fences" instruction still strip.
+// The info string (```html, ````json, …) is ignored.
+const FENCE_RE = /(`{3,})[^\n]*\n?([\s\S]*?)\n?\1/;
 
 /**
  * @param {string} raw
@@ -14,40 +24,71 @@ export function extractHtml(raw) {
   if (!raw || !raw.trim()) {
     return { html: "", ok: false, reason: "empty output" };
   }
+  // Prefer a complete document from the first fenced block, but fall back to
+  // the full output so a truncated or garbage fence can't hide a real
+  // document that follows it.
+  const fromFence = raw.match(FENCE_RE)?.[2];
+  const fenced = fromFence !== undefined ? extractFrom(fromFence) : null;
+  const whole = extractFrom(raw);
+  const complete = [fenced, whole].filter((r) => r?.ok && !r.reason);
+  if (complete.length > 0) {
+    // When both the fence body and the full output yield a complete document,
+    // pick the cleaner copy. A jsonHtml-unescaped fence can still carry benign
+    // JS sequences like `\n` (artifactScore > 0); comparing scores avoids both
+    // returning an escaped slice early and blindly preferring a dirtier whole.
+    return complete.reduce((best, cur) => {
+      const bestScore = qualityScore(best.html);
+      const curScore = qualityScore(cur.html);
+      if (curScore !== bestScore) {
+        return curScore < bestScore ? cur : best;
+      }
+      // Tie: prefer the fenced payload — it is the model's intended extract.
+      return best === fenced ? best : cur === fenced ? cur : best;
+    });
+  }
+  // Neither yielded a complete document: keep the better partial (the fence,
+  // as the model's intended payload, wins ties).
+  return fenced?.ok ? fenced : whole;
+}
 
-  // Strip markdown code fences. Handles ```html ... ``` and bare ``` ... ```.
-  const fenced = raw.match(/```(?:html|HTML)?\s*\n?([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1] : raw;
-
-  const trimmed = candidate.trim();
+function extractFrom(candidate) {
+  // A roleplayed tool call is a JSON object with the document in a string
+  // field; JSON.parse unescapes it for free.
+  const fromJson = jsonHtml(candidate);
+  const trimmed = (fromJson ?? candidate).trim();
   if (!trimmed) {
     return { html: "", ok: false, reason: "empty after fence strip" };
   }
 
-  // Prefer the substring from the first <!doctype>/<html> to the last </html>,
-  // which trims surrounding prose without dropping document content.
-  const openIdx = lowerIndexOf(trimmed, ["<!doctype html", "<html"]);
-  const closeIdx = trimmed.toLowerCase().lastIndexOf("</html>");
-
-  if (openIdx >= 0 && closeIdx > openIdx) {
-    return { html: trimmed.slice(openIdx, closeIdx + "</html>".length).trim(), ok: true };
-  }
-  if (openIdx >= 0) {
-    // Has an opening tag but no closing </html> — take to end, mark not runnable.
-    return {
-      html: trimmed.slice(openIdx).trim(),
-      ok: true,
-      reason: "missing </html>",
-    };
+  const copies = findCopies(trimmed);
+  if (copies.length === 0) {
+    // No document marker at all. Keep tag-leading fragments (flagged) so the
+    // browser panel can show "didn't run" honestly; anything else isn't HTML.
+    return trimmed.startsWith("<")
+      ? { html: trimmed, ok: true, reason: "no doctype/html root" }
+      : { html: trimmed, ok: false, reason: "no html detected" };
   }
 
-  // No html/doctype marker at all. If it still looks like an HTML fragment
-  // (starts with a tag), keep it but flag; otherwise return raw as-is so the
-  // browser panel can show "didn't run" honestly.
-  if (trimmed.startsWith("<")) {
-    return { html: trimmed, ok: true, reason: "no doctype/html root" };
+  // Rank copies: complete beats truncated, doctype-leading beats bare
+  // <html> (prose mentions "<html>" but payloads start with a doctype), then
+  // fewest escape artifacts / internal fences (a fragment that borrows a
+  // later copy's close tag swallows prose and fences into its span). The
+  // first copy wins ties.
+  let best = null;
+  for (const c of copies) {
+    const html = trimmed.slice(c.open, c.end).trim();
+    const score =
+      (c.complete ? 0 : 1000) +
+      (c.doctype ? 0 : 10) +
+      (html.includes("```") ? 10 : 0) +
+      artifactScore(html);
+    if (!best || score < best.score) {
+      best = { html, score, complete: c.complete };
+    }
   }
-  return { html: trimmed, ok: false, reason: "no html detected" };
+  return best.complete
+    ? { html: best.html, ok: true }
+    : { html: best.html, ok: true, reason: "missing </html>" };
 }
 
 /**
@@ -63,17 +104,71 @@ export function looksRunnable(html) {
     return false;
   }
   const lower = html.toLowerCase();
-  return lower.includes("<html") || lower.includes("<body") || lower.includes("<script");
+  return lower.includes(HTML_OPEN) || lower.includes("<body") || lower.includes("<script");
 }
 
-function lowerIndexOf(haystack, needles) {
+/** If candidate holds a JSON object whose string field IS an HTML document, return it. */
+function jsonHtml(candidate) {
+  // The object may sit in surrounding prose ("Write: {…}"); find it via the
+  // outermost {...} span rather than parsing the whole string.
+  const open = candidate.indexOf("{");
+  const close = candidate.lastIndexOf("}");
+  if (open === -1 || close <= open) {
+    return null;
+  }
+  try {
+    const obj = JSON.parse(candidate.slice(open, close + 1));
+    for (const key of ["content", "html", "text", "code", "body"]) {
+      const v = obj?.[key];
+      // Must BE a document (start with a root tag), not merely mention one.
+      if (typeof v === "string" && /^<!doctype html|^<html[\s>]/i.test(v.trim())) {
+        return v;
+      }
+    }
+  } catch {
+    // Not valid JSON — copy ranking below may still recover the document.
+  }
+  return null;
+}
+
+/** Every document copy: each open marker through its next close tag (if any). */
+function findCopies(haystack) {
   const lower = haystack.toLowerCase();
-  let best = -1;
-  for (const needle of needles) {
-    const idx = lower.indexOf(needle);
-    if (idx >= 0 && (best === -1 || idx < best)) {
-      best = idx;
+  /** @type {{ open: number, marker: string }[]} */
+  const opens = [];
+  for (const marker of [DOCTYPE, HTML_OPEN]) {
+    for (let i = lower.indexOf(marker); i !== -1; i = lower.indexOf(marker, i + 1)) {
+      opens.push({ open: i, marker });
     }
   }
-  return best;
+  return opens
+    .sort((a, b) => a.open - b.open)
+    .map(({ open, marker }) => {
+      const close = findClose(lower, open);
+      return {
+        open,
+        end: close === -1 ? haystack.length : close,
+        complete: close !== -1,
+        doctype: marker === DOCTYPE,
+      };
+    });
+}
+
+/** End index of the next close tag, or -1; handles JSON-escaped `<\/html>`. */
+function findClose(lower, from) {
+  const plain = lower.indexOf(CLOSE, from);
+  const escaped = lower.indexOf("<\\/html>", from);
+  if (plain === -1) return escaped === -1 ? -1 : escaped + 8;
+  if (escaped === -1) return plain + 7;
+  return Math.min(plain + 7, escaped + 8);
+}
+
+/** How escape-laden a copy is: literal \" \n \t \/ \\ sequences, plus leaked control tags. */
+function artifactScore(html) {
+  const escapes = html.match(/\\["'nt/\\]/g);
+  return (escapes ? escapes.length : 0) + (/antml:/.test(html) ? 10 : 0);
+}
+
+function qualityScore(html) {
+  return artifactScore(html);
 }

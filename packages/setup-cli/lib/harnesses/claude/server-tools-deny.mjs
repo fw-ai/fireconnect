@@ -1,40 +1,76 @@
-/**
- * Claude Code's `WebSearch` and `WebFetch` are Anthropic **server-side** tools:
- * the model API executes them. Routed through the Fireworks gateway they don't
- * work (the gateway serves Fireworks models, not Anthropic's tool runtime), so
- * FireConnect disables them in `settings.json` via `permissions.deny` while a
- * harness is `on`. Bare tool names remove the tools from Claude's context
- * entirely — the strongest, docs-blessed deny form. The Fireworks-hosted
- * websearch MCP (installed separately in `~/.claude.json` when the account is
- * entitled) is the working replacement for web access.
- */
-export const GATEWAY_DISABLED_SERVER_TOOLS = Object.freeze(["WebSearch", "WebFetch"]);
+/** WebSearch and WebFetch are supported by the Fireworks Messages endpoint. */
+export const GATEWAY_DISABLED_SERVER_TOOLS = Object.freeze([]);
+const LEGACY_GATEWAY_DISABLED_SERVER_TOOLS = Object.freeze(["WebSearch", "WebFetch"]);
+
+function deniedLegacyServerTools(settings) {
+  const deny = Array.isArray(settings?.permissions?.deny) ? settings.permissions.deny : [];
+  return deny.filter((tool) => LEGACY_GATEWAY_DISABLED_SERVER_TOOLS.includes(tool));
+}
 
 /**
- * Merge FireConnect's server-tool denials into `permissions.deny` without
- * disturbing the user's own allow/ask/deny rules. Idempotent: returns the same
- * object reference (so callers can skip the write) when nothing is missing.
- * Teardown is handled by the byte-for-byte settings snapshot restored on `off`,
- * which brings back the user's original `permissions` — so this only ever adds.
+ * Determine which server tools were denied before FireConnect managed the file.
+ * Repeat `on` calls must consult the original snapshot: the current file may
+ * still contain denials added by older FireConnect releases.
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, any>} backup
+ */
+export function originalSettingsDeniedServerTools(settings, backup = {}) {
+  if (backup.snapshot !== undefined) {
+    if (!backup.snapshot.existed) {
+      return [];
+    }
+    try {
+      return deniedLegacyServerTools(JSON.parse(backup.snapshot.raw));
+    } catch {
+      return [...LEGACY_GATEWAY_DISABLED_SERVER_TOOLS];
+    }
+  }
+  const legacyValues = backup.topLevel?.values;
+  if (legacyValues && Object.hasOwn(legacyValues, "permissions")) {
+    return deniedLegacyServerTools({ permissions: legacyValues.permissions });
+  }
+  if ((backup.topLevel?.missing ?? []).includes("permissions")) {
+    return [];
+  }
+  return deniedLegacyServerTools(settings);
+}
+
+/**
+ * Remove obsolete FireConnect server-tool denials while preserving rules found
+ * in the user's original settings. Returns the same object when unchanged.
  * @param {Record<string, unknown>} settings
  * @returns {Record<string, unknown>}
  */
-export function withGatewayServerToolsDenied(settings) {
+export function reconcileGatewayServerToolDenials(settings, { preserveDeniedTools = [] } = {}) {
   const existingPermissions = settings.permissions && typeof settings.permissions === "object"
     ? settings.permissions
     : null;
   const existingDeny = Array.isArray(existingPermissions?.deny) ? existingPermissions.deny : [];
-  const missing = GATEWAY_DISABLED_SERVER_TOOLS.filter((tool) => !existingDeny.includes(tool));
-  if (missing.length === 0) {
+  const withoutLegacyDenials = existingDeny.filter(
+    (tool) => !LEGACY_GATEWAY_DISABLED_SERVER_TOOLS.includes(tool)
+      || preserveDeniedTools.includes(tool),
+  );
+  const nextDeny = [
+    ...withoutLegacyDenials,
+    ...GATEWAY_DISABLED_SERVER_TOOLS.filter((tool) => !withoutLegacyDenials.includes(tool)),
+  ];
+  if (nextDeny.length === existingDeny.length
+      && nextDeny.every((tool, index) => tool === existingDeny[index])) {
     return settings;
   }
-  return {
-    ...settings,
-    permissions: {
-      ...(existingPermissions ?? {}),
-      deny: [...existingDeny, ...missing],
-    },
-  };
+  const nextPermissions = { ...(existingPermissions ?? {}) };
+  if (nextDeny.length > 0) {
+    nextPermissions.deny = nextDeny;
+  } else {
+    delete nextPermissions.deny;
+  }
+  const next = { ...settings };
+  if (Object.keys(nextPermissions).length > 0) {
+    next.permissions = nextPermissions;
+  } else {
+    delete next.permissions;
+  }
+  return next;
 }
 
 /**
@@ -49,7 +85,8 @@ export function withoutGatewayServerToolsDenied(settings) {
     return settings;
   }
   const deny = permissions.deny.filter(
-    (rule) => !GATEWAY_DISABLED_SERVER_TOOLS.includes(rule),
+    (rule) => !GATEWAY_DISABLED_SERVER_TOOLS.includes(rule)
+      && !LEGACY_GATEWAY_DISABLED_SERVER_TOOLS.includes(rule),
   );
   if (deny.length === permissions.deny.length) {
     return settings;

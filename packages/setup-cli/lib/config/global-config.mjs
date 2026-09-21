@@ -8,7 +8,7 @@ import {
 } from "../fireworks/azure-core.mjs";
 import { readJsonIfExists, writeJson } from "../io/json.mjs";
 import { isFireworksShapedKey } from "../keys/key-type.mjs";
-import { HARNESSES } from "../harness/id.mjs";
+import { HARNESS, HARNESSES } from "../harness/id.mjs";
 
 export const GLOBAL_CONFIG_RELATIVE_PATH = ".fireconnect/config.json";
 export const FIREWORKS_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
@@ -132,11 +132,16 @@ function normalizeHarnessMap(raw) {
   /** @type {HarnessConfigMap} */
   const map = {};
   for (const [harnessId, entry] of Object.entries(raw)) {
+    // `copilot` was one harness that configured both Copilot products; it is
+    // now two (copilot-app / copilot-cli). Re-home its entry on the app rather
+    // than dropping it, so an existing user doesn't look "off" with no
+    // explanation. The split CLI write stays as it was.
+    const id = harnessId === "copilot" ? HARNESS.COPILOT_APP : harnessId;
     // Drop retired/unknown harness ids (e.g. the legacy `deepagents` entry
     // from the plugin era) so the config map stays in sync with the current
     // roster. Known ids are preserved verbatim through normalizeHarnessEntry.
-    if (!HARNESSES.includes(harnessId)) continue;
-    map[harnessId] = normalizeHarnessEntry(entry);
+    if (!HARNESSES.includes(id)) continue;
+    map[id] = normalizeHarnessEntry(entry);
   }
   return map;
 }

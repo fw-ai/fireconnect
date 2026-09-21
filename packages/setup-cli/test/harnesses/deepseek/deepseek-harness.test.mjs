@@ -86,62 +86,17 @@ describe("deepseek harness integration", () => {
     assert.match(result.stderr, /FireRouter is not available for Fire Pass keys/);
   });
 
-  it("firerouter is allowed when workspace BYOK is enabled", async () => {
-    const gateway = await new Promise((resolve) => {
-      const server = createServer((req, res) => {
-        if (req.url === "/verifyApiKey") {
-          res.writeHead(200, {
-            "x-fireworks-account-id": "acct-workspace-byok",
-          });
-          res.end();
-          return;
-        }
-        if (/^\/v1\/accounts\/[^/]+\/featureFlags$/.test(req.url ?? "")) {
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({
-            featureFlags: [{
-              name: "accounts/acct-workspace-byok/featureFlags/enable-workspace-byok",
-              value: "true",
-            }],
-          }));
-          return;
-        }
-        res.writeHead(404);
-        res.end();
-      });
-      server.listen(0, "127.0.0.1", () => resolve({ server, url: `http://127.0.0.1:${server.address().port}` }));
-    });
-    try {
-      const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-firerouter-workspace-byok-"));
-      await mkdir(path.join(home, ".dsh"), { recursive: true });
-      const result = await runFireconnect(
-        [
-          "deepseek", "on",
-          "--api-key", "fw_test_key_12345",
-          "--model", "firerouter",
-        ],
-        {
-          HOME: home,
-          FIREWORKS_API_KEY: "",
-          FIRECONNECT_GATEWAY_URL: gateway.url,
-          FIRECONNECT_GATEWAY_GRPC_WEB_URL: `${gateway.url}/grpc`,
-        },
-      );
-      assert.equal(result.code, 0, result.stderr);
-      const settingsPath = deepseekSettingsPath(home);
-      const settings = await readFile(settingsPath, "utf8");
-      assert.match(settings, /model: firerouter/);
-      assert.match(settings, /contextWindow: 1048575/);
-      const { settings: doc } = await readDeepseekSettingsIfExists(settingsPath);
-      assert.equal(deepseekCurrentModelId(doc), "firerouter");
-      assert.equal(
-        doc["llm-pi-ai"].providers.fireworks.models[0].contextWindow,
-        1_048_575,
-      );
-      assert.match(result.stdout, /FireRouter is on/);
-    } finally {
-      gateway.server.close();
-    }
+  it("firerouter is always rejected without a forwardable Anthropic key", async () => {
+    // Workspace BYOK is no longer consulted on non-Claude harnesses: DeepSeek's
+    // custom provider can't forward a key, so firerouter is refused outright.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-firerouter-refused-"));
+    await mkdir(path.join(home, ".dsh"), { recursive: true });
+    const result = await runFireconnect(
+      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Ask the Fireworks team to enable FireRouter/);
   });
 
   it("on/off round-trip restores settings.yaml and credentials.yaml", async () => {
@@ -171,7 +126,7 @@ describe("deepseek harness integration", () => {
     assert.match(enabledSettings, /provider: fireworks/);
     assert.match(enabledSettings, /apiKeyEnv: FIREWORKS_API_KEY/);
     assert.match(enabledSettings, /baseURL: https:\/\/api\.fireworks\.ai\/inference\/v1/);
-    assert.match(enabledSettings, /kimi-fast-latest/);
+    assert.match(enabledSettings, /auto/);
     assert.match(enabledSettings, /mode: dark/);
 
     const enabledCredentials = await readFile(credentialsPath, "utf8");
@@ -190,7 +145,7 @@ describe("deepseek harness integration", () => {
     await seedKeychainConfig(home, "fw_test_key_12345");
     const onResult = await runFireconnect(["deepseek", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
     assert.equal(onResult.code, 0, onResult.stderr);
-    assert.match(onResult.stdout, /DeepSeek Harness → Fireworks · kimi-fast-latest/);
+    assert.match(onResult.stdout, /DeepSeek Harness → Fireworks · auto/);
 
     const credentials = await readFile(deepseekCredentialsPath(home), "utf8");
     assert.match(credentials, /FIREWORKS_API_KEY: fw_test_key_12345/);

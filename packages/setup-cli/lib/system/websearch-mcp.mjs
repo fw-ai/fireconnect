@@ -1,21 +1,11 @@
-import { isAccountFeatureFlagEnabled } from "../config/feature-flags.mjs";
-import { exportFireworksApiKey } from "../keys/api-key.mjs";
-import { verifyFireworksApiKey } from "../keys/verify-api-key.mjs";
+import { readJsonIfExists, writeJson } from "../io/json.mjs";
 import { reconcileShellEnvHook } from "../io/shell-env-hook.mjs";
 import { HARNESS } from "../harness/id.mjs";
 import {
   WEBSEARCH_MCP_SERVER_NAME,
-  WEBSEARCH_MCP_URL,
   claudeJsonPath,
   hasManagedWebsearchMcp,
 } from "./websearch-state.mjs";
-import { printWebsearchOnStep } from "./websearch-install-guide.mjs";
-import {
-  disableWebsearchMcpForHarness,
-  enableWebsearchMcpForHarness,
-  harnessWebsearchMcpEnabled,
-  websearchMcpEntryForHarness,
-} from "./websearch-harness.mjs";
 
 export {
   WEBSEARCH_MCP_SERVER_NAME,
@@ -23,75 +13,47 @@ export {
   claudeJsonPath,
   hasManagedWebsearchMcp,
 } from "./websearch-state.mjs";
-export {
-  WEBSEARCH_MCP_HARNESS_IDS,
-  managedWebsearchMcpEnabled,
-  claudeWebsearchMcpEnabled,
-} from "./websearch-harness.mjs";
-
-/** Feature flag that gates FireSearch / websearch MCP (control plane). */
-export const WEBSEARCH_FEATURE_FLAG_ID = "allow-search-gateway";
 
 /**
- * FireConnect-managed MCP entry for Claude (~/.claude.json).
- * Prefer passing `apiKey` so the Authorization header is a baked Bearer token
- * (same as `claude mcp add --header`).
- * @param {string} [apiKey]
- * @returns {{ type: string, url: string, headers: Record<string, string> }}
+ * @param {unknown} config
+ * @returns {{ config: object, changed: boolean }}
  */
-export function websearchMcpServerEntry(apiKey = "") {
-  return websearchMcpEntryForHarness(HARNESS.CLAUDE, apiKey);
-}
-
-/**
- * Rebake an existing managed websearch MCP entry to a literal Bearer token.
- * No-op when the managed server is absent (does not install / feature-flag check).
- * Also reconciles the shell hook so a legacy FIREWORKS export is removed.
- *
- * @param {string} home
- * @param {string} apiKey
- * @param {import("../harness/id.mjs").HarnessId} [harnessId]
- * @returns {Promise<boolean>} true when the MCP entry changed
- */
-export async function refreshWebsearchMcpAuth(home, apiKey, harnessId = HARNESS.CLAUDE) {
-  const token = apiKey?.trim() ?? "";
-  if (!home || !token) {
-    return false;
+function withoutManagedWebsearchMcp(config) {
+  const current = config ?? {};
+  const servers = { ...(current.mcpServers ?? {}) };
+  if (!Object.hasOwn(servers, WEBSEARCH_MCP_SERVER_NAME)) {
+    return { config: current, changed: false };
   }
-  if (!await harnessWebsearchMcpEnabled(home, harnessId)) {
-    return false;
+  delete servers[WEBSEARCH_MCP_SERVER_NAME];
+  const next = { ...current };
+  if (Object.keys(servers).length > 0) {
+    next.mcpServers = servers;
+  } else {
+    delete next.mcpServers;
   }
-  const result = await enableWebsearchMcpForHarness(home, harnessId, { apiKey: token });
-  try {
-    await reconcileShellEnvHook(home);
-  } catch {
-    // Best-effort.
-  }
-  return result.changed;
+  return { config: next, changed: true };
 }
 
 /**
  * @param {string} home
- * @param {import("../harness/id.mjs").HarnessId} [harnessId]
- * @param {{ apiKey?: string }} [options]
+ * @param {import("../harness/id.mjs").HarnessId} harnessId
  */
-export async function enableWebsearchMcp(home, harnessId = HARNESS.CLAUDE, options = {}) {
-  let apiKey = options.apiKey?.trim() ?? "";
-  if (!apiKey) {
-    try {
-      apiKey = await exportFireworksApiKey(home, { storedOnly: false });
-    } catch {
-      apiKey = "";
-    }
+async function disableWebsearchMcpForHarness(home, harnessId) {
+  if (harnessId !== HARNESS.CLAUDE) {
+    throw new Error(`Websearch MCP removal is not supported for harness: ${harnessId}`);
   }
-  const result = await enableWebsearchMcpForHarness(home, harnessId, { apiKey });
-  // Reconcile may remove a legacy FIREWORKS_API_KEY shell hook that older
-  // installs needed for `${FIREWORKS_API_KEY}` MCP header substitution.
-  await reconcileShellEnvHook(home);
-  return result;
+  const filePath = claudeJsonPath(home);
+  const current = await readJsonIfExists(filePath) ?? {};
+  const { config: next, changed } = withoutManagedWebsearchMcp(current);
+  if (!changed) {
+    return { changed: false, filePath };
+  }
+  await writeJson(filePath, next);
+  return { changed: true, filePath };
 }
 
 /**
+ * Remove the retired FireConnect-managed `fireworks-websearch` MCP entry.
  * @param {string} home
  * @param {import("../harness/id.mjs").HarnessId} [harnessId]
  */
@@ -99,72 +61,4 @@ export async function disableWebsearchMcp(home, harnessId = HARNESS.CLAUDE) {
   const result = await disableWebsearchMcpForHarness(home, harnessId);
   await reconcileShellEnvHook(home);
   return result;
-}
-
-/**
- * @param {string} home
- * @param {import("../harness/id.mjs").HarnessId} harnessId
- * @param {{ installed: boolean, reason: string }} result
- */
-async function leaveWebsearchMcp(home, harnessId, result) {
-  if (!result.installed) {
-    await disableWebsearchMcp(home, harnessId);
-  }
-  return result;
-}
-
-/**
- * Install or remove the managed websearch MCP server based on the account flag.
- * @param {string} home
- * @param {{ harnessId?: import("../harness/id.mjs").HarnessId, apiKey?: string, accountId?: string, quiet?: boolean }} [options]
- */
-export async function syncWebsearchMcp(home, {
-  harnessId = HARNESS.CLAUDE,
-  apiKey = "",
-  accountId = "",
-  quiet = false,
-} = {}) {
-  let resolvedKey = apiKey.trim();
-  let resolvedAccountId = accountId.trim();
-  if (!resolvedKey) {
-    try {
-      resolvedKey = await exportFireworksApiKey(home, { storedOnly: false });
-    } catch {
-      return leaveWebsearchMcp(home, harnessId, { installed: false, reason: "missing-api-key" });
-    }
-  }
-  if (!resolvedAccountId) {
-    const verified = await verifyFireworksApiKey(resolvedKey);
-    if (!verified.ok) {
-      return leaveWebsearchMcp(home, harnessId, {
-        installed: false,
-        reason: verified.reason || "invalid-api-key",
-      });
-    }
-    resolvedAccountId = verified.accountId.trim();
-    if (!resolvedAccountId) {
-      return leaveWebsearchMcp(home, harnessId, { installed: false, reason: "missing-account-id" });
-    }
-  }
-
-  const flag = await isAccountFeatureFlagEnabled(resolvedAccountId, resolvedKey, WEBSEARCH_FEATURE_FLAG_ID);
-  if (flag.unavailable) {
-    if (!quiet) {
-      console.log(
-        `Websearch MCP was not configured (${flag.reason}). `
-          + "Could not verify web search access for this account.",
-      );
-    }
-    return leaveWebsearchMcp(home, harnessId, { installed: false, reason: flag.reason || "flag-unavailable" });
-  }
-  if (!flag.enabled) {
-    return leaveWebsearchMcp(home, harnessId, { installed: false, reason: "flag-disabled" });
-  }
-
-  const result = await enableWebsearchMcp(home, harnessId, { apiKey: resolvedKey });
-  const syncResult = { installed: true, reason: "", filePath: result.filePath, changed: result.changed };
-  if (!quiet) {
-    await printWebsearchOnStep(syncResult, home);
-  }
-  return syncResult;
 }

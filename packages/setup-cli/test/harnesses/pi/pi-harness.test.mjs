@@ -5,7 +5,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { piSettingsPath, piAuthPath, piModelsPath, PI_API_KEY_ENV_REF, PI_DATA_RELATIVE_DIR, PI_AZURE_PROVIDER } from "../../../lib/harnesses/pi/core.mjs";
 import { resolvePiEffectiveFireworksModel } from "../../../lib/harnesses/pi/fireworks-models.mjs";
-import { FIRECONNECT_REFERER, runFireconnect, seedServerlessCatalogCache } from "../../helpers.mjs";
+import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  setServerlessCatalogSnapshot,
+} from "../../../lib/fireworks/serverless-catalog-cache.mjs";
+import { FIRECONNECT_REFERER, mockServerlessModel, runFireconnect, seedServerlessCatalogCache } from "../../helpers.mjs";
 
 const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
 const AZURE_KEY = "azure-test-key-1234567890";
@@ -32,6 +37,45 @@ const CACHED_ROUTER_ENTRIES = [
   displayName: slug, // the picker name resolution isn't under test here
   kind: "serverless",
 }));
+
+// Flat `/v1/serverless/models` rows pairing the `-latest` aliases with their
+// leaf bases so offline registration resolves the same limits/pricing the live
+// catalog does. Under the refactor aliases exist only when a row reports them
+// via `aliases`; there is no static alias table. context_length 1_048_575
+// matches glm-5p2's curated spec (asserted below).
+const GLM_ALIAS_CATALOG_ROWS = [
+  mockServerlessModel({
+    id: "accounts/fireworks/models/glm-5p2",
+    context_length: 1_048_575,
+    aliases: ["accounts/fireworks/routers/glm-latest"],
+  }),
+  mockServerlessModel({
+    id: "accounts/fireworks/models/glm-5p2",
+    serverless_mode: "fast",
+    context_length: 1_048_575,
+    usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+    aliases: ["accounts/fireworks/routers/glm-fast-latest"],
+    pricing: [
+      { sku: "LLM input tokens (uncached)", amount: "2.1" },
+      { sku: "LLM input tokens (cached)", amount: "0.21" },
+      { sku: "LLM output tokens", amount: "6.6" },
+    ],
+  }),
+];
+
+/** Persist a flat-row catalog to `home`'s scoped cache for a spawned CLI to read. */
+function seedFlatCatalogCache(home, rows) {
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot(rows));
+  } finally {
+    process.env.HOME = prevHome;
+    // The persisted file is what spawned CLIs lazy-load; keep this process's
+    // in-memory snapshot empty so it can't leak into unrelated tests.
+    setServerlessCatalogSnapshot(null);
+  }
+}
 
 describe("pi harness integration", () => {
   it("re-on preserves a canonical active model", async () => {
@@ -150,7 +194,7 @@ describe("pi harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-"));
     const settingsDir = path.join(home, ".pi/agent");
     await mkdir(settingsDir, { recursive: true });
-    seedServerlessCatalogCache(home, CACHED_ROUTER_ENTRIES);
+    seedFlatCatalogCache(home, GLM_ALIAS_CATALOG_ROWS);
     const settingsPath = piSettingsPath(home);
     const authPath = piAuthPath(home);
     const modelsPath = piModelsPath(home);
@@ -169,11 +213,11 @@ describe("pi harness integration", () => {
 
     const enabledSettings = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(enabledSettings.defaultProvider, "fireworks");
-    assert.equal(enabledSettings.defaultModel, "accounts/fireworks/routers/kimi-fast-latest");
+    assert.equal(enabledSettings.defaultModel, "auto");
     assert.deepEqual(
       enabledSettings.enabledModels,
-      ["fireworks/accounts/fireworks/routers/*"],
-      "picker scoped to FireConnect routers, hiding Pi built-ins",
+      ["fireworks/accounts/fireworks/routers/*", "fireworks/auto"],
+      "picker scoped to FireConnect routers (plus bare auto), hiding Pi built-ins",
     );
 
     const enabledModels = JSON.parse(await readFile(modelsPath, "utf8"));
@@ -184,7 +228,7 @@ describe("pi harness integration", () => {
     assert.equal(glmFast.contextWindow, 1_048_575);
     assert.equal(glmFast.cost.input, 2.1);
     assert.ok(fireworksModels.every(
-      (model) => model.id.startsWith("accounts/fireworks/"),
+      (model) => model.id.startsWith("accounts/fireworks/") || model.id === "auto",
     ));
     assert.ok(Object.keys(
       enabledModels.providers.fireworks.modelOverrides ?? {},
@@ -206,6 +250,29 @@ describe("pi harness integration", () => {
     assert.equal(restoredModels, originalModels);
   });
 
+  it("explicit router on still scopes the picker at auto (never for Fire Pass)", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-scope-"));
+    await mkdir(path.join(home, ".pi/agent"), { recursive: true });
+    const onResult = await runFireconnect(
+      ["pi", "on", "--api-key", "fw_cataloged_v1_adversarial000000", "--model", "kimi-latest"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(onResult.code, 0, onResult.stderr);
+    const settings = JSON.parse(await readFile(piSettingsPath(home), "utf8"));
+    assert.equal(settings.defaultModel, "accounts/fireworks/routers/kimi-latest");
+    assert.ok(settings.enabledModels.includes("fireworks/auto"));
+
+    const fpHome = await mkdtemp(path.join(os.tmpdir(), "fc-pi-scope-fp-"));
+    await mkdir(path.join(fpHome, ".pi/agent"), { recursive: true });
+    const fpOn = await runFireconnect(
+      ["pi", "on", "--api-key", "fpk_test_firepass_key"],
+      { HOME: fpHome, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(fpOn.code, 0, fpOn.stderr);
+    const fpSettings = JSON.parse(await readFile(piSettingsPath(fpHome), "utf8"));
+    assert.ok(!fpSettings.enabledModels.includes("fireworks/auto"));
+  });
+
   it("writes a literal key into auth.json", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-env-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
@@ -216,7 +283,7 @@ describe("pi harness integration", () => {
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
     );
     assert.equal(onResult.code, 0);
-    assert.match(onResult.stdout, /Pi → Fireworks · kimi-fast-latest/);
+    assert.match(onResult.stdout, /Pi → Fireworks · auto/);
 
     const auth = JSON.parse(await readFile(authPath, "utf8"));
     assert.equal(auth.fireworks.key, "fw_test_key_12345");
@@ -324,7 +391,7 @@ describe("pi harness integration", () => {
   it("off removes models.json when it did not exist before on", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-no-models-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
-    seedServerlessCatalogCache(home, CACHED_ROUTER_ENTRIES);
+    seedFlatCatalogCache(home, GLM_ALIAS_CATALOG_ROWS);
     const settingsPath = piSettingsPath(home);
     const modelsPath = piModelsPath(home);
     await writeFile(settingsPath, `${JSON.stringify({ defaultProvider: "openai" }, null, 2)}\n`);
@@ -473,7 +540,7 @@ describe("pi harness integration", () => {
     // A prior catalog load left glm-latest in the on-disk cache, which is the
     // new source for identifying FireConnect-managed models when state lacks
     // the recorded list.
-    seedServerlessCatalogCache(home, CACHED_ROUTER_ENTRIES);
+    seedFlatCatalogCache(home, GLM_ALIAS_CATALOG_ROWS);
     const settingsPath = piSettingsPath(home);
     const authPath = piAuthPath(home);
     const modelsPath = piModelsPath(home);
@@ -690,6 +757,8 @@ describe("pi harness integration", () => {
   it("on with --model glm-latest gives non-catalog router 1M context in models", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-glm-latest-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
+    // Seed the API alias row so glm-latest resolves to its 1M-context base.
+    seedFlatCatalogCache(home, GLM_ALIAS_CATALOG_ROWS);
     const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
 
     const result = await runFireconnect(["pi", "on", "--model", "glm-latest"], env);

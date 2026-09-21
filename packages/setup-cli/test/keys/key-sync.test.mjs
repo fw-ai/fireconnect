@@ -205,27 +205,28 @@ describe("syncBakedKeysAfterStore", () => {
     });
   });
 
-  it("rebakes legacy websearch MCP Bearer env-ref when the managed server is present", async () => {
+  it("does not refresh the retired websearch MCP", async () => {
     await withTempHome("key-sync-websearch-mcp-", async (home) => {
-      const { WEBSEARCH_MCP_SERVER_NAME, claudeJsonPath, websearchMcpServerEntry } =
-        await import("../../lib/system/websearch-mcp.mjs");
+      const { WEBSEARCH_MCP_SERVER_NAME, WEBSEARCH_MCP_URL, claudeJsonPath } =
+        await import("../../lib/system/websearch-state.mjs");
       await writeJsonFile(claudeJsonPath(home), {
         mcpServers: {
-          [WEBSEARCH_MCP_SERVER_NAME]: websearchMcpServerEntry(),
+          [WEBSEARCH_MCP_SERVER_NAME]: {
+            type: "http",
+            url: WEBSEARCH_MCP_URL,
+            headers: { Authorization: "Bearer ${FIREWORKS_API_KEY}" },
+          },
         },
       });
 
       const notes = await syncBakedKeysAfterStore(home, NEW_KEY);
-      assert.equal(notes.length, 1, notes.join("\n"));
-      assert.match(notes[0], /websearch MCP/);
+      assert.deepEqual(notes, []);
 
       const claudeJson = await readJson(claudeJsonPath(home));
       assert.equal(
         claudeJson.mcpServers[WEBSEARCH_MCP_SERVER_NAME].headers.Authorization,
-        `Bearer ${NEW_KEY}`,
+        "Bearer ${FIREWORKS_API_KEY}",
       );
-
-      assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
     });
   });
 

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { describe, it, beforeEach, afterEach } from "node:test";
-import { itIfNpm } from "../helpers.mjs";
+import { itIfNpm, seedOnCommandCatalog } from "../helpers.mjs";
 
 import {
   cliDependenciesMissingMessage,
@@ -101,6 +101,9 @@ describe("dep-less checkout configure", () => {
 
   itIfNpm("harness on succeeds from a dep-less checkout (auto npm install)", async () => {
     const env = fileBackendEnv(home);
+    // Placeholder keys 404 the mock gateway's catalog endpoint; seed the
+    // empty cache so `on` takes the stale-cache path like other CLI specs.
+    seedOnCommandCatalog(home, ["claude", "on"]);
 
     const res = spawnSync(
       process.execPath,
@@ -152,6 +155,7 @@ describe("dep-less checkout configure", () => {
     );
 
     const env = fileBackendEnv(home);
+    seedOnCommandCatalog(home, ["claude", "on"]);
 
     const res = spawnSync(
       process.execPath,

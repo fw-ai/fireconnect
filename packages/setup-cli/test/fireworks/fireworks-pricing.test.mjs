@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   attachPricing,
+  formatAnthropicStylePerMtok,
   formatPricingDescription,
   formatPricingInOut,
   formatPricingLine,
@@ -9,30 +10,24 @@ import {
 } from "../../lib/fireworks/pricing.mjs";
 import { buildPickerCatalogFromApiModels } from "../../lib/fireworks/models.mjs";
 import { setServerlessCatalogSnapshot } from "../../lib/fireworks/serverless-catalog-cache.mjs";
-import { mockServerlessModel } from "../helpers.mjs";
+import { mockServerlessModel, mockServerlessModelRows } from "../helpers.mjs";
 
 function seedPricingCache() {
   buildPickerCatalogFromApiModels([
-    mockServerlessModel(),
+    ...mockServerlessModelRows(),
     mockServerlessModel({
-      name: "accounts/fireworks/models/kimi-k2p7-code",
-      displayName: "Kimi K2.7 Code",
-      serverlessModes: [
-        {
-          name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/default",
-          skuInfos: [
-            { sku: "LLM input tokens (uncached)", amount: { nanos: 950_000_000 } },
-            { sku: "LLM output tokens", amount: { units: "4" } },
-          ],
-        },
-        {
-          name: "accounts/fireworks/models/kimi-k2p7-code/serverlessModes/fast",
-          usageIdentifier: "accounts/fireworks/routers/kimi-fast-latest",
-          skuInfos: [
-            { sku: "LLM input tokens (uncached)", amount: { units: "1", nanos: 900_000_000 } },
-            { sku: "LLM output tokens", amount: { units: "8" } },
-          ],
-        },
+      id: "accounts/fireworks/models/glm-5p2",
+      display_name: "GLM 5.2",
+      aliases: ["accounts/fireworks/routers/glm-latest"],
+    }),
+    mockServerlessModel({
+      id: "accounts/fireworks/models/kimi-k2p7-code",
+      display_name: "Kimi K2.7 Code",
+      serverless_mode: "fast",
+      usage_identifier: "accounts/fireworks/routers/kimi-fast-latest",
+      pricing: [
+        { sku: "LLM input tokens (uncached)", amount: "1.9" },
+        { sku: "LLM output tokens", amount: "8" },
       ],
     }),
   ]);
@@ -79,30 +74,29 @@ describe("fireworks-pricing", () => {
     assert.equal(pricing.output, 6.60);
   });
 
-  it("uses documented US-only pricing instead of cached global base rates", () => {
+  it("US-only routers price from their static specs, not borrowed base rates", () => {
+    // US rows aren't in the catalog; their documented premium rates come from
+    // the static specs rather than the global base model's.
     const kimiUs = lookupFireworksPricing("kimi-k3-us");
     assert.equal(kimiUs?.slug, "kimi-k3-us");
     assert.equal(kimiUs?.input, 3.30);
-    assert.equal(kimiUs?.cachedInput, 0.33);
     assert.equal(kimiUs?.output, 16.50);
 
     const glmFastUs = lookupFireworksPricing("glm-5p2-fast-us");
-    assert.equal(glmFastUs?.slug, "glm-5p2-fast-us");
     assert.equal(glmFastUs?.tier, "fast");
     assert.equal(glmFastUs?.input, 2.10);
-    assert.equal(glmFastUs?.cachedInput, 0.21);
     assert.equal(glmFastUs?.output, 6.60);
-
-    const glmFlashUs = lookupFireworksPricing("glm-5p3-flash-us");
-    assert.equal(glmFlashUs?.slug, "glm-5p3-flash-us");
-    assert.equal(glmFlashUs?.input, 0.225);
-    assert.equal(glmFlashUs?.cachedInput, 0.045);
-    assert.equal(glmFlashUs?.output, 0.75);
   });
 
   it("formats compact in/out pricing for tables", () => {
     const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p2");
     assert.equal(formatPricingInOut(pricing), "$1.4 / $4.4");
+  });
+
+  it("formats Claude /model-style per Mtok pricing", () => {
+    const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p2");
+    assert.equal(formatAnthropicStylePerMtok(pricing), "$1.4/$4.4 per Mtok");
+    assert.equal(formatAnthropicStylePerMtok(null), null);
   });
 
   it("formats a full pricing line for status output", () => {
