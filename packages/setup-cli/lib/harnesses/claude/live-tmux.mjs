@@ -148,7 +148,7 @@ export function isLiveSessionActive(session, deps = {}) {
   let output;
   try {
     output = execFile("tmux", [
-      "list-panes", "-t", `${session}:0`, "-F", "#{pane_index} #{pane_pid}",
+      "list-panes", "-t", `${session}:`, "-F", "#{pane_at_left} #{pane_pid}",
     ], { encoding: "utf8", env }).trim();
   } catch {
     return true;
@@ -159,14 +159,14 @@ export function isLiveSessionActive(session, deps = {}) {
   const panes = output.split("\n").map((line) => {
     const space = line.indexOf(" ");
     return {
-      index: line.slice(0, space),
+      atLeft: line.slice(0, space),
       pid: line.slice(space + 1).trim(),
     };
   });
   if (panes.length < 2) {
     return false;
   }
-  const left = panes.find((pane) => pane.index === "0");
+  const left = panes.find((pane) => pane.atLeft === "1");
   if (!left?.pid) {
     return false;
   }
@@ -268,7 +268,7 @@ function respawnPane(execFile, env, target, command) {
  *
  * @param {typeof execFileSync} execFile
  * @param {NodeJS.ProcessEnv} env
- * @param {string} target session:window index, e.g. fireconnect-claude-live:0
+ * @param {string} target session with an empty window, e.g. fireconnect-claude-live:
  */
 export function configureLiveTmuxSession(execFile, env, target) {
   const session = target.split(":")[0];
@@ -285,9 +285,9 @@ export function configureLiveTmuxSession(execFile, env, target) {
     ["set-option", "-t", session, "-w", "pane-border-style", `fg=${inactive}`],
     ["set-option", "-t", session, "-w", "mouse", "on"],
     ["set-option", "-t", session, "-w", "focus-events", "on"],
-    ["select-pane", "-t", `${target}.0`, "-T", "Claude Code"],
-    ["select-pane", "-t", `${target}.1`, "-T", "Live cost"],
-    ["select-pane", "-t", `${target}.0`],
+    ["select-pane", "-t", `${target}.{left}`, "-T", "Claude Code"],
+    ["select-pane", "-t", `${target}.{right}`, "-T", "Live cost"],
+    ["select-pane", "-t", `${target}.{left}`],
   ];
   for (const args of opts) {
     execFile("tmux", args, { env });
@@ -404,7 +404,8 @@ export async function runClaudeLiveTmux({
   const snapshot = await snapshotLiveSessionLogs(home);
   await writeFile(snapshotPath, JSON.stringify(snapshot));
 
-  const target = `${CLAUDE_LIVE_TMUX_SESSION}:0`;
+  // Empty window and {left}/{right} panes keep targets independent of base-index and pane-base-index.
+  const target = `${CLAUDE_LIVE_TMUX_SESSION}:`;
   try {
     execFile("tmux", [
       "new-session", "-d", "-s", CLAUDE_LIVE_TMUX_SESSION,
@@ -414,8 +415,8 @@ export async function runClaudeLiveTmux({
     // Resolve claude to the absolute binary the caller's PATH picks, so the
     // login-shell pane doesn't fall back to a stale install (e.g. Homebrew).
     const claudeBin = resolveClaude(env);
-    respawnPane(execFile, env, `${target}.1`, usagePaneCommand(home, snapshotPath, sessionId));
-    respawnPane(execFile, env, `${target}.0`, claudePaneCommand(env, home, { sessionId, resume }, claudeBin));
+    respawnPane(execFile, env, `${target}.{right}`, usagePaneCommand(home, snapshotPath, sessionId));
+    respawnPane(execFile, env, `${target}.{left}`, claudePaneCommand(env, home, { sessionId, resume }, claudeBin));
     configureLiveTmuxSession(execFile, env, target);
   } catch (error) {
     killLiveSession(execFile, env);
