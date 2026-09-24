@@ -103,11 +103,11 @@ describe("runClaudeLiveTmux", () => {
       "creates the session after the countdown");
   });
 
-  // list-panes yields "#{pane_index} #{pane_pid}"; ps yields "pid ppid comm".
+  // list-panes yields "#{pane_at_left} #{pane_pid}"; ps yields "pid ppid comm".
   // The left pane's shell (pid 100) has a claude child (200) when active.
   const activeExec = (cmd, args) => {
     if (cmd === "tmux" && args[0] === "list-panes") {
-      return "0 100\n1 101\n";
+      return "1 100\n0 101\n";
     }
     if (cmd === "ps") {
       return "100 1 bash\n200 100 claude\n101 1 node\n";
@@ -174,7 +174,7 @@ describe("runClaudeLiveTmux", () => {
           return;
         }
         if (cmd === "tmux" && args[0] === "list-panes") {
-          return "0 100\n1 101\n";
+          return "1 100\n0 101\n";
         }
         if (cmd === "ps") {
           // Left pane's shell (100) has no claude/node child — the session is stale.
@@ -293,7 +293,7 @@ describe("live tmux helpers", () => {
     // Left pane shell (100) running claude (200) as a child -> active.
     const active = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         return "100 1 bash\n200 100 claude\n101 1 node\n";
@@ -305,7 +305,7 @@ describe("live tmux helpers", () => {
     // Left pane shell alive but no claude child -> stale.
     const stale = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         return "100 1 bash\n101 1 node\n";
@@ -317,7 +317,7 @@ describe("live tmux helpers", () => {
     // Claude nested a level down (bash -> sh -> node) still counts.
     const nested = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         return "100 1 bash\n200 100 sh\n201 200 node\n101 1 bash\n";
@@ -329,7 +329,7 @@ describe("live tmux helpers", () => {
     // Fewer than two panes -> stale.
     const onePane = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "1 101\n";
+        return "0 101\n";
       }
       throw new Error("unexpected");
     };
@@ -341,7 +341,7 @@ describe("live tmux helpers", () => {
     // must be preserved (fail-safe), not killed as "stale".
     const psThrows = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         throw new Error("ps unavailable");
@@ -430,7 +430,7 @@ describe("live tmux helpers", () => {
     const calls = [];
     configureLiveTmuxSession((cmd, args) => {
       calls.push([cmd, args]);
-    }, {}, "fireconnect-claude-live:0");
+    }, {}, "fireconnect-claude-live:");
     assert.ok(calls.some(([, args]) => args.includes("pane-border-format")));
     assert.ok(calls.some(([, args]) => args.includes("Live cost")));
     assert.ok(calls.some(([, args]) => args.includes("mouse")));
