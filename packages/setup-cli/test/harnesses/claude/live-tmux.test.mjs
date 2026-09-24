@@ -29,6 +29,10 @@ async function tempHome() {
   return home;
 }
 
+// Tests run from a developer's tmux too, so the dedicated-session tests pin TMUX unset.
+const outsideTmuxEnv = { ...process.env };
+delete outsideTmuxEnv.TMUX;
+
 function mockStdout() {
   const chunks = [];
   return {
@@ -50,6 +54,7 @@ describe("runClaudeLiveTmux", () => {
     const stdout = mockStdout();
 
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home,
       stdout,
       spawn: () => ({ status: 0, encoding: "utf8" }),
@@ -80,6 +85,7 @@ describe("runClaudeLiveTmux", () => {
     let attached = false;
 
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home,
       stdout,
       sleep: async (ms) => { sleeps.push(ms); },
@@ -103,11 +109,11 @@ describe("runClaudeLiveTmux", () => {
       "creates the session after the countdown");
   });
 
-  // list-panes yields "#{pane_index} #{pane_pid}"; ps yields "pid ppid comm".
+  // list-panes yields "#{pane_at_left} #{pane_pid}"; ps yields "pid ppid comm".
   // The left pane's shell (pid 100) has a claude child (200) when active.
   const activeExec = (cmd, args) => {
     if (cmd === "tmux" && args[0] === "list-panes") {
-      return "0 100\n1 101\n";
+      return "1 100\n0 101\n";
     }
     if (cmd === "ps") {
       return "100 1 bash\n200 100 claude\n101 1 node\n";
@@ -120,6 +126,7 @@ describe("runClaudeLiveTmux", () => {
     stdout.isTTY = true;
     let attached = false;
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home: "/tmp/home",
       stdout,
       spawn: () => ({ status: 0, encoding: "utf8" }),
@@ -141,6 +148,7 @@ describe("runClaudeLiveTmux", () => {
     const stdout = mockStdout();
     let attached = false;
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home: "/tmp/home",
       stdout,
       spawn: () => ({ status: 0, encoding: "utf8" }),
@@ -165,6 +173,7 @@ describe("runClaudeLiveTmux", () => {
     const stdout = mockStdout();
 
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home,
       stdout,
       spawn: () => ({ status: 0, encoding: "utf8" }),
@@ -174,7 +183,7 @@ describe("runClaudeLiveTmux", () => {
           return;
         }
         if (cmd === "tmux" && args[0] === "list-panes") {
-          return "0 100\n1 101\n";
+          return "1 100\n0 101\n";
         }
         if (cmd === "ps") {
           // Left pane's shell (100) has no claude/node child — the session is stale.
@@ -195,6 +204,7 @@ describe("runClaudeLiveTmux", () => {
     const uuid = "abc12345-1234-1234-1234-123456789012";
 
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home,
       session: "abc123",
       stdout,
@@ -221,10 +231,72 @@ describe("runClaudeLiveTmux", () => {
       "right pane locks onto the requested session");
   });
 
+  it("opens a window in the caller's tmux session instead of switching sessions", async () => {
+    const home = await tempHome();
+    const calls = [];
+    const stdout = mockStdout();
+    stdout.isTTY = true;
+    let entered = false;
+
+    await runClaudeLiveTmux({
+      home,
+      env: { ...outsideTmuxEnv, TMUX: "/tmp/tmux-501/default,1,0" },
+      stdout,
+      sleep: async () => {},
+      enterSession: () => { entered = true; },
+      spawn: () => ({ status: 0, encoding: "utf8" }),
+      execFile: (cmd, args) => {
+        calls.push([cmd, args]);
+        if (cmd === "tmux" && args[0] === "new-window") {
+          return "@7\n";
+        }
+      },
+    });
+
+    const tmux = calls.filter(([cmd]) => cmd === "tmux").map(([, args]) => args);
+    assert.equal(entered, false, "the caller's client stays on its session");
+    for (const verb of ["has-session", "new-session", "switch-client", "attach", "kill-session"]) {
+      assert.ok(!tmux.some((args) => args[0] === verb), `no ${verb}`);
+    }
+    assert.ok(tmux.some((args) => args[0] === "split-window" && args.includes("@7")));
+    assert.ok(tmux.some((args) => args[0] === "respawn-pane" && args.includes("@7.{left}")
+      && args.some((part) => String(part).includes("tmux kill-window -t @7"))), "exiting claude closes only its window");
+    assert.ok(tmux.some((args) => args[0] === "respawn-pane" && args.includes("@7.{right}")
+      && args.some((part) => String(part).includes(`FC_LIVE_WINDOW=${shellQuote("@7")}`))), "q in the meter closes only its window");
+    assert.ok(!tmux.some((args) => args.includes("mouse") || args.includes("focus-events")),
+      "leaves the caller's session and server options alone");
+  });
+
+  it("closes only its own window when setup fails inside tmux", async () => {
+    const home = await tempHome();
+    const calls = [];
+    await assert.rejects(
+      () => runClaudeLiveTmux({
+        home,
+        env: { ...outsideTmuxEnv, TMUX: "/tmp/tmux-501/default,1,0" },
+        stdout: mockStdout(),
+        spawn: () => ({ status: 0, encoding: "utf8" }),
+        execFile: (cmd, args) => {
+          calls.push([cmd, args]);
+          if (cmd === "tmux" && args[0] === "new-window") {
+            return "@7\n";
+          }
+          if (cmd === "tmux" && args[0] === "split-window") {
+            throw new Error("split failed");
+          }
+        },
+      }),
+      /split failed/,
+    );
+    const kills = calls.filter(([cmd, args]) => cmd === "tmux" && args[0].startsWith("kill-"));
+    assert.deepEqual(kills.map(([, args]) => args), [["kill-window", "-t", "@7"]]);
+  });
+
   it("fails fast when --session matches no session log", async () => {
     const home = await tempHome();
     await assert.rejects(
       () => runClaudeLiveTmux({
+        env: outsideTmuxEnv,
         home,
         session: "does-not-exist",
         stdout: mockStdout(),
@@ -243,6 +315,7 @@ describe("runClaudeLiveTmux", () => {
     const uuid = "generated-uuid-1234";
 
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home,
       stdout,
       newSessionId: () => uuid,
@@ -269,6 +342,7 @@ describe("runClaudeLiveTmux", () => {
     const calls = [];
 
     await runClaudeLiveTmux({
+      env: outsideTmuxEnv,
       home,
       stdout: mockStdout(),
       newSessionId: () => "uuid-1",
@@ -293,7 +367,7 @@ describe("live tmux helpers", () => {
     // Left pane shell (100) running claude (200) as a child -> active.
     const active = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         return "100 1 bash\n200 100 claude\n101 1 node\n";
@@ -305,7 +379,7 @@ describe("live tmux helpers", () => {
     // Left pane shell alive but no claude child -> stale.
     const stale = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         return "100 1 bash\n101 1 node\n";
@@ -317,7 +391,7 @@ describe("live tmux helpers", () => {
     // Claude nested a level down (bash -> sh -> node) still counts.
     const nested = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         return "100 1 bash\n200 100 sh\n201 200 node\n101 1 bash\n";
@@ -329,7 +403,7 @@ describe("live tmux helpers", () => {
     // Fewer than two panes -> stale.
     const onePane = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "1 101\n";
+        return "0 101\n";
       }
       throw new Error("unexpected");
     };
@@ -341,7 +415,7 @@ describe("live tmux helpers", () => {
     // must be preserved (fail-safe), not killed as "stale".
     const psThrows = (cmd, args) => {
       if (args[0] === "list-panes") {
-        return "0 100\n1 101\n";
+        return "1 100\n0 101\n";
       }
       if (cmd === "ps") {
         throw new Error("ps unavailable");
@@ -430,7 +504,7 @@ describe("live tmux helpers", () => {
     const calls = [];
     configureLiveTmuxSession((cmd, args) => {
       calls.push([cmd, args]);
-    }, {}, "fireconnect-claude-live:0");
+    }, {}, "fireconnect-claude-live:");
     assert.ok(calls.some(([, args]) => args.includes("pane-border-format")));
     assert.ok(calls.some(([, args]) => args.includes("Live cost")));
     assert.ok(calls.some(([, args]) => args.includes("mouse")));
