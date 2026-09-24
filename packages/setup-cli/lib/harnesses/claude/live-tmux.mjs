@@ -24,10 +24,15 @@ export function liveSnapshotPath() {
   return path.join(os.tmpdir(), `fc-claude-live-${process.pid}.json`);
 }
 
-/** Tear down the live split tmux session. */
+/** @param {string} [window] tmux window id when the layout lives in the caller's session */
+function killLayoutArgs(window = "") {
+  return window ? ["kill-window", "-t", window] : ["kill-session", "-t", CLAUDE_LIVE_TMUX_SESSION];
+}
+
+/** Tear down the live split: its window inside the caller's tmux, else the dedicated session. */
 export function killLiveLayout(env = process.env) {
   try {
-    execFileSync("tmux", ["kill-session", "-t", CLAUDE_LIVE_TMUX_SESSION], { stdio: "ignore", env });
+    execFileSync("tmux", killLayoutArgs(env.FC_LIVE_WINDOW), { stdio: "ignore", env });
   } catch {
     /* session may already be gone */
   }
@@ -174,9 +179,9 @@ export function isLiveSessionActive(session, deps = {}) {
   return active === null ? true : active;
 }
 
-function killLiveSession(execFile, env) {
+function killLiveSession(execFile, env, window = "") {
   try {
-    execFile("tmux", ["kill-session", "-t", CLAUDE_LIVE_TMUX_SESSION], { stdio: "ignore", env });
+    execFile("tmux", killLayoutArgs(window), { stdio: "ignore", env });
   } catch {
     /* session may already be gone */
   }
@@ -219,10 +224,10 @@ export function resolveClaudeBin(env = process.env) {
  *
  * @param {NodeJS.ProcessEnv} env
  * @param {string} [home]
- * @param {{ sessionId?: string, resume?: boolean }} [session]
+ * @param {{ sessionId?: string, resume?: boolean, window?: string }} [session]
  * @param {string} [claudeBin] absolute claude path (bare "claude" to resolve via PATH)
  */
-export function claudePaneCommand(env, home, { sessionId = "", resume = false } = {}, claudeBin = "claude") {
+export function claudePaneCommand(env, home, { sessionId = "", resume = false, window = "" } = {}, claudeBin = "claude") {
   const quotedBin = shellQuote(claudeBin);
   const claude = env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_API_KEY
     ? `env -u ANTHROPIC_AUTH_TOKEN ${quotedBin}`
@@ -233,7 +238,7 @@ export function claudePaneCommand(env, home, { sessionId = "", resume = false } 
       ? ` --resume ${shellQuote(sessionId)}`
       : ` --session-id ${shellQuote(sessionId)}`;
   }
-  const kill = `tmux kill-session -t ${CLAUDE_LIVE_TMUX_SESSION} 2>/dev/null`;
+  const kill = `tmux ${killLayoutArgs(window).join(" ")} 2>/dev/null`;
   const homeExport = home ? `export HOME=${shellQuote(home)}; ` : "";
   // Run claude as a CHILD, not via exec: `exec` would replace the shell, wiping
   // the EXIT trap and skipping the trailing kill — so exiting Claude left the
@@ -242,7 +247,7 @@ export function claudePaneCommand(env, home, { sessionId = "", resume = false } 
   return `${homeExport}trap '${kill}' EXIT INT TERM; ${claude}${sessionArg}; ${kill}`;
 }
 
-function usagePaneCommand(home, snapshotPath, sessionId = "") {
+function usagePaneCommand(home, snapshotPath, sessionId = "", window = "") {
   const lines = [
     `export HOME=${shellQuote(home)}`,
     `export FC_LIVE_SNAPSHOT=${shellQuote(snapshotPath)}`,
@@ -251,6 +256,9 @@ function usagePaneCommand(home, snapshotPath, sessionId = "") {
   ];
   if (sessionId) {
     lines.push(`export FC_LIVE_SESSION=${shellQuote(sessionId)}`);
+  }
+  if (window) {
+    lines.push(`export FC_LIVE_WINDOW=${shellQuote(window)}`);
   }
   lines.push(`exec ${shellQuote(process.execPath)} ${shellQuote(USAGE_HELPER)} ${shellQuote(FIRECONNECT_BIN)}`);
   return lines.join("; ");
@@ -268,10 +276,10 @@ function respawnPane(execFile, env, target, command) {
  *
  * @param {typeof execFileSync} execFile
  * @param {NodeJS.ProcessEnv} env
- * @param {string} target session with an empty window, e.g. fireconnect-claude-live:
+ * @param {string} target session with an empty window (fireconnect-claude-live:) or a window id (@3)
+ * @param {boolean} [ownSession] false when the layout is a window in the caller's session
  */
-export function configureLiveTmuxSession(execFile, env, target) {
-  const session = target.split(":")[0];
+export function configureLiveTmuxSession(execFile, env, target, ownSession = true) {
   // Brand purple (matches the meter accent) for the active pane chrome; a
   // visible muted gray for inactive panes so the divider shows up full instead
   // of the near-invisible colour238.
@@ -279,12 +287,17 @@ export function configureLiveTmuxSession(execFile, env, target) {
   const inactive = "colour240";
   const borderFormat = `#{?pane_active,#[fg=${active},bold],#[fg=colour245]} #{pane_title}`;
   const opts = [
-    ["set-option", "-t", session, "-w", "pane-border-status", "top"],
-    ["set-option", "-t", session, "-w", "pane-border-format", borderFormat],
-    ["set-option", "-t", session, "-w", "pane-active-border-style", `fg=${active}`],
-    ["set-option", "-t", session, "-w", "pane-border-style", `fg=${inactive}`],
-    ["set-option", "-t", session, "-w", "mouse", "on"],
-    ["set-option", "-t", session, "-w", "focus-events", "on"],
+    ["set-option", "-t", target, "-w", "pane-border-status", "top"],
+    ["set-option", "-t", target, "-w", "pane-border-format", borderFormat],
+    ["set-option", "-t", target, "-w", "pane-active-border-style", `fg=${active}`],
+    ["set-option", "-t", target, "-w", "pane-border-style", `fg=${inactive}`],
+    // mouse is a session option and focus-events a server option, so skip them in the caller's session.
+    ...(ownSession
+      ? [
+        ["set-option", "-t", target, "-w", "mouse", "on"],
+        ["set-option", "-t", target, "-w", "focus-events", "on"],
+      ]
+      : []),
     ["select-pane", "-t", `${target}.{left}`, "-T", "Claude Code"],
     ["select-pane", "-t", `${target}.{right}`, "-T", "Live cost"],
     ["select-pane", "-t", `${target}.{left}`],
@@ -378,7 +391,9 @@ export async function runClaudeLiveTmux({
     sessionId = newSessionId();
   }
 
-  if (tmuxHasSession(CLAUDE_LIVE_TMUX_SESSION, { env, execFile })) {
+  // Inside tmux the layout opens as a window in the caller's session, so their client never leaves it.
+  const inTmux = Boolean(env.TMUX);
+  if (!inTmux && tmuxHasSession(CLAUDE_LIVE_TMUX_SESSION, { env, execFile })) {
     if (isLiveSessionActive(CLAUDE_LIVE_TMUX_SESSION, { env, execFile })) {
       if (!stdout.isTTY) {
         stdout.write(`'${CLAUDE_LIVE_TMUX_SESSION}' already running (detached)\n`);
@@ -404,23 +419,37 @@ export async function runClaudeLiveTmux({
   const snapshot = await snapshotLiveSessionLogs(home);
   await writeFile(snapshotPath, JSON.stringify(snapshot));
 
-  // Empty window and {left}/{right} panes keep targets independent of base-index and pane-base-index.
-  const target = `${CLAUDE_LIVE_TMUX_SESSION}:`;
+  // Window ids, an empty window, and {left}/{right} panes keep targets independent of base-index and pane-base-index.
+  let target = `${CLAUDE_LIVE_TMUX_SESSION}:`;
+  let window = "";
   try {
-    execFile("tmux", [
-      "new-session", "-d", "-s", CLAUDE_LIVE_TMUX_SESSION,
-      "-x", String(LIVE_SESSION_COLS), "-y", String(LIVE_SESSION_ROWS),
-    ], { env });
+    if (inTmux) {
+      window = String(execFile("tmux", [
+        "new-window", "-P", "-F", "#{window_id}", "-n", "claude live",
+      ], { encoding: "utf8", env })).trim();
+      target = window;
+    } else {
+      execFile("tmux", [
+        "new-session", "-d", "-s", CLAUDE_LIVE_TMUX_SESSION,
+        "-x", String(LIVE_SESSION_COLS), "-y", String(LIVE_SESSION_ROWS),
+      ], { env });
+    }
     execFile("tmux", ["split-window", "-h", "-t", target, "-p", String(METER_WIDTH_PERCENT)], { env });
     // Resolve claude to the absolute binary the caller's PATH picks, so the
     // login-shell pane doesn't fall back to a stale install (e.g. Homebrew).
     const claudeBin = resolveClaude(env);
-    respawnPane(execFile, env, `${target}.{right}`, usagePaneCommand(home, snapshotPath, sessionId));
-    respawnPane(execFile, env, `${target}.{left}`, claudePaneCommand(env, home, { sessionId, resume }, claudeBin));
-    configureLiveTmuxSession(execFile, env, target);
+    respawnPane(execFile, env, `${target}.{right}`, usagePaneCommand(home, snapshotPath, sessionId, window));
+    respawnPane(execFile, env, `${target}.{left}`, claudePaneCommand(env, home, { sessionId, resume, window }, claudeBin));
+    configureLiveTmuxSession(execFile, env, target, !inTmux);
   } catch (error) {
-    killLiveSession(execFile, env);
+    if (!inTmux || window) {
+      killLiveSession(execFile, env, window);
+    }
     throw error;
+  }
+
+  if (inTmux) {
+    return;
   }
 
   if (!stdout.isTTY) {
@@ -441,9 +470,5 @@ export async function runClaudeLiveTmux({
  * }} opts
  */
 function defaultEnterSession({ env, execFile }) {
-  if (env.TMUX) {
-    execFile("tmux", ["switch-client", "-t", CLAUDE_LIVE_TMUX_SESSION], { stdio: "inherit", env });
-    return;
-  }
   execFile("tmux", ["attach", "-t", CLAUDE_LIVE_TMUX_SESSION], { stdio: "inherit", env });
 }
