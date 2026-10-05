@@ -137,10 +137,10 @@ describe("Claude model profiles", () => {
     assert.deepEqual(plan.mapping, firepass);
   });
 
-  it("leaves fireworks tier slots native regardless of saved live mapping", () => {
+  it("preserves saved fireworks slot pins across a plain re-on", () => {
     const persisted = {
       ...defaultClaudeModelMapping("fireworks"),
-      opus: "firerouter",
+      opus: "glm-latest",
       sonnet: "deepseek-pro-latest",
     };
     const profiles = withSavedClaudeModelMapping({}, "fireworks", persisted);
@@ -150,7 +150,28 @@ describe("Claude model profiles", () => {
       activeKeyType: "fireworks",
       snapshot: { profiles, intent: { mapping: persisted } },
     });
-    assert.deepEqual(plan.mapping, defaultClaudeModelMapping("fireworks"));
+    assert.equal(plan.mapping.opus, "glm-latest");
+    assert.equal(plan.mapping.sonnet, "deepseek-pro-latest");
+    assert.equal(plan.mapping.haiku, CLAUDE_NATIVE_MODEL_ID);
+    assert.equal(plan.mapping.main, CLAUDE_NATIVE_MODEL_ID);
+  });
+
+  it("lets explicit slot flags win over saved pins and `native` unpin", () => {
+    const persisted = {
+      ...defaultClaudeModelMapping("fireworks"),
+      opus: "glm-latest",
+      sonnet: "deepseek-pro-latest",
+    };
+    const profiles = withSavedClaudeModelMapping({}, "fireworks", persisted);
+    const plan = resolveClaudeActivationPlan({
+      ctx: { ...EMPTY_OVERRIDES, sonnet: "kimi-fast-latest", opus: "native" },
+      keyType: "fireworks",
+      activeKeyType: "fireworks",
+      snapshot: { profiles, intent: { mapping: persisted } },
+    });
+    assert.equal(plan.mapping.sonnet, "kimi-fast-latest");
+    assert.equal(plan.mapping.opus, CLAUDE_NATIVE_MODEL_ID);
+    assert.equal(plan.mapping.haiku, CLAUDE_NATIVE_MODEL_ID);
   });
 
   it("tracks --model as a picker addition without pinning tier slots", () => {

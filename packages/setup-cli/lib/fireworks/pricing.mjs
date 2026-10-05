@@ -49,7 +49,12 @@ export function lookupFireworksPricing(modelRef) {
   };
 }
 
-function formatUsd(value) {
+/** Minimal USD format for catalog rates: "$1.4", "$2", "$0.044".
+Unknown/non-finite renders "—" (mirrors the catalog table + demo guards). */
+export function formatUsd(value) {
+  if (!Number.isFinite(value)) {
+    return "—";
+  }
   const text = value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
   return `$${text}`;
 }

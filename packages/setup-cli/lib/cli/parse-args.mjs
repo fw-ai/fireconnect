@@ -6,13 +6,11 @@ import { parseDemoArgs, findDemoInvocation } from "../demo/parse-demo-args.mjs";
 import { withSuggestion } from "../ui.mjs";
 
 const GLOBAL_COMMANDS = new Set([
-  "login", "logout", "status", "model", "configure", "uninstall", "upgrade",
+  "login", "logout", "status", "model", "models", "configure", "uninstall", "upgrade",
   "help", "key", "banner", "finalize-install",
 ]);
-// `key export` is internal plumbing (apiKeyHelper + shell hooks), not a
-// user-facing command; the `key` namespace is intentionally undocumented.
 const KEY_SUBCOMMANDS = new Set(["export"]);
-const HARNESS_VERBS = new Set(["on", "off", "status", "usage", "live"]);
+const HARNESS_VERBS = new Set(["on", "off", "status", "usage", "live", "mcp"]);
 
 /**
  * Flags that were renamed/retired, mapped to their current spelling. Typing an
@@ -26,21 +24,18 @@ const RENAMED_FLAGS = {
   "--last_n": "--last-n",
 };
 
-const RETIRED_FLAG_MESSAGES = {
-  "--openai-api-key":
-    "--openai-api-key is no longer supported: FireRouter supports Anthropic BYOK only. Use --anthropic-api-key.",
-};
+const RETIRED_FLAG_MESSAGES = {};
 
 /** Every flag the parser understands — used only for typo suggestions. */
 const KNOWN_FLAGS = [
   "--help", "--version", "--json", "--home", "--settings-path", "--config-path",
   "--data-dir", "--api-key", "--base-url", "--azure", "--provider",
-  "--anthropic-api-key", "--model", "--opus",
+  "--anthropic-api-key", "--openai-api-key", "--model", "--opus",
   "--sonnet", "--haiku", "--fable", "--subagent", "--search", "--refresh",
   "--db-path", "--vscode-path", "--providers-path", "--force", "--stored-only",
   "--last-n", "--plain", "--verbose", "--routing-preference", "--session", "--days",
-  "--account", "--anthropic", "--paste", "--revoke", "--with-token",
-  "--interactive", "--non-interactive",
+  "--account", "--anthropic", "--openai", "--paste", "--revoke", "--with-token",
+  "--interactive", "--non-interactive", "--client-id", "--client-secret",
 ];
 
 function helpHint(harnessId = "") {
@@ -82,7 +77,10 @@ export function createBaseContext() {
     provider: "",
     anthropicKey: "",
     anthropicKeyFromFlag: false,
+    openaiKey: "",
+    openaiKeyFromFlag: false,
     anthropic: false,
+    openai: false,
     main: "",
     opus: "",
     sonnet: "",
@@ -162,6 +160,8 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--routing-preference": ctx.routingPreference = requireRoutingPreference(arg, next); return true;
     case "--azure": ctx.azure = true; ctx.provider = "azure"; return false;
     case "--force": ctx.force = true; return false;
+    case "--client-id": ctx.clientId = requireValue(arg, next); return true;
+    case "--client-secret": ctx.clientSecret = requireValue(arg, next); return true;
     case "--stored-only": ctx.storedOnly = true; return false;
     case "--with-token": ctx.withToken = true; return false;
     case "--paste": ctx.paste = true; return false;
@@ -170,6 +170,7 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--account": ctx.account = requireValue(arg, next); return true;
     case "--revoke": ctx.revoke = true; return false;
     case "--anthropic": ctx.anthropic = true; return false;
+    case "--openai": ctx.openai = true; return false;
     case "--interactive":
       if (ctx.onboardingMode === "skip") {
         throw new Error("--interactive and --non-interactive cannot be used together");
@@ -190,6 +191,7 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--base-url": ctx.baseUrl = requireValue(arg, next); ctx.baseUrlFromFlag = true; return true;
     case "--provider": ctx.provider = requireValue(arg, next); return true;
     case "--anthropic-api-key": ctx.anthropicKey = requireValue(arg, next); ctx.anthropicKeyFromFlag = true; return true;
+    case "--openai-api-key": ctx.openaiKey = requireValue(arg, next); ctx.openaiKeyFromFlag = true; return true;
     case "--model": ctx.main = requireValue(arg, next); return true;
     case "--opus": ctx.opus = requireValue(arg, next); return true;
     case "--sonnet": ctx.sonnet = requireValue(arg, next); return true;
@@ -287,14 +289,14 @@ function parseHarnessRoute(harnessId, tokens) {
       HARNESS_VERBS,
     )} ${helpHint(harnessId)}`);
   }
-  if (tokens.length > 1) {
+  if (tokens.length > 1 && verb !== "mcp") {
     throw new Error(
       `fireconnect ${harnessId} ${verb} does not accept positional arguments. `
         + helpHint(harnessId),
     );
   }
 
-  return { harnessId, verb, noun: "" };
+  return { harnessId, verb, noun: "", args: verb === "mcp" ? tokens.slice(1) : [] };
 }
 
 /**
@@ -344,6 +346,17 @@ export function parseCli(argv) {
     if (rest[0] !== "list" || rest.length !== 1) {
       throw new Error(
         `Unexpected model subcommand: ${rest[0] || "(missing)"}. `
+          + "Run: fireconnect help",
+      );
+    }
+    return { kind: "global", command: "model", modelSubcommand: "list", ctx };
+  }
+
+  // `models` is a bare alias for `model list`.
+  if (first === "models") {
+    if (rest.length !== 0) {
+      throw new Error(
+        `fireconnect models does not accept positional arguments. `
           + "Run: fireconnect help",
       );
     }

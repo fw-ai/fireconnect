@@ -6,7 +6,11 @@ import {
   printHarnessOnFootnotes,
   printHarnessOnSuccess,
 } from "../cli/messages.mjs";
-import { isFirerouterModel, isFirerouterModelPattern } from "../fireworks/model-id.mjs";
+import {
+  canonicalRequestedModelId,
+  isFirerouterModel,
+  isFirerouterModelPattern,
+} from "../fireworks/model-id.mjs";
 import { assertRequestedModelServable } from "../fireworks/model-servability.mjs";
 import { detectApiKeyType } from "../keys/key-type.mjs";
 import { resolveAzureBaseUrl, resolveAzureOnApiKey } from "../fireworks/azure-core.mjs";
@@ -20,6 +24,7 @@ import {
   resolveFirerouterByokHeaders,
   resolveFirerouterPlan,
 } from "../firerouter/flag.mjs";
+import { resolveOpenaiKey } from "../firerouter/core.mjs";
 import {
   isHarnessEnabled,
   readProviderSettings,
@@ -104,18 +109,25 @@ export async function engineOn(profile, ctx) {
     profile.precheck({ ctx, keyType });
   }
 
-  let modelId = ctx.main;
+  // Admit the id before FireRouter credential setup, so a junk path cannot
+  // collapse to `firerouter` or prompt for an Anthropic key.
+  let modelId = canonicalRequestedModelId(ctx.main);
   let byokHeaders = {};
   let isFirerouterRequested = false;
   let preResolvedAnthropicKey;
   if (profile.firerouter) {
-    const plan = resolveFirerouterPlan(ctx, { keyType });
+    const plan = resolveFirerouterPlan({ ...ctx, main: modelId }, { keyType });
     modelId = plan.mainModel;
     isFirerouterRequested = plan.isFirerouter;
     const settingsEnv = profile.readByokEnv ? await profile.readByokEnv(ctx, paths) : {};
     // Direct Fireworks gateway `on` only (Azure returns above). Fire Pass cannot
     // use FireRouter; assertFirerouterKeyType throws on explicit firerouter + fpk_.
-    if (plan.requiresAnthropicKey && firerouterCredentialsApplyOnGateway(keyType)) {
+    // Harnesses that cannot forward a key (`byok: "none"`) skip credential
+    // resolution entirely: they connect without BYOK headers and FireRouter
+    // routes the Fireworks mix.
+    const needsCredential = profile.firerouter.byok !== "none"
+      && plan.requiresAnthropicKey;
+    if (needsCredential && firerouterCredentialsApplyOnGateway(keyType)) {
       ({ anthropicKey: preResolvedAnthropicKey } = await resolveExplicitFirerouterCredential({
         firerouter: profile.firerouter,
         ctx,
@@ -137,7 +149,19 @@ export async function engineOn(profile, ctx) {
         preResolvedAnthropicKey,
       });
     } else if (profile.firerouter.byok === "envref") {
-      byokHeaders = firerouterByokEnvRefHeaders(plan, { catalogFirerouter });
+      // Codex forwards by env-var name. Both keys are resolved first so each
+      // env ref is only attached when a key is actually behind it; a dangling
+      // ref would send an empty header upstream.
+      const openaiKey = await resolveOpenaiKey({
+        apiKey: ctx.openaiKeyFromFlag ? ctx.openaiKey : "",
+        settingsEnv,
+        home: ctx.home,
+      });
+      byokHeaders = firerouterByokEnvRefHeaders(plan, {
+        catalogFirerouter,
+        anthropicKey: preResolvedAnthropicKey ?? "",
+        openaiKey,
+      });
     }
   }
 

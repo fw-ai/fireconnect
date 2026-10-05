@@ -6,6 +6,7 @@ import {
   formatPricingDescription,
   formatPricingInOut,
   formatPricingLine,
+  formatUsd,
   lookupFireworksPricing,
 } from "../../lib/fireworks/pricing.mjs";
 import { buildPickerCatalogFromApiModels } from "../../lib/fireworks/models.mjs";
@@ -82,15 +83,24 @@ describe("fireworks-pricing", () => {
     assert.equal(kimiUs?.input, 3.30);
     assert.equal(kimiUs?.output, 16.50);
 
-    const glmFastUs = lookupFireworksPricing("glm-5p2-fast-us");
-    assert.equal(glmFastUs?.tier, "fast");
-    assert.equal(glmFastUs?.input, 2.10);
-    assert.equal(glmFastUs?.output, 6.60);
+    const glmFlashUs = lookupFireworksPricing("glm-5p3-flash-us");
+    assert.equal(glmFlashUs?.slug, "glm-5p3-flash-us");
+    assert.equal(glmFlashUs?.input, 0.225);
+    assert.equal(glmFlashUs?.output, 0.75);
   });
 
   it("formats compact in/out pricing for tables", () => {
     const pricing = lookupFireworksPricing("accounts/fireworks/models/glm-5p2");
     assert.equal(formatPricingInOut(pricing), "$1.4 / $4.4");
+  });
+
+  it("shares one minimal USD format with model list", () => {
+    assert.equal(formatUsd(1.4), "$1.4");
+    assert.equal(formatUsd(2), "$2");
+    assert.equal(formatUsd(0.044), "$0.044");
+    assert.equal(formatUsd(0), "$0");
+    assert.equal(formatUsd(undefined), "—");
+    assert.equal(formatUsd(Number.NaN), "—");
   });
 
   it("formats Claude /model-style per Mtok pricing", () => {

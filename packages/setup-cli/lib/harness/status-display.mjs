@@ -1,5 +1,6 @@
 import { bold, dim, cyan, muted, yesNo } from "../ui.mjs";
 import { AZURE_PROVIDER_LABEL } from "../fireworks/azure-core.mjs";
+import { isFirerouterModel, isFirerouterModelPattern } from "../fireworks/model-id.mjs";
 
 const HARNESS_LABELS = {
   claude: "Claude Code",
@@ -46,7 +47,13 @@ export function shortModelId(model) {
   if (!model || typeof model !== "string") {
     return "(unset)";
   }
-  return model.replace(/\[1m\]$/, "").split("/").at(-1) || model;
+  const stripped = model.replace(/\[1m\]$/i, "");
+  // Keep the firerouter/... routing prefix for compound slugs; collapsing to
+  // the last segment would report an id the gateway doesn't serve.
+  if (isFirerouterModelPattern(stripped) && !isFirerouterModel(stripped)) {
+    return stripped.replace(/^accounts\/fireworks\/(?:models|routers)\//i, "");
+  }
+  return stripped.split("/").at(-1) || model;
 }
 
 function formatAuthDetail(authMode) {

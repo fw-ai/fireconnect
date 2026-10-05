@@ -11,6 +11,7 @@ import {
   isCachedServerlessModelRef,
   isCatalogCacheFresh,
   readCatalogCache,
+  reloadServerlessCatalogSnapshot,
   setServerlessCatalogSnapshot,
 } from "../../lib/fireworks/serverless-catalog-cache.mjs";
 
@@ -180,6 +181,25 @@ describe("serverless-catalog-cache disk persistence", () => {
       writeFileSync(file, JSON.stringify(raw));
       assert.equal(isCatalogCacheFresh(), false);
       assert.ok(readCatalogCache()?.snapshot, "stale snapshot is still recoverable");
+    });
+  });
+
+  it("reload picks up rows another process wrote without losing memory on a missing file", () => {
+    withTempHome((home) => {
+      cacheServerlessCatalogSnapshot(sampleSnapshot());
+      assert.equal(getServerlessCatalogSnapshot().entries.length, 2);
+      // Another process (e.g. the detached price refresher) adds a row.
+      const file = path.join(home, ".fireconnect", "catalog-cache.json");
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      raw.snapshot.entries.push({ id: "accounts/fireworks/models/new-row", shortId: "new-row", displayName: "New", kind: "serverless" });
+      writeFileSync(file, JSON.stringify(raw));
+      assert.equal(getServerlessCatalogSnapshot().entries.length, 2, "memory is stale until reloaded");
+      assert.equal(reloadServerlessCatalogSnapshot().entries.length, 3);
+      assert.equal(getServerlessCatalogSnapshot().entries.length, 3);
+      // A vanished file keeps memory instead of nulling it.
+      rmSync(file, { force: true });
+      assert.equal(reloadServerlessCatalogSnapshot().entries.length, 3);
+      setServerlessCatalogSnapshot(null);
     });
   });
 

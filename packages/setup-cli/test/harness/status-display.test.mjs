@@ -29,6 +29,12 @@ describe("structured harness status output", () => {
     assert.equal(shortModelId("FW-GLM-5.2"), "FW-GLM-5.2");
   });
 
+  it("keeps the firerouter prefix on compound routes", () => {
+    assert.equal(shortModelId("firerouter/astra[1m]"), "firerouter/astra");
+    assert.equal(shortModelId("firerouter/astra"), "firerouter/astra");
+    assert.equal(shortModelId("firerouter"), "firerouter");
+  });
+
   it("prints connection, provider, auth, model, and key source sections", () => {
     const lines = [];
     const original = console.log;

@@ -7,13 +7,13 @@ import {
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
 import { readGlobalConfig, writeGlobalConfig } from "../../config/global-config.mjs";
-import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
+import { isAnthropicShapedKey, isOpenAIShapedKey } from "../../firerouter/core.mjs";
 import { accent } from "../../ui.mjs";
 import { printNote, printSuccess } from "../messages.mjs";
 /**
  * `fireconnect configure` sets the non-Fireworks-key globals: the provider
- * (Fireworks vs a Microsoft Azure AI Foundry endpoint) and the Anthropic key
- * for FireRouter mode.
+ * (Fireworks vs a Microsoft Azure AI Foundry endpoint) and the provider BYOK
+ * keys for FireRouter mode (Anthropic, OpenAI).
  *
  * It does NOT set the Fireworks API key (use `fireconnect login`) and does NOT
  * register harnesses (enable one with `fireconnect <harness>`). In this
@@ -43,12 +43,14 @@ export async function runConfigureCommand(ctx) {
   }
 
   const anthropicKeyProvided = ctx.anthropicKeyFromFlag && Boolean(ctx.anthropicKey?.trim());
+  const openaiKeyProvided = ctx.openaiKeyFromFlag && Boolean(ctx.openaiKey?.trim());
 
-  if (!provider && !anthropicKeyProvided) {
+  if (!provider && !anthropicKeyProvided && !openaiKeyProvided) {
     printNote("Nothing to configure.");
     console.log(`  Sign in / set your key:  ${accent("fireconnect login")}`);
     console.log(`  Choose a provider:       ${accent("fireconnect configure --provider azure --base-url <url> --api-key <azure-key>")}`);
     console.log(`  Set the Anthropic key:   ${accent("fireconnect configure --anthropic-api-key sk-ant-…")}`);
+    console.log(`  Set the OpenAI key:      ${accent("fireconnect configure --openai-api-key sk-…")}`);
     console.log(`  Enable a harness:        ${accent("fireconnect <harness>")}`);
     return;
   }
@@ -66,6 +68,14 @@ export async function runConfigureCommand(ctx) {
       throw new Error("--anthropic-api-key must be an Anthropic API key (sk-ant-...).");
     }
     update.anthropicApiKey = anthropicApiKey;
+  }
+
+  if (openaiKeyProvided) {
+    const openaiApiKey = ctx.openaiKey.trim();
+    if (!isOpenAIShapedKey(openaiApiKey)) {
+      throw new Error("--openai-api-key must be an OpenAI API key (sk-..., not sk-ant-...).");
+    }
+    update.openaiApiKey = openaiApiKey;
   }
 
   if (provider === "azure") {
@@ -89,6 +99,9 @@ export async function runConfigureCommand(ctx) {
   printSuccess("Saved to ~/.fireconnect/config.json");
   if (update.anthropicApiKey) {
     printNote("Stored Anthropic API key in global config.");
+  }
+  if (update.openaiApiKey) {
+    printNote("Stored OpenAI API key in global config.");
   }
   if (update.provider === "azure") {
     printSuccess("Configured Fireworks on Microsoft Foundry provider.");

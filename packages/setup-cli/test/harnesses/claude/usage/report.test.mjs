@@ -292,7 +292,7 @@ describe("claude usage", () => {
   });
 
   it("still withholds cost for OpenAI ids with no list row", () => {
-    for (const model of ["gpt-99-future", "gpt-5.6", "o3-mini"]) {
+    for (const model of ["gpt-99-future", "gpt-5.6-helios", "o3-mini"]) {
       const row = computeClaudeUsageCost(model, { input_tokens: 1_000_000 });
       assert.equal(row.cost, null, model);
       assert.equal(row.priced, false, model);
@@ -335,6 +335,17 @@ describe("claude usage", () => {
     assert.equal(row.cost, expected);
     assert.equal(row.rates.cacheReadPerMillion, 0.25);
     assert.equal(row.rates.label, "Claude Fable 5.1");
+  });
+
+  it("prices Opus 5.5 at its own $4/$20 row, including the [1m] tag", () => {
+    const row = computeClaudeUsageCost("claude-opus-5-5[1m]", {
+      input_tokens: 100,
+      cache_read_input_tokens: 1_000_000,
+      output_tokens: 500,
+    });
+    const expected = (100 * 4 + 1_000_000 * 0.2 + 500 * 20) / 1_000_000;
+    assert.equal(row.cost, expected);
+    assert.equal(row.rates.label, "Claude Opus 5.5");
   });
 
   it("computes Anthropic cache write, cache read, geo, batch, and web-search costs", () => {

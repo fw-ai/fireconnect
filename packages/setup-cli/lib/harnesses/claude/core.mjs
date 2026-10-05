@@ -13,6 +13,8 @@ import {
 import {
   buildClaudeCustomHeaders,
   fireworksKeyFromCustomHeaders,
+  OPENAI_BYOK_HEADER,
+  openaiKeyFromCustomHeaders,
   setFireworksKeyInCustomHeaders,
   stripFireworksKeyFromCustomHeaders,
   stripFirerouterOwnedEnv,
@@ -21,7 +23,6 @@ import {
 import {
   CLAUDE_NATIVE_MODEL_ID,
   DEEPSEEK_FLASH_LATEST_ROUTER_ID,
-  DEEPSEEK_PRO_LATEST_ROUTER_ID,
   FIREWORKS_BASE_URL,
   FIREROUTER_ROUTER_ID,
   GLM_FAST_LATEST_ROUTER_ID,
@@ -95,9 +96,8 @@ export const FIREWORKS_ENV_KEYS = [
   "DO_NOT_TRACK",
   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
   "ENABLE_TOOL_SEARCH",
-  // Temporary: skip the server-side auto-mode classifier (Claude Code >=
-  // 2.1.278 default) until the gateway implements it. Removed on `off` like
-  // the other managed keys so restores stay byte-for-byte.
+  // Retired: older versions pinned this to "0". Still listed so every
+  // FireConnect strip path removes it.
   "CLAUDE_CODE_AUTO_MODE_SERVER",
   // The built-in Explore agent inherits the main model capped at Opus, which
   // strands Fireworks-routed sessions on Opus for every exploration call.
@@ -150,14 +150,6 @@ export const CLAUDE_CODE_BEHAVIOR_ENV = {
   // exploration call bills at Opus rates. Removing the cap keeps Explore on
   // the session model (undocumented, verified against Claude Code v2.1.278).
   CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP: "1",
-  // Temporary (remove once the Fireworks gateway implements the server-side
-  // auto-mode classifier: forward the `safeguards` request field and return
-  // `safeguard_results` — see "Auto mode classifier request charges"). Until
-  // then, asking the server (the Claude Code >= 2.1.278 default) only earns
-  // gateway-routed sessions the ineligibility notice; the fallback local
-  // classifier requests are billed either way, so don't ask. Note Anthropic
-  // flags this variable itself as temporary and it may be removed upstream.
-  CLAUDE_CODE_AUTO_MODE_SERVER: "0",
 };
 
 export const DEFAULT_FIREWORKS_PRESET = {
@@ -354,11 +346,14 @@ export async function readRawIfExists(filePath) {
  * recording the absolute path it was taken for. Owner-private (0600 file in a
  * 0700 dir) since the settings can hold credentials.
  * @param {{ settingsPath: string, backupPath: string }} opts
+ * @returns {Promise<{ configPath: string, snapshot: { existed: boolean, raw: string } }>} the backup written
  */
 export async function writeSettingsSnapshotBackup({ settingsPath, backupPath }) {
   await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
   const snapshot = await readRawIfExists(settingsPath);
-  await writeJson(backupPath, { configPath: path.resolve(settingsPath), snapshot }, { mode: 0o600 });
+  const backup = { configPath: path.resolve(settingsPath), snapshot };
+  await writeJson(backupPath, backup, { mode: 0o600 });
+  return backup;
 }
 
 /**
@@ -526,6 +521,41 @@ export function stripFireworksOwnedEnv(env) {
   return { env: nextEnv, changed };
 }
 
+function preFireconnectEnv(backup = {}) {
+  if (backup.snapshot === undefined) {
+    return backup.values ?? {};
+  }
+  if (!backup.snapshot.existed) {
+    return {};
+  }
+  try {
+    return JSON.parse(backup.snapshot.raw)?.env ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Drop the `CLAUDE_CODE_AUTO_MODE_SERVER=0` pin older versions wrote. Claude
+ * Code already falls back to its local classifier when the gateway rejects the
+ * server-side request, and the pin would keep blocking the server classifier
+ * once the gateway supports it. A "0" in the pre-FireConnect settings is the
+ * user's own and stays.
+ * @param {Record<string, any>} settings
+ * @param {Record<string, any>} [backup] provider backup (raw snapshot or legacy values)
+ * @returns {{ settings: Record<string, any>, changed: boolean }}
+ */
+export function stripRetiredAutoModeServerPin(settings, backup = {}) {
+  const env = settings.env ?? {};
+  if (env.CLAUDE_CODE_AUTO_MODE_SERVER !== "0"
+      || preFireconnectEnv(backup).CLAUDE_CODE_AUTO_MODE_SERVER === "0") {
+    return { settings, changed: false };
+  }
+  const nextEnv = { ...env };
+  delete nextEnv.CLAUDE_CODE_AUTO_MODE_SERVER;
+  return { settings: { ...settings, env: nextEnv }, changed: true };
+}
+
 /**
  * Remove client-side model mapping env entries (for FireRouter server-side routing).
  * @param {Record<string, string>} env
@@ -626,6 +656,7 @@ export function buildFireworksProviderEnv(env, {
   keyType = "fireworks",
   anthropicKey = "",
   anthropicAuthToken = "",
+  openaiKey = "",
   routingPreference = null,
   useApiKeySentinel = true,
   telemetryHeaders = buildFireconnectTelemetryHeaders("claude"),
@@ -670,6 +701,7 @@ export function buildFireworksProviderEnv(env, {
       ? [
         buildClaudeCustomHeaders({
           fireworksKey: apiKey.trim(),
+          openaiKey,
           routingPreference,
           telemetryHeaders,
         }),
@@ -679,6 +711,16 @@ export function buildFireworksProviderEnv(env, {
         mergeFireconnectTelemetryHeaderLines(preservedHeaders, telemetryHeaders),
         apiKey.trim(),
       );
+  }
+  // A configured OpenAI key rides along for OpenAI-routed FireRouter picks
+  // (bare `firerouter` already carries it via buildClaudeCustomHeaders above;
+  // pinned GPT compounds like `firerouter/gpt-...` take the plain branch and
+  // need it appended). Never duplicated, never prompted for.
+  if (openaiKey?.trim() && !openaiKeyFromCustomHeaders(nextEnv.ANTHROPIC_CUSTOM_HEADERS)) {
+    nextEnv.ANTHROPIC_CUSTOM_HEADERS = [
+      nextEnv.ANTHROPIC_CUSTOM_HEADERS,
+      `${OPENAI_BYOK_HEADER}: ${openaiKey.trim()}`,
+    ].filter(Boolean).join("\n");
   }
   if (anthropicKey?.trim()) {
     nextEnv.ANTHROPIC_API_KEY = anthropicKey.trim();
@@ -706,6 +748,54 @@ export function buildFireworksProviderEnv(env, {
 }
 
 /**
+ * The top-level `model` (Claude Code's /model default) that `on` writes. Pure
+ * so `on` can decide header eligibility (e.g. the OpenAI key on a firerouter
+ * default) against the model that actually lands, before writing anything.
+ * @param {{
+ *   currentModel?: unknown,
+ *   keyType: string,
+ *   selectedPickerModel?: string,
+ *   mapping: Record<string, string>,
+ *   registerablePickerIds?: string[],
+ * }} args
+ * @returns {string}
+ */
+export function resolveClaudeDefaultModel({
+  currentModel,
+  keyType,
+  selectedPickerModel = "",
+  mapping,
+  registerablePickerIds = [],
+}) {
+  if (keyType === "fireworks" && selectedPickerModel) {
+    // `--model` selects the same row it ensures in /model, matching the
+    // other picker harnesses. Tier env slots remain native/unpinned.
+    return shortFireworksModelRef(claudeCodeModelId(selectedPickerModel));
+  }
+  if (isClaudeNativeModel(mapping.main)) {
+    // Native main (standard keys, or an explicit `native` sentinel): the
+    // top-level `model` field is Claude Code's saved /model default.
+    // A selection the current picker serves (catalog row, firerouter,
+    // auto*) stays; anything else — no selection, a native tier id like
+    // `opus`, or a stale pin — would send an unservable model id to the
+    // gateway, so the FireRouter mix is pinned as the default instead.
+    const servablePickerModels = new Set(
+      buildFireconnectModelPickerOptions(registerablePickerIds)
+        .map((option) => option.model),
+    );
+    const savedDefault = typeof currentModel === "string"
+      ? shortFireworksModelRef(currentModel)
+      : "";
+    return savedDefault && servablePickerModels.has(savedDefault)
+      ? currentModel
+      : shortFireworksModelRef(claudeCodeModelId(FIREROUTER_ROUTER_ID));
+  }
+  // Fire Pass pins main to its router (e.g. kimi-fast-latest), so the
+  // Claude Code default row serves Fireworks instead of Anthropic.
+  return shortFireworksModelRef(claudeCodeModelId(mapping.main));
+}
+
+/**
  * Pure builder: the settings object `enableFireworksProvider` would write to
  * disk, WITHOUT reading or writing any file.
  *
@@ -718,8 +808,10 @@ export function buildFireworksProviderEnv(env, {
  *   keyType?: "fireworks" | "firepass",
  *   anthropicKey?: string,
  *   anthropicAuthToken?: string,
+ *   openaiKey?: string,
  *   useApiKeySentinel?: boolean,
  *   registerablePickerIds?: string[],
+ *   selectedPickerModel?: string,
  *   firerouterHeaders?: boolean,
  * }} [opts]
  * @returns {{ settings: Record<string, unknown>, token: string, keyType: "fireworks" | "firepass" }}
@@ -732,9 +824,11 @@ export function buildFireworksSettings(settings, {
   keyType = "fireworks",
   anthropicKey = "",
   anthropicAuthToken = "",
+  openaiKey = "",
   routingPreference = null,
   useApiKeySentinel = true,
   registerablePickerIds = [],
+  selectedPickerModel = "",
   firerouterHeaders = false,
 } = {}) {
   const env = settings.env ?? {};
@@ -747,7 +841,12 @@ export function buildFireworksSettings(settings, {
   // (only FireConnect-managed lines are removed), so buildFireworksProviderEnv
   // can re-add just the Fireworks key alongside them.
   const { env: strippedEnv } = stripFirerouterOwnedEnv(env);
-  const pinSlotMapping = resolvedKeyType === "firepass";
+  // Fire Pass always pins every slot; standard keys pin only when the mapping
+  // carries explicit tier overrides (`--opus` … `--subagent`). All-native
+  // mappings keep the previous strip behavior so tier slots stay on Claude
+  // defaults and only the /model picker is appended.
+  const pinSlotMapping = resolvedKeyType === "firepass"
+    || Object.values(mapping).some((modelId) => !isClaudeNativeModel(modelId));
   let next = {
     ...settings,
     env: buildFireworksProviderEnv(strippedEnv, {
@@ -758,6 +857,7 @@ export function buildFireworksSettings(settings, {
       keyType: resolvedKeyType,
       anthropicKey,
       anthropicAuthToken,
+      openaiKey,
       routingPreference,
       useApiKeySentinel,
       pinSlotMapping,
@@ -771,31 +871,15 @@ export function buildFireworksSettings(settings, {
       // instead of leaving unservable `auto` / `firerouter` rows in `/model`.
       next = stripFireconnectModelPicker(next).settings;
     } else {
-      // `--model` only adds picker rows; never pin top-level `model` or env slots.
       next = withFireconnectModelPicker(next, registerablePickerIds);
     }
-    if (isClaudeNativeModel(mapping.main)) {
-      // Native main (standard keys, or an explicit `native` sentinel): the
-      // top-level `model` field is Claude Code's saved /model default.
-      // A selection the current picker serves (catalog row, firerouter,
-      // auto*) stays; anything else — no selection, a native tier id like
-      // `opus`, or a stale pin — would send an unservable model id to the
-      // gateway, so the FireRouter mix is pinned as the default instead.
-      const servablePickerModels = new Set(
-        buildFireconnectModelPickerOptions(registerablePickerIds)
-          .map((option) => option.model),
-      );
-      const savedDefault = typeof next.model === "string"
-        ? shortFireworksModelRef(next.model)
-        : "";
-      if (!savedDefault || !servablePickerModels.has(savedDefault)) {
-        next.model = shortFireworksModelRef(claudeCodeModelId(FIREROUTER_ROUTER_ID));
-      }
-    } else {
-      // Fire Pass pins main to its router (e.g. kimi-fast-latest), so the
-      // Claude Code default row serves Fireworks instead of Anthropic.
-      next.model = shortFireworksModelRef(claudeCodeModelId(mapping.main));
-    }
+    next.model = resolveClaudeDefaultModel({
+      currentModel: next.model,
+      keyType: resolvedKeyType,
+      selectedPickerModel,
+      mapping,
+      registerablePickerIds,
+    });
     // Claude Code prices the routed model against Anthropic's list, so its own
     // status line reports a cost the user is never billed. Ours reads the
     // transcript at Fireworks rates. A user's existing statusLine is left as-is.
@@ -814,10 +898,12 @@ export async function enableFireworksProvider({
   keyType = "fireworks",
   anthropicKey = "",
   anthropicAuthToken = "",
+  openaiKey = "",
   nativeApiKeyHelper = null,
   routingPreference = null,
   useApiKeySentinel = true,
   registerablePickerIds = [],
+  selectedPickerModel = "",
   firerouterHeaders = false,
 }) {
  const backupPath = providerBackupPath(dataDir);
@@ -834,9 +920,9 @@ export async function enableFireworksProvider({
   await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
   const existingBackup = await readJsonIfExists(backupPath);
   const alreadyRouted = providerStatusFromEnv(env) === "fireworks";
-  if (existingBackup.snapshot === undefined && existingBackup.values === undefined && !alreadyRouted) {
-    await writeSettingsSnapshotBackup({ settingsPath, backupPath });
-  }
+  const backup = existingBackup.snapshot === undefined && existingBackup.values === undefined && !alreadyRouted
+    ? await writeSettingsSnapshotBackup({ settingsPath, backupPath })
+    : existingBackup;
 
   await ensureCatalogForClaudeCodeContext({ apiKey: effectiveApiKey, keyType });
 
@@ -848,9 +934,11 @@ export async function enableFireworksProvider({
     keyType,
     anthropicKey,
     anthropicAuthToken,
+    openaiKey,
     routingPreference,
     useApiKeySentinel,
     registerablePickerIds,
+    selectedPickerModel,
     firerouterHeaders,
   });
   const token = built.token;
@@ -861,10 +949,11 @@ export async function enableFireworksProvider({
   // (written into env by buildFireworksProviderEnv), not apiKeyHelper. Drop a
   // previously FireConnect-managed apiKeyHelper; a user's own helper is left
   // untouched (the raw snapshot restores it on `off`).
-  const { settings: next } = stripManagedApiKeyHelper(routed, {
+  const { settings: withoutHelper } = stripManagedApiKeyHelper(routed, {
     authMode: state.authMode,
     managedApiKeyHelper: state.managedApiKeyHelper,
   });
+  const { settings: next } = stripRetiredAutoModeServerPin(withoutHelper, backup);
 
   await writeJson(settingsPath, next, { mode: 0o600 });
   await writeJson(statePath, {

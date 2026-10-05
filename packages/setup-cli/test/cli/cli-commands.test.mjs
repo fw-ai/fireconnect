@@ -131,6 +131,15 @@ describe("fireconnect help quick", () => {
       );
     });
   });
+
+  test("full help lists models as an alias for model list", async () => {
+    await withTempHome("help-models-alias", async (home) => {
+      const full = await runCli(["help"], { home });
+      assert.equal(full.code, 0, full.stderr);
+      assert.match(full.stdout, /model list\s+Browse serverless models\./);
+      assert.match(full.stdout, /models\s+Alias for model list\./);
+    });
+  });
 });
 
 describe("harness help matches supported command features", () => {
@@ -169,6 +178,7 @@ describe("harness help matches supported command features", () => {
     const vscode = await runCli(["help", "vscode"]);
     assert.match(vscode.stdout, /--routing-preference/);
     assert.match(vscode.stdout, /--anthropic-api-key/);
+    assert.match(vscode.stdout, /--openai-api-key/);
   });
 
   test("documents FireRouter caveats per harness", async () => {
@@ -178,7 +188,11 @@ describe("harness help matches supported command features", () => {
     assert.match(claude.stdout, /Options for usage/);
     assert.match(claude.stdout, /Options for all commands/);
     assert.match(claude.stdout, /--model <id>/);
-    assert.match(claude.stdout, /does not override tier slots/);
+    assert.match(claude.stdout, /--opus <id>/);
+    assert.match(claude.stdout, /--sonnet <id>/);
+    assert.match(claude.stdout, /--haiku <id>/);
+    assert.match(claude.stdout, /--subagent <id>/);
+    assert.match(claude.stdout, /Pin the Sonnet tier slot/);
     assert.match(claude.stdout, /--plain/);
     assert.match(claude.stdout, /Plain text summary/);
     assert.match(claude.stdout, /--home <path>/);
@@ -193,7 +207,7 @@ describe("harness help matches supported command features", () => {
     assert.match(codex.stdout, /use firerouter for FireRouter/);
     assert.match(codex.stdout, /ANTHROPIC_API_KEY/);
     assert.match(codex.stdout, /configure --anthropic-api-key|--anthropic-api-key <key>/);
-    assert.match(codex.stdout, /Pass --anthropic-api-key with codex on/);
+    assert.match(codex.stdout, /Pass --anthropic-api-key \/ --openai-api-key with codex on/);
 
     const pi = await runCli(["pi", "help"]);
     assert.equal(pi.code, 0, pi.stderr);
@@ -302,7 +316,7 @@ describe("fireconnect claude on", () => {
       assert.equal(settings.env.DO_NOT_TRACK, "1");
       assert.equal(settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
       assert.equal(settings.env.ENABLE_TOOL_SEARCH, "true");
-      assert.equal(settings.env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+      assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
       assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_DISABLE_1M_CONTEXT"), false);
     });
   });
@@ -487,8 +501,8 @@ describe("fireconnect model list", () => {
         { home, env: NO_ENV_KEY },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /LATEST ROUTERS — recommended, automatically track new versions/);
-      assert.match(result.stdout, /FAST ROUTERS — higher tokens per second/);
+      assert.match(result.stdout, /LATEST ROUTERS: recommended, automatically track new versions/);
+      assert.match(result.stdout, /FAST ROUTERS: higher tokens per second/);
       // Fire Pass is a subscription — no per-model metered pricing columns.
       assert.doesNotMatch(result.stdout, /INPUT\s+CACHED\s+OUTPUT/);
       assert.doesNotMatch(result.stdout, /\$/);

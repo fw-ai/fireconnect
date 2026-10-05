@@ -6,6 +6,7 @@ import {
   persistGlobalAnthropicApiKey,
   readGlobalConfig,
   resolveStoredAnthropicApiKey,
+  resolveStoredOpenaiApiKey,
 } from "../config/global-config.mjs";
 import { readSecret } from "../ui/read-secret.mjs";
 import {
@@ -15,7 +16,7 @@ import {
 
 export const FIREROUTER_FIREWORKS_HEADER = "X-Fireworks-Api-Key";
 export const FIREROUTER_TAGLINE =
-  "Routes each request between Claude and open models.";
+  "Routes each user turn between Claude and open models.";
 // Outbound routing preference FireRouter reads to trade capability vs cost
 // (1 = max intelligence … 5 = max savings). Set via `--routing-preference`;
 // omitted entirely when unset so FireRouter applies its own default. Re-running
@@ -245,14 +246,23 @@ export function anthropicKeyFromCustomHeaders(value) {
  * from a harness's stored provider headers, so a repeat `on` can recover the
  * Anthropic BYOK key that lives only in those headers via
  * resolveFirerouterByokKeys. Returns `{}` when the BYOK header is absent.
+ * Stored OpenAI headers ride along as OPENAI_BYOK_HEADER so resolveOpenaiKey
+ * can recover them the same way.
  * @param {Record<string, string>} [headers]
  * @returns {Record<string, string>}
  */
 export function byokEnvFromHeaders(headers = {}) {
+  /** @type {Record<string, string>} */
+  const out = {};
   const anthropic = headers?.[ANTHROPIC_BYOK_HEADER];
-  return anthropic
-    ? { ANTHROPIC_CUSTOM_HEADERS: `${ANTHROPIC_BYOK_HEADER}: ${anthropic}` }
-    : {};
+  if (anthropic) {
+    out.ANTHROPIC_CUSTOM_HEADERS = `${ANTHROPIC_BYOK_HEADER}: ${anthropic}`;
+  }
+  const openai = headers?.[OPENAI_BYOK_HEADER];
+  if (openai) {
+    out[OPENAI_BYOK_HEADER] = openai;
+  }
+  return out;
 }
 
 /**
@@ -300,6 +310,10 @@ export function stripFireworksKeyFromCustomHeaders(value) {
 // ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN) so it can't collide with the
 // X-Fireworks-Api-Key that authenticates the gateway.
 export const ANTHROPIC_BYOK_HEADER = "x-anthropic-api-key";
+// BYOK header FireRouter reads to pass a request through to real OpenAI models
+// using the user's own OpenAI key. Same custom-header mechanism, so the
+// Fireworks gateway key stays the sole gateway credential.
+export const OPENAI_BYOK_HEADER = "x-openai-api-key";
 /** Request-body field FireRouter reads on the VS Code Chat wire (firerouter model). */
 export const ANTHROPIC_BYOK_BODY_FIELD = "anthropic_api_key";
 
@@ -307,6 +321,7 @@ export const ANTHROPIC_BYOK_BODY_FIELD = "anthropic_api_key";
 const MANAGED_CUSTOM_HEADER_NAMES = [
   FIREROUTER_FIREWORKS_HEADER,
   ANTHROPIC_BYOK_HEADER,
+  OPENAI_BYOK_HEADER,
   ROUTING_PREFERENCE_HEADER,
   ...FIRECONNECT_TELEMETRY_HEADER_NAMES,
 ].map((name) => name.toLowerCase());
@@ -354,18 +369,23 @@ export function stripManagedCustomHeaderLines(value) {
  * authenticates the gateway via X-Fireworks-Api-Key (which wins over any
  * x-api-key / Authorization a user's ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
  * would otherwise inject); an optional Anthropic key rides along as a BYOK
- * header so FireRouter can pass hard requests through to real Anthropic models.
- * @param {{ fireworksKey: string, anthropicKey?: string, routingPreference?: number|string|null, telemetryHeaders?: Record<string,string> }} keys
+ * header so FireRouter can pass hard turns through to real Anthropic models,
+ * and a configured OpenAI key rides along the same way for OpenAI members.
+ * @param {{ fireworksKey: string, anthropicKey?: string, openaiKey?: string, routingPreference?: number|string|null, telemetryHeaders?: Record<string,string> }} keys
  */
 export function buildClaudeCustomHeaders({
   fireworksKey,
   anthropicKey = "",
+  openaiKey = "",
   routingPreference = null,
   telemetryHeaders = {},
 }) {
   const lines = [`${FIREROUTER_FIREWORKS_HEADER}: ${fireworksKey}`];
   if (anthropicKey?.trim()) {
     lines.push(`${ANTHROPIC_BYOK_HEADER}: ${anthropicKey.trim()}`);
+  }
+  if (openaiKey?.trim()) {
+    lines.push(`${OPENAI_BYOK_HEADER}: ${openaiKey.trim()}`);
   }
   const preference = normalizeRoutingPreference(routingPreference);
   if (preference !== null) {
@@ -378,17 +398,22 @@ export function buildClaudeCustomHeaders({
 }
 
 /**
- * BYOK header for OpenAI-wire harnesses' provider config (OpenCode/Codex/Pi/
- * VS Code): the user's Anthropic key, so FireRouter can pass hard requests
- * through to real Anthropic models. Empty when no key is present.
- * @param {{ anthropicKey?: string }} keys
+ * BYOK headers for OpenAI-wire harnesses' provider config (OpenCode/Codex/Pi/
+ * VS Code): the user's Anthropic and/or OpenAI keys, so FireRouter can pass
+ * hard turns through to real Anthropic/OpenAI models. Empty entries are
+ * omitted, so a configured key is forwarded while a missing one stays absent
+ * instead of failing the `on`.
+ * @param {{ anthropicKey?: string, openaiKey?: string }} keys
  * @returns {Record<string, string>}
  */
-export function firerouterByokHeaders({ anthropicKey = "" } = {}) {
+export function firerouterByokHeaders({ anthropicKey = "", openaiKey = "" } = {}) {
   /** @type {Record<string, string>} */
   const headers = {};
   if (anthropicKey?.trim()) {
     headers[ANTHROPIC_BYOK_HEADER] = anthropicKey.trim();
+  }
+  if (openaiKey?.trim()) {
+    headers[OPENAI_BYOK_HEADER] = openaiKey.trim();
   }
   return headers;
 }
@@ -423,6 +448,16 @@ export function replaceFireworksKeyInCustomHeaders(value, fireworksKey) {
 /** Anthropic API keys start with `sk-ant-`. */
 export function isAnthropicShapedKey(key) {
   return typeof key === "string" && key.trim().startsWith("sk-ant-");
+}
+
+/**
+ * OpenAI API keys start with `sk-` (including `sk-proj-...`) but never with
+ * Anthropic's `sk-ant-` prefix, so the two families stay disjoint: a key that
+ * satisfies one shape can never satisfy the other.
+ */
+export function isOpenAIShapedKey(key) {
+  const trimmed = typeof key === "string" ? key.trim() : "";
+  return trimmed.startsWith("sk-") && !trimmed.startsWith("sk-ant-");
 }
 
 /**
@@ -463,6 +498,57 @@ export async function resolveAnthropicKey({
   const fromHeader = anthropicKeyFromCustomHeaders(settingsEnv.ANTHROPIC_CUSTOM_HEADERS);
   if (fromHeader && isAnthropicShapedKey(fromHeader)) {
     return fromHeader;
+  }
+  return "";
+}
+
+/**
+ * Extract the OpenAI BYOK key from an ANTHROPIC_CUSTOM_HEADERS string (Claude
+ * Code wire) or a provider-headers map entry. Returns "" when absent.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function openaiKeyFromCustomHeaders(value) {
+  return customHeaderValue(value, [OPENAI_BYOK_HEADER]);
+}
+
+/**
+ * Resolve the OpenAI BYOK key FireRouter forwards as `x-openai-api-key`.
+ * Precedence mirrors the Anthropic resolver: explicit flag, stored global
+ * config, OPENAI_API_KEY env, then a harness-stored header. Never prompts and
+ * never throws: a missing key simply means no OpenAI header is attached, and
+ * FireRouter keeps routing the Fireworks mix.
+ * @param {{
+ *   apiKey?: string,
+ *   settingsEnv?: Record<string, string>,
+ *   home?: string,
+ * }} input
+ * @returns {Promise<string>}
+ */
+export async function resolveOpenaiKey({
+  apiKey = "",
+  settingsEnv = {},
+  home = "",
+} = {}) {
+  const fromFlag = apiKey?.trim() ?? "";
+  if (fromFlag && isOpenAIShapedKey(fromFlag)) {
+    return fromFlag;
+  }
+  if (home) {
+    const config = await readGlobalConfig(home);
+    const fromGlobal = resolveStoredOpenaiApiKey(config.openaiApiKey);
+    if (fromGlobal && isOpenAIShapedKey(fromGlobal)) {
+      return fromGlobal;
+    }
+  }
+  const fromEnv = process.env.OPENAI_API_KEY?.trim() ?? "";
+  if (fromEnv && isOpenAIShapedKey(fromEnv)) {
+    return fromEnv;
+  }
+  const fromSettings = settingsEnv[OPENAI_BYOK_HEADER]?.trim()
+    ?? openaiKeyFromCustomHeaders(settingsEnv.ANTHROPIC_CUSTOM_HEADERS);
+  if (fromSettings && isOpenAIShapedKey(fromSettings)) {
+    return fromSettings;
   }
   return "";
 }
@@ -518,8 +604,8 @@ export function anthropicKeyPromptCopy({ explicit = false, allowSkip = true } = 
   }
   return {
     intro: explicit
-      ? "FireRouter routes hard requests to Anthropic models. Paste your Anthropic API key to enable that."
-      : "Optional: add your Anthropic API key so FireRouter can route hard requests to Anthropic models.",
+      ? "FireRouter routes hard turns to Anthropic models. Paste your Anthropic API key to enable that."
+      : "Optional: add your Anthropic API key so FireRouter can route hard turns to Anthropic models.",
     prompt: explicit
       ? "Anthropic API key (sk-ant-..., Enter to skip): "
       : "Anthropic API key (sk-ant-..., or press Enter to skip): ",

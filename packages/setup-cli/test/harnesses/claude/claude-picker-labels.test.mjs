@@ -27,4 +27,17 @@ describe("Claude picker labels", () => {
   it("still resolves display names from specs", () => {
     assert.match(fireworksModelPickerName("glm-latest"), /GLM/);
   });
+
+  it("labels firerouter compounds with their pinned members", () => {
+    assert.equal(fireworksModelPickerName("firerouter"), "FireRouter");
+    assert.equal(fireworksModelPickerName("firerouter/astra"), "FireRouter · Astra");
+    assert.equal(
+      fireworksModelPickerName("firerouter/claude-opus-5/kimi-k3"),
+      "FireRouter · Claude Opus 5 · Kimi K3",
+    );
+    assert.equal(
+      fireworksModelPickerDescription("firerouter/astra"),
+      "Intelligent router across Claude and open models. Similar performance at lower cost.",
+    );
+  });
 });

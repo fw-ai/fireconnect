@@ -135,7 +135,7 @@ describe("pi harness integration", () => {
         "--model", "firerouter",
         "--anthropic-api-key", anthropicKey,
       ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" },
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
     );
     assert.equal(on.code, 0, on.stderr);
 
@@ -143,6 +143,29 @@ describe("pi harness integration", () => {
     assert.equal(
       models.providers.fireworks.headers["x-anthropic-api-key"],
       anthropicKey,
+    );
+  });
+
+  it("persists --openai-api-key in models.json headers for firerouter", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-firerouter-openai-flag-"));
+    await mkdir(path.join(home, ".pi/agent"), { recursive: true });
+    const openaiKey = "sk-proj-pi-firerouter-12345";
+
+    const on = await runFireconnect(
+      [
+        "pi", "on",
+        "--api-key", "fw_test_key_12345",
+        "--model", "firerouter",
+        "--openai-api-key", openaiKey,
+      ],
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
+    );
+    assert.equal(on.code, 0, on.stderr);
+
+    const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
+    assert.equal(
+      models.providers.fireworks.headers["x-openai-api-key"],
+      openaiKey,
     );
   });
 

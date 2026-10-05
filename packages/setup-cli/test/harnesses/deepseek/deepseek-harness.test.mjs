@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createServer } from "node:http";
@@ -12,6 +12,8 @@ import {
   deepseekSettingsPath,
   buildDeepseekFireworksModelEntry,
   patchDeepseekFireworksSettings,
+  patchDeepseekProfilePatchEntries,
+  stripDeepseekProfilePatchEntries,
   readDeepseekSettingsIfExists,
 } from "../../../lib/harnesses/deepseek/core.mjs";
 import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
@@ -58,7 +60,7 @@ describe("patchDeepseekFireworksSettings catalog metadata", () => {
 });
 
 describe("deepseek harness integration", () => {
-  it("rejects explicit firerouter without workspace BYOK", async () => {
+  it("connects explicit firerouter without an Anthropic key (no BYOK to forward)", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-firerouter-manual-"));
     await mkdir(path.join(home, ".dsh"), { recursive: true });
     const result = await runFireconnect(
@@ -70,10 +72,11 @@ describe("deepseek harness integration", () => {
         "--model",
         "accounts/fireworks/routers/firerouter",
       ],
-      { HOME: home, FIREWORKS_API_KEY: "" },
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
     );
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /Ask the Fireworks team to enable FireRouter/);
+    assert.equal(result.code, 0, result.stderr);
+    const { settings } = await readDeepseekSettingsIfExists(deepseekSettingsPath(home));
+    assert.equal(deepseekCurrentModelId(settings), "firerouter");
   });
 
   it("firerouter is rejected for Fire Pass keys", async () => {
@@ -86,17 +89,18 @@ describe("deepseek harness integration", () => {
     assert.match(result.stderr, /FireRouter is not available for Fire Pass keys/);
   });
 
-  it("firerouter is always rejected without a forwardable Anthropic key", async () => {
-    // Workspace BYOK is no longer consulted on non-Claude harnesses: DeepSeek's
-    // custom provider can't forward a key, so firerouter is refused outright.
+  it("connects firerouter without a forwardable Anthropic key", async () => {
+    // DeepSeek's custom provider can't forward a key, so firerouter connects
+    // without BYOK headers and FireRouter routes the Fireworks mix.
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-firerouter-refused-"));
     await mkdir(path.join(home, ".dsh"), { recursive: true });
     const result = await runFireconnect(
       ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
     );
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /Ask the Fireworks team to enable FireRouter/);
+    assert.equal(result.code, 0, result.stderr);
+    const { settings } = await readDeepseekSettingsIfExists(deepseekSettingsPath(home));
+    assert.equal(deepseekCurrentModelId(settings), "firerouter");
   });
 
   it("on/off round-trip restores settings.yaml and credentials.yaml", async () => {
@@ -206,5 +210,178 @@ describe("deepseek harness integration", () => {
     });
     assert.equal(after.code, 0, after.stderr);
     assert.equal(JSON.parse(after.stdout).provider, null);
+  });
+});
+
+describe("deepseek profile patch (dsh 0.1.7+)", () => {
+  it("patch entries upsert fireworks provider and default model, preserving others", () => {
+    const entries = [
+      { id: "llm-pi-ai", name: "@deepseek-ai/dsh-llm-pi-ai", config: { providers: { other: { api: "mock" } } } },
+      { id: "agent-default-model", name: "@deepseek-ai/dsh-agent-default-model", config: { provider: "other", model: "x" } },
+    ];
+    const next = patchDeepseekProfilePatchEntries(entries, { modelId: "glm-fast-latest" });
+    const llm = next.find((entry) => entry.id === "llm-pi-ai");
+    assert.ok(llm.config.providers.other, "user provider preserved");
+    assert.equal(llm.config.providers.fireworks.baseURL, "https://api.fireworks.ai/inference/v1");
+    assert.equal(llm.config.providers.fireworks.models[0].id, "glm-fast-latest");
+    const def = next.find((entry) => entry.id === "agent-default-model");
+    assert.equal(def.config.provider, "fireworks");
+    assert.equal(def.config.model, "glm-fast-latest");
+  });
+
+  it("patch entries append when missing", () => {
+    const next = patchDeepseekProfilePatchEntries([], { modelId: "firerouter" });
+    assert.equal(next.length, 2);
+    assert.equal(next[0].id, "llm-pi-ai");
+    assert.equal(next[1].id, "agent-default-model");
+  });
+
+  it("strip removes only FireConnect-owned patch entries", () => {
+    const entries = patchDeepseekProfilePatchEntries(
+      [{ id: "llm-pi-ai", config: { providers: { other: { api: "mock" } } } }],
+      { modelId: "glm-fast-latest" },
+    );
+    const { entries: stripped, changed } = stripDeepseekProfilePatchEntries(entries);
+    assert.equal(changed, true);
+    const llm = stripped.find((entry) => entry.id === "llm-pi-ai");
+    assert.deepEqual(llm.config.providers, { other: { api: "mock" } });
+    assert.ok(!stripped.some((entry) => entry.id === "agent-default-model"));
+    // A user's own deepseek-official default is never stripped.
+    const userDefault = [{ id: "agent-default-model", config: { provider: "deepseek-official", model: "deepseek-flash" } }];
+    const again = stripDeepseekProfilePatchEntries(userDefault);
+    assert.equal(again.changed, false);
+    assert.equal(again.entries.length, 1);
+  });
+
+  it("on writes the profile patch when a profile exists; off restores it byte-for-byte", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-profile-"));
+    await mkdir(path.join(home, ".dsh", "profiles", "headless"), { recursive: true });
+    await writeFile(path.join(home, ".dsh", "profiles", "headless", "cordis.yml"), "[]\n");
+    const patchPath = path.join(home, ".dsh", "profiles", "headless", "cordis.patch.yml");
+    const originalPatch = "- id: theme\n  config: { mode: dark }\n";
+    await writeFile(patchPath, originalPatch);
+
+    const on = await runFireconnect(
+      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(on.code, 0, on.stderr);
+
+    const patched = await readFile(patchPath, "utf8");
+    assert.match(patched, /id: llm-pi-ai/);
+    assert.match(patched, /fireworks/);
+    assert.match(patched, /id: agent-default-model/);
+    assert.match(patched, /glm-fast-latest/);
+    assert.match(patched, /mode: dark/, "user patch entry preserved");
+
+    const off = await runFireconnect(["deepseek", "off"], { HOME: home });
+    assert.equal(off.code, 0, off.stderr);
+    assert.equal(await readFile(patchPath, "utf8"), originalPatch);
+  });
+
+  it("off strips the fireworks route from profiles created after on", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-late-profile-"));
+    const on = await runFireconnect(
+      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(on.code, 0, on.stderr);
+
+    // A profile that only appears after `on` (dsh booted a new profile and
+    // imported the managed settings.yaml into it).
+    const lateDir = path.join(home, ".dsh", "profiles", "desktop");
+    await mkdir(lateDir, { recursive: true });
+    await writeFile(path.join(lateDir, "cordis.yml"), "[]\n");
+    await writeFile(path.join(lateDir, "cordis.patch.yml"), [
+      "- id: llm-pi-ai",
+      "  config:",
+      "    providers:",
+      "      fireworks:",
+      "        apiKeyEnv: FIREWORKS_API_KEY",
+      "- id: agent-default-model",
+      "  config:",
+      "    provider: fireworks",
+      "    model: glm-fast-latest",
+      "- id: theme",
+      "  config: { mode: dark }",
+      "",
+    ].join("\n"));
+
+    const off = await runFireconnect(["deepseek", "off"], { HOME: home });
+    assert.equal(off.code, 0, off.stderr);
+
+    const after = await readFile(path.join(lateDir, "cordis.patch.yml"), "utf8");
+    assert.doesNotMatch(after, /fireworks/);
+    assert.match(after, /id: theme/, "user patch entry preserved");
+  });
+
+  it("a re-on over a dirty patch never snapshots the fireworks route as the original", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-dirty-patch-"));
+    const profileDir = path.join(home, ".dsh", "profiles", "headless");
+    await mkdir(profileDir, { recursive: true });
+    await writeFile(path.join(profileDir, "cordis.yml"), "[]\n");
+    const patchPath = path.join(profileDir, "cordis.patch.yml");
+
+    // First on/off cycle; simulate the backup being lost so the next on sees
+    // a patch still carrying the fireworks route.
+    const first = await runFireconnect(
+      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(first.code, 0, first.stderr);
+    await unlink(deepseekBackupPath(deepseekDataDir(home), deepseekSettingsPath(home)));
+
+    const second = await runFireconnect(
+      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "kimi-fast-latest"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(second.code, 0, second.stderr);
+
+    const off = await runFireconnect(["deepseek", "off"], { HOME: home });
+    assert.equal(off.code, 0, off.stderr);
+    assert.doesNotMatch(await readFile(patchPath, "utf8"), /fireworks/);
+  });
+
+  it("status falls back to the profile patch after dsh migrates settings.yaml away", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-migrated-"));
+    const on = await runFireconnect(
+      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "deepseek-v4-flash"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(on.code, 0, on.stderr);
+
+    // Simulate dsh 0.1.7's legacy import: settings.yaml is renamed away and the
+    // sections land in the profile patch instead.
+    await mkdir(path.join(home, ".dsh", "profiles", "headless"), { recursive: true });
+    await writeFile(path.join(home, ".dsh", "profiles", "headless", "cordis.yml"), "[]\n");
+    const settingsRaw = await readFile(deepseekSettingsPath(home), "utf8");
+    await writeFile(path.join(home, ".dsh", "settings.yaml.imported"), settingsRaw);
+    await unlink(deepseekSettingsPath(home));
+    await writeFile(path.join(home, ".dsh", "profiles", "headless", "cordis.patch.yml"), [
+      "- id: llm-pi-ai",
+      '  name: "@deepseek-ai/dsh-llm-pi-ai"',
+      "  config:",
+      "    providers:",
+      "      fireworks:",
+      "        apiKeyEnv: FIREWORKS_API_KEY",
+      "        api: openai-completions",
+      "        baseURL: https://api.fireworks.ai/inference/v1",
+      "- id: agent-default-model",
+      '  name: "@deepseek-ai/dsh-agent-default-model"',
+      "  config:",
+      "    provider: fireworks",
+      "    model: deepseek-v4-flash",
+      "",
+    ].join("\n"));
+
+    const status = await runFireconnect(["deepseek", "status", "--json"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+    });
+    assert.equal(status.code, 0, status.stderr);
+    const payload = JSON.parse(status.stdout);
+    assert.equal(payload.provider, "fireworks");
+    assert.equal(payload.current.main, "deepseek-v4-flash");
+    assert.equal(payload.hasAuthToken, true);
   });
 });

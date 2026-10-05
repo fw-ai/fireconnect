@@ -1,4 +1,5 @@
 import claude from "../harnesses/claude/index.mjs";
+import claudeDesktop from "../harnesses/claude-desktop/index.mjs";
 import codex from "../harnesses/codex/index.mjs";
 import copilotApp from "../harnesses/copilot-app/index.mjs";
 import copilotCli from "../harnesses/copilot-cli/index.mjs";
@@ -12,7 +13,7 @@ import { HARNESSES } from "./id.mjs";
 /** @typedef {import("./types.mjs").HarnessAdapter} HarnessAdapter */
 
 const REGISTRY = new Map(
-  [claude, opencode, codex, pi, cursor, vscode, copilotApp, copilotCli, deepseek].map((adapter) => [adapter.id, adapter]),
+  [claude, claudeDesktop, opencode, codex, pi, cursor, vscode, copilotApp, copilotCli, deepseek].map((adapter) => [adapter.id, adapter]),
 );
 
 /**

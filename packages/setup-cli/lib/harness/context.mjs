@@ -2,6 +2,7 @@ import {
   resolveDataDir,
   userSettingsPath,
 } from "../harnesses/claude/core.mjs";
+import { claudeDesktopDataDir } from "../harnesses/claude-desktop/core.mjs";
 import {
   codexConfigPath,
   codexCatalogPath,
@@ -137,6 +138,7 @@ export function deepseekPathsFor(ctx) {
 /** Per-harness path-override fields + the flag to suggest in the error message. */
 const HOME_VALIDATION = {
   claude: { fields: ["settingsPath"], flag: "--settings-path" },
+  "claude-desktop": { fields: [], flag: "--home" },
   opencode: { fields: ["configPath"], flag: "--config-path" },
   codex: { fields: ["configPath"], flag: "--config-path" },
   pi: { fields: ["settingsPath", "configPath"], flag: "--settings-path" },

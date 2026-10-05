@@ -33,16 +33,20 @@ describe("harness option validation", () => {
     });
   });
 
-  it("requires explicit FireRouter before accepting routing-only options", async () => {
+  it("requires a firerouter target before accepting routing-only options", async () => {
     await withTempHome("option-firerouter-", async (home) => {
+      // Claude's default `on` already lands on firerouter, so an explicit
+      // `--model firerouter` is not required there — but an explicit
+      // non-firerouter picker model still rejects the flag.
       await rejects(
         home,
         [
           "claude", "on",
           "--api-key", "fw_test_key_12345",
+          "--model", "glm-latest",
           "--routing-preference", "balanced",
         ],
-        /--routing-preference requires `--model firerouter`/,
+        /--routing-preference requires a Claude slot set to firerouter/,
       );
       await rejects(
         home,
@@ -57,16 +61,10 @@ describe("harness option validation", () => {
     });
   });
 
-  it("rejects FireRouter options a harness cannot forward", async () => {
+  it("rejects BYOK flags a harness cannot forward", async () => {
     await withTempHome("option-firerouter-capability-", async (home) => {
-      // Bare firerouter routes to an Anthropic primary; Cursor can't forward a
-      // local Anthropic key, so it's refused with the Anthropic-key message
-      // (which also points to workspace BYOK as the remedy).
-      await rejects(
-        home,
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
-        /Anthropic API key Cursor can't forward/,
-      );
+      // Cursor can't forward local provider keys, so both BYOK flags stay
+      // unsupported there even though bare firerouter itself now connects.
       await rejects(
         home,
         ["cursor", "on", "--model", "firerouter/kimi-k3", "--anthropic-api-key", "sk-ant-test"],
@@ -74,9 +72,44 @@ describe("harness option validation", () => {
       );
       await rejects(
         home,
+        ["cursor", "on", "--model", "firerouter/kimi-k3", "--openai-api-key", "sk-openai-test"],
+        /--openai-api-key is not supported by this harness/,
+      );
+      await rejects(
+        home,
         ["deepseek", "on", "--model", "firerouter", "--routing-preference", "balanced"],
         /--routing-preference is not supported/,
       );
+    });
+  });
+
+  it("accepts --openai-api-key on codex firerouter on", async () => {
+    await withTempHome("option-codex-openai-", async (home) => {
+      await mkdir(path.join(home, ".codex"), { recursive: true });
+      const result = await runCli(
+        [
+          "codex", "on",
+          "--api-key", "fw_test_key_12345",
+          "--model", "firerouter",
+          "--openai-api-key", "sk-proj-codex-flag-12345",
+        ],
+        {
+          home,
+          env: {
+            FIREWORKS_API_KEY: "",
+            ANTHROPIC_API_KEY: "",
+            OPENAI_API_KEY: "",
+            SHELL: "/bin/bash",
+            ZSH_VERSION: "",
+            BASH_VERSION: "5",
+          },
+        },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const config = await readFile(codexConfigPath(home), "utf8");
+      assert.match(config, /"x-openai-api-key" = "OPENAI_API_KEY"/);
+      const globalConfig = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
+      assert.equal(globalConfig.openaiApiKey, "sk-proj-codex-flag-12345");
     });
   });
 
@@ -95,6 +128,7 @@ describe("harness option validation", () => {
           env: {
             FIREWORKS_API_KEY: "",
             ANTHROPIC_API_KEY: "",
+            OPENAI_API_KEY: "",
             SHELL: "/bin/bash",
             ZSH_VERSION: "",
             BASH_VERSION: "5",
@@ -124,13 +158,14 @@ describe("harness option validation", () => {
     });
   });
 
-  it("rejects harness-specific model and IDE options elsewhere", async () => {
+  it("scopes Claude tier-slot flags to claude on", async () => {
     await withTempHome("option-specific-", async (home) => {
       await rejects(home, ["pi", "on", "--force"], /--force is only supported/);
       await rejects(home, ["cursor", "on", "--mode", "composer"], /Unknown argument: --mode/);
       await rejects(home, ["cursor", "on", "--slot", "main"], /Unknown argument: --slot/);
-      await rejects(home, ["pi", "on", "--opus", "glm-latest"], /--opus.*not supported/);
-      await rejects(home, ["cursor", "on", "--subagent", "glm-latest"], /--subagent.*not supported/);
+      await rejects(home, ["pi", "on", "--opus", "glm-latest"], /--opus.*apply only to `fireconnect claude on`/);
+      await rejects(home, ["cursor", "on", "--subagent", "glm-latest"], /--subagent.*apply only to `fireconnect claude on`/);
+      await rejects(home, ["claude", "status", "--sonnet", "glm-latest"], /--opus.*apply only to `fireconnect claude on`/);
       await rejects(home, ["opencode", "on", "--non-interactive"], /applies only to .*claude on/);
       await rejects(home, ["opencode", "on", "--interactive"], /applies only to .*claude on/);
       await rejects(

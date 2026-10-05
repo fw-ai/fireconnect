@@ -2,10 +2,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   addCodexSelectedModel,
+  buildCodexAutoCatalogEntry,
   buildCodexCatalog,
   buildCodexCatalogFromSnapshot,
   buildCodexCatalogEntry,
   buildCodexCatalogEntryForRouter,
+  buildCodexFirerouterCatalogEntry,
   CODEX_AUTO_COMPACT_FRACTION,
   CODEX_CONSTANT_FIELDS,
   CODEX_MINIMAX_UNSUPPORTED_NOTE,
@@ -59,9 +61,35 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     assert.equal(entry.web_search_tool_type, "text");
     assert.equal(entry.supports_image_detail_original, false);
     assert.equal(entry.description, "GLM 5.2 is a great model.");
+    assert.equal(entry.auto_review_model_override, "glm-5p2");
     for (const [key, value] of Object.entries(CODEX_CONSTANT_FIELDS)) {
       assert.deepEqual(entry[key], value, `expected CODEX_CONSTANT_FIELDS.${key}`);
     }
+  });
+
+  it("pins guardian auto-review to the servable slug (not codex-auto-review)", () => {
+    // Codex defaults the reviewer to the OpenAI-only `codex-auto-review`
+    // model, which 404s on the Fireworks gateway and fail-closed denies the
+    // action. Every catalog row must carry an override to its own slug.
+    const base = mockModel();
+    assert.equal(buildCodexCatalogEntry(base).auto_review_model_override, "glm-5p2");
+    const router = buildCodexCatalogEntryForRouter(
+      "accounts/fireworks/routers/glm-latest",
+      base,
+      "GLM Latest",
+    );
+    assert.equal(router.slug, "glm-latest");
+    assert.equal(router.auto_review_model_override, "glm-latest");
+    assert.equal(buildCodexAutoCatalogEntry("auto").auto_review_model_override, "auto");
+    assert.equal(
+      buildCodexAutoCatalogEntry("auto-instant").auto_review_model_override,
+      "auto-instant",
+    );
+    assert.equal(buildCodexFirerouterCatalogEntry().auto_review_model_override, "firerouter");
+    assert.equal(
+      buildCodexFirerouterCatalogEntry("firerouter/x").auto_review_model_override,
+      "firerouter/x",
+    );
   });
 
   it("compacts at 80% of the window so the compaction RPC fits under the gateway limit", () => {
@@ -274,7 +302,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(catalog.models[0].slug, "firerouter");
     assert.equal(
       catalog.models[0].description,
-      "Routes each request between Claude and open models.",
+      "Routes each user turn between Claude and open models.",
     );
     assert.equal(catalog.models[0].context_window, 1_048_575);
     assert.equal(catalog.models[0].auto_compact_token_limit, 838860);
@@ -294,7 +322,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     assert.equal(entry.supports_parallel_tool_calls, true);
     assert.equal(
       entry.description,
-      "Routes each request between Claude and open models.",
+      "Routes each user turn between Claude and open models.",
     );
     assert.equal(codexCatalogContainsModel({ models }, "firerouter/x"), true);
     assert.equal(
@@ -388,6 +416,29 @@ describe("codex-catalog buildCodexCatalog", () => {
     const entry = models.find((model) => model.slug === "glm-5p3-fast");
     assert.ok(entry);
     assert.equal(entry.context_window, 1048576);
+  });
+
+  it("resolves alias routers from snapshot maps when the base row is pruned", () => {
+    // Offline/stale-cache builds have no rawModels to borrow base metadata
+    // from, and preferLatestAliases prunes base models whose family has a
+    // -latest alias — the maps still carry the base metadata, so the alias
+    // router must resolve from them instead of being dropped.
+    const rows = [
+      mockModel({
+        name: "accounts/fireworks/models/alpha-base",
+        displayName: "Alpha Base",
+        aliases: ["accounts/fireworks/routers/alpha-latest"],
+      }),
+    ];
+    const snapshot = buildServerlessCatalogSnapshot(rows);
+    const pruned = {
+      ...snapshot,
+      entries: snapshot.entries.filter((entry) => entry.id !== "accounts/fireworks/models/alpha-base"),
+    };
+    const catalog = buildCodexCatalogFromSnapshot(pruned, []);
+    const entry = catalog.models.find((model) => model.slug === "alpha-latest");
+    assert.ok(entry, "alias router dropped from stale catalog");
+    assert.ok(entry.context_window > 0);
   });
 
   it("does not add a catalog row for MiniMax", () => {

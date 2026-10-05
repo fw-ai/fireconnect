@@ -5,6 +5,7 @@ import {
   DEFAULT_FIREPASS_PRESET,
 } from "../../lib/harnesses/claude/core.mjs";
 import {
+  canonicalRequestedModelId,
   fireworksModelSlug,
   fullFireworksResourceId,
   normalizeModelId,
@@ -158,6 +159,15 @@ describe("Fire Pass defaults", () => {
       "accounts/auto-corp/models/private-model",
     );
     assert.equal(normalizeModelId("firerouter/auto-instant"), "firerouter/auto-instant");
+    assert.equal(normalizeModelId("FIREROUTER/ASTRA"), "firerouter/astra");
+    assert.equal(
+      normalizeModelId("accounts/Fireworks/models/kimi-k3"),
+      "kimi-k3",
+    );
+    assert.equal(
+      normalizeModelId("fireworks-ai/firerouter"),
+      "firerouter",
+    );
   });
 
   test("fullFireworksResourceId expands slugs for catalog lookups", () => {
@@ -192,13 +202,47 @@ describe("Fire Pass defaults", () => {
   test("model ID validation shows model and router examples", () => {
     assert.throws(
       () => validateModelId("bad/provider/path", "--model"),
-      /--model must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest/,
+      /--model must be a Fireworks model ID like kimi-k3 or a router ID like glm-latest/,
     );
   });
 
   test("model ID validation allows firerouter* gateway patterns", () => {
     assert.doesNotThrow(() => validateModelId("firerouter/x", "--model"));
     assert.doesNotThrow(() => validateModelId("firerouter/x[1m]", "--opus"));
+    assert.doesNotThrow(() => validateModelId("FIREROUTER/ASTRA", "--model"));
+  });
+
+  test("model ID validation rejects firerouter lookalikes", () => {
+    assert.throws(() => validateModelId("foo/firerouter-clone", "--model"), /--model must be/);
+    assert.throws(() => validateModelId("firerouterx/y", "--model"), /--model must be/);
+    assert.throws(() => validateModelId("firerouter/", "--model"), /--model must be/);
+    assert.throws(() => validateModelId("firerouter/..", "--model"), /--model must be/);
+    assert.throws(() => validateModelId("firerouter//kimi", "--model"), /--model must be/);
+    assert.throws(() => validateModelId("fireworks/kimi-k3", "--model"), /--model must be/);
+    assert.throws(() => validateModelId("router/kimi-k3", "--model"), /--model must be/);
+  });
+
+  test("canonicalRequestedModelId collapses known spellings and rejects junk paths", () => {
+    assert.equal(canonicalRequestedModelId("fireworks-ai/firerouter"), "firerouter");
+    assert.equal(canonicalRequestedModelId("FIREROUTER/ASTRA"), "firerouter/astra");
+    assert.equal(canonicalRequestedModelId("accounts/Fireworks/models/kimi-k3"), "kimi-k3");
+    assert.equal(canonicalRequestedModelId(""), "");
+    assert.throws(
+      () => canonicalRequestedModelId("fireworks/kimi-k3"),
+      /--model must be a Fireworks model ID/,
+    );
+    assert.throws(
+      () => canonicalRequestedModelId("foo/firerouter"),
+      /--model must be a Fireworks model ID/,
+    );
+    assert.throws(
+      () => canonicalRequestedModelId("native"),
+      /--model native is not a Fireworks model id/,
+    );
+    assert.throws(
+      () => canonicalRequestedModelId("claude-default"),
+      /--model claude-default is not a Fireworks model id/,
+    );
   });
 
   test("GLM fast routers and GLM 5P2 use Claude Code 1m context", () => withAliasCatalog(() => {

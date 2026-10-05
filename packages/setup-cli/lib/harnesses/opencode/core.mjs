@@ -325,7 +325,6 @@ export async function enableOpencodeFireworks({
   telemetryHeaders = {},
   catalogModelIds = [],
   catalogAvailable = catalogModelIds.length > 0,
-  catalogInitialized,
 }) {
   if (!apiKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
@@ -379,7 +378,6 @@ export async function enableOpencodeFireworks({
     || providerStatus === "azure";
   const home = homeFromDataDir(dataDir);
   const wasGloballyEnabled = home ? await isHarnessEnabled(home, HARNESS.OPENCODE) : false;
-  const initialized = catalogInitialized ?? wasGloballyEnabled;
   const shouldSnapshot = !hasBackup
     ? !hasFireconnectRouting || !wasGloballyEnabled
     : !hasFireconnectRouting;
@@ -446,10 +444,11 @@ export async function enableOpencodeFireworks({
     return out;
   };
   let models = { ...(existing.models ?? {}) };
-  if (modelId) {
-    models = { ...buildModels([storedModel]), ...models };
-  } else if (!initialized) {
+  if (Object.keys(models).length === 0) {
+    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
     models = buildModels([storedModel, ...catalog]);
+  } else if (modelId) {
+    models = { ...buildModels([storedModel]), ...models };
   } else if (catalogAvailable) {
     // Shared catalog-refresh policy: prune delisted ids, add newly served
     // ones, and re-render kept rows from the fresh catalog (name, context

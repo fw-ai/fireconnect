@@ -13,6 +13,7 @@ import { HARNESS, HARNESSES } from "../harness/id.mjs";
 export const GLOBAL_CONFIG_RELATIVE_PATH = ".fireconnect/config.json";
 export const FIREWORKS_API_KEY_ENV_REF = "{env:FIREWORKS_API_KEY}";
 export const ANTHROPIC_API_KEY_ENV_REF = "{env:ANTHROPIC_API_KEY}";
+export const OPENAI_API_KEY_ENV_REF = "{env:OPENAI_API_KEY}";
 // The keychain ref names the account the key is stored under — SECRET_ACCOUNT
 // ("fireworks-api-key") in secret-store.mjs. It's a fixed sentinel, not parsed;
 // getSecret() always reads that one account. The `keychain-ref-account-name`
@@ -77,6 +78,19 @@ export function resolveStoredAnthropicApiKey(stored) {
   }
   if (stored === ANTHROPIC_API_KEY_ENV_REF) {
     return process.env.ANTHROPIC_API_KEY?.trim() ?? "";
+  }
+  return stored.trim();
+}
+
+/**
+ * @param {string} stored
+ */
+export function resolveStoredOpenaiApiKey(stored) {
+  if (!stored) {
+    return "";
+  }
+  if (stored === OPENAI_API_KEY_ENV_REF) {
+    return process.env.OPENAI_API_KEY?.trim() ?? "";
   }
   return stored.trim();
 }
@@ -191,6 +205,7 @@ export async function readGlobalConfig(home) {
   return {
     apiKey: typeof existing.apiKey === "string" ? existing.apiKey : "",
     anthropicApiKey: typeof existing.anthropicApiKey === "string" ? existing.anthropicApiKey : "",
+    openaiApiKey: typeof existing.openaiApiKey === "string" ? existing.openaiApiKey : "",
     // Remembered enterprise SSO account (not a secret — just the org slug),
     // so `login` can reuse it instead of re-asking every time.
     ssoAccountId: typeof existing.ssoAccountId === "string" ? existing.ssoAccountId : "",
@@ -232,10 +247,25 @@ export async function persistGlobalAnthropicApiKey(home, anthropicApiKey) {
 }
 
 /**
+ * Store an OpenAI API key in global config (e.g. from on --openai-api-key).
+ * @param {string} home
+ * @param {string} openaiApiKey
+ */
+export async function persistGlobalOpenaiApiKey(home, openaiApiKey) {
+  const trimmed = openaiApiKey?.trim() ?? "";
+  if (!home || !trimmed) {
+    return false;
+  }
+  await writeGlobalConfig(home, { openaiApiKey: trimmed });
+  return true;
+}
+
+/**
  * @param {string} home
  * @param {{
  *   apiKey?: string,
  *   anthropicApiKey?: string,
+ *   openaiApiKey?: string,
  *   ssoAccountId?: string,
  *   provider?: "azure" | "fireworks",
  *   azure?: { baseUrl?: string, apiKey?: string },
@@ -250,6 +280,9 @@ export async function writeGlobalConfig(home, config) {
   const anthropicApiKey = config.anthropicApiKey !== undefined
     ? config.anthropicApiKey
     : (existing.anthropicApiKey ?? "");
+  const openaiApiKey = config.openaiApiKey !== undefined
+    ? config.openaiApiKey
+    : (existing.openaiApiKey ?? "");
   const ssoAccountId = config.ssoAccountId !== undefined
     ? config.ssoAccountId
     : (typeof existing.ssoAccountId === "string" ? existing.ssoAccountId : "");
@@ -270,6 +303,7 @@ export async function writeGlobalConfig(home, config) {
   const payload = {
     apiKey,
     anthropicApiKey,
+    openaiApiKey,
     ssoAccountId,
     provider,
     azure,
@@ -277,6 +311,7 @@ export async function writeGlobalConfig(home, config) {
   };
   const hasLiteralKey = (payload.apiKey && payload.apiKey !== FIREWORKS_API_KEY_ENV_REF && payload.apiKey !== FIREWORKS_API_KEY_KEYCHAIN_REF)
     || (payload.anthropicApiKey && payload.anthropicApiKey !== ANTHROPIC_API_KEY_ENV_REF)
+    || (payload.openaiApiKey && payload.openaiApiKey !== OPENAI_API_KEY_ENV_REF)
     || (payload.azure.apiKey && !isAzureApiKeyEnvRef(payload.azure.apiKey));
   await writeJson(filePath, payload, { mode: hasLiteralKey ? 0o600 : undefined });
   return payload;

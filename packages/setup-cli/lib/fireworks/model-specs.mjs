@@ -68,11 +68,6 @@ export const FIREWORKS_MODEL_SPECS = {
     pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
     capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
   },
-  "glm-5p2-fast-us": {
-    label: "GLM 5.2 Fast (US)",
-    pricing: { input: 2.10, cachedInput: 0.21, output: 6.60, tier: "fast" },
-    capabilities: { contextWindow: 1_048_575, maxOutputTokens: 131_072, vision: false, toolCalling: true },
-  },
   "glm-5p3-fast": {
     label: "GLM 5.3 Fast",
     pricing: { input: 2.10, cachedInput: 0.39, output: 6.60, tier: "fast" },
@@ -253,7 +248,6 @@ export function isFirerouterModelPattern(model) {
 /** Router aliases used before the serverless catalog cache is warm. */
 export const KNOWN_LATEST_ROUTER_ALIASES = Object.freeze([
   "deepseek-flash-latest",
-  "deepseek-pro-latest",
   "glm-fast-latest",
   "glm-flash-latest",
   "glm-latest",

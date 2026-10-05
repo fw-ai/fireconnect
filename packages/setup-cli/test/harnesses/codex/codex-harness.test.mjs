@@ -190,6 +190,34 @@ describe("codex harness integration", () => {
     assert.ok(slugs.includes("firerouter/test-model"));
   });
 
+  it("fresh on with --model seeds the full catalog, not just the selected model", async () => {
+    // The ChatGPT app dropdown lists whatever the catalog file holds. A fresh
+    // `--model` run used to write only the selected row, leaving a one-entry
+    // menu; seed the whole fetched catalog so every Fireworks model is pickable.
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-fresh-model-full-"));
+    await mkdir(path.join(home, ".codex"), { recursive: true });
+    seedServerlessCatalogCache(home, [
+      mockServerlessModel({
+        name: "accounts/fireworks/models/alpha-one",
+        displayName: "Alpha One",
+      }),
+      mockServerlessModel({
+        name: "accounts/fireworks/models/beta-two",
+        displayName: "Beta Two",
+      }),
+    ]);
+    const result = await runFireconnect(
+      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "beta-two"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(await readFile(codexConfigPath(home), "utf8"), /model = "beta-two"/);
+    const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8"))
+      .models.map((row) => row.slug);
+    assert.ok(slugs.includes("beta-two"));
+    assert.ok(slugs.includes("alpha-one"), `expected full catalog, got ${slugs.join(",")}`);
+  });
+
   it("second on with no changes is a file-level no-op", async () => {
     // The thin mock catalog also exercises context repair.
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-rerun-noop-"));
@@ -279,6 +307,7 @@ describe("codex harness integration", () => {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
+        OPENAI_API_KEY: "",
         SHELL: "/bin/bash",
         ZSH_VERSION: "",
         BASH_VERSION: "5",

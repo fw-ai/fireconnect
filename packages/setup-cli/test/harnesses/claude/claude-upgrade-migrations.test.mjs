@@ -11,10 +11,10 @@ import {
   userSettingsPath,
 } from "../../../lib/harnesses/claude/core.mjs";
 import {
-  migrateClaudeAutoModeServerOnUpgrade,
   migrateClaudeExploreInheritCapOnUpgrade,
   migrateClaudeModelPickerOnUpgrade,
   migrateClaudeNativeWebSearchOnUpgrade,
+  migrateClaudeRetiredAutoModeServerPinOnUpgrade,
   migrateClaudeToolSearchOnUpgrade,
 } from "../../../lib/harnesses/claude/upgrade-migrations.mjs";
 import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
@@ -110,21 +110,22 @@ describe("migrateClaudeToolSearchOnUpgrade", () => {
   });
 });
 
-describe("migrateClaudeAutoModeServerOnUpgrade", () => {
-  it("pins the local classifier on managed settings, preserving everything else", async () => {
+describe("migrateClaudeRetiredAutoModeServerPinOnUpgrade", () => {
+  it("removes the retired pin from managed settings, preserving everything else", async () => {
     await withTempHome("claude-auto-mode-server-", async (home) => {
       const { settingsPath } = await seedSettings(home, {
         env: {
           ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
           ANTHROPIC_CUSTOM_HEADERS: "X-Fireworks-Api-Key: fw_test_key_12345",
+          CLAUDE_CODE_AUTO_MODE_SERVER: "0",
           MY_CUSTOM_VAR: "keep-me",
         },
       });
 
-      assert.equal(await migrateClaudeAutoModeServerOnUpgrade(home), true);
+      assert.equal(await migrateClaudeRetiredAutoModeServerPinOnUpgrade(home), true);
 
       const settings = JSON.parse(await readFile(settingsPath, "utf8"));
-      assert.equal(settings.env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+      assert.equal(Object.hasOwn(settings.env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
       assert.equal(settings.env.MY_CUSTOM_VAR, "keep-me");
       assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, "X-Fireworks-Api-Key: fw_test_key_12345");
       // The rewrite must not widen the mode: the file holds the Fireworks key.
@@ -132,7 +133,47 @@ describe("migrateClaudeAutoModeServerOnUpgrade", () => {
     });
   });
 
-  it("leaves a value the user already set alone", async () => {
+  it("keeps a pin the user had before connecting", async () => {
+    await withTempHome("claude-auto-mode-server-own-", async (home) => {
+      const { settingsPath, raw } = await seedSettings(home, {
+        env: {
+          ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
+          CLAUDE_CODE_AUTO_MODE_SERVER: "0",
+        },
+      });
+      const backupPath = providerBackupPath(resolveDataDir({ home }));
+      await mkdir(path.dirname(backupPath), { recursive: true });
+      await writeFile(backupPath, JSON.stringify({
+        configPath: settingsPath,
+        snapshot: {
+          existed: true,
+          raw: JSON.stringify({ env: { CLAUDE_CODE_AUTO_MODE_SERVER: "0" } }),
+        },
+      }));
+
+      assert.equal(await migrateClaudeRetiredAutoModeServerPinOnUpgrade(home), false);
+      assert.equal(await readFile(settingsPath, "utf8"), raw);
+    });
+  });
+
+  it("keeps a pin recorded in a legacy values-only backup", async () => {
+    await withTempHome("claude-auto-mode-server-legacy-", async (home) => {
+      const { raw } = await seedSettings(home, {
+        env: {
+          ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
+          CLAUDE_CODE_AUTO_MODE_SERVER: "0",
+        },
+      });
+      const backupPath = providerBackupPath(resolveDataDir({ home }));
+      await mkdir(path.dirname(backupPath), { recursive: true });
+      await writeFile(backupPath, JSON.stringify({ values: { CLAUDE_CODE_AUTO_MODE_SERVER: "0" } }));
+
+      assert.equal(await migrateClaudeRetiredAutoModeServerPinOnUpgrade(home), false);
+      assert.equal(await readFile(userSettingsPath(home), "utf8"), raw);
+    });
+  });
+
+  it("leaves any other value alone", async () => {
     await withTempHome("claude-auto-mode-server-user-", async (home) => {
       const { settingsPath, raw } = await seedSettings(home, {
         env: {
@@ -141,7 +182,7 @@ describe("migrateClaudeAutoModeServerOnUpgrade", () => {
         },
       });
 
-      assert.equal(await migrateClaudeAutoModeServerOnUpgrade(home), false);
+      assert.equal(await migrateClaudeRetiredAutoModeServerPinOnUpgrade(home), false);
       assert.equal(await readFile(settingsPath, "utf8"), raw);
     });
   });
@@ -149,10 +190,13 @@ describe("migrateClaudeAutoModeServerOnUpgrade", () => {
   it("no-ops on settings FireConnect does not route to Fireworks", async () => {
     await withTempHome("claude-auto-mode-server-native-", async (home) => {
       const { settingsPath, raw } = await seedSettings(home, {
-        env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+          CLAUDE_CODE_AUTO_MODE_SERVER: "0",
+        },
       });
 
-      assert.equal(await migrateClaudeAutoModeServerOnUpgrade(home), false);
+      assert.equal(await migrateClaudeRetiredAutoModeServerPinOnUpgrade(home), false);
       assert.equal(await readFile(settingsPath, "utf8"), raw);
     });
   });
@@ -160,10 +204,13 @@ describe("migrateClaudeAutoModeServerOnUpgrade", () => {
   it("leaves settings alone when the harness is off", async () => {
     await withTempHome("claude-auto-mode-server-off-", async (home) => {
       const { raw } = await seedSettings(home, {
-        env: { ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL },
+        env: {
+          ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
+          CLAUDE_CODE_AUTO_MODE_SERVER: "0",
+        },
       }, { enabled: false });
 
-      assert.equal(await migrateClaudeAutoModeServerOnUpgrade(home), false);
+      assert.equal(await migrateClaudeRetiredAutoModeServerPinOnUpgrade(home), false);
       assert.equal(await readFile(userSettingsPath(home), "utf8"), raw);
     });
   });

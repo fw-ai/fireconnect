@@ -157,6 +157,17 @@ export function planPiCatalogUpdate(
   } = {},
 ) {
   const previous = previousManagedIds.map(fullFireworksResourceId);
+  if (!initialized) {
+    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
+    // piModelsToRegister already ensures the selected model is included.
+    const add = piModelsToRegister(resolvedModel, catalogModelIds);
+    return {
+      add,
+      refresh: [],
+      remove: [],
+      managed: add.map((entry) => fullFireworksResourceId(entry.id)),
+    };
+  }
   if (modelRequested) {
     const selected = fullFireworksResourceId(resolvedModel);
     const existing = new Set(existingModelIds.map(fullFireworksResourceId));
@@ -168,15 +179,6 @@ export function planPiCatalogUpdate(
       refresh: [],
       remove: [],
       managed,
-    };
-  }
-  if (!initialized) {
-    const add = piModelsToRegister(resolvedModel, catalogModelIds);
-    return {
-      add,
-      refresh: [],
-      remove: [],
-      managed: add.map((entry) => fullFireworksResourceId(entry.id)),
     };
   }
   if (!catalogAvailable) {

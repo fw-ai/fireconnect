@@ -200,7 +200,6 @@ describe("opencode catalog model handling", () => {
       effectiveApiKey: "fpk_test_firepass_key",
       catalogModelIds,
       catalogAvailable: true,
-      catalogInitialized: true,
     });
 
     const models = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models;
@@ -241,7 +240,6 @@ describe("opencode catalog model handling", () => {
         apiKey: "fpk_test_firepass_key",
         effectiveApiKey: "fpk_test_firepass_key",
         catalogModelIds,
-        catalogInitialized: true,
       });
 
       const entry = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models["glm-latest"];
@@ -278,7 +276,6 @@ describe("opencode catalog model handling", () => {
       apiKey: "fw_test_key_12345",
       effectiveApiKey: "fw_test_key_12345",
       catalogModelIds: [],
-      catalogInitialized: true,
     });
 
     const models = JSON.parse(await readFile(configPath, "utf8")).provider["fireworks-ai"].models;

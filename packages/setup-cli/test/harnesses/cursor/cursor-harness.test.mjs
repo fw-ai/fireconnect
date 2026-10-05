@@ -1014,19 +1014,19 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("firerouter without a key reports the Anthropic-required error", async () => {
+  itIfSqlite("firerouter connects without an Anthropic key", async () => {
     await withTempHome("cursor-firerouter-no-key-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      // Bare firerouter routes to an Anthropic primary, so even with no key the
-      // dedicated refusal fires (Cursor can't forward a local Anthropic key) —
-      // more informative than the generic missing-key error.
+      // Bare firerouter routes to an Anthropic primary, but Cursor can't forward
+      // a local Anthropic key, so it connects without BYOK headers and FireRouter
+      // routes the Fireworks mix instead of failing.
       const result = await runCli(
-        ["cursor", "on", "--model", "firerouter", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
+        ["cursor", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter", "--db-path", dbPath, "--force"],
+        { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
       );
-      assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /Anthropic API key Cursor can't forward/);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE), "firerouter");
     });
   });
 
@@ -1091,40 +1091,38 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("firerouter selection with an Anthropic primary is refused in Cursor", async () => {
+  itIfSqlite("firerouter selections with an Anthropic primary connect in Cursor", async () => {
     await withTempHome("cursor-refuse-anthropic-firerouter-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const refused =
-        /Anthropic API key Cursor can't forward/;
 
-      // Bare firerouter's primary is Claude Opus 5 → needs an Anthropic key.
+      // Bare firerouter's primary is Claude Opus 5: connects without BYOK.
       const bare = await runCli(
         ["cursor", "on", "--api-key", "fw_test_key_12345",
           "--model", "firerouter", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
+        { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
       );
-      assert.notEqual(bare.code, 0);
-      assert.match(bare.stderr, refused);
+      assert.equal(bare.code, 0, bare.stderr);
+      assert.equal(cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE), "firerouter");
 
-      // A multi-model slug naming Claude Opus 5 is the same category — this is
-      // the regression for the crash reported with firerouter/claude-opus-5/kimi-k3-fast.
+      // A multi-model slug naming Claude Opus 5 is the same category.
       const compound = await runCli(
         ["cursor", "on", "--api-key", "fw_test_key_12345",
           "--model", "firerouter/claude-opus-5/kimi-k3-fast", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
+        { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
       );
-      assert.notEqual(compound.code, 0);
-      assert.match(compound.stderr, refused);
-      // Nothing was written.
-      await assert.rejects(access(path.join(home, ".fireconnect", ".secret-memory")));
+      assert.equal(compound.code, 0, compound.stderr);
+      assert.equal(
+        cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE),
+        "firerouter/claude-opus-5/kimi-k3-fast",
+      );
     });
   });
 
-  itIfSqlite("bare firerouter is always refused without a forwardable Anthropic key", async () => {
-    // Workspace BYOK is no longer consulted on non-Claude harnesses; Cursor
-    // can't forward a local Anthropic key, so Anthropic-requiring firerouter
-    // selections (including bare firerouter) are refused outright.
+  itIfSqlite("bare firerouter connects without a forwardable Anthropic key", async () => {
+    // Cursor can't forward a local Anthropic key, so Anthropic-requiring
+    // firerouter selections (including bare firerouter) connect without BYOK
+    // headers instead of failing.
     await withTempHome("cursor-firerouter-refused-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
@@ -1133,10 +1131,10 @@ describe("cursor harness integration", () => {
           "cursor", "on", "--api-key", "fw_test_key_12345",
           "--model", "firerouter", "--db-path", dbPath, "--force",
         ],
-        { home, env: { FIREWORKS_API_KEY: "" } },
+        { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
       );
-      assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /Anthropic API key Cursor can't forward/);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE), "firerouter");
     });
   });
 

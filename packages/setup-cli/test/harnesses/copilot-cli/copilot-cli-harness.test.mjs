@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  copilotCliModelIdFromSelection,
   copilotCliSelectionId,
   copilotProvidersPath,
   copilotSettingsPath,
@@ -41,6 +42,8 @@ describe("copilot-cli config", () => {
     // A bare id is rejected by the CLI ("Model … is not available") and falls
     // back to another model, so the prefix is not cosmetic.
     assert.equal(copilotCliSelectionId("glm-latest"), "fireworks/glm-latest");
+    assert.equal(copilotCliModelIdFromSelection("fireworks/glm-latest"), "glm-latest");
+    assert.equal(copilotCliModelIdFromSelection("other/glm-latest"), "");
   });
 
   it("resolves providers.json and settings.json side by side, honoring COPILOT_HOME", () => {

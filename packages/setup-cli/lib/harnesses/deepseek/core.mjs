@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, unlink } from "node:fs/promises";
+import { chmod, mkdir, readdir, lstat, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { parseDocument, stringify } from "yaml";
@@ -19,13 +19,20 @@ import {
 } from "../../keys/key-type.mjs";
 import { readRawIfExists } from "../opencode/core.mjs";
 import {
+  DEEPSEEK_AGENT_DEFAULT_MODEL_ENTRY_ID,
+  DEEPSEEK_AGENT_DEFAULT_MODEL_PLUGIN,
   DEEPSEEK_API_KEY_ENV,
   DEEPSEEK_DATA_RELATIVE_DIR,
   DEEPSEEK_DEFAULT_MODEL_NS,
   DEEPSEEK_FIREWORKS_BASE_URL,
   DEEPSEEK_FIREWORKS_PROVIDER_ID,
   DEEPSEEK_HOME_RELATIVE_DIR,
+  DEEPSEEK_LLM_PI_AI_ENTRY_ID,
   DEEPSEEK_LLM_PI_AI_NS,
+  DEEPSEEK_LLM_PI_AI_PLUGIN,
+  DEEPSEEK_PROFILE_PATCH_FILENAME,
+  DEEPSEEK_PROFILE_ROOT_FILENAME,
+  DEEPSEEK_PROFILES_DIRNAME,
 } from "./constants.mjs";
 
 export {
@@ -276,11 +283,263 @@ export function stripDeepseekFireworksSettings(settings) {
   return next;
 }
 
+/**
+ * dsh 0.1.7+ treats `$DSH_HOME/settings.yaml` as a legacy document: on the
+ * first boot of a profile it imports the sections into that profile's
+ * `cordis.patch.yml` — asynchronously, after the loader has settled — so the
+ * boot performing the import still resolves the built-in default model
+ * (provider route `deepseek-official`) and fails with MISSING_CREDENTIAL for
+ * anyone without a DeepSeek key. Writing the fireworks provider and default
+ * model into every existing profile patch alongside settings.yaml keeps the
+ * route active from the very first boot; profiles that don't exist yet still
+ * go through dsh's own import of the legacy document.
+ * @param {string} settingsPath
+ */
+export function deepseekProfilesDir(settingsPath) {
+  return path.join(path.dirname(settingsPath), DEEPSEEK_PROFILES_DIRNAME);
+}
+
+/**
+ * Profile dirs that exist on disk (identified by the `cordis.yml` root dsh
+ * writes at profile init). Sorted for deterministic snapshots.
+ * @param {string} settingsPath
+ * @returns {Promise<string[]>}
+ */
+export async function listDeepseekProfileDirs(settingsPath) {
+  const profilesDir = deepseekProfilesDir(settingsPath);
+  let names;
+  try {
+    names = await readdir(profilesDir);
+  } catch {
+    return [];
+  }
+  const dirs = [];
+  for (const name of names.sort()) {
+    const dir = path.join(profilesDir, name);
+    try {
+      const dirStat = await lstat(dir);
+      if (!dirStat.isDirectory()) {
+        continue;
+      }
+      await stat(path.join(dir, DEEPSEEK_PROFILE_ROOT_FILENAME));
+      dirs.push(dir);
+    } catch {
+      // Not an initialized profile (or unreadable) — skip.
+    }
+  }
+  return dirs;
+}
+
+/**
+ * @param {string} patchPath
+ * @returns {Promise<{ existed: boolean, raw: string, entries: unknown[] }>}
+ */
+export async function readDeepseekProfilePatch(patchPath) {
+  const snapshot = await readRawIfExists(patchPath);
+  if (!snapshot.existed || !snapshot.raw.trim()) {
+    return { existed: snapshot.existed, raw: snapshot.raw, entries: [] };
+  }
+  const doc = parseDocument(snapshot.raw);
+  if (doc.errors.length > 0) {
+    throw new Error(`Invalid DeepSeek profile patch ${patchPath}: ${doc.errors[0].message}`);
+  }
+  const entries = doc.toJS();
+  if (entries === null || entries === undefined) {
+    return { existed: true, raw: snapshot.raw, entries: [] };
+  }
+  if (!Array.isArray(entries)) {
+    throw new Error(`DeepSeek profile patch ${patchPath} must be a list of entries`);
+  }
+  return { existed: true, raw: snapshot.raw, entries };
+}
+
+/** Match a patch entry by loader id or plugin name (dsh writes both). */
+function isProfilePatchEntry(entry, id, plugin) {
+  if (!asPlainObject(entry)) {
+    return false;
+  }
+  return entry.id === id || entry.name === plugin;
+}
+
+/**
+ * Upsert the fireworks provider route + default model into a profile patch
+ * entry list. Existing entries (and other providers under llm-pi-ai) are
+ * preserved; missing entries are appended in the shape dsh's legacy-settings
+ * import writes.
+ * @param {unknown[]} entries
+ * @param {{ modelId: string, modelName?: string }} opts
+ * @returns {Record<string, unknown>[]}
+ */
+export function patchDeepseekProfilePatchEntries(entries, { modelId, modelName }) {
+  const slug = shortFireworksModelRef(normalizeModelId(modelId));
+  const fireworksProvider = {
+    displayName: "Fireworks",
+    apiKeyEnv: DEEPSEEK_API_KEY_ENV,
+    api: "openai-completions",
+    baseURL: DEEPSEEK_FIREWORKS_BASE_URL,
+    models: [buildDeepseekFireworksModelEntry(slug, modelName)],
+  };
+  /** @type {Record<string, unknown>[]} */
+  const next = entries.map((entry) => structuredClone(asPlainObject(entry) ?? {}));
+
+  let llmEntry = next.find((entry) => (
+    isProfilePatchEntry(entry, DEEPSEEK_LLM_PI_AI_ENTRY_ID, DEEPSEEK_LLM_PI_AI_PLUGIN)
+  ));
+  if (!llmEntry) {
+    llmEntry = { id: DEEPSEEK_LLM_PI_AI_ENTRY_ID, name: DEEPSEEK_LLM_PI_AI_PLUGIN, config: {} };
+    next.push(llmEntry);
+  }
+  const llmConfig = asPlainObject(llmEntry.config) ?? {};
+  const providers = asPlainObject(llmConfig.providers) ?? {};
+  providers[DEEPSEEK_FIREWORKS_PROVIDER_ID] = fireworksProvider;
+  llmConfig.providers = providers;
+  llmEntry.config = llmConfig;
+
+  let defaultEntry = next.find((entry) => (
+    isProfilePatchEntry(entry, DEEPSEEK_AGENT_DEFAULT_MODEL_ENTRY_ID, DEEPSEEK_AGENT_DEFAULT_MODEL_PLUGIN)
+  ));
+  if (!defaultEntry) {
+    defaultEntry = { id: DEEPSEEK_AGENT_DEFAULT_MODEL_ENTRY_ID, name: DEEPSEEK_AGENT_DEFAULT_MODEL_PLUGIN, config: {} };
+    next.push(defaultEntry);
+  }
+  defaultEntry.config = {
+    ...(asPlainObject(defaultEntry.config) ?? {}),
+    provider: DEEPSEEK_FIREWORKS_PROVIDER_ID,
+    model: slug,
+  };
+  return next;
+}
+
+/**
+ * Remove only the entries FireConnect owns from a profile patch: the
+ * fireworks provider under llm-pi-ai (dropping the entry when nothing else
+ * remains) and the agent-default-model entry only when it still points at the
+ * fireworks provider. Never touches a user's own deepseek-official default.
+ * @param {unknown[]} entries
+ * @returns {{ entries: unknown[], changed: boolean }}
+ */
+export function stripDeepseekProfilePatchEntries(entries) {
+  /** @type {unknown[]} */
+  const next = [];
+  let changed = false;
+  for (const rawEntry of entries) {
+    const entry = asPlainObject(rawEntry);
+    if (!entry) {
+      next.push(rawEntry);
+      continue;
+    }
+    if (isProfilePatchEntry(entry, DEEPSEEK_AGENT_DEFAULT_MODEL_ENTRY_ID, DEEPSEEK_AGENT_DEFAULT_MODEL_PLUGIN)) {
+      if (asPlainObject(entry.config)?.provider === DEEPSEEK_FIREWORKS_PROVIDER_ID) {
+        changed = true;
+        continue;
+      }
+      next.push(entry);
+      continue;
+    }
+    if (isProfilePatchEntry(entry, DEEPSEEK_LLM_PI_AI_ENTRY_ID, DEEPSEEK_LLM_PI_AI_PLUGIN)) {
+      const config = asPlainObject(entry.config);
+      const providers = asPlainObject(config?.providers);
+      if (!providers || !Object.hasOwn(providers, DEEPSEEK_FIREWORKS_PROVIDER_ID)) {
+        next.push(entry);
+        continue;
+      }
+      const nextProviders = { ...providers };
+      delete nextProviders[DEEPSEEK_FIREWORKS_PROVIDER_ID];
+      const nextConfig = { ...(config ?? {}) };
+      if (Object.keys(nextProviders).length > 0) {
+        nextConfig.providers = nextProviders;
+      } else {
+        delete nextConfig.providers;
+      }
+      if (Object.keys(nextConfig).length === 0) {
+        changed = true;
+        continue;
+      }
+      next.push({ ...entry, config: nextConfig });
+      changed = true;
+      continue;
+    }
+    next.push(entry);
+  }
+  return { entries: next, changed };
+}
+
+/**
+ * FireConnect-managed state in a profile patch, if any.
+ * @param {unknown[]} entries
+ * @returns {{ provider: "fireworks" | null, model: string | null }}
+ */
+export function deepseekProfilePatchFireworksState(entries) {
+  for (const rawEntry of entries) {
+    const entry = asPlainObject(rawEntry);
+    if (!entry || !isProfilePatchEntry(entry, DEEPSEEK_LLM_PI_AI_ENTRY_ID, DEEPSEEK_LLM_PI_AI_PLUGIN)) {
+      continue;
+    }
+    const providers = asPlainObject(asPlainObject(entry.config)?.providers);
+    const provider = asPlainObject(providers?.[DEEPSEEK_FIREWORKS_PROVIDER_ID]);
+    if (!provider || provider.apiKeyEnv !== DEEPSEEK_API_KEY_ENV) {
+      continue;
+    }
+    let model = null;
+    for (const other of entries) {
+      const candidate = asPlainObject(other);
+      if (!candidate || !isProfilePatchEntry(candidate, DEEPSEEK_AGENT_DEFAULT_MODEL_ENTRY_ID, DEEPSEEK_AGENT_DEFAULT_MODEL_PLUGIN)) {
+        continue;
+      }
+      const config = asPlainObject(candidate.config);
+      if (config?.provider === DEEPSEEK_FIREWORKS_PROVIDER_ID && typeof config.model === "string") {
+        model = config.model.trim() || null;
+      }
+    }
+    return { provider: "fireworks", model };
+  }
+  return { provider: null, model: null };
+}
+
+/**
+ * Effective routing state: the legacy settings document first, then every
+ * profile patch (dsh 0.1.7+ migrates settings.yaml into the patch, so the
+ * file can be gone while the route still lives in a profile).
+ * @param {string} settingsPath
+ * @param {Record<string, unknown>} settings
+ * @returns {Promise<{ provider: "fireworks" | null, model: string | null }>}
+ */
+export async function deepseekEffectiveFireworksState(settingsPath, settings) {
+  if (isManagedFireworksProvider(settings)) {
+    const model = asPlainObject(settings[DEEPSEEK_DEFAULT_MODEL_NS])?.model;
+    return {
+      provider: "fireworks",
+      model: typeof model === "string" && model.trim() ? shortFireworksModelRef(model) : null,
+    };
+  }
+  for (const dir of await listDeepseekProfileDirs(settingsPath)) {
+    let patch;
+    try {
+      patch = await readDeepseekProfilePatch(path.join(dir, DEEPSEEK_PROFILE_PATCH_FILENAME));
+    } catch {
+      continue;
+    }
+    const state = deepseekProfilePatchFireworksState(patch.entries);
+    if (state.provider === "fireworks") {
+      return state;
+    }
+  }
+  return { provider: null, model: null };
+}
+
 function serializeYaml(doc) {
   if (Object.keys(doc).length === 0) {
     return "";
   }
   return `${stringify(doc, { lineWidth: 0 }).trimEnd()}\n`;
+}
+
+/** Patch files are a top-level entry list; an empty list must stay `[]`. */
+function serializeProfilePatch(entries) {
+  if (entries.length === 0) {
+    return "[]\n";
+  }
+  return `${stringify(entries, { lineWidth: 0 }).trimEnd()}\n`;
 }
 
 /**
@@ -293,6 +552,32 @@ function serializeYaml(doc) {
  *   keyType?: string,
  * }} args
  */
+/**
+ * Snapshot a profile patch as the pre-FireConnect original. A patch left
+ * dirty by a previous `on` whose backup was lost or never run `off` is
+ * snapshotted with FireConnect-owned entries stripped, so restoring it can
+ * never resurrect the fireworks route.
+ * @param {string} patchPath
+ * @returns {Promise<{ existed: boolean, raw: string }>}
+ */
+async function snapshotProfilePatchOriginal(patchPath) {
+  const snap = await readRawIfExists(patchPath);
+  if (!snap.existed || !snap.raw.trim()) {
+    return { existed: snap.existed, raw: snap.raw };
+  }
+  let patch;
+  try {
+    patch = await readDeepseekProfilePatch(patchPath);
+  } catch {
+    return { existed: snap.existed, raw: snap.raw };
+  }
+  if (deepseekProfilePatchFireworksState(patch.entries).provider !== "fireworks") {
+    return { existed: snap.existed, raw: snap.raw };
+  }
+  const { entries } = stripDeepseekProfilePatchEntries(patch.entries);
+  return { existed: true, raw: serializeProfilePatch(entries) };
+}
+
 export async function enableDeepseekFireworks({
   settingsPath,
   credentialsPath,
@@ -330,20 +615,41 @@ export async function enableDeepseekFireworks({
   const shouldSnapshot = existingBackup.settingsSnapshot === undefined
     && !isManagedFireworksProvider(settingsSnap.settings);
 
-  if (shouldSnapshot) {
-    await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
-    await writeJson(backupPath, {
+  // dsh 0.1.7+ composes per-profile `cordis.patch.yml` layers; snapshot each
+  // existing profile patch once (first touch) so `off` restores byte-for-byte.
+  const patchPaths = (await listDeepseekProfileDirs(settingsPath))
+    .map((dir) => path.join(dir, DEEPSEEK_PROFILE_PATCH_FILENAME));
+  const patchSnapshots = { ...(existingBackup.profilePatchSnapshots ?? {}) };
+  let addedPatchSnapshot = false;
+  for (const patchPath of patchPaths) {
+    const key = path.resolve(patchPath);
+    if (patchSnapshots[key] !== undefined) {
+      continue;
+    }
+    patchSnapshots[key] = await snapshotProfilePatchOriginal(patchPath);
+    addedPatchSnapshot = true;
+  }
+
+  if (shouldSnapshot || addedPatchSnapshot) {
+    const backup = {
       settingsPath: path.resolve(settingsPath),
       credentialsPath: path.resolve(credentialsPath),
-      settingsSnapshot: {
-        existed: settingsSnap.existed,
-        raw: settingsSnap.raw,
-      },
-      credentialsSnapshot: {
-        existed: credentialsSnap.existed,
-        raw: credentialsSnap.raw,
-      },
-    });
+      ...(shouldSnapshot || existingBackup.settingsSnapshot !== undefined
+        ? {
+          settingsSnapshot: existingBackup.settingsSnapshot ?? {
+            existed: settingsSnap.existed,
+            raw: settingsSnap.raw,
+          },
+          credentialsSnapshot: existingBackup.credentialsSnapshot ?? {
+            existed: credentialsSnap.existed,
+            raw: credentialsSnap.raw,
+          },
+        }
+        : {}),
+      profilePatchSnapshots: patchSnapshots,
+    };
+    await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
+    await writeJson(backupPath, backup);
     await chmod(backupPath, 0o600);
   }
 
@@ -358,6 +664,20 @@ export async function enableDeepseekFireworks({
   await mkdir(path.dirname(settingsPath), { recursive: true, mode: 0o700 });
   await writeFileAtomic(settingsPath, serializeYaml(nextSettings), { mode: 0o600 });
   await writeFileAtomic(credentialsPath, serializeYaml(nextCredentials), { mode: 0o600 });
+
+  // Patch every existing profile directly so the fireworks route is active on
+  // the very next dsh boot — a legacy settings.yaml import only takes effect
+  // on the boot *after* the one that performs it.
+  for (const patchPath of patchPaths) {
+    let patch;
+    try {
+      patch = await readDeepseekProfilePatch(patchPath);
+    } catch {
+      continue; // Unparseable user patch (e.g. !!js expressions) — leave it alone.
+    }
+    const raw = serializeProfilePatch(patchDeepseekProfilePatchEntries(patch.entries, { modelId: storedModel }));
+    await writeFileAtomic(patchPath, raw, { mode: 0o600 });
+  }
 
   return {
     model: storedModel,
@@ -383,7 +703,8 @@ export async function refreshDeepseekGatewayKey({
     return false;
   }
   const settingsSnap = await readDeepseekSettingsIfExists(settingsPath);
-  if (!isManagedFireworksProvider(settingsSnap.settings)) {
+  const effective = await deepseekEffectiveFireworksState(settingsPath, settingsSnap.settings);
+  if (effective.provider !== "fireworks") {
     return false;
   }
   const credentialsSnap = await readDeepseekCredentialsIfExists(credentialsPath);
@@ -442,8 +763,10 @@ export async function disableDeepseekFireworks({
   const backup = await readJsonIfExists(backupPath);
   const settingsSnap = await readDeepseekSettingsIfExists(settingsPath);
   const hasBackup = backup.settingsSnapshot !== undefined;
+  const patchSnapshots = asPlainObject(backup.profilePatchSnapshots) ?? {};
+  const hasPatchBackup = Object.keys(patchSnapshots).length > 0;
 
-  if (!wasEnabled && !hasBackup && deepseekProviderStatus(settingsSnap.settings) !== "fireworks") {
+  if (!wasEnabled && !hasBackup && !hasPatchBackup && deepseekProviderStatus(settingsSnap.settings) !== "fireworks") {
     return "unchanged";
   }
 
@@ -460,6 +783,8 @@ export async function disableDeepseekFireworks({
     if (backup.credentialsSnapshot) {
       await restoreRawSnapshot(backup.credentialsSnapshot, credentialsPath);
     }
+    await restoreProfilePatchSnapshots(patchSnapshots);
+    await stripLeftoverProfilePatches(settingsPath, patchSnapshots);
     try {
       await unlink(backupPath);
     } catch (error) {
@@ -470,8 +795,24 @@ export async function disableDeepseekFireworks({
     return "restored";
   }
 
+  // Patch-only backup (in-place upgrade of an already-managed install): the
+  // settings strip below still runs, but the patches restore from snapshot.
+  let outcome = null;
+  if (hasPatchBackup) {
+    await restoreProfilePatchSnapshots(patchSnapshots);
+    await stripLeftoverProfilePatches(settingsPath, patchSnapshots);
+    try {
+      await unlink(backupPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    outcome = "restored";
+  }
+
   if (!settingsSnap.existed) {
-    return "unchanged";
+    return outcome ?? "unchanged";
   }
 
   const nextRaw = serializeYaml(stripDeepseekFireworksSettings(settingsSnap.settings));
@@ -493,5 +834,46 @@ export async function disableDeepseekFireworks({
     }
   }
 
-  return "stripped";
+  return outcome ?? "stripped";
+}
+
+/**
+ * Restore per-profile patch snapshots captured by enable.
+ * @param {Record<string, { existed: boolean, raw: string }>} snapshots
+ */
+async function restoreProfilePatchSnapshots(snapshots) {
+  for (const [patchPath, snapshot] of Object.entries(snapshots)) {
+    if (!snapshot || typeof snapshot !== "object") {
+      continue;
+    }
+    await restoreRawSnapshot(snapshot, patchPath);
+  }
+}
+
+/**
+ * Strip FireConnect-owned entries from every profile patch that has no
+ * snapshot — profiles dsh created or imported after `on`, whose fireworks
+ * route would otherwise survive `off`.
+ * @param {string} settingsPath
+ * @param {Record<string, unknown>} snapshots
+ */
+async function stripLeftoverProfilePatches(settingsPath, snapshots) {
+  const restored = new Set(Object.keys(snapshots).map((key) => path.resolve(key)));
+  for (const dir of await listDeepseekProfileDirs(settingsPath)) {
+    const patchPath = path.join(dir, DEEPSEEK_PROFILE_PATCH_FILENAME);
+    if (restored.has(path.resolve(patchPath))) {
+      continue;
+    }
+    let patch;
+    try {
+      patch = await readDeepseekProfilePatch(patchPath);
+    } catch {
+      continue; // Unparseable user patch — leave it alone.
+    }
+    const { entries, changed } = stripDeepseekProfilePatchEntries(patch.entries);
+    if (!changed) {
+      continue;
+    }
+    await writeFileAtomic(patchPath, serializeProfilePatch(entries), { mode: 0o600 });
+  }
 }

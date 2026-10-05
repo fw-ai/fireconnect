@@ -27,14 +27,21 @@ import {
   specShortIdFromModelRef,
 } from "../../fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
-import { isOpenAiPricedModelId, providerListPricing } from "../../demo/list-pricing.mjs";
+import { canonicalOpenAiModelId, isOpenAiPricedModelId, providerListPricing } from "../../demo/list-pricing.mjs";
 import { isAnthropicModelId, isAutoModelId, isClaudeNativeModel, isFirerouterModel, isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
-import { autoDisplayName, firerouterDisplayName, prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
+import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
+import { stripViaFireworksSuffix } from "../../fireworks/label-suffix.mjs";
 import { UNPRICED_TEXT, addUsage } from "./usage/cost.mjs";
 import {
   formatUsageCost,
   formatUsageCachePct,
 } from "./usage/format.mjs";
+import {
+  claimSessionPriceHealing,
+  sessionIdFromTranscript,
+  spawnPriceRefresh,
+  waitForPricedUsage,
+} from "./statusline-refresh.mjs";
 
 /** The helper Claude Code spawns on every status line refresh. */
 const STATUSLINE_SCRIPT = fileURLToPath(
@@ -280,7 +287,10 @@ export async function claudeStatusLineUsage(transcriptPath, { home = process.env
   /** @type {Map<string, { calls: number, cost: number | null, input: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }>} */
   const byModel = new Map();
   for (const row of allRows) {
-    const sid = resolveSpecSlug(row.model);
+    // OpenAI alias spellings (`astra`, `gpt-6`, `firerouter/astra`) name the
+    // same rate-table row as `gpt-6-astra` but distinct spec slugs, so without
+    // canonicalization one model renders as two legend rows.
+    const sid = canonicalOpenAiModelId(row.model) ?? resolveSpecSlug(row.model);
     if (!sid) continue;
     const entry = byModel.get(sid)
       ?? {
@@ -384,6 +394,34 @@ export async function renderClaudeStatusLine(input = {}, { home = process.env.HO
     usage = await claudeStatusLineUsage(input.transcript_path ?? "", { home });
   } catch {
     usage = null;
+  }
+  if (claimSessionPriceHealing({ home, transcriptPath: input.transcript_path ?? "", usage })) {
+    // An unpriced model is in this session: warm the caches in a detached
+    // runner and poll for the missing rates within a tight bound, so the line
+    // prints dollars when the refresh is quick and never stalls when it is
+    // not. Past the bound the runner keeps healing unfollowed and the next
+    // turn is priced; the marker bounds the wait to one turn per session.
+    // Healing must never break the render: any failure keeps stale usage.
+    // (The claimed marker still bounds attempts to one per session.)
+    try {
+      const child = spawnPriceRefresh({
+        home,
+        sessionId: sessionIdFromTranscript(input.transcript_path ?? ""),
+      });
+    if (child) {
+      // A failed heal resolves to null; keep the stale usage so the line
+      // degrades to `cost n/a` instead of blanking.
+      const healed = await waitForPricedUsage({
+        readUsage: () => claudeStatusLineUsage(input.transcript_path ?? "", { home }),
+        child,
+      });
+      if (healed != null) {
+        usage = healed;
+      }
+    }
+    } catch {
+      // Keep stale usage; the next turn retries via a fresh marker.
+    }
   }
 
   const multi = (usage?.models.length ?? 0) > 1;

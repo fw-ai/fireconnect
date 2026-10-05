@@ -937,11 +937,14 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
         .map((id) => shortFireworksModelRef(String(id ?? "")))
         .filter(Boolean),
     }).added;
-  const modelsToAdd = requestedModel
-    ? [resolvedModel, ...autoBackfill]
-    : hasBackup && providerStatus === "fireworks"
-      ? [...autoBackfill, ...missingCatalog]
-      : [resolvedModel, ...extraModels];
+  const modelsToAdd = !(hasBackup && providerStatus === "fireworks")
+    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
+    // addUserModel dedupes, so the overlap between extraModels and
+    // autoBackfill is added once.
+    ? [resolvedModel, ...extraModels, ...autoBackfill]
+    : requestedModel
+      ? [resolvedModel, ...autoBackfill]
+      : [...autoBackfill, ...missingCatalog];
   for (const id of modelsToAdd) {
     if (id) {
       next = addUserModel(next, id);

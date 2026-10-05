@@ -365,7 +365,7 @@ describe("vscode harness integration", () => {
           "--vscode-path", vscodePath,
           "--force",
         ],
-        { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" } },
+        { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
       );
       assert.equal(on.code, 0, on.stderr);
       const firerouterModel = (await readJson(vscodePath))
@@ -374,6 +374,30 @@ describe("vscode harness integration", () => {
         .find((m) => m.id === "firerouter");
       assert.equal(firerouterModel.anthropic_api_key, anthropicKey);
       assert.equal(firerouterModel.requestHeaders["x-anthropic-api-key"], anthropicKey);
+    });
+  });
+
+  it("on --model firerouter --openai-api-key writes x-openai-api-key on the firerouter model", async () => {
+    const openaiKey = "sk-proj-vscode-firerouter-12345";
+    await withTempHome("vscode-on-firerouter-openai-", async (home) => {
+      const vscodePath = path.join(home, "chatLanguageModels.json");
+      const on = await runCli(
+        [
+          "vscode", "on",
+          "--model", "firerouter",
+          "--api-key", "fw_test_key_12345",
+          "--openai-api-key", openaiKey,
+          "--vscode-path", vscodePath,
+          "--force",
+        ],
+        { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
+      );
+      assert.equal(on.code, 0, on.stderr);
+      const firerouterModel = (await readJson(vscodePath))
+        .find(isFireconnectProvider)
+        .models
+        .find((m) => m.id === "firerouter");
+      assert.equal(firerouterModel.requestHeaders["x-openai-api-key"], openaiKey);
     });
   });
 

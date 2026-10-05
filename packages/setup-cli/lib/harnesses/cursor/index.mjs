@@ -7,7 +7,6 @@ import {
   printStructuredHarnessStatus,
 } from "../../harness/status-display.mjs";
 import {
-  firerouterRequiresAnthropicKey,
   isFirerouterModelPattern,
 } from "../../fireworks/model-id.mjs";
 import {
@@ -50,30 +49,10 @@ const CURSOR_FIREROUTER_AZURE_UNSUPPORTED =
   "FireRouter is not supported in Cursor Azure mode.";
 
 // Cursor can't forward a local Anthropic BYOK key (byok: "none"), so an
-// Anthropic-requiring firerouter selection is refused up front.
-const CURSOR_FIREROUTER_ANTHROPIC_REQUIRED_MESSAGE =
-  "This FireRouter selection routes to an Anthropic model, which needs an "
-  + "Anthropic API key Cursor can't forward. Anthropic BYOK support on the "
-  + "Fireworks platform is coming soon.";
-
+// Anthropic-requiring firerouter selection simply runs without BYOK headers:
+// FireRouter keeps routing the Fireworks mix instead of failing the connect.
 function rejectCursorFirerouterAzure() {
   throw new Error(CURSOR_FIREROUTER_AZURE_UNSUPPORTED);
-}
-
-function rejectCursorFirerouterAnthropicKey() {
-  throw new Error(CURSOR_FIREROUTER_ANTHROPIC_REQUIRED_MESSAGE);
-}
-
-/**
- * Resolve whether Cursor may use FireRouter. Cursor can't forward a local
- * Anthropic BYOK key, and workspace BYOK is no longer consulted on non-Claude
- * harnesses, so Anthropic-requiring selections are always refused;
- * pure-Fireworks firerouter paths are fine.
- * @param {boolean} requiresAnthropicKey
- * @returns {boolean}
- */
-function cursorFirerouterAllowed(requiresAnthropicKey) {
-  return !requiresAnthropicKey;
 }
 
 /**
@@ -106,11 +85,6 @@ async function cursorResolveOnContext(ctx) {
   if (await isCursorAzureOnRequest(ctx)) {
     rejectCursorFirerouterAzure();
   }
-  const requiresAnthropicKey = firerouterRequiresAnthropicKey(ctx.main);
-  if (cursorFirerouterAllowed(requiresAnthropicKey)) {
-    return ctx;
-  }
-  rejectCursorFirerouterAnthropicKey();
   return ctx;
 }
 

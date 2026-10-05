@@ -26,6 +26,7 @@ import {
   mockServerlessModel,
   mockServerlessModelRows,
   runFireconnect,
+  withTempHome,
   writeClaudeSettings,
   assertClaudeNativeTierSlots,
 } from "../../helpers.mjs";
@@ -166,7 +167,7 @@ describe("claude harness integration", () => {
     assert.equal(enabled.env.DISABLE_TELEMETRY, "1");
     assert.equal(enabled.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
     assert.equal(enabled.env.ENABLE_TOOL_SEARCH, "true");
-    assert.equal(enabled.env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+    assert.equal(Object.hasOwn(enabled.env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
     assert.equal(enabled.env.CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP, "1");
     assert.equal(
       (await stat(settingsPath)).mode & 0o077,
@@ -200,6 +201,73 @@ describe("claude harness integration", () => {
 
     const config = await readGlobalConfig(home);
     assert.equal(config.harnesses.claude.enabled, false);
+  });
+
+  it("re-on drops the auto mode classifier pin an older version wrote", async () => {
+    await withTempHome("claude-ams-legacy", async (home) => {
+      seedCatalogFor(home);
+      const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+      const settingsPath = userSettingsPath(home);
+      const first = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      assert.equal(first.code, 0, first.stderr);
+      const routed = JSON.parse(await readFile(settingsPath, "utf8"));
+      routed.env.CLAUDE_CODE_AUTO_MODE_SERVER = "0";
+      await writeFile(settingsPath, JSON.stringify(routed), { mode: 0o600 });
+
+      const again = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      assert.equal(again.code, 0, again.stderr);
+      const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
+      assert.equal(Object.hasOwn(enabled.env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
+    });
+  });
+
+  it("keeps an auto mode classifier pin the user set before connecting", async () => {
+    await withTempHome("claude-ams-own", async (home) => {
+      seedCatalogFor(home);
+      const settingsPath = userSettingsPath(home);
+      await mkdir(path.dirname(settingsPath), { recursive: true });
+      const original = JSON.stringify({ env: { CLAUDE_CODE_AUTO_MODE_SERVER: "0" } });
+      await writeFile(settingsPath, original);
+      const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+
+      const onResult = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      assert.equal(onResult.code, 0, onResult.stderr);
+      assert.equal(JSON.parse(await readFile(settingsPath, "utf8")).env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+
+      const offResult = await runFireconnect(["claude", "off"], { HOME: home });
+      assert.equal(offResult.code, 0, offResult.stderr);
+      assert.equal(await readFile(settingsPath, "utf8"), original);
+    });
+  });
+
+  it("adds a firerouter compound picker row with a distinct label", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-firerouter-compound-"));
+    seedCatalogFor(home);
+    const settingsPath = userSettingsPath(home);
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+
+    const onResult = await runFireconnect(
+      ["claude", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter/astra"],
+      {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      },
+    );
+    assert.equal(onResult.code, 0, onResult.stderr);
+
+    const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
+    const options = enabled.modelPicker?.options ?? [];
+    const astra = options.find((row) => row.model === "firerouter/astra[1m]");
+    assert.ok(astra, options.map((row) => row.model).join(", "));
+    assert.equal(enabled.model, "firerouter/astra[1m]");
+    assert.equal(astra.label, "FireRouter · Astra");
+    assert.match(astra.description, /across Claude and open models/);
+    // The compound row must not duplicate the bare firerouter row's label.
+    const bare = options.find((row) => row.model === "firerouter[1m]");
+    assert.ok(bare, options.map((row) => row.model).join(", "));
+    assert.notEqual(astra.label, bare.label);
   });
 
   it("preserves native ANTHROPIC_AUTH_TOKEN and a user-owned apiKeyHelper", async () => {
@@ -636,15 +704,14 @@ describe("claude harness integration", () => {
 
     const statusResult = await runFireconnect(["claude", "status"], { HOME: home });
     assert.equal(statusResult.code, 0, statusResult.stderr);
-    // Unpinned (native) main reads as the gateway-resolved `auto` alias.
-    assert.match(statusResult.stdout, /^Model: firerouter$/m);
+    assert.match(statusResult.stdout, /^Model: glm-fast-latest$/m);
     assert.match(statusResult.stdout, /^Registered models:$/m);
     assert.match(statusResult.stdout, /^\s+glm-fast-latest$/m);
     assert.match(statusResult.stdout, /^\s+deepseek-flash-latest$/m);
     assert.doesNotMatch(statusResult.stdout, /Model mapping/);
     assert.doesNotMatch(statusResult.stdout, /Using Anthropic/);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
-    assert.equal(settings.model, "firerouter[1m]");
+    assert.equal(settings.model, "glm-fast-latest[1m]");
     assertClaudeNativeTierSlots(settings);
   });
 });

@@ -1,6 +1,24 @@
 {
   "releases": [
     {
+      "version": "0.9.8",
+      "highlights": [
+        "Claude Desktop runs on Fireworks. On macOS, `fireconnect claude-desktop on` routes Chat, Cowork, and Code through Fireworks, starting on `auto`. Bring your connectors along with `fireconnect claude-desktop mcp sync`, and `off` puts your previous setup back exactly as it was.",
+        "Pin Claude Code tiers again. Keep Claude as your main model and hand subagents to an open model: `fireconnect claude --sonnet deepseek-flash-latest --subagent deepseek-flash-latest`. Re-running `on` keeps your pins, and `native` releases a slot.",
+        "FireRouter can reach OpenAI's frontier models. Save your key once with `fireconnect configure --openai-api-key sk-...`. It rides along only on FireRouter picks and is never required. Cursor, Copilot, and DeepSeek Harness can now pick plain `firerouter` too.",
+        "New Anthropic and OpenAI models show real dollars as soon as models.dev lists them. The status line, `fireconnect claude status`, and demo estimates read a cached price snapshot, so a model launch no longer waits on a FireConnect release. Offline, the last snapshot still prices your session."
+      ],
+      "improvements": [
+        "Fixed: `fireconnect claude --model <id>` could report success without adding the model. It now becomes your default and shows up in `/model`, and your own picker rows stay untouched.",
+        "Fixed: Codex auto-review denied every approval. It called an OpenAI-only reviewer that Fireworks can't serve; now the model you picked does the review.",
+        "Fixed: `--model` on a first-time `on` left Codex with a one-model menu. You now get the model you asked for plus the full catalog.",
+        "Fixed: DeepSeek Harness 0.1.7 and later asked for a DeepSeek API key on first launch. It now goes straight to Fireworks.",
+        "Heads-up: Claude Code auto mode may show a \"classifier requests are billed\" notice once per session. Nothing is broken. Auto mode's safety checks run on your Sonnet model, so they bill to Anthropic unless you pin Sonnet with `fireconnect claude --sonnet <id>`.",
+        "New: `fireconnect models`, a shortcut for `fireconnect model list`. The list now says when to use each smart router: `auto` balances cost and quality, `auto-instant` is latency-first. If your account disables fast models, stay on `auto`."
+      ],
+      "footer": "Using Codex auto-review or DeepSeek Harness? Run `fireconnect codex on` or `fireconnect deepseek on` once after upgrading to pick up the fixes."
+    },
+    {
       "version": "0.9.7",
       "highlights": [
         "GitHub Copilot works with Fireworks. `fireconnect copilot-app` connects the desktop app, `fireconnect copilot-cli` the CLI. Your own models stay; `off` removes only what FireConnect added.",

@@ -17,6 +17,9 @@ import { HARNESSES } from "./id.mjs";
  * @property {string} [provider]
  * @property {string} anthropicKey
  * @property {boolean} anthropicKeyFromFlag
+ * @property {string} openaiKey
+ * @property {boolean} openaiKeyFromFlag
+ * @property {boolean} [openai]   // key export: print the OpenAI BYOK key instead of the Fireworks key
  * @property {string} main
  * @property {string} opus
  * @property {string} sonnet
@@ -108,6 +111,14 @@ export async function dispatchHarnessCommand(adapter, route, ctx) {
         );
       }
       await adapter.usage(ctx);
+      return;
+    case "mcp":
+      if (typeof adapter.mcp !== "function") {
+        throw new Error(
+          `mcp is not supported for ${adapter.id}. Run: fireconnect ${adapter.id} help`,
+        );
+      }
+      await adapter.mcp(ctx, route.args ?? []);
       return;
     case "live":
       if (typeof adapter.live !== "function") {

@@ -115,7 +115,7 @@ describe("Claude model preferences", () => {
     assert.equal(first.code, 0, first.stderr);
 
     const settingsAfterFirst = await readJsonIfExists(userSettingsPath(home));
-    assert.equal(settingsAfterFirst.model, "firerouter[1m]");
+    assert.equal(settingsAfterFirst.model, "glm-latest[1m]");
     assertClaudeNativeTierSlots(settingsAfterFirst);
     assertClaudeRegisterablePicker(settingsAfterFirst, { includes: ["glm-latest[1m]"] });
 
@@ -135,7 +135,7 @@ describe("Claude model preferences", () => {
     );
     assert.equal(reon.code, 0, reon.stderr);
     const settingsAfterReon = await readJsonIfExists(userSettingsPath(home));
-    assert.equal(settingsAfterReon.model, "firerouter[1m]");
+    assert.equal(settingsAfterReon.model, "kimi-fast-latest[1m]");
     assertClaudeRegisterablePicker(settingsAfterReon, { includes: ["kimi-fast-latest[1m]"] });
     assert.deepEqual(
       savedClaudeModelMapping((await readGlobalConfig(home)).harnesses.claude.profiles, "fireworks"),

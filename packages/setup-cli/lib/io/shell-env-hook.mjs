@@ -4,13 +4,16 @@ import process from "node:process";
 import {
   fireconnectAnthropicKeyExportCommand,
   fireconnectKeyExportCommand,
+  fireconnectOpenaiKeyExportCommand,
 } from "../cli/path.mjs";
 import {
   ANTHROPIC_API_KEY_ENV_REF,
+  OPENAI_API_KEY_ENV_REF,
   readGlobalConfig,
   resolveStoredAnthropicApiKey,
+  resolveStoredOpenaiApiKey,
 } from "../config/global-config.mjs";
-import { isAnthropicShapedKey } from "../firerouter/core.mjs";
+import { isAnthropicShapedKey, isOpenAIShapedKey } from "../firerouter/core.mjs";
 import { shouldInstallShellEnvHook } from "../keys/api-key.mjs";
 import { needsFireworksShellExport } from "./shell-fireworks-consumers.mjs";
 
@@ -42,6 +45,7 @@ export function resolveShellConfigPath(home = process.env.HOME ?? "") {
 export function shellHookBlock(home, {
   includeFireworks = true,
   includeAnthropic = false,
+  includeOpenai = false,
 } = {}) {
   const lines = [SHELL_HOOK_BEGIN];
   if (includeFireworks) {
@@ -61,6 +65,10 @@ export function shellHookBlock(home, {
   if (includeAnthropic) {
     const exportCmd = fireconnectAnthropicKeyExportCommand(home);
     lines.push(`export ANTHROPIC_API_KEY="$(${exportCmd} 2>/dev/null)"`);
+  }
+  if (includeOpenai) {
+    const exportCmd = fireconnectOpenaiKeyExportCommand(home);
+    lines.push(`export OPENAI_API_KEY="$(${exportCmd} 2>/dev/null)"`);
   }
   lines.push(SHELL_HOOK_END, "");
   return lines.join("\n");
@@ -147,9 +155,14 @@ export async function reconcileShellEnvHook(home) {
     && config.harnesses.codex?.provider !== "azure"
     && config.anthropicApiKey !== ANTHROPIC_API_KEY_ENV_REF
     && isAnthropicShapedKey(storedAnthropicKey);
-  if (!includeFireworks && !includeAnthropic) {
+  const storedOpenaiKey = resolveStoredOpenaiApiKey(config.openaiApiKey);
+  const includeOpenai = config.harnesses.codex?.enabled === true
+    && config.harnesses.codex?.provider !== "azure"
+    && config.openaiApiKey !== OPENAI_API_KEY_ENV_REF
+    && isOpenAIShapedKey(storedOpenaiKey);
+  if (!includeFireworks && !includeAnthropic && !includeOpenai) {
     await removeShellEnvHook(home);
     return null;
   }
-  return installShellEnvHook(home, { includeFireworks, includeAnthropic });
+  return installShellEnvHook(home, { includeFireworks, includeAnthropic, includeOpenai });
 }

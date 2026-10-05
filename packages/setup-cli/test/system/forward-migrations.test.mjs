@@ -45,7 +45,7 @@ describe("runHarnessForwardMigrations", () => {
     });
   });
 
-  it("backfills CLAUDE_CODE_AUTO_MODE_SERVER=0 for an enabled Claude and reports a note", async () => {
+  it("removes a retired CLAUDE_CODE_AUTO_MODE_SERVER=0 pin for an enabled Claude and reports a note", async () => {
     await withTempHome("forward-migrate-claude-ams-", async (home) => {
       await writeGlobalConfig(home, {
         harnesses: { claude: { enabled: true, provider: "fireworks" } },
@@ -58,6 +58,7 @@ describe("runHarnessForwardMigrations", () => {
           env: {
             ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
             ENABLE_TOOL_SEARCH: "true",
+            CLAUDE_CODE_AUTO_MODE_SERVER: "0",
           },
         }, null, 2)}\n`,
         { mode: 0o600 },
@@ -65,7 +66,8 @@ describe("runHarnessForwardMigrations", () => {
 
       const notes = await runHarnessForwardMigrations(home);
       assert.equal(notes.filter((n) => /CLAUDE_CODE_AUTO_MODE_SERVER/.test(n)).length, 1, notes.join("\n"));
-      assert.equal(JSON.parse(await readFile(settingsPath, "utf8")).env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+      const { env } = JSON.parse(await readFile(settingsPath, "utf8"));
+      assert.equal(Object.hasOwn(env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
     });
   });
 

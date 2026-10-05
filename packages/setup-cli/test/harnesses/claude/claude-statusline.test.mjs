@@ -190,6 +190,36 @@ describe("claude status line", () => {
     });
   });
 
+  it("merges Astra alias spellings into one legend row", async () => {
+    await withTempHome("statusline-astra-alias-merge", async (home) => {
+      const transcript = path.join(home, "session.jsonl");
+      // The duplicate-Astra report: the gateway stamps `astra` on some calls
+      // and `gpt-6-astra` on others, so without alias canonicalization one
+      // model renders as two legend rows.
+      await writeFile(transcript, [
+        assistantLine({ id: "m1", model: "astra", input: 1000, output: 500, cacheRead: 2000 }),
+        assistantLine({ id: "m2", model: "gpt-6-astra", input: 1000, output: 500, cacheRead: 2000 }),
+        assistantLine({ id: "m3", model: "firerouter/astra", input: 1000, output: 500, cacheRead: 2000 }),
+        assistantLine({ id: "m4", model: "gpt-6", input: 1000, output: 500, cacheRead: 2000 }),
+        assistantLine({ id: "m5", model: "ASTRA[1m]", input: 1000, output: 500, cacheRead: 2000 }),
+        assistantLine({ id: "m6", model: "openai/gpt-6-astra", input: 1000, output: 500, cacheRead: 2000 }),
+      ].join("\n"));
+
+      const usage = await claudeStatusLineUsage(transcript, { home });
+      assert.equal(usage.models.length, 1, usage.models.map((m) => m.label).join(", "));
+      assert.equal(usage.models[0].label, "GPT-6 Astra");
+      assert.equal(usage.models[0].calls, 6);
+
+      const plain = stripAnsi(await renderClaudeStatusLine({
+        model: { id: "firerouter/astra" },
+        transcript_path: transcript,
+      }, { home }));
+      assert.doesNotMatch(plain, /cost n\/a/, plain);
+      assert.equal((plain.match(/GPT-6 Astra/g) ?? []).length, 1, plain);
+      assert.doesNotMatch(plain, /astra n\/a/, plain);
+    });
+  });
+
   it("invokes the helper with an absolute node and script path", () => {
     const command = claudeStatusLineCommand();
     // Claude Code spawns through a shell whose PATH need not contain our Node.

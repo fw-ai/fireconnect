@@ -1,7 +1,10 @@
-/** @typedef {"" | "claude" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "copilot-app" | "copilot-cli" | "deepseek"} HarnessArg */
+/** @typedef {"" | "claude" | "claude-desktop" | "opencode" | "codex" | "pi" | "cursor" | "vscode" | "copilot-app" | "copilot-cli" | "deepseek"} HarnessArg */
 
 export const HARNESS = Object.freeze({
   CLAUDE: "claude",
+  // The Claude Desktop app: routes its native api.anthropic.com inference
+  // through a local Fireworks proxy while leaving claude.ai connectors native.
+  CLAUDE_DESKTOP: "claude-desktop",
   OPENCODE: "opencode",
   CODEX: "codex",
   PI: "pi",

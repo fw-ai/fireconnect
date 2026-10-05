@@ -23,12 +23,12 @@ export function catalogTtlMs() {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CATALOG_TTL_MS;
 }
 
-// FIRECONNECT_CACHE_DIR lets tests (and CI) point the persisted catalog cache at
-// a throwaway dir so in-process catalog loads never touch the developer's real
+// FIRECONNECT_CACHE_DIR lets tests (and CI) point persisted caches at
+// a throwaway dir so in-process loads never touch the developer's real
 // ~/.fireconnect. When set, it's scoped by HOME so spawned CLI children (which
 // inherit FIRECONNECT_CACHE_DIR but each get their own temp HOME) read their own
 // cache file instead of all colliding on one.
-function cacheFilePath() {
+export function scopedCacheFilePath(filename) {
   const home = process.env.HOME ?? os.homedir();
   let dir = process.env.FIRECONNECT_CACHE_DIR;
   if (dir) {
@@ -37,7 +37,11 @@ function cacheFilePath() {
   } else {
     dir = path.join(home, ".fireconnect");
   }
-  return path.join(dir, "catalog-cache.json");
+  return path.join(dir, filename);
+}
+
+function cacheFilePath() {
+  return scopedCacheFilePath("catalog-cache.json");
 }
 
 function pairs(map) {
@@ -173,6 +177,21 @@ export function getServerlessCatalogSnapshot() {
     activeSnapshot = loadPersistedSnapshot();
     snapshotResolved = true;
   }
+  return activeSnapshot;
+}
+
+/**
+ * Re-read the persisted snapshot into memory, so a long-lived process (or a
+ * helper polling for a background refresh) sees rows another process wrote.
+ * A missing/unreadable file keeps the in-memory snapshot untouched. Total:
+ * never throws.
+ */
+export function reloadServerlessCatalogSnapshot() {
+  const snapshot = loadPersistedSnapshot();
+  if (snapshot) {
+    activeSnapshot = snapshot;
+  }
+  snapshotResolved = true;
   return activeSnapshot;
 }
 

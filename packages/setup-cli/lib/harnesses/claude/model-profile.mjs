@@ -1,10 +1,13 @@
 import {
   CLAUDE_NATIVE_MODEL_ID,
+  CLAUDE_NATIVE_SLOT_ALIAS,
   DEFAULT_FIREPASS_MAIN_MODEL,
+  firerouterRequiresOpenaiKey,
   fireworksModelSlug,
   isClaudeNativeModel,
   isClaudeNativeSlotAlias,
   isFirerouterModel,
+  isFirerouterModelPattern,
   normalizeModelId,
   validateModelId,
 } from "../../fireworks/model-id.mjs";
@@ -109,14 +112,26 @@ const CLAUDE_SLOT_FLAGS = Object.freeze({
  */
 export function assertClaudeModelOverrides(ctx) {
   const value = ctx.main?.trim();
-  if (!value || isClaudeNativeSlotAlias(value)) {
-    return;
-  }
-  if (isClaudeNativeModel(normalizeModelId(value))) {
+  if (value && !isClaudeNativeSlotAlias(value) && isClaudeNativeModel(normalizeModelId(value))) {
     throw new Error(
       `--model ${value} is not a Fireworks model id. Tier slots stay on Claude defaults; `
-        + `\`--model\` adds a serverless model to the /model picker.`,
+        + `\`--model\` chooses a serverless model and adds it to the /model picker.`,
     );
+  }
+  for (const [slot, flag] of Object.entries(CLAUDE_SLOT_FLAGS)) {
+    if (slot === "main") {
+      continue;
+    }
+    const raw = ctx[slot]?.trim();
+    if (!raw || isClaudeNativeSlotAlias(raw)) {
+      continue;
+    }
+    if (isClaudeNativeModel(normalizeModelId(raw))) {
+      throw new Error(
+        `${flag} ${raw} is not a model id. Use \`${flag} ${CLAUDE_NATIVE_SLOT_ALIAS}\` `
+          + "to leave the slot on Claude Code's own default model.",
+      );
+    }
   }
 }
 
@@ -139,6 +154,35 @@ export function resolveClaudeModelMapping(overrides = {}, keyType = "fireworks")
  */
 export function mappingUsesBareFirerouter(mapping) {
   return Object.values(mapping).some((modelId) => isFirerouterModel(modelId));
+}
+
+/**
+ * Whether any FireRouter route — bare `firerouter` or a `firerouter/*`
+ * compound — is the `--model` pick or pinned to any slot. Fire Pass keys
+ * cannot use FireRouter at all, so `on` rejects every such route there.
+ * Mirrors `firePassRejectsRouter` in `SlotMapping.lean`.
+ * @param {Record<string, string>} mapping resolved Claude slot mapping
+ * @param {string|null} extraPickerModel normalized `--model` pick, if any
+ */
+export function claudeMappingUsesAnyFirerouter(mapping, extraPickerModel = null) {
+  return [extraPickerModel, ...Object.values(mapping)]
+    .some((modelId) => isFirerouterModelPattern(modelId ?? ""));
+}
+
+/**
+ * Whether a configured OpenAI key should ride along as `x-openai-api-key`:
+ * bare `firerouter` anywhere (its mix can serve GPT primaries), or a GPT
+ * compound like `firerouter/gpt-...` as the /model default or pinned to any
+ * tier slot (saved or flagged). Pinned non-GPT compounds stay clean. Mirrors
+ * `needsOpenaiKey` in `SlotMapping.lean`.
+ * @param {Record<string, string>} mapping resolved Claude slot mapping
+ * @param {string|null} defaultModel the top-level /model default `on` writes
+ *   (`--model`, a kept saved pick, or the implicit firerouter default)
+ */
+export function claudeMappingNeedsOpenaiKey(mapping, defaultModel = null) {
+  return [defaultModel, ...Object.values(mapping)]
+    .some((modelId) => isFirerouterModel(modelId ?? "")
+      || firerouterRequiresOpenaiKey(modelId ?? ""));
 }
 
 function completeMapping(raw) {

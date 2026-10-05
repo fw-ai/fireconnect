@@ -46,7 +46,7 @@ export function buildLauncherChoices(adapters, harnessMap, detectedIds) {
   rows.push({
     value: { kind: "configure" },
     short: "configure",
-    name: `${"configure".padEnd(idWidth)}  ${dim("choose Fireworks/Azure provider & Anthropic BYOK")}`,
+    name: `${"configure".padEnd(idWidth)}  ${dim("choose Fireworks/Azure provider and BYOK keys")}`,
   });
   rows.push({
     value: { kind: "key" },

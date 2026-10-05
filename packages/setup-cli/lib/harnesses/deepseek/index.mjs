@@ -9,9 +9,7 @@ import {
   DEEPSEEK_API_KEY_ENV,
   DEEPSEEK_FIREWORKS_BASE_URL,
   DEEPSEEK_FIREWORKS_PROVIDER_ID,
-  deepseekAuthMode,
-  deepseekCurrentModelId,
-  deepseekProviderStatus,
+  deepseekEffectiveFireworksState,
   disableDeepseekFireworks,
   enableDeepseekFireworks,
   readDeepseekCredentialsIfExists,
@@ -35,14 +33,24 @@ import { harnessStatusKeySource } from "../../keys/api-key.mjs";
 async function deepseekResolveKey(ctx) {
   const { settingsPath, credentialsPath } = deepseekPathsFor(ctx);
   const { settings } = await readDeepseekSettingsIfExists(settingsPath);
-  if (deepseekProviderStatus(settings) !== "fireworks") {
+  const effective = await deepseekEffectiveFireworksState(settingsPath, settings);
+  if (effective.provider !== "fireworks") {
     return "";
   }
   const { credentials } = await readDeepseekCredentialsIfExists(credentialsPath);
   return resolveDeepseekApiKey({
-    mode: deepseekAuthMode(settings, credentials),
+    mode: deepseekAuthModeFor(effective.provider, credentials),
     credentials,
   });
+}
+
+/** Auth mode from the effective provider (settings or profile patch). */
+function deepseekAuthModeFor(provider, credentials) {
+  if (provider !== "fireworks") {
+    return "missing";
+  }
+  const stored = credentials[DEEPSEEK_API_KEY_ENV];
+  return typeof stored === "string" && stored.trim() ? "literal" : "env-reference";
 }
 
 export default defineHarnessProfile({
@@ -52,14 +60,15 @@ export default defineHarnessProfile({
   paths: (ctx) => deepseekPathsFor(ctx),
   keyEnvRef: DEEPSEEK_API_KEY_ENV,
   // Custom providers cannot forward local BYOK headers, so Anthropic-requiring
-  // firerouter selections are refused here.
+  // firerouter selections run without a forwarded key instead of failing.
   firerouter: {
     byok: "none",
     autoCatalog: true,
   },
   getExistingHarnessKey: async (_ctx, paths) => {
     const { settings } = await readDeepseekSettingsIfExists(paths.settingsPath);
-    if (deepseekProviderStatus(settings) !== "fireworks") {
+    const effective = await deepseekEffectiveFireworksState(paths.settingsPath, settings);
+    if (effective.provider !== "fireworks") {
       return "";
     }
     const { credentials } = await readDeepseekCredentialsIfExists(paths.credentialsPath);
@@ -93,7 +102,7 @@ export default defineHarnessProfile({
     ensureHomeForHarness(ctx, HARNESS.DEEPSEEK);
     const { settingsPath } = deepseekPathsFor(ctx);
     const { settings } = await readDeepseekSettingsIfExists(settingsPath);
-    return deepseekProviderStatus(settings);
+    return (await deepseekEffectiveFireworksState(settingsPath, settings)).provider;
   },
 
   async status(ctx) {
@@ -104,9 +113,10 @@ export default defineHarnessProfile({
       readDeepseekCredentialsIfExists(credentialsPath),
     ]);
 
-    const provider = deepseekProviderStatus(settings);
-    const apiKeyMode = deepseekAuthMode(settings, credentials);
-    const model = deepseekCurrentModelId(settings);
+    const effective = await deepseekEffectiveFireworksState(settingsPath, settings);
+    const provider = effective.provider;
+    const apiKeyMode = deepseekAuthModeFor(provider, credentials);
+    const model = effective.model;
     const resolvedKey = await harnessFullKey(ctx, async () => (
       provider === "fireworks"
         ? resolveDeepseekApiKey({ mode: apiKeyMode, credentials })

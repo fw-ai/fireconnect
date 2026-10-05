@@ -6,8 +6,13 @@
  * Code, OpenCode, Pi) — so anything wanting a rate lookup pulled that whole
  * graph in, including optional npm packages. The Claude cost engine and the
  * status line only need the table, so it lives here on its own; incumbent
- * detection re-exports it for its existing callers.
+ * detection re-exports it for its existing callers. Its only dependency is
+ * the leaf models.dev list-price cache (lib/pricing/list-price-cache.mjs),
+ * which wins on key collisions so refreshed prices beat these bundled rows —
+ * the tables below stay as the offline fallback.
  */
+
+import { cachedListRateTable } from "../pricing/list-price-cache.mjs";
 
 const ANTHROPIC_PRICING_URL = "https://www.anthropic.com/pricing";
 const OPENAI_PRICING_URL = "https://openai.com/api/pricing/";
@@ -24,6 +29,13 @@ const ANTHROPIC_LIST_RATES = {
   "claude-sonnet-4-6": { input: 3, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.3, output: 15, label: "Claude Sonnet 4.6" },
   "claude-sonnet-4-5": { input: 3, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.3, output: 15, label: "Claude Sonnet 4.5" },
   "claude-sonnet": { input: 3, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.3, output: 15, label: "Claude Sonnet" },
+  // Opus 5.5 (2026-10-03): $4/$20, cache write $5/$8, cache read $0.20 (5% of
+  // input); fast mode 2x across the board. Verified against
+  // platform.claude.com/docs/en/about-claude/pricing and models.dev api.json.
+  "claude-opus-5-5": {
+    input: 4, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2, output: 20, label: "Claude Opus 5.5",
+    fast: { input: 8, cacheWrite5m: 10, cacheWrite1h: 16, cacheRead: 0.4, output: 40 },
+  },
   // Opus 4.5–4.8 and Opus 5 are all $5/$25. The old $15/$75 was Opus 4.1 / 4 only.
   "claude-opus-5": {
     input: 5, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5, output: 25, label: "Claude Opus 5",
@@ -38,7 +50,11 @@ const ANTHROPIC_LIST_RATES = {
   "claude-opus-4-5": { input: 5, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5, output: 25, label: "Claude Opus 4.5" },
   "claude-opus-4-1": { input: 15, cacheWrite5m: 18.75, cacheWrite1h: 30, cacheRead: 1.5, output: 75, label: "Claude Opus 4.1" },
   "claude-opus-4": { input: 15, cacheWrite5m: 18.75, cacheWrite1h: 30, cacheRead: 1.5, output: 75, label: "Claude Opus 4" },
-  "claude-opus": { input: 5, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5, output: 25, label: "Claude Opus" },
+  // Bare `opus` follows the newest generation (as sonnet/fable do): 5.5.
+  "claude-opus": {
+    input: 4, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2, output: 20, label: "Claude Opus 5.5",
+    fast: { input: 8, cacheWrite5m: 10, cacheWrite1h: 16, cacheRead: 0.4, output: 40 },
+  },
   "claude-haiku-4-5": { input: 1, cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5, label: "Claude Haiku 4.5" },
   "claude-haiku-3-5": { input: 0.8, cacheWrite5m: 1, cacheWrite1h: 1.6, cacheRead: 0.08, output: 4, label: "Claude Haiku 3.5" },
   "claude-haiku": { input: 1, cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5, label: "Claude Haiku" },
@@ -49,8 +65,8 @@ const ANTHROPIC_LIST_RATES = {
   "claude-fable": { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 1, output: 50, label: "Claude Fable" },
   // Bare `/model` aliases (settings.json `model` may be just "opus"/"sonnet"/"haiku").
   "opus": {
-    input: 5, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5, output: 25, label: "Claude Opus",
-    fast: { input: 10, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 1, output: 50 },
+    input: 4, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2, output: 20, label: "Claude Opus 5.5",
+    fast: { input: 8, cacheWrite5m: 10, cacheWrite1h: 16, cacheRead: 0.4, output: 40 },
   },
   "sonnet": { input: 2, cacheWrite5m: 2.5, cacheWrite1h: 4, cacheRead: 0.2, output: 10, label: "Claude Sonnet" },
   "haiku": { input: 1, cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.1, output: 5, label: "Claude Haiku" },
@@ -79,12 +95,19 @@ const OPENAI_LIST_RATES = {
     label: "GPT-6 Astra",
     long: { input: 20, cacheRead: 2.0, cacheWrite5m: 25, cacheWrite1h: 25, output: 75 },
   },
-  // GPT-5.6 family (sol / terra / luna trade price for quality). Same 272K
-  // long-context tiering as Astra.
+  // GPT-5.6 family (sol / terra / luna trade price for quality) and the base
+  // 5.6, all with the same 272K long-context tiering as Astra. Sol was
+  // $5/$30 before 2026-10-03 (it carried GPT-5.5's rates); models.dev lists
+  // $4/$20 — verified again against the OpenAI pricing card.
   "gpt-5.6-sol": {
-    input: 5, cacheRead: 0.5, cacheWrite5m: 6.25, cacheWrite1h: 6.25, output: 30,
+    input: 4, cacheRead: 0.4, cacheWrite5m: 5, cacheWrite1h: 5, output: 20,
     label: "GPT-5.6 Sol",
-    long: { input: 10, cacheRead: 1.0, cacheWrite5m: 12.5, cacheWrite1h: 12.5, output: 45 },
+    long: { input: 8, cacheRead: 0.8, cacheWrite5m: 10, cacheWrite1h: 10, output: 30 },
+  },
+  "gpt-5.6": {
+    input: 4, cacheRead: 0.4, cacheWrite5m: 5, cacheWrite1h: 5, output: 20,
+    label: "GPT-5.6",
+    long: { input: 8, cacheRead: 0.8, cacheWrite5m: 10, cacheWrite1h: 10, output: 30 },
   },
   "gpt-5.6-terra": {
     input: 2, cacheRead: 0.2, cacheWrite5m: 2.5, cacheWrite1h: 2.5, output: 12,
@@ -95,6 +118,28 @@ const OPENAI_LIST_RATES = {
     input: 0.2, cacheRead: 0.02, cacheWrite5m: 0.25, cacheWrite1h: 0.25, output: 1.2,
     label: "GPT-5.6 Luna",
     long: { input: 0.4, cacheRead: 0.04, cacheWrite5m: 0.5, cacheWrite1h: 0.5, output: 1.8 },
+  },
+  // GPT-6 family (2026-09/10): sol / luna siblings of Astra; 6.1-sol is the
+  // refresh. Same 272K long tiering. Verified against models.dev api.json
+  // (2026-10-03).
+  "gpt-6.1-sol": {
+    input: 2, cacheRead: 0.1, cacheWrite5m: 2.5, cacheWrite1h: 2.5, output: 10,
+    label: "GPT-6.1 Sol",
+    long: { input: 4, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 5, output: 15 },
+  },
+  "gpt-6-sol": {
+    input: 2, cacheRead: 0.2, cacheWrite5m: 2.5, cacheWrite1h: 2.5, output: 10,
+    label: "GPT-6 Sol",
+    long: { input: 4, cacheRead: 0.4, cacheWrite5m: 5, cacheWrite1h: 5, output: 15 },
+  },
+  "gpt-6-luna": {
+    input: 0.1, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.125, output: 0.5,
+    label: "GPT-6 Luna",
+    long: { input: 0.2, cacheRead: 0.02, cacheWrite5m: 0.25, cacheWrite1h: 0.25, output: 0.75 },
+  },
+  "gpt-5.5-pro": {
+    input: 30, output: 180, label: "GPT-5.5 Pro",
+    long: { input: 60, output: 270 },
   },
   // Current flagships.
   "gpt-5.5": {
@@ -168,6 +213,40 @@ function strictTableKey(modelId, table, aliases = {}) {
 }
 
 /**
+ * Rate tables merged over the models.dev list-price cache. Cached rows win on
+ * key collisions so refreshed prices beat the bundled fallback without adding
+ * per-model statics; with an empty cache these are exactly the tables below.
+ *
+ * The merge is per row, not wholesale: models.dev omits `fast` / `long` for
+ * some models, and a cached row that lacks a tier must keep the bundled one
+ * rather than silently pricing fast-mode or long-context calls at the
+ * standard rate. A tier the cache does carry replaces the bundled tier whole.
+ */
+function mergeRateTables(bundled, cached) {
+  const merged = { ...bundled };
+  for (const [key, row] of Object.entries(cached)) {
+    const base = bundled[key];
+    merged[key] = base
+      ? {
+        ...base,
+        ...row,
+        ...(row.fast ?? base.fast ? { fast: row.fast ?? base.fast } : {}),
+        ...(row.long ?? base.long ? { long: row.long ?? base.long } : {}),
+      }
+      : row;
+  }
+  return merged;
+}
+
+function anthropicRateTable() {
+  return mergeRateTables(ANTHROPIC_LIST_RATES, cachedListRateTable("anthropic"));
+}
+
+function openAiRateTable() {
+  return mergeRateTables(OPENAI_LIST_RATES, cachedListRateTable("openai"));
+}
+
+/**
  * Whether an id resolves to a real OpenAI list-price row (not the estimated
  * fallback). Single home for OpenAI id matching so the Claude cost engine and
  * the status line classify ids the same way.
@@ -175,7 +254,19 @@ function strictTableKey(modelId, table, aliases = {}) {
  * @returns {boolean}
  */
 export function isOpenAiPricedModelId(modelId) {
-  return strictTableKey(modelId, OPENAI_LIST_RATES, OPENAI_ALIASES) !== null;
+  return strictTableKey(modelId, openAiRateTable(), OPENAI_ALIASES) !== null;
+}
+
+/**
+ * Canonical OpenAI rate-table key for an id (`astra` -> `gpt-6-astra`), or
+ * null when it names no known row. Same normalization as `strictTableKey`,
+ * returned as the key rather than a boolean, so callers that bucket by model
+ * id can keep alias spellings in one row.
+ * @param {string} modelId
+ * @returns {string | null}
+ */
+export function canonicalOpenAiModelId(modelId) {
+  return strictTableKey(modelId, openAiRateTable(), OPENAI_ALIASES);
 }
 
 /**
@@ -195,27 +286,32 @@ export function isOpenAiPricedModelId(modelId) {
  */
 export function providerListPricing({ provider, modelId, speed = "standard", inputTokens = null }) {
   if (provider === "anthropic") {
-    const key = strictTableKey(modelId, ANTHROPIC_LIST_RATES);
-    const rate = key ? ANTHROPIC_LIST_RATES[key] : null;
+    const table = anthropicRateTable();
+    const key = strictTableKey(modelId, table);
+    const rate = key ? table[key] : null;
     if (rate) {
       const selected = speed === "fast" && rate.fast
         ? { ...rate, ...rate.fast }
         : rate;
-      return toRateShape(selected, ANTHROPIC_PRICING_URL, selected.cacheRead, false);
+      return toRateShape(selected, selected.source ?? ANTHROPIC_PRICING_URL, selected.cacheRead, false);
     }
     return toRateShape(DEFAULT_ANTHROPIC_RATE, ANTHROPIC_PRICING_URL, 0.2, true);
   }
   if (provider === "openai") {
-    const key = strictTableKey(modelId, OPENAI_LIST_RATES, OPENAI_ALIASES);
-    const rate = key ? OPENAI_LIST_RATES[key] : null;
+    const table = openAiRateTable();
+    const key = strictTableKey(modelId, table, OPENAI_ALIASES);
+    const rate = key ? table[key] : null;
     if (rate) {
+      const threshold = Number(rate.long?.threshold) > 0
+        ? rate.long.threshold
+        : OPENAI_LONG_CONTEXT_INPUT_TOKENS;
       const useLong = rate.long
         && Number.isFinite(inputTokens)
-        && inputTokens >= OPENAI_LONG_CONTEXT_INPUT_TOKENS;
+        && inputTokens >= threshold;
       const selected = useLong ? { ...rate, ...rate.long } : rate;
       return toRateShape(
         selected,
-        OPENAI_PRICING_URL,
+        selected.source ?? OPENAI_PRICING_URL,
         selected.cacheRead ?? selected.input * 0.5,
         false,
         useLong ? "long" : "standard",
