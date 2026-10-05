@@ -56,6 +56,36 @@ describe("Claude native slot sentinel is not user input", () => {
     assert.doesNotThrow(() => assertClaudeModelOverrides({ main: "native" }));
   });
 
+  for (const spelling of SENTINEL_SPELLINGS) {
+    it(`rejects --sonnet ${spelling} with native guidance`, () => {
+      assert.throws(
+        () => assertClaudeModelOverrides({ sonnet: spelling }),
+        (error) => {
+          assert.match(error.message, /--sonnet/);
+          assert.match(error.message, /`--sonnet native`/);
+          return true;
+        },
+      );
+    });
+  }
+
+  it("accepts the documented native alias for tier slots", () => {
+    assert.doesNotThrow(() => assertClaudeModelOverrides({
+      opus: "native",
+      sonnet: "native",
+      haiku: "native",
+      fable: "native",
+      subagent: "native",
+    }));
+  });
+
+  it("accepts concrete Fireworks ids for tier slots", () => {
+    assert.doesNotThrow(() => assertClaudeModelOverrides({
+      sonnet: "deepseek-flash-latest",
+      subagent: "glm-latest",
+    }));
+  });
+
   it("accepts concrete Fireworks ids for --model", () => {
     assert.doesNotThrow(() => assertClaudeModelOverrides({
       main: "kimi-fast-latest",
@@ -156,5 +186,66 @@ describe("Claude native slot sentinel canonicalization", () => {
     assert.equal(settings.model, "firerouter[1m]", "sentinel pin replaced by the FireRouter default");
     assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
     assert.equal(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, undefined);
+  });
+});
+
+describe("buildFireworksSettings modelPicker writes", () => {
+  const registerable = ["firerouter", "glm-latest", "auto"];
+
+  it("appends missing rows to a picker without the FireConnect marker", () => {
+    const { settings } = buildFireworksSettings({
+      modelPicker: {
+        replaceBuiltInOptions: false,
+        options: [{ model: "firerouter[1m]", label: "FireRouter" }],
+      },
+      env: {},
+    }, {
+      apiKey: FW_KEY,
+      keyType: "fireworks",
+      registerablePickerIds: registerable,
+    });
+    assert.deepEqual(
+      settings.modelPicker.options.map((row) => row.model),
+      ["firerouter[1m]", "glm-latest[1m]", "auto[1m]"],
+    );
+  });
+
+  it("preserves user rows while appending missing FireConnect rows", () => {
+    const userPicker = {
+      replaceBuiltInOptions: true,
+      options: [{ model: "claude-sonnet-4-6", label: "Mine" }],
+    };
+    const { settings } = buildFireworksSettings({
+      modelPicker: userPicker,
+      env: {},
+    }, {
+      apiKey: FW_KEY,
+      keyType: "fireworks",
+      registerablePickerIds: registerable,
+    });
+    assert.deepEqual(
+      settings.modelPicker.options.map((row) => row.model),
+      ["claude-sonnet-4-6", "firerouter[1m]", "glm-latest[1m]", "auto[1m]"],
+    );
+    assert.deepEqual(userPicker.options, [{ model: "claude-sonnet-4-6", label: "Mine" }]);
+  });
+
+  it("creates a managed picker on a clean enable and dedupes repeats", () => {
+    const first = buildFireworksSettings({ env: {} }, {
+      apiKey: FW_KEY,
+      keyType: "fireworks",
+      registerablePickerIds: registerable,
+    });
+    assert.ok(first.settings.modelPicker.fireconnectManaged === true);
+    // Re-running on with the same ids adds nothing.
+    const second = buildFireworksSettings(first.settings, {
+      apiKey: FW_KEY,
+      keyType: "fireworks",
+      registerablePickerIds: registerable,
+    });
+    assert.deepEqual(
+      second.settings.modelPicker.options,
+      first.settings.modelPicker.options,
+    );
   });
 });

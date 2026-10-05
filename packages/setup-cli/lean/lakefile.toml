@@ -1,0 +1,10 @@
+name = "fireconnect-verification"
+version = "0.1.0"
+defaultTargets = ["FireConnect"]
+
+[[lean_lib]]
+name = "FireConnect"
+
+[[lean_exe]]
+name = "fireconnect-verify"
+root = "Main"

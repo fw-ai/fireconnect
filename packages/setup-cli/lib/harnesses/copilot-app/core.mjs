@@ -160,10 +160,11 @@ export async function enableCopilotFireworks({
     : [];
   const catalogModels = copilotModelIds(extraModels);
   let toRegister;
-  if (modelId) {
-    toRegister = [...new Set([...current, resolvedModel])];
-  } else if (!existing) {
+  if (!existing) {
+    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
     toRegister = copilotModelIds([resolvedModel, ...extraModels]);
+  } else if (modelId) {
+    toRegister = [...new Set([...current, resolvedModel])];
   } else if (catalogUnavailable) {
     toRegister = current;
   } else {

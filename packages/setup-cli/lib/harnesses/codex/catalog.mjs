@@ -124,12 +124,19 @@ export function buildCodexCatalogEntry(model) {
 
   const reasoning = reasoningConfigFor(model.name);
   const reasoningSummaryFormat = reasoning.levels.length > 1 ? "experimental" : "none";
+  const slug = fireworksModelSlug(model.name);
 
   return {
-    slug: fireworksModelSlug(model.name),
+    slug,
     display_name: model.displayName ?? model.name,
     description: model.description ?? "",
     ...CODEX_CONSTANT_FIELDS,
+    // Guardian auto-review defaults to the OpenAI-only `codex-auto-review`
+    // model, which the Fireworks gateway has no deployment for (404 on
+    // /responses, fail-closed denial). Pin the reviewer to this same servable
+    // slug so `approvals_reviewer = "auto_review"` routes through Fireworks.
+    // Older Codex clients ignore unknown catalog fields, so this is safe.
+    auto_review_model_override: slug,
     input_modalities: supportsImageInput ? ["text", "image"] : ["text"],
     supports_parallel_tool_calls: supportsTools,
     default_reasoning_level: reasoning.default,
@@ -145,9 +152,11 @@ export function buildCodexCatalogEntry(model) {
 
 export function buildCodexCatalogEntryForRouter(routerId, baseModel, displayName) {
   const entry = buildCodexCatalogEntry(baseModel);
+  const slug = fireworksModelSlug(routerId);
   return {
     ...entry,
-    slug: fireworksModelSlug(routerId),
+    slug,
+    auto_review_model_override: slug,
     display_name: displayName,
   };
 }
@@ -160,6 +169,7 @@ export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID)
   const spec = lookupModelSpec(modelId);
   const stored = shortFireworksModelRef(modelId);
   const exact = isFirerouterModel(modelId);
+  const slug = exact ? "firerouter" : stored;
   return {
     ...buildCodexCatalogEntry({
       name: FIREROUTER_ROUTER_ID,
@@ -170,13 +180,14 @@ export function buildCodexFirerouterCatalogEntry(modelId = FIREROUTER_ROUTER_ID)
       supportsTools: spec?.capabilities.toolCalling ?? true,
     }),
     // Path-shaped IDs must keep the full short ref; last-segment slug would collide.
-    slug: exact ? "firerouter" : stored,
+    slug,
+    auto_review_model_override: slug,
   };
 }
 
-export const AUTO_TAGLINE = "Routes each request across Fireworks open models.";
+export const AUTO_TAGLINE = "Routes each user turn across Fireworks open models.";
 export const AUTO_INSTANT_TAGLINE =
-  "Routes each request across the fastest Fireworks open models.";
+  "Routes each user turn across the fastest Fireworks open models.";
 
 /** Codex catalog row for `auto` / `auto-*`, built from that mix's spec. */
 export function buildCodexAutoCatalogEntry(modelId = AUTO_MODEL_ID) {
@@ -192,6 +203,7 @@ export function buildCodexAutoCatalogEntry(modelId = AUTO_MODEL_ID) {
       supportsTools: spec?.capabilities.toolCalling ?? true,
     }),
     slug: stored,
+    auto_review_model_override: stored,
   };
 }
 
@@ -308,16 +320,35 @@ export function buildCodexCatalog(apiModels) {
 
 function snapshotModelMetadata(snapshot, modelId) {
   const entry = snapshot.entries.find((candidate) => candidate.id === modelId);
-  if (!entry) {
-    return null;
-  }
   const inputModalities = snapshot.inputModalitiesById.get(modelId) ?? [];
+  const contextLength = snapshot.contextLengthById.get(modelId) ?? 0;
+  const supportsTools = snapshot.supportsToolsById.get(modelId)
+    ?? DEFAULT_MODEL_CAPABILITIES.toolCalling;
+  if (!entry) {
+    // The entry row itself can be pruned from the iterated set while the
+    // snapshot maps still carry its metadata: preferLatestAliases drops base
+    // models whose family has a -latest alias, so offline/stale-cache builds
+    // (no rawModels to borrow from) would otherwise lose every alias router.
+    // Synthesize from the maps; ids the snapshot never saw stay null.
+    if (!snapshot.contextLengthById.has(modelId)
+      && !snapshot.inputModalitiesById.has(modelId)
+      && !snapshot.supportsToolsById.has(modelId)) {
+      return null;
+    }
+    return {
+      name: modelId,
+      displayName: prettyModelName(modelId),
+      contextLength,
+      supportsImageInput: rowSupportsImageInput({ inputModalities }),
+      supportsTools,
+    };
+  }
   return {
     name: modelId,
     displayName: entry.displayName,
-    contextLength: snapshot.contextLengthById.get(modelId) ?? 0,
+    contextLength,
     supportsImageInput: rowSupportsImageInput({ inputModalities }),
-    supportsTools: snapshot.supportsToolsById.get(modelId) ?? DEFAULT_MODEL_CAPABILITIES.toolCalling,
+    supportsTools,
   };
 }
 

@@ -636,15 +636,24 @@ test("providerListPricing: known anthropic + openai models resolve real rates", 
   assert.equal(o.estimated, false);
 });
 
-test("providerListPricing: opus 4.5+ uses current $5/$25 rate, not legacy $15/$75", () => {
-  // Opus 4.5–4.8 are all $5/$25 per platform.claude.com/pricing (verified
+test("providerListPricing: opus generations use their current rates, not legacy $15/$75", () => {
+  // Opus 4.5–5 are all $5/$25 per platform.claude.com/pricing (verified
   // 2026-08-30). The old $15/$75 was Opus 4.1 and Opus 4 (both retired legacy);
   // a stale table would inflate incumbent cost 3x and skew the demo's cost-saved
   // fraction.
-  for (const id of ["claude-opus-4-8", "claude-opus-4-5", "opus"]) {
+  for (const id of ["claude-opus-4-8", "claude-opus-4-5", "claude-opus-5"]) {
     const r = providerListPricing({ provider: "anthropic", modelId: id });
     assert.equal(r.inputPerMillion, 5, `${id} input`);
     assert.equal(r.outputPerMillion, 25, `${id} output`);
+    assert.equal(r.estimated, false, `${id} not estimated`);
+  }
+  // Opus 5.5 (2026-10-03, platform.claude.com pricing + models.dev): $4/$20
+  // with $0.20 cache read; the bare `opus` alias tracks the newest generation.
+  for (const id of ["claude-opus-5-5", "opus"]) {
+    const r = providerListPricing({ provider: "anthropic", modelId: id });
+    assert.equal(r.inputPerMillion, 4, `${id} input`);
+    assert.equal(r.outputPerMillion, 20, `${id} output`);
+    assert.equal(r.cacheReadPerMillion, 0.2, `${id} cache read`);
     assert.equal(r.estimated, false, `${id} not estimated`);
   }
   // Opus 4 and 4.1 keep the legacy $15/$75 tier (retired, except on partners).
@@ -655,14 +664,23 @@ test("providerListPricing: opus 4.5+ uses current $5/$25 rate, not legacy $15/$7
   }
 });
 
-test("providerListPricing: fast mode uses the published Opus 5/4.8 rate", () => {
-  for (const id of ["claude-opus-5", "claude-opus-4-8", "opus"]) {
+test("providerListPricing: fast mode uses the published Opus rates per generation", () => {
+  for (const id of ["claude-opus-5", "claude-opus-4-8"]) {
     const r = providerListPricing({ provider: "anthropic", modelId: id, speed: "fast" });
     assert.equal(r.inputPerMillion, 10, `${id} fast input`);
     assert.equal(r.cacheWrite5mPerMillion, 12.5, `${id} fast 5m write`);
     assert.equal(r.cacheWrite1hPerMillion, 20, `${id} fast 1h write`);
     assert.equal(r.cacheReadPerMillion, 1, `${id} fast cache read`);
     assert.equal(r.outputPerMillion, 50, `${id} fast output`);
+  }
+  // Opus 5.5 fast: 2x its standard $4/$20 (2026-10-03 pricing page).
+  for (const id of ["claude-opus-5-5", "opus"]) {
+    const r = providerListPricing({ provider: "anthropic", modelId: id, speed: "fast" });
+    assert.equal(r.inputPerMillion, 8, `${id} fast input`);
+    assert.equal(r.cacheWrite5mPerMillion, 10, `${id} fast 5m write`);
+    assert.equal(r.cacheWrite1hPerMillion, 16, `${id} fast 1h write`);
+    assert.equal(r.cacheReadPerMillion, 0.4, `${id} fast cache read`);
+    assert.equal(r.outputPerMillion, 40, `${id} fast output`);
   }
 });
 
@@ -712,7 +730,7 @@ test("providerListPricing: partial OpenAI ids stay estimated, never borrow rates
   // Regression (bugbot): substring matching priced `gpt-5.6` at `gpt-5` rates
   // and `o3-mini` at `o3` rates. Resolution is exact id, last path segment, or
   // explicit alias only — anything else gets the estimated reference row.
-  for (const id of ["gpt-5.6", "o3-mini", "gpt-4o-2024-08-06", "gpt-5.1-codex", "my-gpt-5-wrapper"]) {
+  for (const id of ["gpt-5.6-helios", "o3-mini", "gpt-4o-2024-08-06", "gpt-5.1-codex", "my-gpt-5-wrapper"]) {
     const r = providerListPricing({ provider: "openai", modelId: id });
     assert.equal(r.estimated, true, id);
     assert.equal(r.label, "GPT-4o (reference)", id);
@@ -728,7 +746,7 @@ test("providerListPricing: id normalization matrix (exact, segment, alias, tag, 
     ["openai", "  gpt-4o  ", false], ["openai", "a/b/gpt-4o", false],
     ["openai", "gpt-6", false], ["openai", "astra", false],
     ["openai", "gpt-6-astra[1m]", false],
-    ["openai", "gpt-5.6", true], ["openai", "o3-mini", true],
+    ["openai", "gpt-5.6", false], ["openai", "gpt-5.6-helios", true], ["openai", "o3-mini", true],
     ["openai", "gpt-4o-2024-08-06", true], ["openai", "gpt-6x", true],
     ["openai", "astra2", true], ["openai", "", true],
     ["openai", "firerouter/", true],
@@ -799,8 +817,10 @@ test("providerListPricing: Astra long-context tier applies at 272K input", () =>
 test("providerListPricing: GPT-5.6 family resolves (no gpt-5 shadowing) with long tiers", () => {
   // Regression: "gpt-5.6-sol" substring-matched "gpt-5" ($1.25/$10).
   const sol = providerListPricing({ provider: "openai", modelId: "gpt-5.6-sol" });
-  assert.equal(sol.inputPerMillion, 5);
-  assert.equal(sol.outputPerMillion, 30);
+  // $4/$20 since 2026-10-03 (was 5/30, which carried GPT-5.5's rates).
+  assert.equal(sol.inputPerMillion, 4);
+  assert.equal(sol.outputPerMillion, 20);
+  assert.equal(sol.cachedInputPerMillion, 0.4);
   assert.equal(sol.label, "GPT-5.6 Sol");
   const terra = providerListPricing({ provider: "openai", modelId: "gpt-5.6-terra" });
   assert.equal(terra.inputPerMillion, 2);
@@ -810,8 +830,19 @@ test("providerListPricing: GPT-5.6 family resolves (no gpt-5 shadowing) with lon
   assert.equal(luna.outputPerMillion, 1.2);
   const solLong = providerListPricing({ provider: "openai", modelId: "gpt-5.6-sol", inputTokens: 500_000 });
   assert.equal(solLong.contextTier, "long");
-  assert.equal(solLong.inputPerMillion, 10);
-  assert.equal(solLong.outputPerMillion, 45);
+  assert.equal(solLong.inputPerMillion, 8);
+  assert.equal(solLong.outputPerMillion, 30);
+  const gpt6Sol = providerListPricing({ provider: "openai", modelId: "gpt-6-sol" });
+  assert.equal(gpt6Sol.inputPerMillion, 2);
+  assert.equal(gpt6Sol.outputPerMillion, 10);
+  const gpt61Sol = providerListPricing({ provider: "openai", modelId: "gpt-6.1-sol" });
+  assert.equal(gpt61Sol.inputPerMillion, 2);
+  assert.equal(gpt61Sol.cacheWrite5mPerMillion, 2.5);
+  const gpt6Luna = providerListPricing({ provider: "openai", modelId: "gpt-6-luna" });
+  assert.equal(gpt6Luna.inputPerMillion, 0.1);
+  const pro = providerListPricing({ provider: "openai", modelId: "gpt-5.5-pro" });
+  assert.equal(pro.inputPerMillion, 30);
+  assert.equal(pro.outputPerMillion, 180);
   const terraLong = providerListPricing({ provider: "openai", modelId: "gpt-5.6-terra", inputTokens: 500_000 });
   assert.equal(terraLong.inputPerMillion, 4);
   assert.equal(terraLong.outputPerMillion, 18);
@@ -923,10 +954,10 @@ test("detectIncumbent: honors the /model picker choice (top-level `model` in set
   assert.equal(inc.cliModel, "opus");
   assert.equal(inc.modelId, "opus");
   assert.match(inc.modelLabel, /opus/i);
-  // Pricing for the alias resolves to Opus list rate, not the Sonnet fallback.
+  // Pricing for the alias resolves to the current Opus (5.5) list rate, not the Sonnet fallback.
   const price = incumbentPricing(inc);
-  assert.equal(price.inputPerMillion, 5);
-  assert.equal(price.outputPerMillion, 25);
+  assert.equal(price.inputPerMillion, 4);
+  assert.equal(price.outputPerMillion, 20);
   assert.equal(price.estimated, false);
   await rm(home, { recursive: true, force: true });
 });

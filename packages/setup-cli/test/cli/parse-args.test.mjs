@@ -84,6 +84,21 @@ describe("parseCli", () => {
     assert.equal(parsed.ctx.refresh, true);
   });
 
+  it("parses models as an alias for model list", () => {
+    const parsed = parseCli(["models", "--search", "glm"]);
+    assert.equal(parsed.kind, "global");
+    assert.equal(parsed.command, "model");
+    assert.equal(parsed.modelSubcommand, "list");
+    assert.equal(parsed.ctx.search, "glm");
+  });
+
+  it("rejects positional arguments after models", () => {
+    assert.throws(
+      () => parseCli(["models", "list"]),
+      /fireconnect models does not accept positional arguments/,
+    );
+  });
+
   it("parses bare harness as on", () => {
     const parsed = parseCli(["claude"]);
     assert.equal(parsed.kind, "harness");
@@ -217,11 +232,10 @@ describe("parseCli", () => {
     }
   });
 
-  it("explains that retired OpenAI BYOK has no API-key replacement", () => {
-    assert.throws(
-      () => parseCli(["codex", "on", "--openai-api-key", "sk-old"]),
-      /no longer supported.*Anthropic BYOK only.*--anthropic-api-key/,
-    );
+  it("parses --openai-api-key for OpenAI frontier models", () => {
+    const parsed = parseCli(["codex", "on", "--model", "firerouter", "--openai-api-key", "sk-proj-test"]);
+    assert.equal(parsed.ctx.openaiKey, "sk-proj-test");
+    assert.equal(parsed.ctx.openaiKeyFromFlag, true);
   });
 
   it("parses --routing-preference named levels into their numeric value", () => {

@@ -81,7 +81,7 @@ describe("FireRouter path catalog sequences across harnesses", () => {
     });
   });
 
-  it("claude: selecting a FireRouter path adds it to the picker without slot pins", async () => {
+  it("claude: selecting a FireRouter path pins the picker default without tier slot pins", async () => {
     await withTempHome("seq-claude-", async (home) => {
       assert.equal(
         (await runFireconnect(
@@ -97,7 +97,7 @@ describe("FireRouter path catalog sequences across harnesses", () => {
       assert.equal(withPath.code, 0, withPath.stderr);
 
       const settings = JSON.parse(await readFile(path.join(home, USER_SETTINGS_RELATIVE_PATH), "utf8"));
-      assert.equal(settings.model, "firerouter[1m]");
+      assert.equal(settings.model, `${FIREROUTER_TEST_PATH}[1m]`);
       assert.equal(settings.env?.ANTHROPIC_DEFAULT_OPUS_MODEL, undefined);
       assert.equal(settings.env?.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
       const pickerModels = settings.modelPicker?.options?.map((row) => row.model) ?? [];

@@ -20,6 +20,12 @@ One command points a harness at Fireworks. `on` edits that harness's own setting
 **1. Install**
 
 ```bash
+curl -fsSL https://fireconnect.fireworks.ai/install.sh | bash
+```
+
+Or install direct from GitHub:
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh | bash
 ```
 
@@ -99,6 +105,7 @@ mkdir -p ~/.fireconnect && git clone git@github.com:fw-ai/fireconnect.git ~/.fir
 | [GitHub Copilot app](#github-copilot-app) | `fireconnect copilot-app` | `~/.copilot/data.db` (SQLite) | Saved in the file itself (locked down to you only) | **Quit Copilot first** |
 | [GitHub Copilot CLI](#github-copilot-cli) | `fireconnect copilot-cli` | `~/.copilot/providers.json` + `settings.json` | Saved in the file itself (locked down to you only) | Restart `copilot` after |
 | [DeepSeek Harness](#deepseek-harness) | `fireconnect deepseek` | `~/.dsh/settings.yaml` + `.credentials.yaml` | Saved in the file itself (locked down to you only) | Restart `dsh` after |
+| [Claude Desktop](#claude-desktop) | `fireconnect claude-desktop` | Claude-3p provider profile + loopback shim | Saved in the profile + shim state | **Quit and reopen Desktop after** |
 
 Every harness supports `on`, `off`, `status`, and `help`. `off` brings back how things were before you connected.
 File-based harnesses restore from a snapshot kept under `~/.fireconnect/`, and the IDEs just drop what FireConnect added.
@@ -107,7 +114,7 @@ File-based harnesses restore from a snapshot kept under `~/.fireconnect/`, and t
 
 | Slot / harness | What you get |
 |----------------|---------|
-| Claude tiers (`opus` / `sonnet` / `haiku` / `fable` / subagents) | Claude's own defaults (left alone); pick Fireworks entries in `/model` |
+| Claude tiers (`opus` / `sonnet` / `haiku` / `fable` / subagents) | Claude's own defaults unless pinned with `--opus` / `--sonnet` / `--haiku` / `--fable` / `--subagent` |
 | Claude `/model` picker | Serverless catalog appended (`auto`, routers, `firerouter` when eligible) |
 | OpenCode, Codex, Pi, Cursor, VS Code, Copilot, DeepSeek Harness | `auto` |
 | Fire Pass (`fpk_...`) | `kimi-fast-latest` everywhere |
@@ -115,6 +122,8 @@ File-based harnesses restore from a snapshot kept under `~/.fireconnect/`, and t
 Fire Pass keys are detected on their own. No flags needed. Your saved Claude picks are kept separately
 per key type (Fireworks vs Fire Pass) and come back quietly after `claude off` → `claude`.
 Add a Fireworks model to the picker anytime with `fireconnect claude --model <id>`.
+Pin a tier slot with `fireconnect claude --sonnet <id>` (`native` unpins back to
+Claude's default).
 
 Re-running `fireconnect <harness>` refreshes the registered catalog in every harness: retired
 models are pruned, newly served ones are added, and pricing / context / display metadata is
@@ -125,6 +134,7 @@ re-rendered in place. Your own models and picks are untouched.
 ```bash
 fireconnect claude                       # connect; catalog lands in /model
 fireconnect claude --model <id>          # ensure one model appears in /model
+fireconnect claude --sonnet <id> --subagent <id>  # pin tier slots (native unpins)
 fireconnect claude status                # mapping, auth, and per-slot rates
 fireconnect claude usage                 # pick session → live meter (Tab agents, Esc sessions, q quit)
 fireconnect claude usage --days 7        # look back further in the session list (default 3)
@@ -149,17 +159,19 @@ start a new session.
 ### Model picker
 
 Claude Code has Anthropic tier rows in `/model` plus Fireworks entries. On connect, FireConnect
-routes through Fireworks, **does not override** Opus / Sonnet / Haiku / Fable / subagent slots,
-and **appends the registerable serverless catalog** (same set as Cursor and OpenCode) via
-`settings.json` → `modelPicker`.
+routes through Fireworks, leaves Opus / Sonnet / Haiku / Fable / subagent slots on Claude
+defaults unless you pin them, and **appends the registerable serverless catalog** (same set
+as Cursor and OpenCode) via `settings.json` → `modelPicker`.
 
 Use **`--model`** only when you want an extra picker row (for example `firerouter` or a router
-not yet in the live catalog). It does **not** pin the main default or tier aliases.
+not yet in the live catalog). It does **not** pin the main default or tier aliases. Pin tiers
+with **`--opus` / `--sonnet` / `--haiku` / `--fable` / `--subagent`** (`native` unpins):
 
 ```bash
 fireconnect claude                              # catalog in /model, tiers native
 fireconnect claude --model firerouter           # FireRouter row + routing headers
 fireconnect claude --model glm-latest           # ensure that router appears in the picker
+fireconnect claude --sonnet deepseek-flash-latest --subagent deepseek-flash-latest
 ```
 
 ### What gets written
@@ -167,14 +179,15 @@ fireconnect claude --model glm-latest           # ensure that router appears in 
 Claude Code signs in with a static `X-Fireworks-Api-Key` header
 (`ANTHROPIC_CUSTOM_HEADERS`), **not** `apiKeyHelper`. On a standard key, `main` and
 every tier slot default to **native** (unpinned): Anthropic's own picker rows stay
-as-is. Pick Fireworks models from the extra `/model` entries FireConnect adds (`auto`,
-routers, `firerouter`, etc.). Tier slot flags are retired — slots stay native.
+as-is unless you pass a tier flag. Pick Fireworks models from the extra `/model` entries
+FireConnect adds (`auto`, routers, `firerouter`, etc.), or pin a slot outright.
 
 | Slot | Default (standard `fw_` keys) |
 |------|---------------------------|
-| Main, Opus, Sonnet, Haiku, Fable, Subagents | native (never overridden by `on`) |
+| Main | native (never overridden by `on`; `/model` default leads) |
+| Opus, Sonnet, Haiku, Fable, Subagents | native unless pinned via `--opus` / `--sonnet` / `--haiku` / `--fable` / `--subagent` (`native` unpins) |
 | `/model` picker | + full registerable serverless catalog |
-| `--model <id>` | adds one Fireworks id to the picker (optional) |
+| `--model <id>` | selects that id and ensures it is in the picker |
 
 Fire Pass (`fpk_`) keys are the exception: every slot pins its curated router
 (`kimi-fast-latest` everywhere, including `main`), and no catalog picker is written.
@@ -184,6 +197,7 @@ serverless models listed in `modelPicker`):
 
 ```json
 {
+  "model": "glm-latest[1m]",
   "modelPicker": {
     "fireconnectManaged": true,
     "replaceBuiltInOptions": false,
@@ -200,10 +214,11 @@ serverless models listed in `modelPicker`):
 ```
 
 `firerouter` is already a picker row on a standard key; passing
-`--model firerouter` additionally sends routing headers with each request
+`--model firerouter` selects it and additionally sends routing headers with each request
 (used for `--routing-preference`). Tier slots stay on Claude Code defaults
-either way — pick a Fireworks entry in `/model` when you want a Fireworks
-model. `main` stays unpinned on standard keys.
+unless pinned (`--opus` / `--sonnet` / `--haiku` / `--fable` / `--subagent`) —
+or pin a slot to `firerouter` itself for routed tiers. `main` stays unpinned
+on standard keys.
 
 **Why a header?** The gateway checks `X-Fireworks-Api-Key` first, ahead of any `x-api-key` /
 `Authorization` a leftover `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` might send, so a stray
@@ -266,7 +281,7 @@ Fireworks rates:
 ```
 
 The top line is a **bar showing where the money went**: one colored slice per model, sized by
-its share of the bill, plus the session total. FireRouter switches models call by call, so the
+its share of the bill, plus the session total. FireRouter can switch models from turn to turn, so the
 bar shows the whole mix instead of just the latest model. Above, Opus 5 took 47% of the calls
 but almost the whole bar, because it's 89% of the spend. That's the gap worth seeing. The bar
 carries no text on purpose: a bare `%` next to the cache percentages below would be confusing,
@@ -529,10 +544,109 @@ fireconnect deepseek off
 
 Use `--config-path <path>` for a `settings.yaml` somewhere else (credentials stay next to that file).
 
+## Claude Desktop
+
+Run Claude Desktop's Chat, Cowork and Code surfaces — everything the app
+answers with a model — on Fireworks models. The picker starts on `auto`, the
+cost-aware default mix of open models, followed by the Fireworks line-up with
+per-model effort menus and full 1M context; switching is one
+command and one app restart, and `off` puts everything back exactly as it
+was.
+
+```bash
+fireconnect claude-desktop on          # switch Desktop to Fireworks
+fireconnect claude-desktop mcp sync    # re-import your connectors (first time)
+fireconnect claude-desktop off         # restore your previous setup
+```
+
+Quit and reopen Claude Desktop after `on` / `off`. Requires macOS and a
+stored Fireworks credential (`fireconnect login`).
+
+### How it works
+
+`on` writes a third-party inference provider profile (Desktop's own supported
+mechanism) pointing at a loopback gateway shim — a small launchd service that
+maps model names, translates auth headers, and mirrors the signed model
+catalog. The shim auto-starts at login and after crashes; if it is ever down,
+`fireconnect claude-desktop status` says so and `on` brings it back.
+
+### Connectors
+
+Desktop's third-party mode does not expose the in-app connector browser (the
+Connectors pane and its one-click add flow are suppressed) — connectors are
+managed through fireconnect instead. After every `on`, run `mcp sync` once:
+
+- **`mcp sync`** imports the connectors you already use — from Desktop session
+  history, your previous Desktop config, and your claude.ai org registry
+  (when the Claude Code CLI is installed and signed in). Each imported
+  connector needs a one-time re-auth sign-in the first time you use it.
+- **`mcp add <name> <url>` / `mcp remove <name>`** manage entries by hand;
+  removals stick across syncs.
+
+Most connectors (Linear, Slack, Notion, GitHub-based tools, ...) work with
+just that. Two categories need extra setup because they cannot self-register
+in third-party mode:
+
+**Connectors that need your own OAuth client.** Google-hosted connectors
+(Gmail, Google Drive, Google Calendar, BigQuery) require a Google OAuth
+client you own — Google does not support OAuth self-registration:
+
+1. On [console.cloud.google.com](https://console.cloud.google.com), create a project
+   and enable the Gmail / Drive / Calendar / BigQuery APIs.
+2. OAuth consent screen: Internal (Workspace) or External with your account
+   added as a test user.
+3. Credentials → Create credentials → OAuth client ID → **Desktop app**.
+4. Register it with fireconnect — one client covers all four connectors:
+
+   ```bash
+   fireconnect claude-desktop mcp add gmail https://gmailmcp.googleapis.com/mcp/v1 \
+     --client-id "<ID>.apps.googleusercontent.com" --client-secret "GOCSPX-..."
+   ```
+
+**Figma.** The hosted Figma connector only admits allowlisted OAuth clients.
+Use the Figma desktop app's local server instead: enable it in Dev Mode's
+inspect panel, then
+`fireconnect claude-desktop mcp add figma-desktop http://127.0.0.1:3845/mcp`.
+
+OAuth clients are stored under `~/.fireconnect/claude-desktop/oauth-clients.json`
+(owner-only) and survive `off` / `on` cycles; `sync` re-attaches them
+automatically.
+
+### What changes in third-party mode
+
+These are Claude Desktop's third-party-mode rules, not FireConnect bugs:
+
+| Change | Workaround |
+|---|---|
+| In-app connector browser / one-click add is gone | `mcp sync` / `mcp add` |
+| Connectors relying on your claude.ai sign-in server-side need an OAuth client | See the Google and Figma recipes above |
+| Every connector needs a one-time re-auth after `on` | Sign in once per connector |
+| Chat, Cowork and Code use the Fireworks picker, not your claude.ai subscription models | `off` restores them |
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `status` shows the shim NOT RESPONDING | `fireconnect claude-desktop on` restarts it |
+| Models missing from the picker | Run `on` once with network up (warms the catalog cache), then restart Desktop |
+| A connector shows a sign-in error that won't clear | `mcp remove` it, then re-`add` with your OAuth client (Google), or use a companion local server (Figma) |
+| Code tab says the API key was rejected | `on` again — the profile carries a fresh key from your stored credential |
+
+`off` restores the provider profile you had before, the device config keys
+FireConnect touched, and removes only FireConnect-owned artifacts (the shim
+service and its state). Nothing of yours is deleted.
+
+**Skills and plugins across modes.** `on` copies your skills/plugin assets
+(`local-agent-mode-sessions/skills-plugin/`) into the 3p deployment —
+additive, one-way, never overwriting. Conversation sessions themselves stay
+in the deployment they were made in; nothing migrates back on `off`
+(Claude Desktop also offers cross-deployment CLI-transcript recovery on its
+own).
+
 ## FireRouter
 
-FireRouter sends each request to either Claude or a Fireworks open model. Easy work stays on
-open models, hard work can use Claude when you've connected your Anthropic key. It's just a
+FireRouter routes each user turn to either closed models or Fireworks open models. Easy work stays on
+open models, hard work can use closed models when you've connected your Anthropic key. It's just a
 **`firerouter` model** on the Fireworks gateway, not a separate mode.
 Pick it like any other model.
 
@@ -548,18 +662,26 @@ fireconnect <harness> --model firerouter       # any harness
 | **No Anthropic key** | Still routes between Fireworks models; Claude Code attaches its own Anthropic auth |
 
 **Using Anthropic's frontier models.** Pass `--anthropic-api-key sk-ant-...` (or export
-`ANTHROPIC_API_KEY`) on a harness that can forward it. OpenAI BYOK isn't supported. On
-Claude Code the flag is optional native auth — FireRouter works without it.
+`ANTHROPIC_API_KEY`, or save it once with `fireconnect configure --anthropic-api-key sk-ant-...`)
+on a harness that can forward it. FireConnect attaches the key as `x-anthropic-api-key` on
+FireRouter selections (`firerouter`, `firerouter/opus`) when one is configured, and connects
+without it otherwise. On Claude Code the flag is optional native auth: FireRouter works without it.
 
-| Harness | Local Anthropic key | `--routing-preference` | Notes |
-|---------|----------------------|------------------------|-------|
-| Claude Code | Header value | Yes | Gateway header still wins for auth |
-| OpenCode | Header value | Yes | `--model firerouter` registers only that model |
-| Pi | Header value | Yes | Same Fireworks provider as other Pi models |
-| VS Code | Header value | Yes | Same provider (`apiType: chat-completions`) |
-| Codex | `ANTHROPIC_API_KEY` env reference | No | Export the key |
-| Cursor | Not forwardable | No | Settings screen can't attach a local Anthropic key |
-| DeepSeek Harness | Not forwardable | No | Custom provider can't attach a local Anthropic key |
+**Using OpenAI's frontier models.** Pass `--openai-api-key sk-...` (or export `OPENAI_API_KEY`,
+or save it once with `fireconnect configure --openai-api-key sk-...`) on a harness that can
+forward it. FireConnect attaches the key as `x-openai-api-key` on FireRouter selections when one
+is configured, and connects without it otherwise. The key is never prompted for and never blocks
+`on` when missing.
+
+| Harness | Local Anthropic key | Local OpenAI key | `--routing-preference` | Notes |
+|---------|----------------------|------------------|------------------------|-------|
+| Claude Code | Header value | Header value | Yes | Gateway header still wins for auth |
+| OpenCode | Header value | Header value | Yes | `--model firerouter` selects it; the full picker remains registered |
+| Pi | Header value | Header value | Yes | Same Fireworks provider as other Pi models |
+| VS Code | Header value | Header value | Yes | Same provider (`apiType: chat-completions`) |
+| Codex | `ANTHROPIC_API_KEY` env reference | `OPENAI_API_KEY` env reference | No | Export the keys |
+| Cursor | Not forwardable | Not forwardable | No | Connects without BYOK; FireRouter routes the Fireworks mix |
+| DeepSeek Harness | Not forwardable | Not forwardable | No | Connects without BYOK; FireRouter routes the Fireworks mix |
 
 Tune cost vs quality where supported:
 
@@ -588,18 +710,19 @@ fast per-model routers the API reports and version-tracking nicknames whose targ
 The list is cached for **1 hour**; `--refresh` skips the cache and refetches. Offline, the last
 cached list is shown instead of an error.
 
+SMART ROUTERS (`auto`, `auto-instant`, `firerouter`) pick a model per user turn instead of
+pinning one. Every inference call within the turn routes to the selected model. `auto` is
+the cost-aware default mix of open models. `auto-instant` is the latency-first mix of
+open models. Accounts with fast models disabled via model governance should stay on `auto`.
+
 US-only serverless routers get their own section and take short names:
 
 ```bash
 fireconnect claude on --model kimi-k3-us
-fireconnect opencode on --model glm-5p2-fast-us
-fireconnect claude on --model glm-5p3-flash-us
+fireconnect opencode on --model glm-5p3-flash-us
 ```
 
-US-only endpoints launched from September 1, 2026 cost 50% more than the matching global row
-(`glm-5p3-flash-us`). Earlier routers keep their launch prices: `kimi-k3-us` at +10%,
-`glm-5p2-fast-us` at the same price as global GLM 5.2 Fast. See
-[US-only Serverless](https://docs.fireworks.ai/serverless/us-only-serverless).
+See [US-only Serverless](https://docs.fireworks.ai/serverless/us-only-serverless).
 
 Which key is used, in order: `--api-key` → `FIREWORKS_API_KEY` → saved key. Standard keys see
 `firerouter`; Fire Pass keys see only Fire Pass routers (`glm-latest`,
@@ -691,8 +814,8 @@ Every model change goes through `<harness> on`. Claude adds `fireconnect claude 
 fireconnect login                  Sign in: browser (creates a key) or paste a key you have.
 fireconnect logout                 Clear the stored key (keychain entry + config ref).
 fireconnect status                 Show sign-in state, machine environment, and key storage.
-fireconnect model list             Browse the serverless catalog.
-fireconnect configure              Set the provider (Azure/Foundry) and the Anthropic key.
+fireconnect model list             Browse the serverless catalog (`models` is an alias).
+fireconnect configure              Set the provider (Azure/Foundry) and the BYOK keys.
 fireconnect claude demo              Race two models on the same prompt via Claude Code.
 fireconnect upgrade                Update FireConnect.
 fireconnect uninstall              Switch off + restore every harness, then remove FireConnect.
@@ -742,6 +865,7 @@ copying it into secret storage, and combining `login` with a key-saving option (
 | `claude-fable-5-1` fails with `model_not_found` | The gateway serves Opus / Sonnet / Haiku by concrete id, but Fable needs data retention enabled on the upstream account — without it every Fable call 404s while connected. Pick another row with `/model`, or ask about account access. |
 | Resumed session says the model "could not be restored" | Normal with Fireworks models: the transcript records the serving backend (e.g. `accounts/fireworks/models/…`), which Claude doesn't recognize as a model id, so it falls back to your configured default. If no default is pinned, that means native Opus — check the status line for a fresh Opus slice and re-pick your row if so. |
 | Claude Code shows a scary cost estimate | It uses [Anthropic list prices](#pricing-estimates). Check `fireconnect claude status` for real Fireworks rates. |
+| Claude Code says auto mode classifier requests are billed in this session | Expected through the Fireworks gateway, once per session. Auto mode keeps working with its local classifier, which runs on your Sonnet slot's model: native Sonnet bills your Anthropic account. Pin a Fireworks model with `fireconnect claude --sonnet <id>` to bill classifier requests (and all Sonnet-tier calls) at Fireworks rates. |
 | `firerouter` missing from a picker | It's opt-in — pick it directly with `on --model firerouter`. Not on Fire Pass keys. |
 | `login` fails with a key-storage conflict | `FIREWORKS_API_KEY` is set. Unset it so FireConnect can store a key. |
 | `/model` picker ignores your main model | An old `env.ANTHROPIC_MODEL` is overriding it. Re-run `fireconnect claude` once to migrate. |
@@ -754,6 +878,8 @@ copying it into secret storage, and combining `login` with a key-saving option (
 ```bash
 fireconnect upgrade
 # or re-run the installer:
+sh -c "$(curl -fsSL https://fireconnect.fireworks.ai/install.sh)"
+# or direct from GitHub:
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/fw-ai/fireconnect/main/install.sh)"
 ```
 

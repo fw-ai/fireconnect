@@ -4,8 +4,9 @@ import {
   FIREWORKS_PRICING_DOCS_URL,
   lookupFireworksPricing,
 } from "../../fireworks/pricing.mjs";
-import { autoDisplayName, prettyModelName, stripViaFireworksSuffix } from "../../fireworks/models.mjs";
-import { isAutoModelId, isFirerouterModel } from "../../fireworks/model-id.mjs";
+import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
+import { stripViaFireworksSuffix } from "../../fireworks/label-suffix.mjs";
+import { isAutoModelId, isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
 
 /**
  * Human-readable label for Fireworks models in Claude Code's subscription picker.
@@ -16,6 +17,13 @@ import { isAutoModelId, isFirerouterModel } from "../../fireworks/model-id.mjs";
 export function fireworksModelPickerName(modelId) {
   if (isAutoModelId(modelId)) {
     return autoDisplayName(modelId);
+  }
+  // A firerouter compound pins its own targets (firerouter/astra, or
+  // multi-member slugs like firerouter/claude-opus-5/kimi-k3), so it reads
+  // through the canonical display helper shared with the statusline and other
+  // harnesses — never the bare spec label, which would duplicate rows.
+  if (isFirerouterModelPattern(modelId)) {
+    return firerouterDisplayName(modelId);
   }
   const liveLabel = resolveFireworksModelLabel(modelId);
   if (liveLabel) {
@@ -38,7 +46,9 @@ export function fireworksModelPickerDescription(modelId) {
   if (isAutoModelId(modelId)) {
     return "Intelligent router across open models. Similar performance at lower cost.";
   }
-  if (isFirerouterModel(modelId)) {
+  // Compounds pin the mix's frontier but route through the same mix, so they
+  // share the bare firerouter blurb rather than the generic serverless one.
+  if (isFirerouterModelPattern(modelId)) {
     return "Intelligent router across Claude and open models. Similar performance at lower cost.";
   }
   const pricing = lookupFireworksPricing(modelId);

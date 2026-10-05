@@ -307,7 +307,7 @@ describe("opencode harness integration", () => {
         "--model", "firerouter",
         "--anthropic-api-key", anthropicKey,
       ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" },
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
     );
     assert.equal(on.code, 0, on.stderr);
 
@@ -315,6 +315,83 @@ describe("opencode harness integration", () => {
     assert.equal(
       config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers["x-anthropic-api-key"],
       anthropicKey,
+    );
+  });
+
+  it("persists --openai-api-key in provider headers for firerouter", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-firerouter-openai-flag-"));
+    const configPath = opencodeConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const openaiKey = "sk-proj-opencode-firerouter-12345";
+
+    const on = await runFireconnect(
+      [
+        "opencode", "on",
+        "--api-key", "fw_test_key_12345",
+        "--model", "firerouter",
+        "--openai-api-key", openaiKey,
+      ],
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
+    );
+    assert.equal(on.code, 0, on.stderr);
+
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(
+      config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers["x-openai-api-key"],
+      openaiKey,
+    );
+    // A mislabeled Anthropic key is never seated as the OpenAI credential.
+    assert.equal(
+      config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers["x-anthropic-api-key"],
+      undefined,
+    );
+  });
+
+  it("connects firerouter/sol without provider keys and attaches no BYOK headers", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-firerouter-sol-"));
+    const configPath = opencodeConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+
+    const on = await runFireconnect(
+      ["opencode", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter/sol"],
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
+    );
+    assert.equal(on.code, 0, on.stderr);
+
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(config.model, `${OPENCODE_FIREWORKS_PROVIDER_ID}/firerouter/sol`);
+    const headers = config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers ?? {};
+    assert.equal(headers["x-anthropic-api-key"], undefined);
+    assert.equal(headers["x-openai-api-key"], undefined);
+  });
+
+  it("recovers the stored OpenAI key on re-on without re-passing the flag", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-firerouter-openai-reen-"));
+    const configPath = opencodeConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const openaiKey = "sk-proj-opencode-reen-12345";
+
+    const first = await runFireconnect(
+      [
+        "opencode", "on",
+        "--api-key", "fw_test_key_12345",
+        "--model", "firerouter",
+        "--openai-api-key", openaiKey,
+      ],
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
+    );
+    assert.equal(first.code, 0, first.stderr);
+
+    const second = await runFireconnect(
+      ["opencode", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
+      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
+    );
+    assert.equal(second.code, 0, second.stderr);
+
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(
+      config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers["x-openai-api-key"],
+      openaiKey,
     );
   });
 

@@ -1,25 +1,20 @@
 import { resolveModelDisplayMetadata } from "./model-display.mjs";
 import { visionCapabilityLabel } from "./vision.mjs";
-import { attachPricing } from "./pricing.mjs";
+import { attachPricing, formatUsd } from "./pricing.mjs";
 import {
   allModelsByRecency,
   autoCatalogEntry,
+  autoCatalogEntryId,
   filterCatalogBySearch,
   catalogWithAutomaticFirerouter,
   isAutoCatalogEntry,
   loadServerlessCatalog,
   preferLatestAliases,
-  stripViaFireworksSuffix,
 } from "./models.mjs";
-import { KNOWN_AUTO_MODEL_IDS, canonicalAutoModelId } from "./model-id.mjs";
+import { stripViaFireworksSuffix } from "./label-suffix.mjs";
+import { refreshListPriceCache } from "../pricing/list-price-cache.mjs";
+import { KNOWN_AUTO_MODEL_IDS } from "./model-id.mjs";
 import { bold, dim, warn, withSpinner } from "../ui.mjs";
-
-function formatUsd(value) {
-  if (!Number.isFinite(value)) {
-    return "—";
-  }
-  return `$${value.toFixed(3)}`;
-}
 
 export function formatCatalogUpdatedAt(updatedAt, timeZone = undefined) {
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
@@ -82,10 +77,11 @@ export function organizeCatalogForDisplay(catalog) {
   // whole catalog, then split. Running preferLatestAliases over the full set is
   // what keeps standalone models that have no -latest alias (gpt-oss-120b,
   // inkling, nemotron-3-ultra-nvfp4) visible instead of dropping them.
-  const preferred = preferLatestAliases(catalog.filter((entry) => (
+  const nonSmart = catalog.filter((entry) => (
     entry.shortId !== "firerouter"
     && !isAutoCatalogEntry(entry)
-  )));
+  ));
+  const preferred = preferLatestAliases(nonSmart);
   const routers = preferred.filter((entry) => entry.id.includes("/routers/"));
   const usRouters = routers.filter(isUsRouter);
   const fastRouters = routers.filter(isFastLatestRouter);
@@ -95,12 +91,12 @@ export function organizeCatalogForDisplay(catalog) {
   ));
   // Every versioned model the catalog serves, newest first — no family
   // collapsing, so older versions stay visible for pinning.
-  const models = allModelsByRecency(catalog);
+  const models = allModelsByRecency(nonSmart);
 
   return [
     {
       title: "SMART ROUTERS",
-      description: "pick a model per request",
+      description: "one model picked per user turn",
       entries: sortEntries(smartRouters),
     },
     {
@@ -160,6 +156,13 @@ function formatTable(catalog, widths, showPricing) {
   return [header, ...lines].join("\n");
 }
 
+/** One-liner per smart router, shown under the SMART ROUTERS table. */
+export const SMART_ROUTER_NOTES = {
+  auto: "cost-aware default mix of open models",
+  "auto-instant": "latency-first mix of open models",
+  firerouter: "cost-saving routing between closed and open models",
+};
+
 export function formatCatalogSections(sections) {
   const catalog = sections.flatMap((section) => section.entries);
   const widths = tableWidths(catalog);
@@ -172,9 +175,17 @@ export function formatCatalogSections(sections) {
 
   for (const section of sections) {
     const heading = section.description
-      ? `${section.title} — ${section.description}`
+      ? `${section.title}: ${section.description}`
       : section.title;
     lines.push("", bold(heading), formatTable(section.entries, widths, showPricing));
+    if (section.title === "SMART ROUTERS") {
+      for (const entry of section.entries) {
+        const note = SMART_ROUTER_NOTES[entry.shortId];
+        if (note) {
+          lines.push(dim(`  ${entry.shortId}: ${note}`));
+        }
+      }
+    }
   }
   return lines.join("\n");
 }
@@ -214,11 +225,7 @@ export function catalogWithAutoEntry(catalog, keyType) {
   if (!globalListIncludesAuto(keyType)) {
     return catalog;
   }
-  const present = new Set(
-    catalog
-      .filter(isAutoCatalogEntry)
-      .map((entry) => canonicalAutoModelId(entry.shortId) || canonicalAutoModelId(entry.id)),
-  );
+  const present = new Set(catalog.map(autoCatalogEntryId).filter(Boolean));
   const missing = KNOWN_AUTO_MODEL_IDS
     .filter((id) => !present.has(id))
     .map((id) => autoCatalogEntry(id));
@@ -227,6 +234,9 @@ export function catalogWithAutoEntry(catalog, keyType) {
 
 export async function runModelListCommand({ options, apiKey }) {
   const refresh = Boolean(options.refresh);
+  // List prices refresh on the same cadence as the catalog read below: stale
+  // caches warm in the background of every `model list`, `--refresh` forces.
+  await refreshListPriceCache({ force: refresh });
   const { catalog, keyType, source, updatedAt } = await withSpinner(
     refresh ? "Refreshing Fireworks model catalog…" : "Fetching Fireworks model catalog…",
     () => loadServerlessCatalog({ apiKey, refresh }),

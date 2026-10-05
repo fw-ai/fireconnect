@@ -174,7 +174,10 @@ describeIf(HAS_SQLITE, "copilot enable/disable (core)", () => {
       assert.equal(readSql(dbPath, `SELECT name FROM model_providers WHERE id = '${result.providerId}';`), "Fireworks");
 
       const models = providerModels(dbPath, result.providerId);
-      assert.deepEqual(models, ["glm-5p2"]);
+      // Fresh installs seed the whole fetched catalog even when --model pins
+      // one row (shared fresh-install policy), so both the selected model and
+      // the catalog's other entry are registered.
+      assert.deepEqual(models, ["glm-5p2", "kimi-k3"]);
 
       // Context window metadata must be published, or the app reports
       // `hasContextWindowMetadata: false` and hides the readout.
@@ -189,7 +192,7 @@ describeIf(HAS_SQLITE, "copilot enable/disable (core)", () => {
       // Reasoning efforts must be a JSON array, or the app reports
       // `missing-effort-metadata` and hides the effort control. Same four
       // levels for every model — each verified to return 200 on the gateway.
-      for (const modelId of ["glm-5p2"]) {
+      for (const modelId of ["glm-5p2", "kimi-k3"]) {
         const efforts = JSON.parse(readSql(
           dbPath,
           `SELECT supported_reasoning_efforts FROM provider_models WHERE provider_id = '${result.providerId}' AND model_id = '${modelId}';`,

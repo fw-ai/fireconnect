@@ -1,11 +1,11 @@
 import process from "node:process";
 import { dispatchHarnessCommand } from "../../harness/types.mjs";
 import { getHarness } from "../../harness/registry.mjs";
-import { persistGlobalAnthropicApiKey } from "../../config/global-config.mjs";
+import { persistGlobalAnthropicApiKey, persistGlobalOpenaiApiKey } from "../../config/global-config.mjs";
 import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
 import { isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
-import { isAnthropicShapedKey } from "../../firerouter/core.mjs";
-import { supportsAnthropicApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
+import { isAnthropicShapedKey, isOpenAIShapedKey } from "../../firerouter/core.mjs";
+import { supportsAnthropicApiKeyFlag, supportsOpenaiApiKeyFlag, supportsRoutingPreference } from "../../firerouter/flag.mjs";
 import {
   assertFireworksKeyUsable,
   assertFireworksKeyShape,
@@ -56,19 +56,16 @@ function validateHarnessOptions(route, ctx) {
   }
   if (onboardingMode === "prompt" && harnessId === HARNESS.CLAUDE && isOn) {
     throw new Error(
-      "--interactive is not supported for Claude Code. Use `--model <id>` to add a Fireworks "
-        + "model to the /model picker.",
+      "--interactive is not supported for Claude Code. Use `--model <id>` to choose a Fireworks "
+        + "model and add it to the /model picker.",
     );
   }
   if (onboardingMode !== "auto" && !(harnessId === HARNESS.CLAUDE && isOn)) {
     const flag = onboardingMode === "prompt" ? "--interactive" : "--non-interactive";
     throw new Error(`${flag} applies only to \`fireconnect claude on\`.`);
   }
-  if (claudeAliases.some(Boolean)) {
-    throw new Error(
-      "--opus/--sonnet/--haiku/--fable/--subagent are not supported. "
-        + "Tier slots stay on Claude defaults; use `--model <id>` on `fireconnect claude on`.",
-    );
+  if (claudeAliases.some(Boolean) && !(harnessId === HARNESS.CLAUDE && isOn)) {
+    throw new Error("--opus/--sonnet/--haiku/--fable/--subagent apply only to `fireconnect claude on`.");
   }
   if (ctx.main && !isOn) {
     throw new Error("--model applies only to `<harness> on`.");
@@ -114,7 +111,7 @@ function validateHarnessOptions(route, ctx) {
   if (ctx.providersPath && harnessId !== HARNESS.COPILOT_CLI) {
     throw new Error("--providers-path is supported only by the Copilot CLI.");
   }
-  if (ctx.anthropic || ctx.storedOnly || ctx.withToken || ctx.revoke || ctx.paste || ctx.account) {
+  if (ctx.anthropic || ctx.openai || ctx.storedOnly || ctx.withToken || ctx.revoke || ctx.paste || ctx.account) {
     throw new Error("This option belongs to a global login/logout/key command, not a harness command.");
   }
 
@@ -122,7 +119,7 @@ function validateHarnessOptions(route, ctx) {
     if (!isOn || (harnessId !== HARNESS.CLAUDE && !firerouterRequested)) {
       throw new Error(
         harnessId === HARNESS.CLAUDE
-          ? "--routing-preference requires `fireconnect claude on --model firerouter`."
+          ? "--routing-preference requires `fireconnect claude on` (bare, or with `--model firerouter`)."
           : "--routing-preference requires `<harness> on --model firerouter`.",
       );
     }
@@ -143,6 +140,19 @@ function validateHarnessOptions(route, ctx) {
       throw new Error("--anthropic-api-key is not supported by this harness.");
     }
   }
+  if (ctx.openaiKeyFromFlag) {
+    const validClaudeOn = harnessId === HARNESS.CLAUDE && isOn;
+    if (!validClaudeOn && (!isOn || !firerouterRequested)) {
+      throw new Error(
+        harnessId === HARNESS.CLAUDE
+          ? "--openai-api-key applies only to `fireconnect claude on`."
+          : "--openai-api-key requires `<harness> on --model firerouter`.",
+      );
+    }
+    if (!supportsOpenaiApiKeyFlag(getHarness(harnessId).firerouter)) {
+      throw new Error("--openai-api-key is not supported by this harness.");
+    }
+  }
 }
 
 /**
@@ -158,11 +168,25 @@ function persistAnthropicKeyFromFlag(ctx, home, harnessId) {
   return persistGlobalAnthropicApiKey(home, ctx.anthropicKey);
 }
 
+/**
+ * @param {import("../../harness/types.mjs").HarnessContext} ctx
+ */
+function persistOpenaiKeyFromFlag(ctx, home, harnessId) {
+  if (!ctx.openaiKeyFromFlag || !ctx.openaiKey?.trim()) {
+    return;
+  }
+  if (!isOpenAIShapedKey(ctx.openaiKey)) {
+    throw new Error("--openai-api-key must be an OpenAI API key (sk-..., not sk-ant-...).");
+  }
+  return persistGlobalOpenaiApiKey(home, ctx.openaiKey);
+}
+
 export async function finalizeClaudeOnOutcome(
   outcome,
   {
     persistFireworksKey,
     persistAnthropicKey,
+    persistOpenaiKey,
   } = {},
 ) {
   if (outcome?.cancelled) {
@@ -171,6 +195,7 @@ export async function finalizeClaudeOnOutcome(
   }
   await persistFireworksKey?.();
   await persistAnthropicKey?.();
+  await persistOpenaiKey?.();
   return true;
 }
 
@@ -225,6 +250,7 @@ export async function runHarnessCommand(route, ctx) {
     }
     if (route.harnessId !== HARNESS.CLAUDE) {
       await persistAnthropicKeyFromFlag(ctx, home, route.harnessId);
+      await persistOpenaiKeyFromFlag(ctx, home, route.harnessId);
     }
   }
 
@@ -239,6 +265,7 @@ export async function runHarnessCommand(route, ctx) {
         ? () => persistApiKeyFromFlag(home, deferredClaudeApiKey)
         : undefined,
       persistAnthropicKey: () => persistAnthropicKeyFromFlag(ctx, home, route.harnessId),
+      persistOpenaiKey: () => persistOpenaiKeyFromFlag(ctx, home, route.harnessId),
     });
   }
 }

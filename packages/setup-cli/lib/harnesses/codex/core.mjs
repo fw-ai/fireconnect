@@ -500,7 +500,11 @@ export async function enableCodexFireworks({
           : catalogAvailable
             ? refreshCodexCatalogRows(managedCatalog.models, catalogSnapshot, catalog.models ?? [])
             : managedCatalog.models)
-      : (modelId ? [] : catalog.models ?? []);
+      // Fresh installs seed the whole fetched catalog even when --model pins
+      // one row: the catalog file drives the ChatGPT app model dropdown, so a
+      // single-row file leaves no menu to pick from. The selected model is
+      // appended below when it isn't in the fetched set.
+      : (catalog.models ?? []);
     const catalogToWrite = {
       ...(managedCatalog ?? catalog),
       models: modelId

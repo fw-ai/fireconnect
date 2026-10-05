@@ -21,6 +21,7 @@ import {
   providerBackupPath,
   providerStatePath,
   providerStatusFromEnv,
+  resolveClaudeDefaultModel,
   stripFireconnectManagedClaudeSettings,
   stripManagedApiKeyHelper,
 } from "./core.mjs";
@@ -28,7 +29,11 @@ import {
   FIREWORKS_BASE_URL,
 } from "../../fireworks/model-id.mjs";
 import { assertRequestedModelsServable } from "../../fireworks/model-servability.mjs";
-import { isClaudeNativeModel, normalizeModelId, shortFireworksModelRef } from "../../fireworks/model-id.mjs";
+import {
+  isClaudeNativeModel,
+  normalizeModelId,
+  shortFireworksModelRef,
+} from "../../fireworks/model-id.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import {
   detectApiKeyType,
@@ -79,7 +84,9 @@ import { HARNESS } from "../../harness/id.mjs";
 import {
   fireworksKeyFromCustomHeaders,
   isAnthropicShapedKey,
+  isOpenAIShapedKey,
   resolveAnthropicKey,
+  resolveOpenaiKey,
   routingPreferenceFromCustomHeaders,
   routingPreferenceLevelLabel,
 } from "../../firerouter/core.mjs";
@@ -104,18 +111,24 @@ import {
   resolveClaudeActivationPlan,
 } from "./activation.mjs";
 import {
-  assertNoClaudeSlotFlags,
   claudeBareFirerouterRequested,
   claudeExtraPickerModelFromCtx,
+  claudeSlotOverridesFromCtx,
+  shouldImplyFirerouterPickerRow,
 } from "./connect.mjs";
 import {
   assertClaudeModelOverrides,
+  claudeMappingNeedsOpenaiKey,
+  claudeMappingUsesAnyFirerouter,
   defaultClaudeModelMapping,
   inferClaudeActiveKeyType,
   mappingUsesBareFirerouter,
   withSavedClaudeModelMapping,
 } from "./model-profile.mjs";
-import { isFireconnectModelPicker } from "./settings-model-picker.mjs";
+import {
+  isFireconnectModelPicker,
+  validateClaudeModelPicker,
+} from "./settings-model-picker.mjs";
 
 const CLAUDE_FIREROUTER = Object.freeze({
   byok: "none",
@@ -373,11 +386,10 @@ export default defineHarnessProfile({
   async on(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CLAUDE);
     const onboardingMode = ctx.onboardingMode ?? "auto";
-    assertNoClaudeSlotFlags(ctx);
     if (onboardingMode === "prompt") {
       throw new Error(
-        "--interactive is not supported. Use `--model <id>` to add a Fireworks model "
-          + "to Claude Code's /model picker.",
+        "--interactive is not supported. Use `--model <id>` to choose a Fireworks model "
+          + "and add it to Claude Code's /model picker.",
       );
     }
     assertClaudeModelOverrides(ctx);
@@ -391,13 +403,35 @@ export default defineHarnessProfile({
     if (ctx.anthropicKeyFromFlag && !isAnthropicShapedKey(ctx.anthropicKey)) {
       throw new Error("--anthropic-api-key must be an Anthropic API key (sk-ant-...).");
     }
+    if (ctx.openaiKeyFromFlag && !isOpenAIShapedKey(ctx.openaiKey)) {
+      throw new Error("--openai-api-key must be an OpenAI API key (sk-..., not sk-ant-...).");
+    }
     const keyType = detectApiKeyType(fireworksKey);
+    const activeToken = resolveClaudeAuthState(snapshot.settings, snapshot.state).token;
+    const recordedKeyType = ["fireworks", "firepass"].includes(snapshot.state.keyType)
+      ? snapshot.state.keyType
+      : "";
+    validateClaudeModelPicker(snapshot.settings, {
+      keyType,
+      priorKeyType: activeToken ? detectApiKeyType(activeToken) : recordedKeyType,
+    });
     // Normalize first so friendly aliases like `native` are seen as the native
     // sentinel (claude-default) before the servability check, not as a bare,
     // unrecognized model id.
-    const extraPickerModel = claudeExtraPickerModelFromCtx(ctx);
+    // Default `claude on` lands on the FireRouter mix, so `--routing-preference`
+    // without `--model` means `--model firerouter` — but only when no tier slot
+    // was pinned (see `shouldImplyFirerouterPickerRow`): an explicit slot opts
+    // out of the mix, so synthesizing firerouter there would attach a routing
+    // header the pinned tiers ignore. Pin it explicitly: a re-`on` otherwise
+    // keeps a saved servable /model pick (e.g. glm-latest), and the routing
+    // header would ride on a model that ignores it.
+    const extraPickerModel = claudeExtraPickerModelFromCtx(
+      shouldImplyFirerouterPickerRow(ctx) ? { main: "firerouter" } : ctx,
+    );
+    const slotOverrides = claudeSlotOverridesFromCtx(ctx);
     await assertRequestedModelsServable(
-      extraPickerModel ? [extraPickerModel] : [],
+      [extraPickerModel, ...Object.values(slotOverrides)]
+        .filter((modelId) => modelId && !isClaudeNativeModel(modelId)),
       { apiKey: fireworksKey, keyType },
     );
     const nativeBaseline = claudeNativeAuthBaseline(
@@ -416,10 +450,6 @@ export default defineHarnessProfile({
     // auth at request time. FireConnect does not probe for that login — only
     // Fire Pass is ineligible for FireRouter.
     const canUseFirerouter = keyType !== "firepass";
-    const activeToken = resolveClaudeAuthState(snapshot.settings, snapshot.state).token;
-    const recordedKeyType = ["fireworks", "firepass"].includes(snapshot.state.keyType)
-      ? snapshot.state.keyType
-      : "";
     const activeKeyType = snapshot.intent
       ? inferClaudeActiveKeyType({
         tokenKeyType: activeToken ? detectApiKeyType(activeToken) : "",
@@ -452,11 +482,14 @@ export default defineHarnessProfile({
         }
       }
     }
-    const bareFirerouter = claudeBareFirerouterRequested(extraPickerModel);
+    const bareFirerouter = claudeBareFirerouterRequested(extraPickerModel)
+      || mappingUsesBareFirerouter(mapping);
     if (ctx.routingPreference !== null && !bareFirerouter) {
-      throw new Error("--routing-preference requires `--model firerouter`.");
+      throw new Error("--routing-preference requires a Claude slot set to firerouter.");
     }
-    if (bareFirerouter && keyType === "firepass") {
+    // Every FireRouter route is off-limits on Fire Pass, not just bare
+    // `firerouter`: a `firerouter/*` compound pin would otherwise be written.
+    if (keyType === "firepass" && claudeMappingUsesAnyFirerouter(mapping, extraPickerModel)) {
       throw new Error(FIREROUTER_FIREPASS_UNSUPPORTED_MESSAGE);
     }
     if (keyType === "firepass"
@@ -470,6 +503,28 @@ export default defineHarnessProfile({
     // or BYOK the user configured in Claude Code). FireRouter does not require
     // FireConnect to inject x-anthropic-api-key — Claude Code attaches auth.
     const anthropicKeyForSettings = nativeAuth.anthropicApiKey;
+    // A configured OpenAI key rides along as x-openai-api-key on FireRouter
+    // picks that can route to OpenAI (see `claudeMappingNeedsOpenaiKey`), the
+    // same attach rule as `resolveFirerouterByokHeaders`. Checked against the
+    // /model default `on` will actually write, so a plain `on` that lands on
+    // the implicit firerouter default carries the key too. Missing stays
+    // absent, never an error.
+    const defaultModel = resolveClaudeDefaultModel({
+      currentModel: snapshot.settings.model,
+      keyType,
+      selectedPickerModel: extraPickerModel ?? "",
+      mapping,
+      registerablePickerIds,
+    });
+    const openaiKeyForSettings = claudeMappingNeedsOpenaiKey(mapping, defaultModel)
+      ? await resolveOpenaiKey({
+        apiKey: ctx.openaiKeyFromFlag ? ctx.openaiKey : "",
+        settingsEnv: {
+          ANTHROPIC_CUSTOM_HEADERS: snapshot.settings.env?.ANTHROPIC_CUSTOM_HEADERS ?? "",
+        },
+        home: ctx.home,
+      })
+      : "";
 
     // Migrate a harness-local key (baked into settings by an older `on`) into the
     // shared store so `key export` and other harnesses can reuse it — but only
@@ -499,10 +554,12 @@ export default defineHarnessProfile({
       keyType,
       anthropicKey: anthropicKeyForSettings,
       anthropicAuthToken: nativeAuth.anthropicAuthToken,
+      openaiKey: openaiKeyForSettings,
       nativeApiKeyHelper: nativeAuth.nativeApiKeyHelper,
       routingPreference: bareFirerouter ? ctx.routingPreference : null,
       useApiKeySentinel: false,
       registerablePickerIds,
+      selectedPickerModel: extraPickerModel ?? "",
       firerouterHeaders: bareFirerouter,
     });
     await setHarnessState(ctx.home, HARNESS.CLAUDE, {
@@ -524,7 +581,10 @@ export default defineHarnessProfile({
       firepass: keyType === "firepass",
     }));
     const visionWarning = formatNonVisionModelsWarning(
-      uniqueNonVisionModelShortIds(extraPickerModel ? [extraPickerModel] : []),
+      uniqueNonVisionModelShortIds(
+        [extraPickerModel, ...Object.values(slotOverrides)]
+          .filter((modelId) => modelId && !isClaudeNativeModel(modelId)),
+      ),
     );
     if (visionWarning) {
       footnotes.push(() => printNote(visionWarning));
@@ -545,6 +605,7 @@ export default defineHarnessProfile({
       afterConnected: async () => {
         printClaudePickerSummary({
           extraPickerModel,
+          mapping,
           firepass: keyType === "firepass",
         });
       },

@@ -75,6 +75,14 @@ export function copilotCliSelectionId(modelId) {
   return `${COPILOT_CLI_PROVIDER_NAME}/${modelId}`;
 }
 
+/** Resolve a provider-qualified Copilot CLI selection back to its model id. */
+export function copilotCliModelIdFromSelection(selectionId) {
+  const prefix = `${COPILOT_CLI_PROVIDER_NAME}/`;
+  return typeof selectionId === "string" && selectionId.startsWith(prefix)
+    ? selectionId.slice(prefix.length)
+    : "";
+}
+
 /** Backups are keyed by file path so two configs can't restore onto each other. */
 export function copilotProvidersBackupPath(dataDir, providersPath) {
   const key = createHash("sha256").update(path.resolve(providersPath)).digest("hex").slice(0, 16);

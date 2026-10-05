@@ -21,8 +21,8 @@ import { mockServerlessModel } from "../../helpers.mjs";
 const GLM_5P2_FAST = "accounts/fireworks/routers/glm-5p2-fast";
 const GLM_LATEST = "accounts/fireworks/routers/glm-latest";
 const GLM_FAST_LATEST = "accounts/fireworks/routers/glm-fast-latest";
-const KIMI_LATEST = "accounts/fireworks/routers/kimi-latest";
-const KIMI_K2P6_FAST = "accounts/fireworks/routers/kimi-k2p6-fast";
+const SAMPLE_LATEST = "accounts/fireworks/routers/sample-latest";
+const GLM_5P1_FAST = "accounts/fireworks/routers/glm-5p1-fast";
 
 // Flat `/v1/serverless/models` rows for the alias routers these tests exercise.
 // Under the refactor alias routers exist only when the API reports them via a
@@ -47,12 +47,12 @@ const GLM_5P2_CATALOG_ROWS = [
   }),
 ];
 
-const KIMI_K3_CATALOG_ROWS = [
+const SAMPLE_CATALOG_ROWS = [
   mockServerlessModel({
-    id: "accounts/fireworks/models/kimi-k3",
-    display_name: "Kimi K3",
+    id: "accounts/fireworks/models/sample-model-v3",
+    display_name: "Sample Model V3",
     context_length: 1_040_000,
-    aliases: ["accounts/fireworks/routers/kimi-latest"],
+    aliases: ["accounts/fireworks/routers/sample-latest"],
     pricing: [
       { sku: "LLM input tokens (uncached)", amount: "3" },
       { sku: "LLM output tokens", amount: "15" },
@@ -309,16 +309,16 @@ describe("resolvePiEffectiveFireworksModel", () => {
     });
   });
 
-  it("does not collapse catalog kimi-k2p6-fast to the 128K default", () => {
-    const effective = effectiveAfterMerge(KIMI_K2P6_FAST, KIMI_K2P6_FAST);
+  it("does not collapse a known fast router to the 128K default", () => {
+    const effective = effectiveAfterMerge(GLM_5P1_FAST, GLM_5P1_FAST);
     assert.ok(effective);
-    assert.equal(effective.contextWindow, 262_000);
-    assert.equal(effective.cost.input, 2);
+    assert.equal(effective.contextWindow, 202_800);
+    assert.equal(effective.cost.input, 2.8);
   });
 
-  it("gives kimi-latest 1M context from the seeded kimi-k3 alias, not 128K", () => {
-    withCatalogSnapshot(KIMI_K3_CATALOG_ROWS, () => {
-      const effective = effectiveAfterMerge(KIMI_LATEST, KIMI_LATEST);
+  it("gives a catalog alias 1M context from its seeded base model, not 128K", () => {
+    withCatalogSnapshot(SAMPLE_CATALOG_ROWS, () => {
+      const effective = effectiveAfterMerge(SAMPLE_LATEST, SAMPLE_LATEST);
       assert.ok(effective);
       assert.equal(effective.contextWindow, 1_040_000);
       assert.equal(effective.cost.input, 3);
@@ -409,7 +409,7 @@ describe("resolvePiEffectiveFireworksModel", () => {
   });
 
   it("registers a custom deployment ID (accounts/<user>/deployments/<id>) in models", () => {
-    const deploymentId = "accounts/ahmadshahzad/deployments/ub9lvh50";
+    const deploymentId = "accounts/example-account/deployments/test-deployment";
     const merged = mergePiFireworksRouterModels({}, deploymentId);
     const entry = merged.providers.fireworks.models.find((model) => model.id === deploymentId);
 
@@ -424,7 +424,7 @@ describe("resolvePiEffectiveFireworksModel", () => {
   });
 
   it("resolvePiEffectiveFireworksModel resolves a custom deployment with defaults", () => {
-    const deploymentId = "accounts/ahmadshahzad/deployments/ub9lvh50";
+    const deploymentId = "accounts/example-account/deployments/test-deployment";
     const effective = effectiveAfterMerge(deploymentId, deploymentId);
     assert.ok(effective);
     assert.equal(effective.contextWindow, 1_000_000);
@@ -432,14 +432,14 @@ describe("resolvePiEffectiveFireworksModel", () => {
 });
 
 describe("fullFireworksResourceId router classification", () => {
-  // Regression: router slugs not in a hand-maintained list (e.g. kimi-k3-fast,
+  // Regression: router slugs not in a hand-maintained list (e.g. sample-model-fast,
   // any new *-fast/*-latest/*-turbo) must still expand to routers/, not models/.
   // A mis-expanded active model failed to match its catalog row in
   // mergePiFireworksRouterModels, yielding a duplicate models[] entry.
   it("expands router-suffixed slugs to routers/ even when not in a static list", () => {
     assert.equal(
-      fullFireworksResourceId("kimi-k3-fast"),
-      "accounts/fireworks/routers/kimi-k3-fast",
+      fullFireworksResourceId("sample-model-fast"),
+      "accounts/fireworks/routers/sample-model-fast",
     );
     assert.equal(
       fullFireworksResourceId("glm-5p2-fast"),
@@ -458,25 +458,13 @@ describe("fullFireworksResourceId router classification", () => {
     // Full `accounts/fireworks/routers/...-us` ids (as the API reports them)
     // pass through unchanged.
     assert.equal(
-      fullFireworksResourceId("kimi-k3-us"),
-      "accounts/fireworks/routers/kimi-k3-us",
-    );
-    assert.equal(
-      fullFireworksResourceId("glm-5p2-fast-us"),
-      "accounts/fireworks/routers/glm-5p2-fast-us",
-    );
-    assert.equal(
       fullFireworksResourceId("glm-5p3-flash-us"),
       "accounts/fireworks/routers/glm-5p3-flash-us",
     );
     // The full ids the catalog actually reports as US routers pass through.
     assert.equal(
-      fullFireworksResourceId("accounts/fireworks/routers/kimi-k3-us"),
-      "accounts/fireworks/routers/kimi-k3-us",
-    );
-    assert.equal(
-      fullFireworksResourceId("accounts/fireworks/routers/glm-5p2-fast-us"),
-      "accounts/fireworks/routers/glm-5p2-fast-us",
+      fullFireworksResourceId("accounts/fireworks/routers/glm-5p3-flash-us"),
+      "accounts/fireworks/routers/glm-5p3-flash-us",
     );
   });
 
@@ -508,16 +496,16 @@ describe("fullFireworksResourceId router classification", () => {
   it("registers a router-slug active model as a single canonical row (no duplicate)", () => {
     setServerlessCatalogSnapshot(null);
     try {
-      // kimi-k3-fast is a real router but absent from the static short-id list,
-      // so it previously expanded to models/kimi-k3-fast and duplicated its own
-      // routers/kimi-k3-fast catalog row.
-      const merged = mergePiFireworksRouterModels({}, "kimi-k3-fast");
+      // This synthetic fast router is absent from the static short-id list,
+      // so it would previously expand under models/ and duplicate its own
+      // routers/ catalog row.
+      const merged = mergePiFireworksRouterModels({}, "sample-model-fast");
       const ids = (merged.providers.fireworks.models ?? []).map((m) => m.id);
       const canonical = ids.filter(
-        (id) => shortFireworksModelRef(id) === "kimi-k3-fast",
+        (id) => shortFireworksModelRef(id) === "sample-model-fast",
       );
       assert.equal(canonical.length, 1, "no duplicate rows for the active router");
-      assert.equal(canonical[0], "accounts/fireworks/routers/kimi-k3-fast");
+      assert.equal(canonical[0], "accounts/fireworks/routers/sample-model-fast");
     } finally {
       setServerlessCatalogSnapshot(null);
     }

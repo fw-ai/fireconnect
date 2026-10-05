@@ -38,8 +38,6 @@ export const KIMI_FAST_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/kimi-fast-latest";
 export const DEEPSEEK_FLASH_LATEST_ROUTER_ID =
   "accounts/fireworks/routers/deepseek-flash-latest";
-export const DEEPSEEK_PRO_LATEST_ROUTER_ID =
-  "accounts/fireworks/routers/deepseek-pro-latest";
 export const DEFAULT_MAIN_MODEL = AUTO_MODEL_ID;
 // Fire Pass keeps a concrete router pin: the mix's auto router needs no bare-slug
 // catalog entry, and Fire Pass keys can't list the catalog to resolve one.
@@ -56,6 +54,15 @@ function stripContextSuffix(model) {
   return typeof model === "string"
     ? model.replace(/\[1m\]$/i, "")
     : model;
+}
+
+const FIREWORKS_ACCOUNT_PREFIX = "accounts/fireworks/";
+
+function withCanonicalFireworksAccountPrefix(model) {
+  if (!model.toLowerCase().startsWith(FIREWORKS_ACCOUNT_PREFIX)) {
+    return model;
+  }
+  return `${FIREWORKS_ACCOUNT_PREFIX}${model.slice(FIREWORKS_ACCOUNT_PREFIX.length)}`;
 }
 
 /**
@@ -90,9 +97,39 @@ export function isFirerouterModel(model) {
 }
 
 /**
- * Whether a FireRouter selection requires an Anthropic credential: bare
- * `firerouter` (primary is Claude Opus 5) or any Claude/Opus model in the slash
- * path. Pure-Fireworks selections (firerouter/kimi-k3) need no Anthropic key.
+ * Bare `firerouter` or `firerouter/<member>/…` with no empty segment.
+ * Stricter than {@link isFirerouterModelPattern}: admission rejects lookalikes
+ * (`foo/firerouter-clone`, `firerouter/`); routing and display stay liberal.
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function isFirerouterRouteRef(model) {
+  if (typeof model !== "string") {
+    return false;
+  }
+  const ref = stripContextSuffix(model.trim()).toLowerCase();
+  if (ref === FIREROUTER_MODEL_ID) {
+    return true;
+  }
+  if (!ref.startsWith(`${FIREROUTER_MODEL_ID}/`)) {
+    return false;
+  }
+  // Every member must be a real segment. `firerouter/`, `firerouter//kimi`,
+  // and `firerouter/astra/` are not gateway routes.
+  const members = ref.slice(FIREROUTER_MODEL_ID.length + 1).split("/");
+  return members.every((segment) => (
+    segment.length > 0
+    && segment !== "."
+    && segment !== ".."
+    && !/\s/.test(segment)
+  ));
+}
+
+/**
+ * Whether a FireRouter selection uses an Anthropic credential: bare
+ * `firerouter` (Claude Opus when an Anthropic key is present) or any
+ * Claude/Opus model in the slash path. Pure-Fireworks selections
+ * (firerouter/kimi-k3) use no Anthropic key.
  * @param {string} model
  * @returns {boolean}
  */
@@ -103,12 +140,57 @@ export function firerouterRequiresAnthropicKey(model) {
   if (isFirerouterModel(model)) {
     return true;
   }
+  return firerouterNamesAnthropicModel(model);
+}
+
+/**
+ * Whether a FireRouter slash path names a Claude/Opus model. Bare `firerouter`
+ * names none: it serves a GPT model with only an OpenAI credential and open models
+ * with no closed-model credential, so harnesses that cannot forward an
+ * Anthropic key can still use it.
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function firerouterNamesAnthropicModel(model) {
+  if (!isFirerouterModelPattern(model) || isFirerouterModel(model)) {
+    return false;
+  }
   const stripped = stripContextSuffix(String(model ?? "").trim());
   return stripped.split("/").some((part) => {
     const seg = part.trim().toLowerCase();
     return seg === "claude"
       || seg.startsWith("claude-")
       || CLAUDE_MODEL_ALIASES.has(seg);
+  });
+}
+
+/**
+ * Whether a FireRouter selection routes to an OpenAI model in the slash path
+ * (e.g. firerouter/gpt-5p6, firerouter/openai/<id>), so a configured OpenAI
+ * key should ride along as `x-openai-api-key` (matches `openai`, `gpt`,
+ * `gpt-*`, `openai-*`, and the o-series reasoning ids). Bare `firerouter`
+ * returns false
+ * here: its primary is Claude, and an OpenAI key is attached opportunistically
+ * (when configured) rather than required.
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function firerouterRequiresOpenaiKey(model) {
+  if (!isFirerouterModelPattern(model)) {
+    return false;
+  }
+  if (isFirerouterModel(model)) {
+    return false;
+  }
+  const stripped = stripContextSuffix(String(model ?? "").trim());
+  return stripped.split("/").some((part) => {
+    const seg = part.trim().toLowerCase();
+    return seg === "openai"
+      || seg === "gpt"
+      || seg.startsWith("gpt-")
+      || seg.startsWith("openai-")
+      // OpenAI reasoning models: o1, o3, o4-mini, ...
+      || /^o\d/.test(seg);
   });
 }
 
@@ -192,8 +274,8 @@ export function fullFireworksResourceId(model) {
   if (!bare) {
     return bare;
   }
-  if (bare.startsWith("accounts/fireworks/")) {
-    return bare;
+  if (bare.toLowerCase().startsWith(FIREWORKS_ACCOUNT_PREFIX)) {
+    return withCanonicalFireworksAccountPrefix(bare);
   }
   if (bare.includes("/")) {
     return bare;
@@ -228,7 +310,12 @@ export function normalizeModelId(model) {
   if (!bare) {
     return bare;
   }
-  if (isFirerouterModel(bare)) {
+  // Collapse only bare firerouter and the two provider spellings. Any other
+  // path whose last segment is firerouter (`foo/firerouter`) is a different id.
+  if (
+    isFirerouterModel(bare)
+    && (!bare.includes("/") || /^(?:fireworks-ai|fireworks)\/firerouter$/i.test(bare))
+  ) {
     return FIREROUTER_MODEL_ID;
   }
   if (isAutoModelId(bare)) {
@@ -237,8 +324,14 @@ export function normalizeModelId(model) {
   if (isClaudeNativeSlotAlias(bare) || isClaudeNativeModel(bare)) {
     return CLAUDE_NATIVE_MODEL_ID;
   }
-  if (bare.startsWith("accounts/fireworks/")) {
-    return shortFireworksModelRef(bare);
+  if (isFirerouterRouteRef(bare)) {
+    return bare.toLowerCase();
+  }
+  if (bare.toLowerCase().startsWith(FIREWORKS_ACCOUNT_PREFIX)) {
+    const shortened = shortFireworksModelRef(bare);
+    return shortened === bare
+      ? withCanonicalFireworksAccountPrefix(bare)
+      : shortened;
   }
   if (bare.includes("/")) {
     return bare;
@@ -246,12 +339,39 @@ export function normalizeModelId(model) {
   return bare;
 }
 
-export function validateModelId(model, flag) {
-  if (!model.startsWith("accounts/") && model.includes("/") && !isFirerouterModelPattern(model)) {
-    throw new Error(
-      `${flag} must be a Fireworks model ID like deepseek-v4-flash or a router ID like glm-latest`,
-    );
+/**
+ * Id to admit and store. Empty means the harness default.
+ * Collapses spellings {@link normalizeModelId} already understands, then
+ * applies the shape gate so every harness rejects the same slash forms.
+ * @param {string | undefined | null} model
+ * @param {string} [flag]
+ * @returns {string}
+ */
+export function canonicalRequestedModelId(model, flag = "--model") {
+  if (typeof model !== "string" || !model.trim()) {
+    return "";
   }
+  const normalized = normalizeModelId(model);
+  if (isClaudeNativeModel(normalized)) {
+    throw new Error(`${flag} ${model.trim()} is not a Fireworks model id.`);
+  }
+  if (normalized) {
+    validateModelId(normalized, flag);
+  }
+  return normalized;
+}
+
+/** Shape only: bare slug, `accounts/…`, or a rooted `firerouter/` route. */
+export function validateModelId(model, flag) {
+  const accepted = !model.includes("/")
+    || /^accounts\//i.test(model)
+    || isFirerouterRouteRef(model);
+  if (accepted) {
+    return;
+  }
+  throw new Error(
+    `${flag} must be a Fireworks model ID like kimi-k3 or a router ID like glm-latest`,
+  );
 }
 
 export function defaultMainModel(keyType = "fireworks") {

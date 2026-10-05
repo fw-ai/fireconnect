@@ -14,7 +14,17 @@ import {
   resolveClaudeModelMapping,
   savedClaudeModelMapping,
 } from "./model-profile.mjs";
+import { CLAUDE_TIER_SLOTS, claudeSlotOverridesFromCtx } from "./connect.mjs";
 import { normalizeModelId } from "../../fireworks/model-id.mjs";
+
+/** Tier-slot slice of a mapping; `main` stays picker-managed on standard keys. */
+function tierSlotsOf(mapping = {}) {
+  return Object.fromEntries(
+    CLAUDE_TIER_SLOTS
+      .filter((slot) => typeof mapping[slot] === "string" && mapping[slot].trim())
+      .map((slot) => [slot, mapping[slot]]),
+  );
+}
 
 export async function readClaudeActivationSnapshot(ctx) {
   const paths = claudePathsFor(ctx);
@@ -53,11 +63,39 @@ export function resolveClaudeActivationPlan({
       : {};
     const migratedSaved = migrateLegacyClaudeModelMapping(saved).mapping;
     const migratedActive = migrateLegacyClaudeModelMapping(active).mapping;
+    // Tier flags merge here too so they are never silently dropped: a Fire Pass
+    // router pin applies, while `native` / `firerouter` reach the Fire Pass
+    // guards in `on` and fail loudly instead of exiting 0 unchanged.
     const mapping = resolveClaudeModelMapping(
-      mergeClaudeModelMappings(migratedSaved, migratedActive, mainOverride),
+      mergeClaudeModelMappings(
+        migratedSaved,
+        migratedActive,
+        mainOverride,
+        claudeSlotOverridesFromCtx(ctx),
+      ),
       keyType,
     );
     return { mapping };
   }
-  return { mapping: resolveClaudeModelMapping({}, keyType) };
+  // Standard keys default every tier slot to native, but explicit `--opus` …
+  // `--subagent` flags pin slots and re-`on` preserves pins saved by an
+  // earlier `on` (saved profile, then live settings). Explicit flags win;
+  // `native` unpins back to Claude defaults. `--model` stays picker-only.
+  const saved = savedClaudeModelMapping(snapshot.profiles, keyType);
+  const active = snapshot.intent && activeKeyType === keyType
+    ? snapshot.intent.mapping
+    : {};
+  const overrides = claudeSlotOverridesFromCtx(ctx);
+  const migratedSaved = migrateLegacyClaudeModelMapping(saved).mapping;
+  const migratedActive = migrateLegacyClaudeModelMapping(active).mapping;
+  return {
+    mapping: resolveClaudeModelMapping(
+      mergeClaudeModelMappings(
+        tierSlotsOf(migratedSaved),
+        tierSlotsOf(migratedActive),
+        overrides,
+      ),
+      keyType,
+    ),
+  };
 }

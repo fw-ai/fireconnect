@@ -50,6 +50,7 @@ import { colorizeHelp } from "../../ui.mjs";
 import { ROUTING_PREFERENCE_LEVEL_NAMES } from "../../firerouter/core.mjs";
 import {
   supportsAnthropicApiKeyFlag,
+  supportsOpenaiApiKeyFlag,
   supportsRoutingPreference,
 } from "../../firerouter/flag.mjs";
 import { accent, check as checkGlyph, red, symbols } from "../../ui/style.mjs";
@@ -115,6 +116,9 @@ function standardOnOpts({ azure = true, firerouter = null, modelNote = "" } = {}
   if (supportsAnthropicApiKeyFlag(firerouter)) {
     opts.push(["--anthropic-api-key <key>", "Anthropic BYOK key for firerouter."]);
   }
+  if (supportsOpenaiApiKeyFlag(firerouter)) {
+    opts.push(["--openai-api-key <key>", "OpenAI BYOK key for firerouter."]);
+  }
   return opts;
 }
 
@@ -137,10 +141,16 @@ function claudeHelp() {
     optBlock("Options for on", [
       ["--api-key <key>", "Fireworks API key (also saves ~/.fireconnect/config.json)."],
       ["--base-url <url>", "Anthropic-compatible gateway URL override."],
-      ["--model <id>", "Add a Fireworks model to Claude Code's /model picker (does not override tier slots)."],
+      ["--model <id>", "Add a Fireworks model to Claude Code's /model picker (default)."],
+      ["--opus <id>", "Pin the Opus tier slot (`native` = Claude default)."],
+      ["--sonnet <id>", "Pin the Sonnet tier slot (`native` = Claude default)."],
+      ["--haiku <id>", "Pin the Haiku tier slot (`native` = Claude default)."],
+      ["--fable <id>", "Pin the Fable tier slot (`native` = Claude default)."],
+      ["--subagent <id>", "Pin the subagent model (`native` = Claude default)."],
       ["--non-interactive", "Non-interactive connect (default)."],
-      ["--routing-preference <p>", `FireRouter tradeoff (${ROUTING_PREF}); requires --model firerouter.`],
+      ["--routing-preference <p>", `FireRouter tradeoff (${ROUTING_PREF}); bare on, --model firerouter, or a firerouter tier pin.`],
       ["--anthropic-api-key <key>", "Optional: store sk-ant-… for Claude Code native auth (not required for FireRouter)."],
+      ["--openai-api-key <key>", "Optional: store sk-… so FireRouter can route hard turns to OpenAI models."],
     ]),
     "",
     optBlock("Options for usage", [
@@ -245,6 +255,7 @@ export function mainCommandsHelp() {
     "",
     cmdBlock("Harnesses", [
       ["claude", "Claude Code"],
+      ["claude-desktop", "Claude Desktop (Fireworks inference)"],
       ["opencode", "OpenCode"],
       ["codex", "Codex CLI & ChatGPT app"],
       ["chatgpt", "Codex CLI & ChatGPT app"],
@@ -264,7 +275,7 @@ export function mainCommandsHelp() {
     "",
     cmdBlock("Other", [
       ["status", "Sign-in state and key storage."],
-      ["configure", "Provider and Anthropic key."],
+      ["configure", "Provider and BYOK keys."],
       ["upgrade", "Update FireConnect."],
       ["help", "Full command reference."],
       ["help <harness>", "All options for one harness."],
@@ -281,8 +292,8 @@ export function printHelp(topic = "") {
   const codexHelpOpts = {
     configPath: "--config-path <path>",
     configPathNote: "Explicit ~/.codex/config.toml path.",
-    codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY from your shell. "
-      + "Pass --anthropic-api-key with codex on (or configure), then source your shell config.",
+    codexNote: "Firerouter BYOK reads ANTHROPIC_API_KEY and OPENAI_API_KEY from your shell. "
+      + "Pass --anthropic-api-key / --openai-api-key with codex on (or configure), then source your shell config.",
     force: true,
   };
   const harnessHelp = {
@@ -336,6 +347,31 @@ export function printHelp(topic = "") {
       configPath: "--config-path <path>",
       configPathNote: "Explicit ~/.dsh/settings.yaml path.",
     }),
+    "claude-desktop": helpLines(
+      `Usage: ${CLI_NAME} claude-desktop <on|off|status> | mcp <list|add|remove|sync>`,
+      "",
+      "Routes Claude Desktop's Chat, Cowork and Code surfaces through Fireworks",
+      "via Desktop's third-party inference profile and a loopback gateway",
+      "shim (launchd, auto-restart). Connectors are imported from your existing",
+      "setup; each needs a one-time re-auth, and some providers (Google, Figma",
+      "hosted) need your own OAuth app or a companion local server.",
+      "",
+      "  on                 enable (idempotent; pre-existing profiles backed up).",
+      "  off                restore the previous configuration.",
+      "  status             lane health: shim, applied profile, connectors.",
+      "",
+      "  mcp list|add|remove|sync",
+      "                     Manage connectors in the 3p profile. sync re-detects",
+      "                     from Desktop sessions, the pre-FireConnect config, and",
+      "                     the org's claude.ai connector registry (via the Claude",
+      "                     Code CLI when installed).",
+      "",
+      "`off` restores only what FireConnect changed (profiles, device config,",
+      "services) and removes only FireConnect-owned artifacts.",
+      "Quit and reopen Claude Desktop after on/off.",
+      "",
+      "Requirements: macOS, a stored Fireworks credential (`fireconnect login`).",
+    ),
     login: helpLines(
       `Usage: ${CLI_NAME} login [options]`,
       "",
@@ -372,13 +408,14 @@ export function printHelp(topic = "") {
     configure: helpLines(
       `Usage: ${CLI_NAME} configure [options]`,
       "",
-      "Set default provider and Anthropic key for firerouter. Use `fireconnect login` for your Fireworks key.",
+      "Set default provider and BYOK keys for firerouter. Use `fireconnect login` for your Fireworks key.",
       "",
       optBlock("Options", [
         ["--provider <name>", "fireworks (default) or azure."],
         ["--base-url <url>", "Foundry URL (with --provider azure)."],
         ["--api-key <key>", "Foundry endpoint key (azure only)."],
         ["--anthropic-api-key <key>", "Anthropic key for firerouter."],
+        ["--openai-api-key <key>", "OpenAI key for firerouter."],
         OPT_HOME,
       ]),
     ),
@@ -407,6 +444,7 @@ export function printHelp(topic = "") {
     "",
     cmdBlock("Harnesses", [
       ["claude", "Claude Code"],
+      ["claude-desktop", "Claude Desktop (Fireworks inference)"],
       ["opencode", "OpenCode"],
       ["codex", "Codex CLI & ChatGPT app"],
       ["chatgpt", "Codex CLI & ChatGPT app"],
@@ -433,7 +471,8 @@ export function printHelp(topic = "") {
       ["logout", "Clear stored credentials."],
       ["status", "Show sign-in state, machine environment, and key storage."],
       ["model list", "Browse serverless models."],
-      ["configure", "Set provider and Anthropic key."],
+      ["models", "Alias for model list."],
+      ["configure", "Set provider and BYOK keys."],
       ["upgrade", "Update FireConnect."],
       ["uninstall", "Remove FireConnect."],
       ["help", "Show help (`help <topic>` or `<harness> help`)."],

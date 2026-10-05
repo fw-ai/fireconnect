@@ -4,6 +4,7 @@ import {
   printRestartHint,
 } from "../../cli/messages.mjs";
 import { printStructuredHarnessStatus } from "../../harness/status-display.mjs";
+import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
 import { detectApiKeyType, isFireworksKey } from "../../keys/key-type.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
 import { ensureHomeForHarness, copilotCliPathsFor as copilotCliPathsForShared } from "../../harness/context.mjs";
@@ -23,6 +24,7 @@ import {
   resolveCopilotModelId,
 } from "../copilot-shared.mjs";
 import {
+  copilotCliModelIdFromSelection,
   copilotCliSelectionId,
   copilotProvidersPath,
   copilotSettingsPath,
@@ -69,22 +71,31 @@ export default defineHarnessProfile({
       apiKey: effectiveKey,
       includeFirerouter,
     });
-    const resolvedModel = shortFireworksModelRef(resolveCopilotModelId(modelId?.trim(), keyType));
     const existing = await readCopilotCliState(paths.providersPath, paths.settingsPath);
+    const existingSelection = copilotCliModelIdFromSelection(existing.selectedModel);
+    const requestedModel = modelId?.trim() || existingSelection;
+    const resolvedModel = shortFireworksModelRef(resolveCopilotModelId(requestedModel, keyType));
     const initialized = await isHarnessEnabled(ctx.home, HARNESS.COPILOT_CLI);
     const catalogModels = copilotModelIds(extraModels);
     let toRegister;
-    if (modelId) {
-      toRegister = [...new Set([...existing.models, resolvedModel])];
-    } else if (!initialized) {
+    if (!initialized) {
+      // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
       toRegister = copilotModelIds([resolvedModel, ...extraModels]);
+    } else if (modelId) {
+      toRegister = [...new Set([...existing.models, resolvedModel])];
     } else if (catalogAvailable) {
-      const served = new Set(catalogModels);
-      toRegister = existing.models.filter((id) => (
-        isAutoModelId(id)
-        || isFirerouterModelPattern(id)
-        || served.has(id)
-      ));
+      const plan = planCatalogRefresh({
+        // Include the saved selection even if providers.json was edited or
+        // partially lost; the selected model must remain registered.
+        currentIds: [...existing.models, existingSelection].filter(Boolean),
+        freshIds: catalogModels,
+        keepUnserved: (id) => (
+          id === existingSelection
+          || isAutoModelId(id)
+          || isFirerouterModelPattern(id)
+        ),
+      });
+      toRegister = [...plan.kept, ...plan.added];
     } else {
       toRegister = existing.models;
     }

@@ -3,7 +3,6 @@ import {
   FIREROUTER_ROUTER_ID,
   KIMI_FAST_LATEST_ROUTER_ID,
   canonicalAutoModelId,
-  isAutoModelId,
   isFirerouterModel,
   isFirerouterModelPattern,
 } from "./model-id.mjs";
@@ -27,6 +26,8 @@ import {
   setServerlessCatalogSnapshot,
 } from "./serverless-catalog-cache.mjs";
 import { fireworksGatewayFetchSignal } from "./gateway-fetch.mjs";
+import { stripViaFireworksSuffix } from "./label-suffix.mjs";
+import { refreshListPriceCache } from "../pricing/list-price-cache.mjs";
 
 export const FIREWORKS_GATEWAY_URL = "https://api.fireworks.ai";
 export const PLATFORM_ACCOUNT_ID = "fireworks";
@@ -188,11 +189,6 @@ export function firerouterDisplayName(modelId) {
   }
   return ["FireRouter", ...segments.map(prettyModelName)].join(" · ");
 }
-
-/** Strip catalog/router suffix from a display label. */
-import { stripViaFireworksSuffix } from "./label-suffix.mjs";
-
-export { stripViaFireworksSuffix };
 
 async function fetchGatewayPage(path, apiKey) {
   // Same dev/test override as verify-api-key.mjs — lets the mock gateway
@@ -594,6 +590,17 @@ export function buildServerlessCatalogSnapshot(apiModels) {
     addApiAliasRouters(snapshot, modelId, aliases, entries, pricingById, fastRouterByModel.get(modelId));
   }
 
+  // An auto mix routes across models, so it must not inherit the rates,
+  // context, or base model of whichever row listed it; its static spec stays
+  // the source for those.
+  for (const entry of entries) {
+    if (autoCatalogEntryId(entry)) {
+      for (const byId of [pricingById, inputModalitiesById, routerBaseModelById, contextLengthById, supportsToolsById]) {
+        byId.delete(entry.id);
+      }
+    }
+  }
+
   snapshot.entries = dedupeCatalog(entries);
   refreshRouterDisplayNames(snapshot);
   return snapshot;
@@ -602,9 +609,18 @@ export function buildServerlessCatalogSnapshot(apiModels) {
 function dedupeCatalog(entries) {
   const byId = new Map();
   for (const entry of entries) {
-    if (entry?.id) {
-      byId.set(entry.id, entry);
+    if (!entry?.id) {
+      continue;
     }
+    // The gateway serves auto mixes under the bare slug only, so a listed
+    // auto row (a router, a model, or an alias on several models) collapses
+    // to the one canonical row the synthesized entry would have been.
+    const autoId = autoCatalogEntryId(entry);
+    if (autoId) {
+      byId.set(autoId, autoCatalogEntry(autoId));
+      continue;
+    }
+    byId.set(entry.id, entry);
   }
   return [...byId.values()].sort((a, b) => a.shortId.localeCompare(b.shortId));
 }
@@ -630,6 +646,9 @@ export async function fetchServerlessCatalog(apiKey) {
  * an Anthropic key read from ANTHROPIC_API_KEY) to the Fireworks gateway.
  */
 export async function warmServerlessPricingCache(apiKey, keyType = "") {
+  // Anthropic/OpenAI list prices come from the keyless models.dev cache, so
+  // they refresh for every key type (including Fire Pass) ahead of the fw_ gate.
+  await refreshListPriceCache();
   const trimmed = apiKey?.trim();
   if (!trimmed || !trimmed.startsWith("fw_")) {
     return;
@@ -864,7 +883,16 @@ export function registerableModelIds(catalog, keyType, { includeFirerouter = fal
  * @param {CatalogEntry} entry
  */
 export function isAutoCatalogEntry(entry) {
-  return isAutoModelId(entry?.shortId) || isAutoModelId(shortIdFromResourceName(entry?.id));
+  return autoCatalogEntryId(entry) !== "";
+}
+
+/**
+ * The canonical auto mix slug a catalog row stands for (`auto`,
+ * `auto-instant`), or "" for any other row.
+ * @param {CatalogEntry} entry
+ */
+export function autoCatalogEntryId(entry) {
+  return canonicalAutoModelId(entry?.shortId) || canonicalAutoModelId(shortIdFromResourceName(entry?.id));
 }
 
 export function catalogWithAutomaticFirerouter(
@@ -902,12 +930,39 @@ export function catalogWithAutomaticFirerouter(
  * @returns {import("./models.mjs").CatalogEntry[]}
  */
 export function catalogWithAutomaticAuto(catalog, keyType) {
-  if (keyType === "firepass"
-    || catalog.length === 0
-    || catalog.some((entry) => isAutoCatalogEntry(entry))) {
+  if (keyType === "firepass" || catalog.length === 0) {
     return catalog;
   }
-  return [autoCatalogEntry(), ...catalog];
+  const canonical = withCanonicalAutoRows(catalog);
+  if (canonical.some((entry) => entry.id === AUTO_MODEL_ID)) {
+    return canonical;
+  }
+  return [autoCatalogEntry(), ...canonical];
+}
+
+/**
+ * One canonical row per auto mix, in first-seen position. A snapshot cached
+ * before the build-time dedupe can still carry the gateway's own auto rows.
+ * @param {CatalogEntry[]} catalog
+ */
+function withCanonicalAutoRows(catalog) {
+  const seen = new Set();
+  const rows = [];
+  let changed = false;
+  for (const entry of catalog) {
+    const autoId = autoCatalogEntryId(entry);
+    if (!autoId) {
+      rows.push(entry);
+    } else if (seen.has(autoId)) {
+      changed = true;
+    } else {
+      seen.add(autoId);
+      const canonical = entry.id === autoId && entry.shortId === autoId;
+      changed ||= !canonical;
+      rows.push(canonical ? entry : autoCatalogEntry(autoId));
+    }
+  }
+  return changed ? rows : catalog;
 }
 
 export async function loadRegisterableModels({ apiKey, includeFirerouter = false }) {
@@ -971,6 +1026,13 @@ export async function loadServerlessCatalog({ apiKey, keyType = "", refresh = fa
   }
 
   try {
+    // Every harness `on` loads the catalog through here, so refresh the
+    // models.dev list prices alongside it rather than per-harness: a catalog
+    // fetch and a price refresh are the same "metadata is fresh" moment. The
+    // refresh is best-effort (never throws, keyless, TTL-bounded) and is not
+    // awaited — the catalog path must not block on a slow/unreachable
+    // models.dev. The fresh prices land on disk for the next read.
+    void refreshListPriceCache({ force: refresh });
     const { catalog, rawModels, routersUnavailable, updatedAt } = await fetchServerlessCatalog(resolvedKey);
     const filteredCatalog = filterCatalogForKeyType(catalog, resolvedKeyType);
     return {

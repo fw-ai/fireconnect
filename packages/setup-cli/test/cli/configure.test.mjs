@@ -21,6 +21,29 @@ describe("configure (provider / FireRouter setup)", () => {
     assert.equal(config.anthropicApiKey, "sk-ant-configure-12345");
   });
 
+  it("stores a literal OpenAI API key in global config", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-openai-"));
+    const result = await runFireconnect(
+      ["configure", "--openai-api-key", "sk-proj-configure-12345"],
+      { HOME: home, OPENAI_API_KEY: "" },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Stored OpenAI API key in global config/);
+
+    const config = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
+    assert.equal(config.openaiApiKey, "sk-proj-configure-12345");
+  });
+
+  it("rejects a mislabeled Anthropic key as the OpenAI key", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-openai-mislabeled-"));
+    const result = await runFireconnect(
+      ["configure", "--openai-api-key", "sk-ant-not-openai"],
+      { HOME: home, OPENAI_API_KEY: "" },
+    );
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /must be an OpenAI API key/);
+  });
+
   it("rejects --api-key unless --provider azure (Fireworks key belongs to login)", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-apikey-guard-"));
     const result = await runFireconnect(

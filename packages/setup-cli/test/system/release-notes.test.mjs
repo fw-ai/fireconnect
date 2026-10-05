@@ -57,6 +57,24 @@ describe("release notes", () => {
     assert.doesNotMatch(formatted, /Bugbot|argv|fetchFailed|patchUpdateCache|fireconnect status|libsecret/i);
   });
 
+  it("formats the v0.9.8 user-facing summary", async () => {
+    const releases = await readReleaseNotes();
+    const release = releases.find((candidate) => candidate.version === "0.9.8");
+    assert.ok(release);
+
+    const formatted = formatReleaseNotes(release);
+    assert.match(formatted, /What's new in FireConnect v0\.9\.8/);
+    assert.match(formatted, /`fireconnect claude-desktop on`/);
+    assert.match(formatted, /`fireconnect claude-desktop mcp sync`/);
+    assert.match(formatted, /--subagent deepseek-flash-latest/);
+    assert.match(formatted, /`fireconnect configure --openai-api-key sk-\.\.\.`/);
+    assert.match(formatted, /Fixed: `fireconnect claude --model <id>` could report success without adding the model/);
+    assert.match(formatted, /New: `fireconnect models`, a shortcut for `fireconnect model list`/);
+    assert.match(formatted, /`fireconnect codex on` or `fireconnect deepseek on`/);
+    assert.doesNotMatch(formatted, /\u2014/);
+    assert.doesNotMatch(formatted, /safeguards|AUTO_MODE_SERVER|launchd|shim|Bugbot|Lean/i);
+  });
+
   it("selects releases newer than the installed version", () => {
     const releases = [
       { version: "0.8.0", highlights: [] },

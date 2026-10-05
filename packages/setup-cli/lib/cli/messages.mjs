@@ -119,7 +119,7 @@ export function printModelsAdded(models = [], { primaryModel } = {}) {
 export function printClaudeModelManagementHints() {
   const rows = [
     ["Browse", "fireconnect model list"],
-    ["Add to /model", "fireconnect claude --model <id>"],
+    ["Choose model", "fireconnect claude --model <id>"],
   ];
   console.log("");
   console.log(bold("Manage models"));

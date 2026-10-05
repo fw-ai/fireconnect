@@ -1,32 +1,36 @@
-import { isAutoModelId, isFirerouterModelPattern } from "./model-specs.mjs";
+import { isAutoModelId } from "./model-specs.mjs";
 import {
-  isGatewayAnthropicSlot,
+  isAnthropicModelId,
+  isFirerouterRouteRef,
   shortFireworksModelRef,
-  fireworksModelSlug,
 } from "./model-id.mjs";
 import { loadServerlessCatalog } from "./models.mjs";
 
 // Custom (user-deployed) Fireworks models are served on the gateway but aren't
 // listed in the public serverless catalog, so the servability check must allow
 // them through.
-const CUSTOM_DEPLOYMENT_REF_RE = /^accounts\/[^/]+\/deployments\/[^/]+/i;
+const CUSTOM_DEPLOYMENT_REF_RE = /^accounts\/[^/]+\/deployments\/[^/]+(\[1m\])?$/i;
 
 /**
- * Whether a `--model` id is one we validate against the serverless catalog.
- * Firerouter gateway ids, the `auto` / `auto-*` open-mix routers, custom
- * deployment ids, and real Anthropic model ids are served on the gateway but
- * aren't (or aren't always) listed in the public catalog, so they're allowed
- * unconditionally; an empty model means the harness default is used.
+ * Whether `--model` must resolve in the serverless catalog.
+ * Gateway ids that are never catalog rows skip the check: rooted
+ * `firerouter` routes, `auto` / `auto-*`, concrete Anthropic ids, and
+ * private `accounts/…/deployments/…`. The Claude `claude-default` sentinel
+ * is not one of those — only Claude Code understands it. Empty means the
+ * harness default.
  * @param {string} modelId
  * @returns {boolean}
  */
 export function isModelIdValidationApplicable(modelId) {
-  if (!modelId) return false;
+  if (!modelId) {
+    return false;
+  }
   const ref = shortFireworksModelRef(modelId);
-  if (isFirerouterModelPattern(ref)) return false;
-  if (isAutoModelId(ref)) return false;
-  if (isGatewayAnthropicSlot(ref)) return false;
-  return !CUSTOM_DEPLOYMENT_REF_RE.test(ref);
+  const servedOutsideCatalog = isFirerouterRouteRef(ref)
+    || isAutoModelId(ref)
+    || isAnthropicModelId(ref)
+    || CUSTOM_DEPLOYMENT_REF_RE.test(ref);
+  return !servedOutsideCatalog;
 }
 
 /**
@@ -53,24 +57,65 @@ export async function assertRequestedModelsServable(modelIds, { apiKey, keyType 
     return; // offline / fetch failed — can't verify, don't block
   }
   if (!Array.isArray(catalog) || catalog.length === 0) return;
-  const known = new Set();
-  for (const entry of catalog) {
-    if (entry?.shortId) known.add(entry.shortId);
-    if (entry?.id) known.add(entry.id);
-  }
+  const known = new Set(catalog.flatMap((entry) => [entry?.shortId, entry?.id].filter(Boolean)));
   for (const id of applicable) {
-    const slug = fireworksModelSlug(id);
-    const normalized = String(shortFireworksModelRef(id)).replace(/\[1m\]$/i, "");
-    if (!known.has(slug) && !known.has(normalized)) {
-      throw new Error(
-        `Model "${shortFireworksModelRef(id)}" is not available on Fireworks. `
-        + `Run \`fireconnect model list\` to see serverless models.`,
-      );
+    // Match the shortened ref, not its last segment. A last-segment hit would
+    // admit `fireworks/kimi-k3` or `accounts/acme/models/kimi-k3` whenever the
+    // public slug is listed.
+    const short = String(shortFireworksModelRef(id)).replace(/\[1m\]$/i, "");
+    if (known.has(short)) {
+      continue;
     }
+    throw new Error(
+      `Model "${shortFireworksModelRef(id)}" is not available on Fireworks. `
+      + `Run \`fireconnect model list\` to see serverless models.`,
+    );
   }
 }
 
 /** Single-id convenience wrapper around {@link assertRequestedModelsServable}. */
 export function assertRequestedModelServable(modelId, opts) {
   return assertRequestedModelsServable([modelId], opts);
+}
+/**
+ * Servability probe: catalog membership alone is not enough — the catalog
+ * lists retired models (dated snapshots, superseded generations) with full
+ * metadata and no flag, so the only retirement signal is a request: 404
+ * "Model not found" at POST /inference/v1/messages. Anything else (2xx, 429,
+ * other 4xx) means the model serves. 16-token probe; call from setup paths
+ * only (never a hot path); FIRECONNECT_TEST gates real calls.
+ * @param {string} modelId
+ * @param {string} apiKey
+ * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [options]
+ * @returns {Promise<boolean>}
+ */
+export async function probeModelServable(modelId, apiKey, { timeoutMs = 8_000, fetchImpl = fetch } = {}) {
+  if (process.env.FIRECONNECT_TEST === "1") return true;
+  try {
+    const res = await fetchImpl("https://api.fireworks.ai/inference/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model: modelId, max_tokens: 8, messages: [{ role: "user", content: "ok" }] }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.status !== 404;
+  } catch {
+    return true; // network trouble is not a verdict; keep the model
+  }
+}
+
+/**
+ * Filter model ids to the servable ones, probing in parallel.
+ * @param {string[]} modelIds
+ * @param {string} apiKey
+ * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [options]
+ * @returns {Promise<string[]>}
+ */
+export async function servableModels(modelIds, apiKey, options = {}) {
+  const verdicts = await Promise.allSettled(modelIds.map((id) => probeModelServable(id, apiKey, options)));
+  return modelIds.filter((_, i) => verdicts[i].status !== "fulfilled" || verdicts[i].value);
 }

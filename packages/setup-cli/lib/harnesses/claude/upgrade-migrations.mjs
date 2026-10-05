@@ -11,6 +11,7 @@ import {
   providerBackupPath,
   providerStatusFromEnv,
   resolveDataDir,
+  stripRetiredAutoModeServerPin,
   userSettingsPath,
 } from "./core.mjs";
 import {
@@ -67,19 +68,33 @@ export async function migrateClaudeToolSearchOnUpgrade(home) {
 }
 
 /**
- * Pin `CLAUDE_CODE_AUTO_MODE_SERVER` to local-only classifier requests on an
- * already-connected Claude Code install. Installs connected before this key
- * existed ask the server by default (Claude Code >= 2.1.278) and earn the
- * ineligibility notice on every session, because the Fireworks gateway does
- * not implement the server-side classifier yet.
- *
- * Temporary: remove this migration (and the preset entry) once the gateway
- * implements safeguard passthrough.
+ * Remove the `CLAUDE_CODE_AUTO_MODE_SERVER=0` pin an earlier upgrade or `on`
+ * wrote. Pinning only kept auto mode from trying the server classifier; Claude
+ * Code falls back to the local one on its own, and the pin would block the
+ * server classifier once the gateway supports it.
  * @param {string} home
  * @returns {Promise<boolean>} true when the file was updated
  */
-export async function migrateClaudeAutoModeServerOnUpgrade(home) {
-  return backfillClaudeBehaviorKey(home, "CLAUDE_CODE_AUTO_MODE_SERVER");
+export async function migrateClaudeRetiredAutoModeServerPinOnUpgrade(home) {
+  if (!home) {
+    return false;
+  }
+  const { harnesses } = await readGlobalConfig(home);
+  if (!isEnabledFireworksHarness(harnesses, HARNESS.CLAUDE)) {
+    return false;
+  }
+  const settingsPath = userSettingsPath(home);
+  const settings = await readJsonIfExists(settingsPath);
+  if (providerStatusFromEnv(settings.env ?? {}) !== "fireworks") {
+    return false;
+  }
+  const backup = await readJsonIfExists(providerBackupPath(resolveDataDir({ home })));
+  const { settings: next, changed } = stripRetiredAutoModeServerPin(settings, backup);
+  if (!changed) {
+    return false;
+  }
+  await writeJson(settingsPath, next, { mode: 0o600 });
+  return true;
 }
 
 /**

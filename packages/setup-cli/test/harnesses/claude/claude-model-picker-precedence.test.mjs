@@ -63,7 +63,7 @@ describe("Claude main model storage", () => {
     });
   });
 
-  it("--model adds to the picker and pins the FireRouter default", async () => {
+  it("--model adds to the picker and pins that model as the default", async () => {
     await withTempHome("claude-model-flag-", async (home) => {
       seedCatalogFor(home);
       const settingsPath = userSettingsPath(home);
@@ -80,8 +80,7 @@ describe("Claude main model storage", () => {
       );
       assert.equal(enabled.code, 0, enabled.stderr);
       let settings = JSON.parse(await readFile(settingsPath, "utf8"));
-      // --model never pins main, but nothing servable was selected → FireRouter default.
-      assert.equal(settings.model, "firerouter[1m]");
+      assert.equal(settings.model, KIMI_MODEL_STORED);
       assert.ok(
         settings.modelPicker?.options?.some((row) => row.model === KIMI_MODEL_STORED),
         settings.modelPicker?.options?.map((row) => row.model).join(", "),
@@ -90,7 +89,7 @@ describe("Claude main model storage", () => {
       const reon = await runFireconnect(["claude", "on"], env);
       assert.equal(reon.code, 0, reon.stderr);
       settings = JSON.parse(await readFile(settingsPath, "utf8"));
-      assert.equal(settings.model, "firerouter[1m]");
+      assert.equal(settings.model, KIMI_MODEL_STORED);
       assert.ok(settings.modelPicker?.options?.some((row) => row.model === KIMI_MODEL_STORED));
     });
   });
@@ -124,6 +123,120 @@ describe("Claude main model storage", () => {
       assert.equal(reon.code, 0, reon.stderr);
       settings = JSON.parse(await readFile(settingsPath, "utf8"));
       assert.equal(settings.model, KIMI_MODEL_STORED, "user's saved default survives re-on");
+    });
+  });
+
+  it("re-on appends to a marker-stripped picker without duplicates", async () => {
+    await withTempHome("claude-picker-reclaim-", async (home) => {
+      seedCatalogFor(home);
+      const settingsPath = userSettingsPath(home);
+      const env = {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      };
+      const first = await runFireconnect(
+        ["claude", "on", "--api-key", FIREWORKS_KEY],
+        env,
+      );
+      assert.equal(first.code, 0, first.stderr);
+
+      const drifted = JSON.parse(await readFile(settingsPath, "utf8"));
+      delete drifted.modelPicker.fireconnectManaged;
+      const driftedRaw = `${JSON.stringify(drifted, null, 2)}\n`;
+      await writeFile(settingsPath, driftedRaw);
+
+      const reon = await runFireconnect(["claude", "on"], env);
+      assert.equal(reon.code, 0, reon.stderr);
+      const merged = JSON.parse(await readFile(settingsPath, "utf8"));
+      const ids = merged.modelPicker.options.map((row) => row.model);
+      assert.equal(ids.length, new Set(ids).size);
+      assert.equal(merged.modelPicker.fireconnectManaged, undefined);
+
+      const firepass = await runFireconnect([
+        "claude",
+        "on",
+        "--api-key",
+        "fpk_test_firepass_key_000000000000",
+      ], env);
+      assert.notEqual(firepass.code, 0);
+      assert.match(firepass.stderr, /cannot remove it for Fire Pass/);
+    });
+  });
+
+  it("fresh on preserves existing picker rows and appends the serverless catalog", async () => {
+    await withTempHome("claude-picker-conflict-", async (home) => {
+      seedCatalogFor(home);
+      const settingsPath = userSettingsPath(home);
+      await mkdir(path.dirname(settingsPath), { recursive: true });
+      const original = `${JSON.stringify({
+        modelPicker: {
+          replaceBuiltInOptions: true,
+          options: [{ model: "claude-sonnet-4-6", label: "Mine" }],
+        },
+      }, null, 2)}\n`;
+      await writeFile(settingsPath, original);
+
+      const result = await runFireconnect(
+        ["claude", "on", "--api-key", FIREWORKS_KEY],
+        {
+          HOME: home,
+          FIREWORKS_API_KEY: "",
+          ANTHROPIC_API_KEY: "",
+          ANTHROPIC_AUTH_TOKEN: "",
+        },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+      assert.equal(settings.modelPicker.options[0].model, "claude-sonnet-4-6");
+      assert.ok(settings.modelPicker.options.some((row) => row.model === "auto[1m]"));
+      assert.equal(settings.modelPicker.fireconnectManaged, undefined);
+    });
+  });
+
+  it("already-routed setup without state appends for standard keys but blocks Fire Pass removal", async () => {
+    await withTempHome("claude-picker-no-state-", async (home) => {
+      const settingsPath = userSettingsPath(home);
+      await mkdir(path.dirname(settingsPath), { recursive: true });
+      const original = `${JSON.stringify({
+        modelPicker: {
+          replaceBuiltInOptions: false,
+          options: [{ model: "auto[1m]", label: "Auto" }],
+        },
+        env: {
+          ANTHROPIC_BASE_URL: FIREWORKS_BASE_URL,
+          ANTHROPIC_CUSTOM_HEADERS: `X-Fireworks-Api-Key: ${FIREWORKS_KEY}`,
+        },
+      }, null, 2)}\n`;
+      await writeFile(settingsPath, original);
+
+      const firepass = await runFireconnect([
+        "claude",
+        "on",
+        "--api-key",
+        "fpk_test_firepass_key_000000000000",
+      ], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      });
+      assert.notEqual(firepass.code, 0);
+      assert.match(firepass.stderr, /cannot remove it for Fire Pass/);
+      assert.equal(await readFile(settingsPath, "utf8"), original);
+
+      const result = await runFireconnect(["claude", "on"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+      const ids = settings.modelPicker.options.map((row) => row.model);
+      assert.equal(ids.length, new Set(ids).size);
+      assert.equal(settings.modelPicker.fireconnectManaged, undefined);
     });
   });
 

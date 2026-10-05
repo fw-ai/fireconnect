@@ -1,8 +1,8 @@
 import {
-  migrateClaudeAutoModeServerOnUpgrade,
   migrateClaudeExploreInheritCapOnUpgrade,
   migrateClaudeModelPickerOnUpgrade,
   migrateClaudeNativeWebSearchOnUpgrade,
+  migrateClaudeRetiredAutoModeServerPinOnUpgrade,
   migrateClaudeToolSearchOnUpgrade,
 } from "../harnesses/claude/upgrade-migrations.mjs";
 import { migrateCodexWebSearchOnUpgrade } from "../harnesses/codex/upgrade-migrations.mjs";
@@ -84,9 +84,9 @@ const HARNESS_FORWARD_MIGRATIONS = [
     failure: "Couldn't enable MCP tool search for Claude Code — re-run fireconnect claude on.",
   },
   {
-    run: migrateClaudeAutoModeServerOnUpgrade,
-    success: "Pinned Claude Code auto mode to its local classifier (CLAUDE_CODE_AUTO_MODE_SERVER=0) until the gateway supports server-side checks — restart Claude Code to pick it up.",
-    failure: "Couldn't pin Claude Code auto mode to its local classifier — re-run fireconnect claude on.",
+    run: migrateClaudeRetiredAutoModeServerPinOnUpgrade,
+    success: "Removed the Claude Code auto mode classifier pin (CLAUDE_CODE_AUTO_MODE_SERVER=0). Restart Claude Code to apply it.",
+    failure: "Couldn't remove the Claude Code auto mode classifier pin. Re-run fireconnect claude on.",
   },
   {
     run: migrateClaudeExploreInheritCapOnUpgrade,

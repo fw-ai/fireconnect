@@ -2,7 +2,7 @@
  * Shared re-`on` refresh policy for FireConnect-managed picker catalogs.
  *
  * Every harness stores its catalog in its own format — a JSON catalog file
- * (codex), a provider models map (opencode), SQLite rows (copilot app),
+ * (codex), provider model maps (opencode / copilot CLI), SQLite rows (copilot app),
  * Electron-state arrays (vscode, cursor), a models.json provider block (pi) —
  * but the refresh POLICY is one:
  *
@@ -17,6 +17,13 @@
  * storage format, normalized into the same id space as freshIds) and their own
  * row building (how added/kept ids become storage rows); this module owns only
  * the id-set plan so all harnesses follow the same interface.
+ *
+ * Fresh-install policy (enforced alongside the refresh policy so every
+ * harness behaves the same): a fresh `on` always seeds the whole fetched
+ * catalog, even when `--model` pins one row — `--model` selects the active
+ * model, it never narrows the picker menu. The selected model is ensured
+ * present (appended/synthesized when the fetch doesn't list it). Re-`on`
+ * with `--model` keeps the existing registry and only ensures the selection.
  *
  * @param {object} args
  * @param {string[]} args.currentIds ids currently registered (normalized)

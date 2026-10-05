@@ -798,13 +798,14 @@ function computeVscodeModels(existing, modelId, resolvedModel, catalogModelIds =
       byId.set(storedId, buildModelEntry(id));
     }
   };
-  if (modelId) {
-    ensure(resolvedModel);
-  } else if (!existing) {
+  if (!existing) {
+    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
     ensure(resolvedModel);
     for (const id of catalogModelIds) {
       ensure(id);
     }
+  } else if (modelId) {
+    ensure(resolvedModel);
   } else if (catalogAvailable) {
     // Shared catalog-refresh policy: prune delisted ids, add newly served
     // ones, and re-render kept rows from the fresh entries (display metadata

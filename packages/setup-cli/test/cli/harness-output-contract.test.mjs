@@ -63,7 +63,7 @@ describe("compact harness command output", () => {
       console.log = original;
     }
     assert.equal(lines[0], "Also in your model list: glm-latest, firerouter");
-    assert.match(lines[1], /FireRouter is on\. Routes each request between Claude and open models/);
+    assert.match(lines[1], /FireRouter is on\. Routes each user turn between Claude and open models/);
     assert.equal(lines[2], "Also in your model list: glm-latest");
     // Nothing selected → the note stays quiet (no advertisement); the next
     // printed line is the Fire Pass refusal from the case after it.
@@ -136,12 +136,12 @@ describe("compact harness command output", () => {
       const lines = nonemptyLines(result.stdout);
       assert.equal(lines.length, 5, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks · firerouter/);
-      assert.match(lines[1], /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.match(lines[1], /FireRouter is on\. Routes each user turn between Claude and open models/);
       assert.match(lines[2], /Change routing: fireconnect opencode --model firerouter --routing-preference balanced/);
       assert.match(lines[3], /Other levels: max-intelligence \(1\).*max-savings \(5\)/);
       assert.equal(lines[4], "Restart OpenCode to use the new setup.");
       assert.doesNotMatch(result.stdout, /→ FireRouter|Choose models|Models added:|FireRouter default/);
-      assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.match(result.stdout, /FireRouter is on\. Routes each user turn between Claude and open models/);
       assert.match(result.stdout, /Change routing: fireconnect opencode --model firerouter --routing-preference balanced/);
     });
   });
@@ -162,7 +162,7 @@ describe("compact harness command output", () => {
       const lines = nonemptyLines(result.stdout);
       assert.equal(lines.length, 6, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks · firerouter/);
-      assert.match(lines[1], /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.match(lines[1], /FireRouter is on\. Routes each user turn between Claude and open models/);
       assert.match(lines[2], /Routing: balanced \(3\) \(applies to firerouter slots\)/);
       assert.match(lines[3], /Change routing: fireconnect opencode --model firerouter --routing-preference balanced/);
       assert.match(lines[4], /Other levels: max-intelligence \(1\).*more-savings \(4\), max-savings \(5\)/);
@@ -237,7 +237,7 @@ describe("compact harness command output", () => {
       assert.equal(lines[0], `${symbols.ok} Claude Code → Fireworks · firerouter`);
       assert.match(result.stdout, /Model picker/);
       assert.match(result.stdout, /Added via --model.*firerouter/);
-      assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.match(result.stdout, /FireRouter is on\. Routes each user turn between Claude and open models/);
       assert.match(result.stdout, /Routing: balanced \(3\) \(applies to firerouter slots\)/);
       assert.match(
         lines.find((line) => line.startsWith("Change routing:")),
@@ -261,7 +261,7 @@ describe("compact harness command output", () => {
       );
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /Codex → Fireworks · firerouter/);
-      assert.match(result.stdout, /FireRouter is on\. Routes each request between Claude and open models/);
+      assert.match(result.stdout, /FireRouter is on\. Routes each user turn between Claude and open models/);
       assert.doesNotMatch(result.stdout, /Routing:/);
     });
   });

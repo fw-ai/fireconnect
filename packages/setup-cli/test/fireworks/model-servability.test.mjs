@@ -24,6 +24,17 @@ describe("model-servability isModelIdValidationApplicable", () => {
   it("is false for firerouter gateway ids", () => {
     assert.equal(isModelIdValidationApplicable("firerouter"), false);
     assert.equal(isModelIdValidationApplicable("firerouter/balanced"), false);
+    assert.equal(isModelIdValidationApplicable("firerouter/claude-opus-5/kimi-k3"), false);
+    assert.equal(isModelIdValidationApplicable("firerouter/"), true);
+    assert.equal(isModelIdValidationApplicable("firerouter//kimi"), true);
+    assert.equal(isModelIdValidationApplicable("firerouter/.."), true);
+    assert.equal(isModelIdValidationApplicable("claude-default"), true);
+    assert.equal(isModelIdValidationApplicable("claude-opus-5"), false);
+  });
+
+  it("is true for firerouter lookalikes so the catalog rejects them", () => {
+    assert.equal(isModelIdValidationApplicable("foo/firerouter-clone"), true);
+    assert.equal(isModelIdValidationApplicable("firerouterx/y"), true);
   });
 
   it("is false for the auto mix and auto-* variants", () => {
@@ -42,7 +53,7 @@ describe("model-servability isModelIdValidationApplicable", () => {
 
   it("is false for custom deployment ids", () => {
     assert.equal(
-      isModelIdValidationApplicable("accounts/ahmadshahzad/deployments/ub9lvh50"),
+      isModelIdValidationApplicable("accounts/example-account/deployments/test-deployment"),
       false,
     );
   });
@@ -83,6 +94,47 @@ describe("model-servability assertRequestedModelsServable", () => {
         }),
         /not available on Fireworks/,
       );
+    });
+  });
+
+  it("throws for firerouter lookalikes instead of writing junk config", async () => {
+    await withFetchMock([mockServerlessModel({
+      aliases: ["accounts/fireworks/routers/glm-latest"],
+    })], async () => {
+      for (const id of ["foo/firerouter-clone", "firerouterx/y"]) {
+        await assert.rejects(
+          () => assertRequestedModelServable(id, {
+            apiKey: "fw_test_key",
+            keyType: "fireworks",
+          }),
+          /not available on Fireworks/,
+          id,
+        );
+      }
+    });
+  });
+
+  it("does not treat a catalog slug as a match for a different path", async () => {
+    await withFetchMock([mockServerlessModel({
+      id: "accounts/fireworks/models/kimi-k3",
+    })], async () => {
+      for (const id of [
+        "fireworks/kimi-k3",
+        "fireworks-ai/kimi-k3",
+        "router/kimi-k3",
+        "accounts/acme/models/kimi-k3",
+        "firerouter/",
+        "firerouter//kimi",
+      ]) {
+        await assert.rejects(
+          () => assertRequestedModelServable(id, {
+            apiKey: "fw_test_key",
+            keyType: "fireworks",
+          }),
+          /not available on Fireworks/,
+          id,
+        );
+      }
     });
   });
 
@@ -188,6 +240,49 @@ describe("model-servability assertRequestedModelsServable", () => {
       assert.equal(fetchCount, 1, "catalog fetched once for the whole batch");
     } finally {
       globalThis.fetch = previousFetch;
+    }
+  });
+});
+
+
+describe("model-servability probeModelServable", () => {
+  it("404 means retired; 200/429/other-4xx means it serves", async () => {
+    const { probeModelServable } = await import("../../lib/fireworks/model-servability.mjs");
+    const prev = process.env.FIRECONNECT_TEST;
+    delete process.env.FIRECONNECT_TEST;
+    try {
+      assert.equal(await probeModelServable("retired", "key", { fetchImpl: async () => new Response("Model not found", { status: 404 }) }), false);
+      assert.equal(await probeModelServable("live", "key", { fetchImpl: async () => new Response("{}", { status: 200 }) }), true);
+      assert.equal(await probeModelServable("limited", "key", { fetchImpl: async () => new Response("{}", { status: 429 }) }), true);
+    } finally {
+      if (prev !== undefined) process.env.FIRECONNECT_TEST = prev;
+    }
+  });
+
+  it("network failure keeps the model (fail-open); FIRECONNECT_TEST gates real calls", async () => {
+    const { probeModelServable } = await import("../../lib/fireworks/model-servability.mjs");
+    assert.equal(await probeModelServable("anything", "key", { fetchImpl: () => { throw new Error("must not be called"); } }), true);
+    const prev = process.env.FIRECONNECT_TEST;
+    delete process.env.FIRECONNECT_TEST;
+    try {
+      assert.equal(await probeModelServable("m", "key", { fetchImpl: async () => { throw new Error("offline"); } }), true);
+    } finally {
+      if (prev !== undefined) process.env.FIRECONNECT_TEST = prev;
+    }
+  });
+
+  it("servableModels filters in parallel, order-preserving", async () => {
+    const { servableModels } = await import("../../lib/fireworks/model-servability.mjs");
+    const prev = process.env.FIRECONNECT_TEST;
+    delete process.env.FIRECONNECT_TEST;
+    try {
+      const statuses = { a: 200, b: 404, c: 200 };
+      const out = await servableModels(["a", "b", "c"], "key", {
+        fetchImpl: async (url, init) => new Response("", { status: statuses[JSON.parse(init.body).model] }),
+      });
+      assert.deepEqual(out, ["a", "c"]);
+    } finally {
+      if (prev !== undefined) process.env.FIRECONNECT_TEST = prev;
     }
   });
 });
