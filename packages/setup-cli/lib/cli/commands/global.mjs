@@ -175,7 +175,15 @@ function claudeHelp() {
   );
 }
 
-function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNote = "", displayId = id, force = false } = {}) {
+function configHarnessHelp(id, label, {
+  configPath,
+  configPathNote = "",
+  codexNote = "",
+  displayId = id,
+  force = false,
+  extraCommands = [],
+  usageOptions = [],
+} = {}) {
   const onOpts = standardOnOpts({
     azure: Boolean(getHarness(id).azure),
     firerouter: getHarness(id).firerouter,
@@ -200,11 +208,15 @@ function configHarnessHelp(id, label, { configPath, configPathNote = "", codexNo
       ["on", "Enable Fireworks routing (default)."],
       ["off", "Restore your previous config."],
       ["status", "Show provider, auth, and model."],
+      ...extraCommands,
       ["help", "Show this help."],
     ]),
     "",
     optBlock("Options for on", onOpts),
     "",
+    ...(usageOptions.length
+      ? [optBlock("Options for usage", usageOptions), ""]
+      : []),
     optBlock("Options for status", [
       ["--json", "Machine-readable JSON output."],
     ]),
@@ -310,6 +322,17 @@ export function printHelp(topic = "") {
       configHarnessHelp("pi", "Pi", {
         configPath: "--settings-path <path>",
         configPathNote: "Explicit Pi settings.json path.",
+        extraCommands: [
+          ["usage", "Pick session → live meter; snapshot with --json / --last-n."],
+          ["live", "tmux split: Pi left, live usage meter right (exit Pi to close)."],
+        ],
+        usageOptions: [
+          ["--session <id|path>", "Start on one session; Esc still opens the session list."],
+          ["--days <N>", "Lookback for the session list, 1-365 (default 3)."],
+          ["--last-n <N>", "Snapshot of the latest N sessions."],
+          ["--plain", "Plain text summary (no interactive TUI styling)."],
+          ["-v, --verbose", "Request-level usage rows and rate details."],
+        ],
       }),
       "",
       "  --config-path <path>      Alias for --settings-path.",
@@ -460,8 +483,8 @@ export function printHelp(topic = "") {
       ["on", "Route the harness through Fireworks (default when omitted)."],
       ["off", "Restore previous provider settings."],
       ["status", "Show provider, auth, and models."],
-      ["usage", "Claude-only: session usage report."],
-      ["live", "Claude-only: tmux split with live usage meter."],
+      ["usage", "Claude Code and Pi: session usage report."],
+      ["live", "Claude Code and Pi: tmux split with live usage meter."],
       ["demo", "Claude-only: race two models on a prompt."],
       ["help", "Show harness-specific options."],
     ]),

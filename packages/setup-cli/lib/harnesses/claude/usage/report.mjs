@@ -1,9 +1,25 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import {
+  NoSessionLogsError,
+  collectJsonlFiles,
+  expandHome as expandHomePath,
+  fileExists,
+  filesWithMtime,
+  filterWithinDays,
+  isExplicitSessionPath as isExplicitPath,
+  parseLastN,
+  selectSessionLogs,
+  snapshotSessionLogs,
+  waitForLiveSessionLog as waitForLiveLog,
+  waitForNewSessionLog as waitForNewLog,
+  waitForSessionLog as waitForLog,
+} from "../../../usage/session-logs.mjs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FIREWORKS_PRICING_DOCS_URL } from "../../../fireworks/pricing.mjs";
 import {
   UNPRICED_TEXT,
   addUsage,
+  rowHasUsage,
   sumUsage,
 } from "./cost.mjs";
 import { computeClaudeUsageCost } from "./pricing.mjs";
@@ -19,47 +35,11 @@ export { computeClaudeUsageCost };
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function expandHome(value, home) {
-  if (!value?.startsWith("~")) {
-    return value;
-  }
-  if (value === "~") {
-    return home;
-  }
-  if (value.startsWith("~/")) {
-    return path.join(home, value.slice(2));
-  }
-  return value;
+  return expandHomePath(value, home);
 }
 
-async function fileExists(filePath) {
-  try {
-    return (await stat(filePath)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-async function collectJsonlFiles(dir) {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-
-  const files = [];
-  for (const entry of entries) {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await collectJsonlFiles(entryPath));
-    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      files.push(entryPath);
-    }
-  }
-  return files;
+function isExplicitSessionPath(value) {
+  return isExplicitPath(value);
 }
 
 function isSubagentLog(filePath) {
@@ -72,48 +52,31 @@ function isTopLevelSessionLog(filePath) {
     && SESSION_ID_RE.test(path.basename(filePath, ".jsonl"));
 }
 
-function isExplicitSessionPath(value) {
-  return value.startsWith("~")
-    || path.isAbsolute(value)
-    || value.includes("/")
-    || value.includes("\\")
-    || value.endsWith(".jsonl");
-}
 
-async function filesWithMtime(files) {
-  return Promise.all(
-    files.map(async (filePath) => {
-      const st = await stat(filePath);
-      return { filePath, mtimeMs: st.mtimeMs, size: st.size };
-    }),
-  );
-}
-
-function parseLastN(value) {
-  if (value === "" || value == null) {
-    return 1;
-  }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error("--last_n must be a positive integer.");
-  }
-  return parsed;
-}
 
 /**
- * Every top-level Claude Code session log under ~/.claude.
- *
+ * Every top-level Claude Code session log, newest first.
  * @param {string} home
- * @returns {Promise<string[]>}
+ * @returns {Promise<Array<{ filePath: string, mtimeMs: number, size: number }>>}
  */
-export async function listTopLevelSessionLogPaths(home) {
+export async function listTopLevelSessionLogsWithMtime(home) {
   if (!home) {
     throw new Error("HOME is required to find Claude Code session logs.");
   }
   const claudeDir = path.join(home, ".claude");
-  return (await collectJsonlFiles(claudeDir)).filter(isTopLevelSessionLog);
+  const candidates = (await collectJsonlFiles(claudeDir)).filter(isTopLevelSessionLog);
+  const withMtime = await filesWithMtime(candidates);
+  withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return withMtime;
 }
 
+/**
+ * @param {string} home
+ * @returns {Promise<string[]>}
+ */
+export async function listTopLevelSessionLogPaths(home) {
+  return (await listTopLevelSessionLogsWithMtime(home)).map(({ filePath }) => filePath);
+}
 /**
  * Wait until Claude Code creates a session log that did not exist in `beforePaths`.
  *
@@ -133,20 +96,14 @@ export async function waitForNewSessionLog({
   signal,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
-  const before = new Set(beforePaths);
-  for (;;) {
-    if (signal?.aborted) {
-      throw new Error("Cancelled while waiting for a new Claude Code session.");
-    }
-    const logs = await listTopLevelSessionLogPaths(home);
-    const fresh = logs.filter((filePath) => !before.has(filePath));
-    if (fresh.length) {
-      const withMtime = await filesWithMtime(fresh);
-      withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      return withMtime[0].filePath;
-    }
-    await sleep(pollMs);
-  }
+  return waitForNewLog({
+    list: () => listTopLevelSessionLogsWithMtime(home),
+    beforePaths,
+    pollMs,
+    signal,
+    sleep,
+    cancelMessage: "Cancelled while waiting for a new Claude Code session.",
+  });
 }
 
 /**
@@ -155,12 +112,7 @@ export async function waitForNewSessionLog({
  * @param {string} home
  */
 export async function snapshotLiveSessionLogs(home) {
-  const paths = await listTopLevelSessionLogPaths(home);
-  const logs = await filesWithMtime(paths);
-  return {
-    startedAtMs: Date.now(),
-    logs,
-  };
+  return snapshotSessionLogs(() => listTopLevelSessionLogsWithMtime(home));
 }
 
 /**
@@ -186,26 +138,14 @@ export async function waitForLiveSessionLog({
   signal,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
-  const before = new Map(beforeLogs.map(({ filePath, mtimeMs, size = 0 }) => [filePath, { mtimeMs, size }]));
-  for (;;) {
-    if (signal?.aborted) {
-      throw new Error("Cancelled while waiting for a new Claude Code session.");
-    }
-    const logs = await listTopLevelSessionLogPaths(home);
-    const withMtime = await filesWithMtime(logs);
-    const candidates = withMtime.filter(({ filePath, mtimeMs, size }) => {
-      const prev = before.get(filePath);
-      if (prev == null) {
-        return true;
-      }
-      return mtimeMs > prev.mtimeMs || size > prev.size;
-    });
-    if (candidates.length) {
-      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      return candidates[0].filePath;
-    }
-    await sleep(pollMs);
-  }
+  return waitForLiveLog({
+    list: () => listTopLevelSessionLogsWithMtime(home),
+    beforeLogs,
+    pollMs,
+    signal,
+    sleep,
+    cancelMessage: "Cancelled while waiting for a new Claude Code session.",
+  });
 }
 
 /**
@@ -239,20 +179,20 @@ export async function waitForClaudeSessionLog({
   signal,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
-  for (;;) {
-    if (signal?.aborted) {
-      throw new Error("Cancelled while waiting for the Claude Code session log.");
-    }
-    try {
-      const logPath = await findClaudeSessionLog({ home, session });
-      if (logPath) {
-        return logPath;
+  return waitForLog({
+    find: async () => {
+      try {
+        return await findClaudeSessionLog({ home, session });
+      } catch {
+        /* not written yet — the session idles until the first prompt */
+        return undefined;
       }
-    } catch {
-      /* not written yet — the session idles until the first prompt */
-    }
-    await sleep(pollMs);
-  }
+    },
+    pollMs,
+    signal,
+    sleep,
+    cancelMessage: "Cancelled while waiting for the Claude Code session log.",
+  });
 }
 
 /**
@@ -271,41 +211,28 @@ export async function findClaudeSessionLogs({ home, session = "", lastN = 1, wit
   }
 
   const claudeDir = path.join(home, ".claude");
-  const candidates = (await collectJsonlFiles(claudeDir)).filter(isTopLevelSessionLog);
-  if (candidates.length === 0) {
-    throw new Error(`No Claude Code session logs found under ${claudeDir}`);
-  }
-
-  let withMtime = await filesWithMtime(candidates);
-  withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  if (withinDays != null && withinDays !== "") {
-    const days = Number(withinDays);
-    if (!Number.isFinite(days) || days <= 0) {
-      throw new Error("withinDays must be a positive number.");
-    }
-    const cutoffMs = Date.now() - days * 86_400_000;
-    withMtime = withMtime.filter(({ mtimeMs }) => mtimeMs >= cutoffMs);
-  }
-
-  if (session) {
-    const needle = session.toLowerCase();
-    const exactish = withMtime.find(({ filePath }) => path.basename(filePath, ".jsonl").toLowerCase().startsWith(needle));
-    if (exactish) {
-      return [exactish.filePath];
-    }
-    const fuzzy = withMtime.find(({ filePath }) => path.basename(filePath, ".jsonl").toLowerCase().includes(needle));
-    if (fuzzy) {
-      return [fuzzy.filePath];
-    }
-    throw new Error(`No Claude Code session log matching '${session}' under ${claudeDir}`);
-  }
-
+  const withMtime = await listTopLevelSessionLogsWithMtime(home);
   if (withMtime.length === 0) {
-    return [];
+    throw new NoSessionLogsError(`No Claude Code session logs found under ${claudeDir}`);
   }
 
-  return withMtime.slice(0, parseLastN(lastN)).map(({ filePath }) => filePath);
+  const scoped = withinDays != null && withinDays !== ""
+    ? filterWithinDays(withMtime, withinDays)
+    : withMtime;
+
+  return selectSessionLogs({
+    logs: scoped,
+    session,
+    lastN,
+    storeDir: claudeDir,
+    // Ordered passes: a prefix hit (a session-id prefix) always beats a
+    // fuzzy substring hit, wherever each sits in the mtime order.
+    matchers: [
+      (basename, needle) => basename.startsWith(needle),
+      (basename, needle) => basename.includes(needle),
+    ],
+    noMatchMessage: (needle, dir) => `No Claude Code session log matching '${needle}' under ${dir}`,
+  });
 }
 
 function numberValue(value) {
@@ -513,16 +440,6 @@ function sumRows(rows) {
 
 function addTotals(a, b) {
   return addUsage(a, b);
-}
-
-function rowHasUsage(row) {
-  return row.input > 0
-    || row.cacheWrite5m > 0
-    || row.cacheWrite1h > 0
-    || row.cacheRead > 0
-    || row.output > 0
-    || row.webSearches > 0
-    || (row.cost ?? 0) > 0;
 }
 
 function reportHasUsage(report) {

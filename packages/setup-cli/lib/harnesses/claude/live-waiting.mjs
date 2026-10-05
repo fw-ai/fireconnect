@@ -1,6 +1,8 @@
 /**
  * Waiting and handoff screens for the live split's right pane — matches the
- * cost meter frame and uses the same palette.
+ * cost meter frame and uses the same palette. Labels are parameterized so the
+ * Pi split reuses the same screens with its own harness name; the defaults
+ * render exactly what the Claude split always drew.
  */
 
 import { ANSI } from "../../ui/palette.mjs";
@@ -34,6 +36,15 @@ const TIPS = [
 ];
 
 /**
+ * @param {{ harnessLabel?: string }} [labels]
+ */
+function paneLabels(labels = {}) {
+  return {
+    harnessLabel: labels.harnessLabel ?? "Claude Code",
+  };
+}
+
+/**
  * @param {NodeJS.WriteStream} stream
  */
 export function enterLiveWaitingScreen(stream) {
@@ -54,11 +65,13 @@ export function enterLiveWaitingScreen(stream) {
 /**
  * @param {NodeJS.WriteStream} stream
  * @param {number} inner printable width inside the frame
+ * @param {{ harnessLabel?: string }} [labels]
  */
-function splitDiagramLines(stream, inner) {
+function splitDiagramLines(inner, labels = {}) {
+  const { harnessLabel } = paneLabels(labels);
   const leftW = Math.max(14, Math.floor((inner - 3) * 0.55));
   const rightW = Math.max(10, inner - leftW - 3);
-  const leftLabel = clip(" Claude Code ", leftW - 2);
+  const leftLabel = clip(` ${harnessLabel} `, leftW - 2);
   const rightLabel = clip(" Live cost ", rightW - 2);
   const leftBody = clip(" your session ", leftW - 2);
   const rightBody = clip(" waiting… ", rightW - 2);
@@ -78,23 +91,27 @@ function splitDiagramLines(stream, inner) {
  * select text in the pane. (It is redrawn only when the session locks.)
  *
  * @param {NodeJS.WriteStream} stream
+ * @param {{ harnessLabel?: string, title?: string, tips?: string[] }} [opts]
  */
-export function drawLiveWaitingScreen(stream) {
+export function drawLiveWaitingScreen(stream, opts = {}) {
+  const labels = paneLabels(opts);
+  const title = opts.title ?? LIVE_METER_TITLE;
+  const tips = opts.tips ?? TIPS;
   applyMeterStyle(colorEnabled(stream));
   const cols = stream.columns || 100;
   const rows = stream.rows || 24;
   const w = Math.min(cols, 132);
   const inner = w - 2;
   const meta = clip("  waiting for your first prompt on the left…", inner);
-  const tip = clip(`  ${TIPS[0]}`, inner);
+  const tip = clip(`  ${tips[0]}`, inner);
 
   const out = [`${ANSI.homeCursor}${ANSI.clearScreen}`];
   out.push(`${ACCENT}${TL}${H.repeat(inner)}${TR}${R}`);
-  out.push(`${ACCENT}${V}${R}${B}${clip(LIVE_METER_TITLE, inner)}${R}${" ".repeat(Math.max(0, inner - vislen(clip(LIVE_METER_TITLE, inner))))}${ACCENT}${V}${R}`);
+  out.push(`${ACCENT}${V}${R}${B}${clip(title, inner)}${R}${" ".repeat(Math.max(0, inner - vislen(clip(title, inner))))}${ACCENT}${V}${R}`);
   out.push(`${ACCENT}${V}${R}${GHOST}${meta}${R}${" ".repeat(Math.max(0, inner - vislen(meta)))}${ACCENT}${V}${R}`);
   out.push(`${ACCENT}${BL}${H.repeat(inner)}${BR}${R}`);
   out.push("");
-  out.push(...splitDiagramLines(stream, inner));
+  out.push(...splitDiagramLines(inner, labels));
   out.push("");
   out.push(`${GHOST}${tip}${R}`);
   for (let i = out.length; i < Math.max(rows - 2, 12); i += 1) {
@@ -110,8 +127,10 @@ export function drawLiveWaitingScreen(stream) {
  * @param {NodeJS.WriteStream} stream
  * @param {string} sessionId 8-char session prefix
  * @param {number} [tick]
+ * @param {{ title?: string }} [opts]
  */
-export function drawSessionLockedScreen(stream, sessionId, tick = 0) {
+export function drawSessionLockedScreen(stream, sessionId, tick = 0, opts = {}) {
+  const title = opts.title ?? LIVE_METER_TITLE;
   applyMeterStyle(colorEnabled(stream));
   const cols = stream.columns || 100;
   const rows = stream.rows || 24;
@@ -123,7 +142,7 @@ export function drawSessionLockedScreen(stream, sessionId, tick = 0) {
 
   const out = [`${ANSI.homeCursor}${ANSI.clearScreen}`];
   out.push(`${ACCENT}${TL}${H.repeat(inner)}${TR}${R}`);
-  out.push(`${ACCENT}${V}${R}${B}${clip(LIVE_METER_TITLE, inner)}${R}${" ".repeat(Math.max(0, inner - vislen(clip(LIVE_METER_TITLE, inner))))}${ACCENT}${V}${R}`);
+  out.push(`${ACCENT}${V}${R}${B}${clip(title, inner)}${R}${" ".repeat(Math.max(0, inner - vislen(clip(title, inner))))}${ACCENT}${V}${R}`);
   out.push(`${ACCENT}${V}${R}${GOLD}${meta}${R}${" ".repeat(Math.max(0, inner - vislen(meta)))}${ACCENT}${V}${R}`);
   out.push(`${ACCENT}${BL}${H.repeat(inner)}${BR}${R}`);
   out.push("");

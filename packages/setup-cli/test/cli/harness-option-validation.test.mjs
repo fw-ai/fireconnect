@@ -188,7 +188,7 @@ describe("harness option validation", () => {
 
   it("rejects usage, JSON, and path options where they are ignored", async () => {
     await withTempHome("option-command-scope-", async (home) => {
-      await rejects(home, ["pi", "status", "--session", "abc"], /applies only to .*claude usage/);
+      await rejects(home, ["pi", "status", "--session", "abc"], /--session applies only to/);
       await rejects(home, ["opencode", "on", "--json"], /--json is supported by/);
       await rejects(home, ["claude", "on", "--refresh"], /--refresh applies only to .*model list/);
       await rejects(home, ["codex", "status", "--db-path", "/tmp/state.vscdb"], /--db-path is supported only by Cursor/);
@@ -209,6 +209,15 @@ describe("harness option validation", () => {
       assert.doesNotMatch(live.stderr, /--session applies only to/);
       // Report-only flags stay usage-only even on the live command.
       await rejects(home, ["claude", "live", "--days", "3"], /--days\/--last-n\/--verbose\/--plain apply only to/);
+
+      // The pi usage/live pair accepts the same flags as claude's.
+      const piLive = await runCli(["pi", "live", "--session", "abc"], {
+        home,
+        env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" },
+      });
+      assert.doesNotMatch(piLive.stderr, /--session applies only to/);
+      await rejects(home, ["pi", "live", "--days", "3"], /--days\/--last-n\/--verbose\/--plain apply only to/);
+      await rejects(home, ["opencode", "live"], /live` is supported only for Claude Code and Pi/);
     });
   });
 });

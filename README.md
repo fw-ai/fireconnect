@@ -375,9 +375,14 @@ Use `--config-path <path>` for a config somewhere else.
 Sends [Pi](https://pi.dev) through Fireworks.
 
 ```bash
-fireconnect pi
-fireconnect pi status
-fireconnect pi --model glm-latest
+fireconnect pi                       # connect; catalog lands in /model
+fireconnect pi status               # provider, auth, model
+fireconnect pi --model glm-latest    # ensure one model is in the picker
+fireconnect pi usage                 # pick session → live meter (Esc sessions, q quit)
+fireconnect pi usage --days 7        # look back further in the session list (default 3)
+fireconnect pi usage --session <id>  # start on one session; Esc still opens the list
+fireconnect pi usage --plain         # one-shot snapshot, no interactive picker
+fireconnect pi live                  # tmux split: Pi left, live usage meter right
 fireconnect pi off
 ```
 
@@ -387,11 +392,42 @@ fireconnect pi off
   Entries use full `accounts/fireworks/...` IDs so they line up with Pi's built-in rows, with
   context, pricing, reasoning, and vision info from the shared Fireworks specs. Offline, the last
   cached catalog is used.
+- Installs the footer usage bar (see below).
 - Backs up all three files (`settings.json`, `auth.json`, `models.json`). Which model IDs were
   added is tracked in `~/.fireconnect/config.json`, so repeat `on` rebuilds exactly and `off`
   removes only what FireConnect added.
 
 Use `--settings-path <path>` for a settings file somewhere else.
+
+### Usage meter and footer usage bar
+
+Pi's session logs (`~/.pi/agent/sessions/--<cwd>--/*.jsonl`) record every model call's token
+usage and the `responseModel` that actually served it — the same raw material the Claude Code
+meter prices — so the same engine (Fireworks rates for Fireworks models, list rates for
+Anthropic/OpenAI ids) powers both surfaces:
+
+- **`fireconnect pi usage`** — the live cost meter over Pi sessions: session picker → live
+  per-turn table, per-model totals, spend bar, and cache-hit share. `--json`, `--last-n`,
+  `--verbose`, and `--plain` print one-shot snapshots (same scripts/cost-reporting contract as
+  Claude's). Resume and branch navigation are priced too: entries on abandoned branches were
+  real billed calls, so the meter and the report both count them.
+- **`fireconnect pi live`** — tmux split, Pi on the left, the live meter on the right. Exit Pi
+  (`/quit`) to close the layout. The meter pane locks onto the pinned session id, so a background
+  session can't steal it.
+- **Footer usage bar** — `on` also installs a tiny extension into
+  `~/.pi/agent/extensions/fireconnect-usage/` that renders a one-line status into Pi's own
+  footer: a spend-by-model bar, the session total at Fireworks rates, the cache-hit share, and
+  a per-model legend — the same visual language as the Claude Code status line, and the same
+  engine as `pi usage`. Pi has no `statusLine` setting to spawn a command from, so the extension
+  is the native equivalent — and it tallies in-process as each call finishes instead of
+  re-reading the transcript. `/usage` inside Pi opens a per-model table overlay (any key to
+  close). The extension is marker-claimed: a directory you own of the same name is never
+  touched, `off` removes it, and a repeat `on` refreshes it.
+
+Pi's own footer cost can read `$0` on FireConnect models (Pi has no rates for `firerouter/*`
+ids) — the usage bar is the number that matches your bill. Model switches mid-session,
+FireRouter routing, and subagent calls all total correctly because every call is priced by the
+model that actually served it.
 
 ## Cursor
 
@@ -806,7 +842,7 @@ fireconnect <harness> status --json  Same state as JSON (for CI checks).
 fireconnect <harness> help         Help for that harness.
 ```
 
-Every model change goes through `<harness> on`. Claude adds `fireconnect claude usage`, `fireconnect claude live`, and `fireconnect claude demo`.
+Every model change goes through `<harness> on`. Claude adds `fireconnect claude usage`, `fireconnect claude live`, and `fireconnect claude demo`; Pi adds `fireconnect pi usage` and `fireconnect pi live` (plus the footer usage bar `on` installs).
 
 **Global**
 

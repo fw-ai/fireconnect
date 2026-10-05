@@ -28,10 +28,10 @@ import { HARNESSES } from "./id.mjs";
  * @property {string} subagent
  * @property {string} search
  * @property {boolean} [refresh] // model list: drop the 1h catalog cache and refetch
- * @property {string} [session] // claude usage: session id prefix or explicit .jsonl path
- * @property {string} [lastN]   // claude usage: latest N parent sessions
+ * @property {string} [session] // claude|pi usage: session id prefix or explicit .jsonl path
+ * @property {string} [lastN]   // claude|pi usage: latest N sessions
  * @property {boolean} [verbose]
- * @property {boolean} [plain]   // claude usage: force plain summary instead of interactive TUI
+ * @property {boolean} [plain]   // claude|pi usage: force plain summary instead of interactive TUI
  * @property {"auto"|"prompt"|"skip"} [onboardingMode] // claude on model onboarding policy
  * @property {boolean} json
  * @property {string} [dbPath]   // cursor: explicit state.vscdb path

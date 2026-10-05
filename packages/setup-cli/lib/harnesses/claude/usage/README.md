@@ -2,6 +2,14 @@
 
 Everything that reads Claude Code's session logs and turns them into cost.
 
+The harness-neutral half of this machinery — session-log discovery, picker
+policy, nullable-cost arithmetic, cost formatting, the spend bar, the live
+split panes, and the tmux split lifecycle — lives in `lib/usage/` and is
+shared with `lib/harnesses/pi/usage/` (`fireconnect pi usage` / `pi live`).
+Only the Claude record shapes, the agents pane, and the Claude-specific
+labels stay in this folder; `cost.mjs` and `format.mjs` here are re-export
+shims over the shared modules so importers (and these tests) are unchanged.
+
 ## Entry points
 
 The harness (`../index.mjs`) uses two, depending on the flags:

@@ -77,11 +77,15 @@ class Dashboard {
     stream = process.stdout,
     agentLabel = "",
     keyHint = DEFAULT_KEY_HINT,
+    title = Dashboard.TITLE,
   } = {}) {
     this.path = filePath;
     this.index = index;
     this.stream = stream;
     this.fullscreen = fullscreen && COLOR;
+    // A harness adapter (Pi) passes its own banner; the Dashboard renders
+    // whatever title it was given, never the Claude brand by name.
+    this.title = title;
     this.turns = [];
     this.cur = null;
     // message.id -> { turn, priced, weight, bucket }, so a later record for the
@@ -292,7 +296,7 @@ class Dashboard {
     const rows = Math.max(14, this.stream.rows || 24);
     const inner = w - 2;
     const out = [`${ANSI.homeCursor}${ANSI.clearScreen}`];
-    const title = clip(Dashboard.TITLE, inner);
+    const title = clip(this.title, inner);
     const n = this.turns.length;
     const agentPart = this.agentLabel
       ? `   ·   ${sanitize(this.agentLabel).replace(/\s+/g, " ").trim()}`
@@ -354,7 +358,7 @@ class Dashboard {
     const w = Dashboard.plainWidth(this.stream) - 2;
     const write = (line) => this.stream.write(`${line}\n`);
     write(`${ACCENT}${TL}${H.repeat(w)}${TR}${R}`);
-    const t = Dashboard.TITLE;
+    const t = this.title;
     write(`${ACCENT}${V}${R}${B}${t}${R}${" ".repeat(Math.max(0, w - vislen(t)))}${ACCENT}${V}${R}`);
     write(`${ACCENT}${BL}${H.repeat(w)}${BR}${R}`);
     write(`${D}${clip(Dashboard.HDR, Dashboard.plainWidth(this.stream))}${R}`);
@@ -443,6 +447,9 @@ export function syncAgentPane(pane, agents) {
  *   agentLabel?: string,
  *   readPeers?: () => Promise<{ count: number, calls: number, cost: number } | null>,
  *   peersMs?: number,
+ *   keyHint?: string,
+ *   title?: string, meter banner (default: the Claude Code one),
+ *   mapRecord?: (entry: object) => object | null | undefined,
  *   agentPane?: { list: any[], index: number, focused: boolean, trackingId: string } | null,
  *   readAgents?: () => Promise<any[]>,
  *   onReady?: (db: Dashboard) => void,
@@ -461,6 +468,8 @@ export async function runUsageMeter({
   readPeers,
   peersMs = 2000,
   keyHint,
+  title,
+  mapRecord,
   agentPane = null,
   readAgents,
   onReady,
@@ -481,6 +490,7 @@ export async function runUsageMeter({
     stream,
     agentLabel,
     ...(keyHint ? { keyHint } : liveSplit ? { keyHint: "q quit layout" } : {}),
+    ...(title ? { title } : {}),
   });
   db.locked = true;
   // Caller-owned so the keys that move the pane cursor (read outside the meter)
@@ -594,7 +604,13 @@ export async function runUsageMeter({
       }
       for (const line of lines) {
         try {
-          db.feed(JSON.parse(line));
+          // A harness adapter (Pi session JSONL → the record shape this
+          // Dashboard accumulates) maps each parsed line, and null skips it.
+          // Without a mapper the log is already in the Dashboard's shape.
+          const record = mapRecord ? mapRecord(JSON.parse(line)) : JSON.parse(line);
+          if (record) {
+            db.feed(record);
+          }
         } catch {
           /* torn write */
         }

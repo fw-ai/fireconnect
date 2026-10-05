@@ -77,18 +77,19 @@ function validateHarnessOptions(route, ctx) {
     throw new Error("--refresh applies only to `fireconnect model list`.");
   }
   // `--session` is shared by `claude usage` (report) and `claude live` (resume +
-  // meter that session in the split); the report-only flags stay usage-only.
-  const sessionAllowed = harnessId === HARNESS.CLAUDE && !noun
-    && (verb === "usage" || verb === "live");
+  // meter that session in the split), and identically by the Pi usage/live
+  // pair; the report-only flags stay usage-only.
+  const sessionAllowed = !noun && (verb === "usage" || verb === "live")
+    && (harnessId === HARNESS.CLAUDE || harnessId === HARNESS.PI);
   if (ctx.session && !sessionAllowed) {
-    throw new Error("--session applies only to `fireconnect claude usage` or `fireconnect claude live`.");
+    throw new Error("--session applies only to `fireconnect claude|pi usage` or `fireconnect claude|pi live`.");
   }
   const hasUsageOption = Boolean(ctx.days || ctx.lastN || ctx.verbose || ctx.plain);
-  if (hasUsageOption && !(harnessId === HARNESS.CLAUDE && verb === "usage" && !noun)) {
-    throw new Error("--days/--last-n/--verbose/--plain apply only to `fireconnect claude usage`.");
+  if (hasUsageOption && !((harnessId === HARNESS.CLAUDE || harnessId === HARNESS.PI) && verb === "usage" && !noun)) {
+    throw new Error("--days/--last-n/--verbose/--plain apply only to `fireconnect claude|pi usage`.");
   }
-  if (verb === "live" && harnessId !== HARNESS.CLAUDE) {
-    throw new Error("`fireconnect <harness> live` is supported only for Claude Code.");
+  if (verb === "live" && harnessId !== HARNESS.CLAUDE && harnessId !== HARNESS.PI) {
+    throw new Error("`fireconnect <harness> live` is supported only for Claude Code and Pi.");
   }
   const jsonSupported = verb === "status"
     || verb === "usage";

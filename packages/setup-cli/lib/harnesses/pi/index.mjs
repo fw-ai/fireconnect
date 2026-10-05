@@ -24,9 +24,7 @@ import {
 import {
   byokEnvFromHeaders,
 } from "../../firerouter/core.mjs";
-import {
-  loadRegisterableModels,
-} from "../../fireworks/models.mjs";
+import { loadRegisterableModels, warmServerlessPricingCache } from "../../fireworks/models.mjs";
 import { detectApiKeyType, isFireworksKey } from "../../keys/key-type.mjs";
 import { DEFAULT_AZURE_MODEL } from "../../fireworks/azure-core.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
@@ -37,6 +35,19 @@ import {
 import { finishEnvHarnessOn } from "../../harness/env-hook.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import { harnessStatusKeySource } from "../../keys/api-key.mjs";
+import { runPiLiveTmux } from "./live-tmux.mjs";
+import {
+  formatPiUsageReport,
+  readPiUsage,
+  readPiUsages,
+} from "./usage/report.mjs";
+import {
+  promptPiUsageSession,
+} from "./usage/session-picker.mjs";
+import {
+  runPiUsageLive,
+  shouldRunPiUsageLive,
+} from "./usage/live.mjs";
 
 function piStoredApiKeyRef(auth) {
   return auth.fireworks?.key ?? "";
@@ -160,8 +171,7 @@ export default defineHarnessProfile({
 
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
-    const { settingsPath, authPath, modelsPath } = piPathsFor(ctx);
-    const settings = await readJsonIfExists(settingsPath);
+    const { settingsPath, authPath, modelsPath } = piPathsFor(ctx);    const settings = await readJsonIfExists(settingsPath);
     const modelsConfig = await readJsonIfExists(modelsPath);
     const provider = piProviderStatus(settings);
 
@@ -220,6 +230,66 @@ export default defineHarnessProfile({
       model: payload.current.main,
       keySource: harnessStatusKeySource(HARNESS.PI, provider),
     });
+  },
+
+  async usage(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.PI);
+    // Meter with live Fireworks prices, not just the static spec table. Warm
+    // it before any cost is computed (self-gates on a genuine fw_ key); fully
+    // best-effort so usage still works off the session logs.
+    try {
+      await warmServerlessPricingCache(await piResolveKey(ctx));
+    } catch {
+      /* fall back to static spec pricing */
+    }
+    if (shouldRunPiUsageLive(ctx)) {
+      const withinDays = ctx.days || undefined;
+      let session = ctx.session ?? "";
+      if (!session) {
+        // Needs stdin TTY for the multi-session menu; otherwise picks newest.
+        session = await promptPiUsageSession({ home: ctx.home, withinDays });
+        if (!session) {
+          return;
+        }
+      }
+      await runPiUsageLive({
+        home: ctx.home,
+        session,
+        plain: ctx.plain,
+        ...(process.env.FC_LIVE_SPLIT === "1"
+          ? {}
+          : {
+            // The session list is always reachable, including from an explicit
+            // --session: Esc opens it (same policy as the Claude meter).
+            promptSession: (opts) => promptPiUsageSession({ ...opts, withinDays }),
+          }),
+      });
+      return;
+    }
+    if (ctx.lastN) {
+      const reportGroup = await readPiUsages({ home: ctx.home, session: ctx.session ?? "", lastN: ctx.lastN });
+      if (ctx.json) {
+        console.log(JSON.stringify(reportGroup, null, 2));
+        return;
+      }
+      const text = reportGroup.sessions
+        .map((report) => formatPiUsageReport(report, { verbose: ctx.verbose }))
+        .join("\n\n");
+      console.log(text || "No priced calls in the selected sessions.");
+      return;
+    }
+
+    const report = await readPiUsage({ home: ctx.home, session: ctx.session ?? "" });
+    if (ctx.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    console.log(formatPiUsageReport(report, { verbose: ctx.verbose }));
+  },
+
+  async live(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.PI);
+    await runPiLiveTmux({ home: ctx.home, session: ctx.session, cwd: process.cwd() });
   },
 
 });

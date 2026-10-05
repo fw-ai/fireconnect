@@ -38,6 +38,10 @@ import {
   piEnabledModels,
   planPiCatalogUpdate,
 } from "./fireworks-models.mjs";
+import {
+  installPiUsageExtension,
+  removePiUsageExtension,
+} from "./extension/install.mjs";
 import { stripFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
 export {
@@ -451,7 +455,7 @@ export async function enablePiFireworks({
   dataDir,
   home = "",
   apiKey,
-  apiKeyFromFlag = false,
+  apiKeyFromFlag: _apiKeyFromFlag = false,
   effectiveApiKey = "",
   modelId,
   keyType = "fireworks",
@@ -574,6 +578,15 @@ export async function enablePiFireworks({
   const managedModelIds = catalogPlan.managed;
   await persistManagedModelIds(home, dataDir, managedModelIds, { initialized: true });
 
+  // Footer usage bar: in-process extension priced at the same Fireworks
+  // rates (Pi's own footer cost reads $0 on FireConnect models). Best-effort:
+  // a failed extension install must never fail the routing itself.
+  try {
+    await installPiUsageExtension({ home, settingsPath });
+  } catch {
+    /* the routing is what matters */
+  }
+
   return {
     model: storedModel,
     modelsAdded: managedModelIds,
@@ -601,7 +614,7 @@ export async function enablePiFireworks({
  */
 export async function enablePiAzure({
   settingsPath,
-  authPath = "",
+  authPath: _authPath = "",
   modelsPath,
   dataDir,
   home = "",
@@ -660,6 +673,15 @@ export async function enablePiAzure({
   );
   await writeJson(modelsPath, azureModels, { mode: apiKeyFromFlag ? 0o600 : undefined });
   await persistManagedModelIds(home, dataDir, []);
+
+  // Footer usage bar: same in-process extension as the Fireworks gateway —
+  // the pricing engine prices whatever model actually served, Azure or not.
+  // Best-effort: a failed extension install must never fail the routing.
+  try {
+    await installPiUsageExtension({ home, settingsPath });
+  } catch {
+    /* the routing is what matters */
+  }
 
   return {
     model: resolvedModel,
@@ -810,6 +832,16 @@ async function stripManagedAuth(authPath) {
  * providerStatus); it decides restore-vs-strip alongside backup presence.
  */
 export async function disablePiFireworks({ settingsPath, authPath, modelsPath, dataDir, home = "", wasEnabled = false }) {
+  // The footer usage-bar extension is FireConnect's own surface; take it with
+  // the routing on every off path (restore and strip alike). Best-effort: a
+  // failed removal must never fail the restore. No-op without our marker —
+  // a user's own extension of the same name is never touched.
+  try {
+    await removePiUsageExtension({ home, settingsPath });
+  } catch {
+    /* keep going: the settings restore is what matters */
+  }
+
   const managedModelIds = await readManagedModelIds(home, dataDir);
   const settingsBackup = backupPath(dataDir, settingsPath, "settings");
   const hasBackup = (await readJsonIfExists(settingsBackup)).snapshot !== undefined;

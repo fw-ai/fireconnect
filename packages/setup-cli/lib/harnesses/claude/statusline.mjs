@@ -31,6 +31,9 @@ import { canonicalOpenAiModelId, isOpenAiPricedModelId, providerListPricing } fr
 import { isAnthropicModelId, isAutoModelId, isClaudeNativeModel, isFirerouterModel, isFirerouterModelPattern } from "../../fireworks/model-id.mjs";
 import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import { stripViaFireworksSuffix } from "../../fireworks/label-suffix.mjs";
+// Series hues and the stacked spend bar are shared with the Pi footer usage
+// bar; only this line's two-line composition is Claude-specific.
+import { BAR_MARK, paintSeries, renderSpendBar } from "../../usage/spend-bar.mjs";
 import { UNPRICED_TEXT, addUsage } from "./usage/cost.mjs";
 import {
   formatUsageCost,
@@ -132,29 +135,9 @@ const COLOR = process.env.NO_COLOR ? null : {
   reset: "\x1b[0m",
 };
 
-// Series hues for bar segments and swatches only; text uses COLOR tokens above.
-const SERIES_COLORS = Object.freeze([
-  "\x1b[38;2;57;135;229m", // #3987e5 blue
-  "\x1b[38;2;217;89;38m", // #d95926 orange
-  "\x1b[38;2;25;158;112m", // #199e70 aqua
-  "\x1b[38;2;201;133;0m", // #c98500 yellow
-  "\x1b[38;2;213;81;129m", // #d55181 magenta
-  "\x1b[38;2;0;131;0m", // #008300 green
-  "\x1b[38;2;144;133;233m", // #9085e9 violet
-  "\x1b[38;2;230;103;103m", // #e66767 red
-]);
-
 /** @param {keyof typeof COLOR} name @param {string} text */
 function paint(name, text) {
   return COLOR ? `${COLOR[name]}${text}${COLOR.reset}` : String(text);
-}
-
-/** A mark in a series hue — bar segment or legend swatch, never prose. */
-function paintSeries(index, mark) {
-  if (!COLOR) {
-    return String(mark);
-  }
-  return `${SERIES_COLORS[index % SERIES_COLORS.length]}${mark}${COLOR.reset}`;
 }
 
 function sep() {
@@ -164,36 +147,6 @@ function sep() {
 /** Join non-empty parts with the dim separator. */
 function joinParts(parts) {
   return parts.filter(Boolean).join(` ${sep()} `);
-}
-
-/**
- * The bar's fill glyph, doubling as the legend swatch so a legend entry reads as
- * a piece of the bar. Heavy horizontal rule (U+2501): unambiguous single-column
- * width in every terminal, unlike the square/circle glyphs legends usually use,
- * which are East-Asian-ambiguous and can render double-wide and misalign.
- */
-const BAR_MARK = "━";
-
-/**
- * Stacked bar by spend share (not call count). Width only — no in-bar labels.
- * @param {Array<{ label: string, costShare: number }>} models largest first
- * @param {number} width total bar width in cells
- * @returns {string}
- */
-function renderModelBar(models, width) {
-  if (models.length === 0) {
-    return "";
-  }
-  const gaps = models.length - 1;
-  const inkWidth = Math.max(models.length, width - gaps);
-  const widths = models.map((m) => Math.max(1, Math.round(m.costShare * inkWidth)));
-  const drift = inkWidth - widths.reduce((sum, w) => sum + w, 0);
-  if (drift !== 0) {
-    widths[0] = Math.max(1, widths[0] + drift);
-  }
-  return models
-    .map((model, index) => paintSeries(index, BAR_MARK.repeat(widths[index])))
-    .join(" ");
 }
 
 /** Drop trailing parenthetical qualifiers when they fit the legend width. */
@@ -427,7 +380,7 @@ export async function renderClaudeStatusLine(input = {}, { home = process.env.HO
   const multi = (usage?.models.length ?? 0) > 1;
 
   const bar = usage?.models.length
-    ? renderModelBar(usage.models, MODEL_BAR_WIDTH)
+    ? renderSpendBar(usage.models, MODEL_BAR_WIDTH, { color: Boolean(COLOR) })
     : "";
   const line1 = joinParts([
     bar || paint("secondary", slotLabel),
@@ -454,9 +407,14 @@ export async function renderClaudeStatusLine(input = {}, { home = process.env.HO
     const text = multi
       ? `${label} ${formatUsageCost(m.cost)}${cache}`
       : `${label}${cache}`;
-    return `${paintSeries(index, BAR_MARK)} ${paint("primary", text)}`;
+    return `${paintSeriesMark(index)} ${paint("primary", text)}`;
   }) ?? [];
   const line2 = joinParts(legend);
 
   return [line1, line2].filter(Boolean).join("\n");
+}
+
+/** A legend swatch in the series hue this model's bar slice used. */
+function paintSeriesMark(index) {
+  return paintSeries(index, BAR_MARK, Boolean(COLOR));
 }
