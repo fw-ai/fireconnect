@@ -17,6 +17,15 @@ import {
   refreshCopilotCliGatewayKey,
 } from "../harnesses/copilot-cli/config.mjs";
 import {
+  cursorStateDbPath,
+  refreshCursorGatewayKey,
+} from "../harnesses/cursor/core.mjs";
+import {
+  chatLanguageModelsPath,
+  refreshVscodeGatewayKey,
+  vscodeStateDbPath,
+} from "../harnesses/vscode/core.mjs";
+import {
   FIREWORKS_API_KEY_KEYCHAIN_REF,
   readGlobalConfig,
   isEnabledFireworksHarness,
@@ -107,6 +116,22 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       label: "Copilot CLI",
       hint: "fireconnect copilot-cli on",
       refresh: () => refreshCopilotCliGatewayKey({ providersPath: copilotProvidersPath({ home }), fireworksKey }),
+    },
+    {
+      id: HARNESS.CURSOR,
+      label: "Cursor",
+      hint: "fireconnect cursor on",
+      refresh: () => refreshCursorGatewayKey({ dbPath: cursorStateDbPath({ home }), fireworksKey }),
+    },
+    {
+      id: HARNESS.VSCODE,
+      label: "VS Code",
+      hint: "fireconnect vscode on",
+      refresh: () => refreshVscodeGatewayKey({
+        vscodePath: chatLanguageModelsPath({ home }),
+        stateDbPath: vscodeStateDbPath({ home }),
+        fireworksKey,
+      }),
     },
   ];
   const notes = [];
