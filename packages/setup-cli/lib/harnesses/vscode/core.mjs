@@ -154,6 +154,61 @@ function secretStorageKey(secretId) {
   return `${SECRET_STORAGE_PREFIX}${secretId}`;
 }
 
+/**
+ * Single write path for the fireconnect-owned VS Code secret row. Both `on`
+ * and key refresh go through here so encryption, variant selection, and the
+ * ItemTable ensure stay in one place.
+ * @param {{ vscodePath: string, stateDbPath?: string, secretId: string, apiKey: string }} opts
+ * @returns {Promise<{ dbPath: string, obfuscatedKey: boolean, variant: "stable" | "insiders" }>}
+ */
+async function writeVscodeSecretRow({ vscodePath, stateDbPath, secretId, apiKey }) {
+  const variant = currentVariant(vscodePath);
+  const localStatePath = vscodeLocalStatePath({ vscodePath });
+  if (!isSecretEncryptionAvailable({ variant, localStatePath })) {
+    throw new Error(secretEncryptionUnavailableMessage(variant));
+  }
+  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
+  // Ensure the ItemTable exists so writes work against a profile VS Code has
+  // never launched (no state.vscdb yet). Idempotent + mkdirs the parent.
+  await ensureItemTable(dbPath);
+  const encrypted = encryptSecret(apiKey, { variant, localStatePath });
+  const obfuscatedKey = linuxEncryptUsesBasicTextBackend(encrypted);
+  await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
+  return { dbPath, obfuscatedKey, variant };
+}
+
+/**
+ * Re-bake the Fireworks key in `state.vscdb` after a `login`/rotation.
+ * Skips unmanaged providers and Azure routes; returns false when nothing
+ * changed so `syncBakedKeysAfterStore` stays note-quiet on the happy path.
+ * @param {{ vscodePath: string, stateDbPath?: string, fireworksKey: string }} opts
+ * @returns {Promise<boolean>} true when the stored secret was replaced
+ */
+export async function refreshVscodeGatewayKey({ vscodePath, stateDbPath, fireworksKey }) {
+  const key = fireworksKey?.trim();
+  if (!key) {
+    return false;
+  }
+  const arr = await readChatLanguageModels(vscodePath);
+  const provider = findFireconnectProvider(arr);
+  if (!provider) {
+    return false;
+  }
+  if (vscodeAzureProviderStatus(arr) === "azure") {
+    return false;
+  }
+  const secretId = fireconnectSecretId(provider.apiKey);
+  if (!secretId) {
+    return false;
+  }
+  const stored = await readVscodeStoredKey(vscodePath, stateDbPath, arr);
+  if (stored === key) {
+    return false;
+  }
+  await writeVscodeSecretRow({ vscodePath, stateDbPath, secretId, apiKey: key });
+  return true;
+}
+
 /* -------------------------------------------------------------------------- */
 /* JSON I/O                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -628,12 +683,6 @@ export async function enableVscodeFireworks({
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
-  const variant = currentVariant(vscodePath);
-  const localStatePath = vscodeLocalStatePath({ vscodePath });
-  if (!isSecretEncryptionAvailable({ variant, localStatePath })) {
-    throw new Error(secretEncryptionUnavailableMessage(variant));
-  }
-
   const resolvedKeyType = keyType === "fireworks" ? detectApiKeyType(apiKey) : keyType;
   const resolvedModel = shortFireworksModelRef(
     resolveVscodeModelId(modelId, resolvedKeyType),
@@ -657,13 +706,12 @@ export async function enableVscodeFireworks({
   // generate one and store the key.
   const existing = findFireconnectProvider(arr);
   const secretId = existing ? fireconnectSecretId(existing.apiKey) : makeFireconnectSecretId();
-  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
-  // Ensure the ItemTable exists so `on` works against a profile VS Code has
-  // never launched (no state.vscdb yet). Idempotent + mkdirs the parent.
-  await ensureItemTable(dbPath);
-  const encrypted = encryptSecret(apiKey, { variant, localStatePath });
-  const obfuscatedKey = linuxEncryptUsesBasicTextBackend(encrypted);
-  await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
+  const { dbPath, obfuscatedKey, variant } = await writeVscodeSecretRow({
+    vscodePath,
+    stateDbPath,
+    secretId,
+    apiKey,
+  });
 
   // Preserve previously registered models when re-running `on` (for example to
   // rotate a key). With `--model`, ensure that model is present; without it,
@@ -732,12 +780,6 @@ export async function enableVscodeAzure({
     throw new Error(MISSING_AZURE_API_KEY_MESSAGE);
   }
 
-  const variant = currentVariant(vscodePath);
-  const localStatePath = vscodeLocalStatePath({ vscodePath });
-  if (!isSecretEncryptionAvailable({ variant, localStatePath })) {
-    throw new Error(secretEncryptionUnavailableMessage(variant));
-  }
-
   const { existed: fileExisted, raw: fileRaw } = await readRawIfExists(vscodePath);
   const arr = parseChatLanguageModelsRaw(fileRaw, vscodePath);
 
@@ -757,10 +799,12 @@ export async function enableVscodeAzure({
 
   const existing = findFireconnectProvider(arr);
   const secretId = existing ? fireconnectSecretId(existing.apiKey) : makeFireconnectSecretId();
-  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
-  await ensureItemTable(dbPath);
-  const encrypted = encryptSecret(effectiveApiKey, { variant, localStatePath });
-  await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
+  const { dbPath } = await writeVscodeSecretRow({
+    vscodePath,
+    stateDbPath,
+    secretId,
+    apiKey: effectiveApiKey,
+  });
 
   // addFireworksProvider replaces the provider's models, so switching from the
   // gateway drops the whole serverless catalog — only the deployment remains.

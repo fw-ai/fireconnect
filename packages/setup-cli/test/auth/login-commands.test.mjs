@@ -12,6 +12,12 @@ import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import { pbDecode, pbStringAt } from "../../lib/auth/grpc-web.mjs";
 import { runInteractiveSignIn } from "../../lib/auth/login/flows.mjs";
 import { installShellEnvHook } from "../../lib/io/shell-env-hook.mjs";
+import {
+  chatLanguageModelsPath,
+  enableVscodeFireworks,
+  readVscodeStoredKey,
+  vscodeStateDbPath,
+} from "../../lib/harnesses/vscode/core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(__dirname, "../../bin/fireconnect.mjs");
@@ -317,6 +323,35 @@ describe("fireconnect login / logout", () => {
       assert.equal(result.code, 0, `stderr: ${result.stderr}`);
       assert.match(result.stdout, new RegExp(`Already signed in as ${EMAIL}`));
       assert.match(result.stdout, /--api-key/);
+    });
+  });
+
+  it("login when already signed in heals a stale VS Code secret without rotating", async () => {
+    await withTempHome("login-already-vscode-", async (home) => {
+      await mkdir(path.join(home, ".fireconnect"), { recursive: true });
+      await seedKeychainConfig(home, VALID_KEY);
+      await writeGlobalConfig(home, {
+        harnesses: { vscode: { enabled: true, provider: "fireworks" } },
+      });
+      const vscodePath = chatLanguageModelsPath({ home });
+      const stateDbPath = vscodeStateDbPath({ home });
+      await enableVscodeFireworks({
+        vscodePath,
+        dataDir: path.join(home, ".fireconnect", "vscode"),
+        apiKey: "fw_stale_gateway_00000000000000000",
+        stateDbPath,
+      });
+
+      const result = await runCli(["login"], { home, env: gatewayEnv });
+      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stdout, new RegExp(`Already signed in as ${EMAIL}`));
+      assert.match(result.stdout, /VS Code/);
+      assert.equal(await readVscodeStoredKey(vscodePath, stateDbPath), VALID_KEY);
+
+      // Second run: everything matches — no update note.
+      const again = await runCli(["login"], { home, env: gatewayEnv });
+      assert.equal(again.code, 0, `stderr: ${again.stderr}`);
+      assert.doesNotMatch(again.stdout, /VS Code/);
     });
   });
 

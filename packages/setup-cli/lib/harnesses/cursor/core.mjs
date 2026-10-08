@@ -982,8 +982,23 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
  * @returns {{ writes: Array<{op: string, key: string, value?: string}>, obfuscatedKey: boolean }}
  */
 function cursorKeyWrites(dbPath, blobRaw, apiKey) {
+  const { writes: keyWrites, obfuscatedKey } = cursorKeyCellWrites(dbPath, apiKey);
   const writes = [
     { op: "set", key: APPLICATION_USER_KEY, value: blobRaw },
+    ...keyWrites,
+  ];
+  return { writes, obfuscatedKey };
+}
+
+/**
+ * Key-only cells for Cursor's OpenAI key: the legacy plaintext row older
+ * builds read plus the encrypted `secret://` row modern Cursor reads. Shared
+ * by `on` (via `cursorKeyWrites`) and key refresh so both encrypt identically.
+ * @param {string} dbPath @param {string} apiKey
+ * @returns {{ writes: Array<{op: string, key: string, value?: string}>, obfuscatedKey: boolean }}
+ */
+function cursorKeyCellWrites(dbPath, apiKey) {
+  const writes = [
     { op: "set", key: CURSOR_AUTH_OPENAI_KEY, value: apiKey },
   ];
   const localStatePath = cursorLocalStatePath(dbPath);
@@ -998,6 +1013,35 @@ function cursorKeyWrites(dbPath, blobRaw, apiKey) {
     });
   }
   return { writes, obfuscatedKey };
+}
+
+/**
+ * Re-bake the Fireworks key in Cursor's `state.vscdb` after a `login`/
+ * rotation. Touches only the key cells — the applicationUser blob (models,
+ * base URL) is left alone. Skips unmanaged and Azure routes; returns false
+ * when nothing changed so sync stays note-quiet on the happy path.
+ * @param {{ dbPath: string, fireworksKey: string }} opts
+ * @returns {Promise<boolean>} true when the stored key was replaced
+ */
+export async function refreshCursorGatewayKey({ dbPath, fireworksKey }) {
+  const key = fireworksKey?.trim();
+  if (!key || !dbPath) {
+    return false;
+  }
+  if (!existsSync(dbPath)) {
+    return false;
+  }
+  const { blob, openAIKey } = await readCursorState(dbPath);
+  if (cursorProviderStatus(blob, openAIKey) !== "fireworks") {
+    return false;
+  }
+  if (openAIKey === key) {
+    return false;
+  }
+  await ensureCursorTable(dbPath);
+  const { writes } = cursorKeyCellWrites(dbPath, key);
+  await applyCursorWrites(dbPath, writes);
+  return true;
 }
 
 /**

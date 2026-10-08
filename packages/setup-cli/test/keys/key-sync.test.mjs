@@ -7,6 +7,17 @@ import { syncBakedKeysAfterStore } from "../../lib/keys/sync.mjs";
 import { piAuthPath } from "../../lib/harnesses/pi/core.mjs";
 import { userSettingsPath } from "../../lib/harnesses/claude/core.mjs";
 import { opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
+import {
+  chatLanguageModelsPath,
+  enableVscodeFireworks,
+  readVscodeStoredKey,
+  vscodeStateDbPath,
+} from "../../lib/harnesses/vscode/core.mjs";
+import {
+  cursorStateDbPath,
+  enableCursorFireworks,
+  readCursorOpenAiKey,
+} from "../../lib/harnesses/cursor/core.mjs";
 import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import { runCli, withTempHome } from "../helpers.mjs";
 
@@ -232,6 +243,50 @@ describe("syncBakedKeysAfterStore", () => {
 
   it("does nothing on a machine with no router configs", async () => {
     await withTempHome("key-sync-empty-", async (home) => {
+      assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+    });
+  });
+
+  it("re-bakes the VS Code secret in state.vscdb", async () => {
+    await withTempHome("key-sync-vscode-", async (home) => {
+      await enableHarnessesForSync(home, ["vscode"]);
+      const vscodePath = chatLanguageModelsPath({ home });
+      const stateDbPath = vscodeStateDbPath({ home });
+      const dataDir = path.join(home, ".fireconnect", "vscode");
+      await enableVscodeFireworks({
+        vscodePath,
+        dataDir,
+        apiKey: "fw_stale_gateway_00000000000000000",
+        stateDbPath,
+      });
+
+      const notes = await syncBakedKeysAfterStore(home, NEW_KEY);
+      assert.equal(notes.length, 1, notes.join("\n"));
+      assert.match(notes[0], /VS Code/);
+      assert.equal(await readVscodeStoredKey(vscodePath, stateDbPath), NEW_KEY);
+
+      // Idempotent: nothing to change on a second run.
+      assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+    });
+  });
+
+  it("re-bakes the Cursor key cells in state.vscdb", async () => {
+    await withTempHome("key-sync-cursor-", async (home) => {
+      await enableHarnessesForSync(home, ["cursor"]);
+      const dbPath = cursorStateDbPath({ home });
+      const dataDir = path.join(home, ".fireconnect", "cursor");
+      await enableCursorFireworks({
+        dbPath,
+        dataDir,
+        apiKey: "fw_stale_gateway_00000000000000000",
+      });
+
+      const notes = await syncBakedKeysAfterStore(home, NEW_KEY);
+      assert.equal(notes.length, 1, notes.join("\n"));
+      assert.match(notes[0], /Cursor/);
+      assert.equal(await readCursorOpenAiKey(dbPath), NEW_KEY);
+
+      // Idempotent: nothing to change on a second run.
       assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
     });
   });

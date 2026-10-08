@@ -23,6 +23,7 @@ import {
 } from "../../auth/login/output.mjs";
 import { promptYesNo } from "../../auth/login/prompts.mjs";
 import { readShellConfig, SHELL_HOOK_BEGIN } from "../../io/shell-env-hook.mjs";
+import { syncBakedKeysAfterStore } from "../../keys/sync.mjs";
 
 export { KEYS_URL } from "../../auth/login/output.mjs";
 export {
@@ -144,6 +145,14 @@ export async function runLoginCommand(ctx) {
       if (fromEnv) {
         await printEnvKeyRotationHints(home);
         return;
+      }
+      // The stored key is still valid, but baked copies in harness configs
+      // can be stale independently of the keychain (key rotation elsewhere,
+      // a restore, or a harness enabled before the fix). Heal them here so
+      // `login` alone recovers a 401 without re-running `<harness> on`.
+      // Reuses the same post-store sync as a fresh sign-in — never throws.
+      for (const note of await syncBakedKeysAfterStore(home, existing)) {
+        console.log(`  ${note}`);
       }
       printKeyRotationHints();
       if (!stdin.isTTY) {
