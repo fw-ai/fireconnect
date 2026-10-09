@@ -559,16 +559,30 @@ fireconnect claude-desktop mcp sync    # re-import your connectors (first time)
 fireconnect claude-desktop off         # restore your previous setup
 ```
 
-Quit and reopen Claude Desktop after `on` / `off`. Requires macOS and a
-stored Fireworks credential (`fireconnect login`).
+Quit and reopen Claude Desktop after `on` / `off`. Requires macOS or Linux
+and a stored Fireworks credential (`fireconnect login`). Linux is unofficial:
+Anthropic documents Desktop's third-party mode for macOS and Windows only, but
+the Linux build ships the same mechanism and FireConnect drives it the same way.
 
 ### How it works
 
 `on` writes a third-party inference provider profile (Desktop's own supported
-mechanism) pointing at a loopback gateway shim — a small launchd service that
-maps model names, translates auth headers, and mirrors the signed model
-catalog. The shim auto-starts at login and after crashes; if it is ever down,
+mechanism) pointing at a loopback gateway shim — a small service (a launchd
+agent on macOS, a systemd user unit on Linux) that maps model names,
+translates auth headers, and mirrors the signed model catalog. The shim
+auto-starts at login and after crashes; if it is ever down,
 `fireconnect claude-desktop status` says so and `on` brings it back.
+
+Where things live:
+
+| | macOS | Linux |
+|---|---|---|
+| Desktop 3p profile | `~/Library/Application Support/Claude-3p/configLibrary/` | `~/.config/Claude-3p/configLibrary/` (`$XDG_CONFIG_HOME` honored) |
+| Shim service | `~/Library/LaunchAgents/ai.fireworks.fireconnect.claude-desktop-shim.plist` | `~/.config/systemd/user/ai.fireworks.fireconnect.claude-desktop-shim.service` |
+| Shim logs | `~/.fireconnect/claude-desktop/shim.log`, `shim.err.log` | same |
+
+On Linux, `on` needs a systemd user session (the normal case for a logged-in
+desktop); over a bare SSH session without one it stops with a clear error.
 
 ### Connectors
 
@@ -627,7 +641,7 @@ These are Claude Desktop's third-party-mode rules, not FireConnect bugs:
 
 | Symptom | Fix |
 |---|---|
-| `status` shows the shim NOT RESPONDING | `fireconnect claude-desktop on` restarts it |
+| `status` shows the shim NOT RESPONDING | `fireconnect claude-desktop on` restarts it (Linux: `systemctl --user status ai.fireworks.fireconnect.claude-desktop-shim` shows why) |
 | Models missing from the picker | Run `on` once with network up (warms the catalog cache), then restart Desktop |
 | A connector shows a sign-in error that won't clear | `mcp remove` it, then re-`add` with your OAuth client (Google), or use a companion local server (Figma) |
 | Code tab says the API key was rejected | `on` again — the profile carries a fresh key from your stored credential |

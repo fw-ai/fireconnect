@@ -1,8 +1,10 @@
 /**
  * Claude Desktop "profile lane": route Desktop's Chat/Cowork/Code surfaces
  * through Fireworks using Desktop's third-party provider profile mechanism
- * (~/Library/Application Support/Claude-3p/configLibrary/), with a loopback
- * shim in front of Fireworks for model-name mapping.
+ * (<Claude-3p data dir>/configLibrary/ — ~/Library/Application Support on
+ * macOS, ~/.config on Linux), with a loopback shim in front of Fireworks for
+ * model-name mapping. The shim runs as a launchd agent (macOS) or a systemd
+ * user unit (Linux); see platform.mjs.
  *
  * Semantics (validated live):
  * - profile keys: inferenceGatewayBaseUrl, inferenceGatewayApiKey,
@@ -25,7 +27,8 @@ import { writeFileAtomic } from "../../io/atomic-write.mjs";
 import { printBody, printNote } from "../../cli/messages.mjs";
 import { claudeDesktopDataDir } from "./core.mjs";
 import {
-  SHIM_AGENT_LABEL, buildLaunchAgentPlist, startLaunchAgent, stopLaunchAgent,
+  SHIM_AGENT_LABEL, SUPPORTED_PLATFORMS, buildShimServiceFile, shimServiceFilePath,
+  startShimService, stopShimService,
 } from "./platform.mjs";
 
 const SHIM_DEFAULT_PORT = 8799;
@@ -39,20 +42,17 @@ export function shimStatePath(home) {
 function profileStatePath(home) {
   return path.join(claudeDesktopDataDir(home), "profile-state.json");
 }
-function shimPlistPath(home) {
-  return path.join(home, "Library", "LaunchAgents", `${SHIM_LABEL}.plist`);
+/** The owned shim service definition (launchd plist or systemd user unit). */
+export function shimServicePath(home) {
+  return shimServiceFilePath(home, { label: SHIM_LABEL });
 }
 function backupDir(home) {
   return path.join(claudeDesktopDataDir(home), "profile-backup");
 }
 // The pure lineup logic lives in lineup.mjs (the shim imports only that leaf);
 // re-export so existing callers keep working.
-import { DEFAULT_MODEL_MAP, PICKER_MODELS, serverlessLineup, thirdPartyDir } from "./lineup.mjs";
-export { DEFAULT_MODEL_MAP, PICKER_MODELS, serverlessLineup, thirdPartyDir } from "./lineup.mjs";
-
-export function firstPartyDir(home) {
-  return path.join(home, "Library", "Application Support", "Claude");
-}
+import { DEFAULT_MODEL_MAP, PICKER_MODELS, firstPartyDir, serverlessLineup, thirdPartyDir } from "./lineup.mjs";
+export { DEFAULT_MODEL_MAP, PICKER_MODELS, firstPartyDir, serverlessLineup, thirdPartyDir } from "./lineup.mjs";
 function configLibraryDir(home) {
   return path.join(thirdPartyDir(home), "configLibrary");
 }
@@ -715,7 +715,9 @@ export async function enableProfileLane(home, {
   model,
   log = (line) => console.log(line),
 } = {}) {
-  if (process.platform !== "darwin") throw new Error("Claude Desktop support requires macOS.");
+  if (!SUPPORTED_PLATFORMS.includes(process.platform)) {
+    throw new Error("Claude Desktop support requires macOS or Linux.");
+  }
   const key = await resolveFireworksKeyWithSource({ home });
   if (!key.key) throw new Error("No Fireworks credential found. Run `fireconnect login` or set FIREWORKS_API_KEY first.");
   if (key.source === "env") {
@@ -756,8 +758,8 @@ export async function enableProfileLane(home, {
   await writeFileAtomic(shimStatePath(home), JSON.stringify({ port, modelMap: stateModelMap }, null, 2));
   if (process.env.FIRECONNECT_TEST !== "1" && allowSystemChanges) {
     const entry = new URL(import.meta.url).pathname.replace(/[^/]+$/, "shim.mjs");
-    await mkdir(path.dirname(shimPlistPath(home)), { recursive: true });
-    await writeFileAtomic(shimPlistPath(home), buildLaunchAgentPlist({
+    await mkdir(path.dirname(shimServicePath(home)), { recursive: true });
+    await writeFileAtomic(shimServicePath(home), buildShimServiceFile({
       nodeExec: process.execPath,
       entry,
       home,
@@ -765,7 +767,7 @@ export async function enableProfileLane(home, {
       logPath: path.join(dataDir, "shim.log"),
       errorPath: path.join(dataDir, "shim.err.log"),
     }));
-    await startLaunchAgent(shimPlistPath(home), { allowSystemChanges, label: SHIM_LABEL });
+    await startShimService(shimServicePath(home), { allowSystemChanges, label: SHIM_LABEL });
     await waitForShim(port);
   }
 
@@ -872,13 +874,13 @@ export async function disableProfileLane(home, {
   }
 
   if (process.env.FIRECONNECT_TEST !== "1" && allowSystemChanges) {
-    await stopLaunchAgent({ allowSystemChanges, label: SHIM_LABEL });
+    await stopShimService({ allowSystemChanges, label: SHIM_LABEL, unitPath: shimServicePath(home) });
   }
   // Only now that profiles are restored and the shim is stopped: uninstall
   // discovery reads this flag, so clearing it earlier would let a failed off
   // drop Claude Desktop (and its profile backup) from a later uninstall.
   await markHarnessEnabled(home, false);
-  await rm(shimPlistPath(home), { force: true });
+  await rm(shimServicePath(home), { force: true });
   await rm(shimStatePath(home), { force: true });
   await rm(profileStatePath(home), { force: true });
   // Sessions are NOT migrated: each deployment keeps its own conversation

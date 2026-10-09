@@ -7,7 +7,7 @@ import http from "node:http";
 
 import { createShimServer } from "../../../lib/harnesses/claude-desktop/shim.mjs";
 import {
-  detectConnectors, migrateSkillsPlugin, DEFAULT_MODEL_MAP,
+  detectConnectors, migrateSkillsPlugin, DEFAULT_MODEL_MAP, firstPartyDir, thirdPartyDir,
 } from "../../../lib/harnesses/claude-desktop/profile-lane.mjs";
 
 process.env.FIRECONNECT_TEST = "1";
@@ -18,7 +18,8 @@ async function tempHome() {
 }
 
 async function writeSession(home, deployment, account, name, servers) {
-  const dir = path.join(home, "Library", "Application Support", deployment, "local-agent-mode-sessions", account, "org");
+  const root = deployment === "Claude-3p" ? thirdPartyDir(home) : firstPartyDir(home);
+  const dir = path.join(root, "local-agent-mode-sessions", account, "org");
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, name), JSON.stringify({
     sessionId: name, remoteMcpServersConfig: servers,
@@ -56,8 +57,8 @@ test("detectConnectors returns [] when no sessions exist (offline/cold cache)", 
 test("migrateSkillsPlugin copies skills/plugin assets one-way, additively", async () => {
   const { home, cleanup } = await tempHome();
   try {
-    const first = path.join(home, "Library", "Application Support", "Claude");
-    const third = path.join(home, "Library", "Application Support", "Claude-3p");
+    const first = firstPartyDir(home);
+    const third = thirdPartyDir(home);
     const srcSkill = path.join(first, "local-agent-mode-sessions", "skills-plugin", "org-1", "acct-1", "skills", "demo", "SKILL.md");
     await mkdir(path.dirname(srcSkill), { recursive: true });
     await writeFile(srcSkill, "# demo skill");
@@ -128,7 +129,7 @@ test("shim model mapping: exact names, then family substrings, then passthrough"
 });
 
 async function enableFakeProfile(home, servers = []) {
-  const lib = path.join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+  const lib = path.join(thirdPartyDir(home), "configLibrary");
   await mkdir(lib, { recursive: true });
   await writeFile(path.join(lib, "prof-1.json"), JSON.stringify({ managedMcpServers: servers }));
   await writeFile(path.join(lib, "_meta.json"), JSON.stringify({ appliedId: "prof-1", entries: [{ id: "prof-1", name: "Fireworks" }] }));
@@ -171,7 +172,7 @@ test("sync rebuilds from sources; org-registered entries kept with oauth", async
     await writeSession(home, "Claude", "acct-1", "local_a.json", [
       { uuid: "1", name: "Linear", url: "https://mcp.linear.app/mcp" },
     ]);
-    const fp = path.join(home, "Library", "Application Support", "Claude");
+    const fp = firstPartyDir(home);
     await mkdir(fp, { recursive: true });
     await writeFile(path.join(fp, "claude_desktop_config.json"), JSON.stringify({
       mcpServers: { slack: { type: "http", url: "https://mcp.slack.com/mcp" } },
@@ -302,7 +303,7 @@ test("off snapshots the connector setup before deleting the profiles", async () 
     assert.deepEqual(store.excluded, ["granola"]);
     // The applied profile itself is gone, as before.
     await assert.rejects(() => readFile(path.join(
-      home, "Library", "Application Support", "Claude-3p", "configLibrary", "prof-1.json"), "utf8"));
+      thirdPartyDir(home), "configLibrary", "prof-1.json"), "utf8"));
   } finally { await cleanup(); }
 });
 
@@ -359,7 +360,7 @@ const SHIM_PROFILE_BODY = {
 test("detectShimProfileId fingerprints our profile; lookalikes on the same port don't match", async () => {
   const { home, cleanup } = await tempHome();
   try {
-    const lib = path.join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
     await mkdir(lib, { recursive: true });
     // Ours (even a stale old-format one, as long as the fingerprint holds).
     await writeFile(path.join(lib, "stale-fw.json"), JSON.stringify({ ...SHIM_PROFILE_BODY, modelCatalogEnabled: true }));
@@ -388,7 +389,7 @@ test("detectShimProfileId fingerprints our profile; lookalikes on the same port 
 test("detectShimProfileId prefers the durable written-profiles registry over content", async () => {
   const { home, cleanup } = await tempHome();
   try {
-    const lib = path.join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
     await mkdir(lib, { recursive: true });
     // Registry says "registered-id" is ours even though its file is not
     // shim-shaped (e.g. mid-rewrite); the fingerprint finds nothing.
@@ -408,7 +409,7 @@ test("off never leaves a shim-pointing profile applied (stale backup appliedId)"
   try {
     const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
     await enableFakeProfile(home); // prof-1 with managedMcpServers: [] — shim-URL body
-    const lib = path.join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
     // A stale backup whose appliedId points at a FireConnect profile — the
     // failure mode seen live: off must not leave the app on the dead shim.
     const backup = path.join(home, ".fireconnect", "claude-desktop", "profile-backup", "configLibrary-stale");
@@ -432,7 +433,7 @@ test("off keeps a healthy non-shim appliedId from the backup", async () => {
   try {
     const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
     await enableFakeProfile(home);
-    const lib = path.join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
     const backup = path.join(home, ".fireconnect", "claude-desktop", "profile-backup", "configLibrary-ok");
     await mkdir(backup, { recursive: true });
     await writeFile(path.join(backup, "user-prof.json"), JSON.stringify({ inferenceGatewayBaseUrl: "https://gateway.example.com" }));
@@ -617,7 +618,7 @@ test("secret-bearing profile files are written owner-only (0600)", async () => {
   try {
     await enableFakeProfile(home);
     await addProfileConnector(home, { name: "linear", url: "https://mcp.linear.app/mcp", oauth: { clientId: "example-client", clientSecret: "example-secret" } });
-    const lib = path.join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
     const profileMode = (await stat(path.join(lib, "prof-1.json"))).mode & 0o777;
     const oauthMode = (await stat(path.join(home, ".fireconnect", "claude-desktop", "oauth-clients.json"))).mode & 0o777;
     assert.equal(profileMode, 0o600); // holds the Fireworks gateway key
