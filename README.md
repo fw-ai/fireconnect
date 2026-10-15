@@ -878,6 +878,7 @@ Every model change goes through `<harness> on`. Claude adds `fireconnect claude 
 fireconnect login                  Sign in: browser (creates a key) or paste a key you have.
 fireconnect logout                 Clear the stored key (keychain entry + config ref).
 fireconnect status                 Show sign-in state, machine environment, and key storage.
+fireconnect key export             Print the resolved Fireworks API key to stdout (secret).
 fireconnect model list             Browse the serverless catalog (`models` is an alias).
 fireconnect configure              Set the provider (Azure/Foundry) and the BYOK keys.
 fireconnect configure --unset openai-api-key   Clear the saved OpenAI key (`--unset anthropic-api-key` for Anthropic).
@@ -887,6 +888,8 @@ fireconnect uninstall              Switch off + restore every harness, then remo
 fireconnect --version              Print the installed CLI version (-V; --json for machine-readable).
 fireconnect help                   Show help.
 ```
+
+For provider selection and safe handling of `key export` output, see [Export a key](#export-a-key).
 
 `login` asks one question: create a key for this machine, or paste one you already have.
 Create opens the browser, makes `fireconnect-{hostname}`, and stores it in the OS keychain.
@@ -924,6 +927,27 @@ Claude Code keeps an Anthropic key it signs in with.
 copying it into secret storage, and combining `login` with a key-saving option (`--api-key`,
 `--with-token`, browser, paste) fails before changing anything. Unset the variable first.
 `<harness> on` may still read it, save it, and bake it into that harness's config.
+
+### Export a key
+
+`fireconnect key export` resolves the Fireworks API key by default. When stdout
+is piped or redirected, it writes the key without a trailing newline. Use
+`fireconnect key export --openai` for an OpenAI key or
+`fireconnect key export --anthropic` for an Anthropic key.
+
+For these commands, a nonblank value in the corresponding environment variable
+(`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`) takes precedence over
+the saved credential. If no key resolves, the command fails instead of starting
+login. Exporting a key does not verify its validity with the provider.
+
+**The output is the unmasked credential, not a redacted status report.** Pipe it
+only to a trusted consumer; never include it in logs, issue reports, or agent
+transcripts. The [Codex sign-in example](#signing-in-with-chatgpt) shows piping an
+OpenAI key directly to a key-consuming command.
+
+In a fully interactive terminal, an update prompt can follow the export; accepting
+an upgrade can append upgrade output. Use piped or redirected stdout when another
+program needs only the credential bytes.
 
 ## Troubleshooting
 
