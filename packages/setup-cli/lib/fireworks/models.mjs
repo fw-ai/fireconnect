@@ -269,19 +269,19 @@ export function inputModalitiesFromModel(model) {
 }
 
 /**
- * Pricing tier of a flat serverless row, read off `serverless_mode`.
+ * Pricing tier of a flat serverless row, read off `serverless_mode`. Only an
+ * absent or explicit "standard" mode is the standard tier: any other mode (spot,
+ * ultrafast, a mode added later) is its own offering with its own rates, and
+ * must never be priced as the bare model id's standard rate.
  * @param {{ serverless_mode?: string, serverlessMode?: string }} model
  * @returns {string}
  */
 function flatModeTier(model) {
   const mode = model.serverless_mode ?? model.serverlessMode ?? "";
-  if (mode === "fast") {
-    return "fast";
+  if (mode === "" || mode === "standard") {
+    return "standard";
   }
-  if (mode === "priority") {
-    return "priority";
-  }
-  return "standard";
+  return mode;
 }
 
 function hasUsableSkuPricing(rates) {
