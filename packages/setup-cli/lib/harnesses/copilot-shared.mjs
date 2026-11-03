@@ -5,8 +5,8 @@ import {
   shortFireworksModelRef,
 } from "../fireworks/model-id.mjs";
 import { ALL_REASONING_EFFORTS } from "../fireworks/reasoning.mjs";
-import { prettyModelName } from "../fireworks/models.mjs";
-import { resolveFireworksCatalog } from "../fireworks/model-specs.mjs";
+import { autoDisplayName, prettyModelName } from "../fireworks/models.mjs";
+import { isAutoModelId, resolveFireworksCatalog } from "../fireworks/model-specs.mjs";
 
 /**
  * Model selection shared by the two GitHub Copilot harnesses.
@@ -71,7 +71,7 @@ export function describeCopilotModels(modelIds) {
     const { limits } = resolveFireworksCatalog(id);
     return {
       id,
-      displayName: prettyModelName(id) || id,
+      displayName: isAutoModelId(id) ? autoDisplayName(id) : prettyModelName(id) || id,
       maxPromptTokens: limits?.contextWindow ?? null,
       maxOutputTokens: limits?.maxTokens ?? null,
       vision: Boolean(limits?.vision),

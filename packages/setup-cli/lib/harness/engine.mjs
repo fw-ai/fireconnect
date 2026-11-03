@@ -9,6 +9,7 @@ import {
 import { assertNotFirerouterModelId, canonicalRequestedModelId } from "../fireworks/model-id.mjs";
 import { assertRequestedModelServable } from "../fireworks/model-servability.mjs";
 import { resolveAzureBaseUrl, resolveAzureOnApiKey } from "../fireworks/azure-core.mjs";
+import { assertResolvedKeyNotRejected } from "../keys/api-key.mjs";
 import {
   resolveHarnessOnApiKey,
 } from "../keys/harness-api-key.mjs";
@@ -75,6 +76,8 @@ import { buildFireconnectTelemetryHeaders } from "../telemetry/request-headers.m
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<void>} [on]
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<void>} [off]
  * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<void>} [usage]
+ * @property {(ctx: import("./types.mjs").HarnessContext) => Promise<string | object | null>} [keyInUse]
+ *   See HarnessAdapter.keyInUse.
  */
 
 /**
@@ -210,18 +213,29 @@ export async function engineAzureOn(profile, ctx, azureConfig) {
  * @param {object} paths
  */
 async function resolveOnKey(profile, ctx, paths) {
+  let resolved;
+  let keyVerified = false;
   if (profile.resolveOnKey) {
-    return profile.resolveOnKey(ctx, paths);
+    resolved = await profile.resolveOnKey(ctx, paths);
+  } else {
+    const { apiKey, effectiveKey, reusedExistingKey, source } = await resolveHarnessOnApiKey({
+      apiKey: ctx.apiKey,
+      home: ctx.home,
+      harnessId: profile.id,
+      harnessEnvRef: profile.keyEnvRef,
+      getExistingHarnessKey: profile.getExistingHarnessKey
+        ? () => profile.getExistingHarnessKey(ctx, paths)
+        : undefined,
+    });
+    resolved = { apiKeyRef: apiKey, effectiveKey, reusedExistingKey };
+    keyVerified = source === "harness-local-literal";
   }
-  const { apiKey, effectiveKey, reusedExistingKey } = await resolveHarnessOnApiKey({
-    apiKey: ctx.apiKey,
-    home: ctx.home,
-    harnessEnvRef: profile.keyEnvRef,
-    getExistingHarnessKey: profile.getExistingHarnessKey
-      ? () => profile.getExistingHarnessKey(ctx, paths)
-      : undefined,
-  });
-  return { apiKeyRef: apiKey, effectiveKey, reusedExistingKey };
+  // `--api-key` was already verified by runHarnessCommand; a harness-local
+  // literal was verified inside resolveHarnessOnApiKey before its migration.
+  if (!ctx.apiKeyFromFlag && !keyVerified) {
+    await assertResolvedKeyNotRejected(resolved.effectiveKey, { harnessId: profile.id });
+  }
+  return resolved;
 }
 
 /**
@@ -356,6 +370,7 @@ export function defineHarnessProfile(profile) {
     off: profile.off ?? ((ctx) => engineOff(profile, ctx)),
     status: profile.status,
     ...(profile.providerStatus ? { providerStatus: profile.providerStatus } : {}),
+    ...(profile.keyInUse ? { keyInUse: profile.keyInUse } : {}),
     ...(profile.usage ? { usage: profile.usage } : {}),
     ...(profile.live ? { live: profile.live } : {}),
     ...(profile.resolveOnContext ? { resolveOnContext: profile.resolveOnContext } : {}),

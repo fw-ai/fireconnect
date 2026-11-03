@@ -402,6 +402,23 @@ export function clearFireworksTopLevelWithoutBackup(settings) {
 }
 
 /**
+ * Whether `helper` is Nexus's own apiKeyHelper — the one recorded at `on`, or
+ * a `nexus`/`fireconnect` `key export` command — rather than the user's.
+ * @param {unknown} helper
+ * @param {{ managedApiKeyHelper?: string }} [state]
+ */
+export function isNexusApiKeyHelper(helper, state = {}) {
+  if (typeof helper !== "string" || !helper) {
+    return false;
+  }
+  if (state.managedApiKeyHelper && helper === state.managedApiKeyHelper) {
+    return true;
+  }
+  return /(?:^|[/\\])(?:fireconnect|nexus)(?:\.mjs|\.cmd)?['"]?(?:\s|$)/.test(helper)
+    && /(?:^|\s)key\s+export(?:\s|$)/.test(helper);
+}
+
+/**
  * Remove Nexus-managed apiKeyHelper after disable. Returns
  * { settings, changed } like the sibling strip helpers (stripFireworksOwnedEnv,
  * stripModelMappingEnv) so callers don't have to compare apiKeyHelper before
@@ -415,15 +432,9 @@ export function stripManagedApiKeyHelper(settings, state = {}) {
     return { settings, changed: false };
   }
 
-  const managedHelper = state.managedApiKeyHelper;
-  const currentHelper = settings.apiKeyHelper;
-  const isRecordedHelper = Boolean(managedHelper) && currentHelper === managedHelper;
-  const isLegacyFireconnectHelper = typeof currentHelper === "string"
-    && /(?:^|[/\\])(?:fireconnect|nexus)(?:\.mjs|\.cmd)?['"]?(?:\s|$)/.test(currentHelper)
-    && /(?:^|\s)key\s+export(?:\s|$)/.test(currentHelper);
   // authMode describes the prior Nexus configuration, not ownership of
   // a helper that may just have been restored from the user's backup.
-  if (isRecordedHelper || isLegacyFireconnectHelper) {
+  if (isNexusApiKeyHelper(settings.apiKeyHelper, state)) {
     const next = { ...settings };
     delete next.apiKeyHelper;
     return { settings: next, changed: true };
@@ -551,7 +562,7 @@ function stripRetiredEnvPins(settings, backup, pins) {
  * Drop the `CLAUDE_CODE_AUTO_MODE_SERVER=0` pin older versions wrote. Claude
  * Code already falls back to its local classifier when the gateway rejects the
  * server-side request, and the pin would keep blocking the server classifier
- * once the gateway supports it. A "0" in the pre-Nexus settings is the
+ * wherever it is available. A "0" in the pre-Nexus settings is the
  * user's own and stays.
  * @param {Record<string, any>} settings
  * @param {Record<string, any>} [backup] provider backup (raw snapshot or legacy values)
@@ -936,6 +947,7 @@ export function resolveClaudeDefaultModel({
  *   registerablePickerIds?: string[],
  *   selectedPickerModel?: string,
  *   firerouterHeaders?: boolean,
+ *   catalogServed?: boolean,
  * }} [opts]
  * @returns {{ settings: Record<string, unknown>, token: string }}
  */
@@ -952,9 +964,10 @@ export function buildFireworksSettings(settings, {
   registerablePickerIds = [],
   selectedPickerModel = "",
   firerouterHeaders = false,
+  catalogServed = false,
 } = {}) {
   const env = settings.env ?? {};
-  const token = apiKey || claudeFireworksKeyFrom({ env }) || process.env.FIREWORKS_API_KEY || "";
+  const token = apiKey || claudeFireworksKeyFrom({ env }) || "";
   if (!token) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
@@ -992,6 +1005,7 @@ export function buildFireworksSettings(settings, {
       || isFireconnectModelPicker(settings.modelPicker);
     next = withFireconnectModelPicker(next, registerablePickerIds, {
       refresh: refreshPicker,
+      catalogServed,
       // This run's --model and the saved default both survive a refresh
       // (as the upgrade migration already protects the saved default);
       // retired defaults (FireRouter, auto-instant) are not protected —
@@ -1033,6 +1047,7 @@ export async function enableFireworksProvider({
   registerablePickerIds = [],
   selectedPickerModel = "",
   firerouterHeaders = false,
+  catalogServed = false,
 }) {
  const backupPath = providerBackupPath(dataDir);
  const settings = await readJsonIfExists(settingsPath);
@@ -1067,6 +1082,7 @@ export async function enableFireworksProvider({
     registerablePickerIds,
     selectedPickerModel,
     firerouterHeaders,
+    catalogServed,
   });
   const token = built.token;
   const routed = nativeApiKeyHelper === null

@@ -217,7 +217,7 @@ export async function enableCopilotCli({
   const hasBackup = Object.keys(await readJsonIfExists(backupPath)).length > 0;
   if (!hasBackup && !hasManagedProviders(raw)) {
     await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
-    await writeFileAtomic(backupPath, `${JSON.stringify({ providersPath: path.resolve(providersPath), snapshot: { existed, raw } }, null, 2)}\n`);
+    await writeFileAtomic(backupPath, `${JSON.stringify({ providersPath: path.resolve(providersPath), snapshot: { existed, raw } }, null, 2)}\n`, { mode: 0o600 });
     await chmod(backupPath, 0o600);
   }
 
@@ -254,7 +254,7 @@ export async function enableCopilotCli({
   };
 
   await mkdir(path.dirname(providersPath), { recursive: true, mode: 0o700 });
-  await writeFileAtomic(providersPath, `${JSON.stringify(next, null, 2)}\n`);
+  await writeFileAtomic(providersPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   // The file holds the API key in cleartext, so keep it owner-only.
   await chmod(providersPath, 0o600);
 
@@ -306,7 +306,7 @@ export async function removeCopilotCliSavedProviderKeys({ providersPath, headerN
   const { headers: _dropped, ...provider } = providers[index];
   const nextProviders = [...providers];
   nextProviders[index] = Object.keys(headers).length ? { ...provider, headers } : provider;
-  await writeFileAtomic(providersPath, `${JSON.stringify({ ...config, providers: nextProviders }, null, 2)}\n`);
+  await writeFileAtomic(providersPath, `${JSON.stringify({ ...config, providers: nextProviders }, null, 2)}\n`, { mode: 0o600 });
   await chmod(providersPath, 0o600);
   return true;
 }
@@ -330,7 +330,7 @@ export async function disableCopilotCli({ providersPath, dataDir }) {
     }
     const { existed, raw } = backup.snapshot;
     if (existed) {
-      await writeFileAtomic(providersPath, raw);
+      await writeFileAtomic(providersPath, raw, { mode: 0o600 });
       await chmod(providersPath, 0o600).catch(() => {});
     } else {
       // We created the file; remove it rather than leaving an empty shell.
@@ -363,7 +363,7 @@ export async function disableCopilotCli({ providersPath, dataDir }) {
     providers: providers.filter((provider) => provider?.name !== COPILOT_CLI_PROVIDER_NAME),
     models: models.filter((model) => model?.provider !== COPILOT_CLI_PROVIDER_NAME),
   };
-  await writeFileAtomic(providersPath, `${JSON.stringify(next, null, 2)}\n`);
+  await writeFileAtomic(providersPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   await chmod(providersPath, 0o600).catch(() => {});
   return "stripped";
 }
@@ -390,7 +390,7 @@ export async function selectCopilotCliModel({ settingsPath, dataDir, selectionId
   // Same rule as providers.json: never snapshot Nexus's own selection.
   if (!hasBackup && !hasManagedSelection(raw)) {
     await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
-    await writeFileAtomic(backupPath, `${JSON.stringify({ settingsPath: path.resolve(settingsPath), snapshot: { existed, raw } }, null, 2)}\n`);
+    await writeFileAtomic(backupPath, `${JSON.stringify({ settingsPath: path.resolve(settingsPath), snapshot: { existed, raw } }, null, 2)}\n`, { mode: 0o600 });
     await chmod(backupPath, 0o600).catch(() => {});
   }
 
@@ -479,7 +479,7 @@ export async function refreshCopilotCliGatewayKey({ providersPath, fireworksKey 
     return false;
   }
   provider.apiKey = fireworksKey;
-  await writeFileAtomic(providersPath, `${JSON.stringify(config, null, 2)}\n`);
+  await writeFileAtomic(providersPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   return true;
 }
 

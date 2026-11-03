@@ -55,7 +55,7 @@ async function withHome(prefix, fn) {
   }
 }
 
-describe("signInSucceeded (#3: verify-as-success)", () => {
+describe("signInSucceeded (verify-as-success)", () => {
   let gateway;
   let savedUrl;
   let savedEnvKey;
@@ -105,15 +105,14 @@ describe("signInSucceeded (#3: verify-as-success)", () => {
     });
   });
 
-  it("false when a rejected FIREWORKS_API_KEY overrides a valid stored key", async () => {
-    // The on-ramp #3 case: the flow stored a good key, but a bad env var wins
-    // over it. Success must NOT be reported — the on-ramp would otherwise rerun
-    // `on` with the same bad credential.
+  it("true when a rejected FIREWORKS_API_KEY sits beside a valid stored key", async () => {
+    // env is not a credential source: a bad env var can't shadow the stored
+    // key, so sign-in still reports success.
     await withHome("env-override", async (home) => {
       await persistApiKeyToKeychain(home, VALID_KEY);
-      process.env.FIREWORKS_API_KEY = REJECTED_KEY; // env wins → verify rejects
+      process.env.FIREWORKS_API_KEY = REJECTED_KEY;
       try {
-        assert.equal(await signInSucceeded(home), false);
+        assert.equal(await signInSucceeded(home), true);
       } finally {
         delete process.env.FIREWORKS_API_KEY;
       }

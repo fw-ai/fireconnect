@@ -105,7 +105,7 @@ describe("vscode-core pure transforms", () => {
     const existing = {
       models: [buildModelEntry("firerouter"), buildModelEntry("auto"), buildModelEntry("firerouter/opus")],
     };
-    const models = computeVscodeModels(existing, undefined, "auto", [], false);
+    const models = computeVscodeModels(existing, "auto", [], false);
     assert.deepEqual(models.map((m) => m.id), ["auto"]);
   });
 
@@ -120,7 +120,7 @@ describe("vscode-core pure transforms", () => {
   it("buildModelEntry registers auto under its bare slug with vision", () => {
     const m = buildModelEntry("auto");
     assert.equal(m.id, "auto");
-    assert.equal(m.name, "Auto");
+    assert.equal(m.name, "Nexus Auto");
     assert.equal(m.vision, true);
     assert.equal(m.toolCalling, true);
     assert.equal(m.maxInputTokens, 1_048_575);
@@ -130,7 +130,7 @@ describe("vscode-core pure transforms", () => {
   it("buildModelEntry registers auto-* under the variant slug with shared limits", () => {
     const m = buildModelEntry("auto-instant");
     assert.equal(m.id, "auto-instant");
-    assert.equal(m.name, "Auto Instant");
+    assert.equal(m.name, "Nexus Auto Instant");
     assert.equal(m.vision, true);
     assert.equal(m.maxInputTokens, 1_048_575);
   });
@@ -213,10 +213,7 @@ describe("vscode harness integration", () => {
   itIfSqlite("on writes the provider, the ${input:...} reference, and stores the key", async () => {
     await withTempHome("vscode-on-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      const r = await runCli(
-        ["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"],
-        { home, env: secretEnv() },
-      );
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const arr = await readJson(vscodePath);
@@ -252,10 +249,7 @@ describe("vscode harness integration", () => {
       const original = JSON.stringify([userProvider()], null, "\t") + "\n";
       await writeFile(vscodePath, original);
 
-      const onR = await runCli(
-        ["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"],
-        { home, env: secretEnv() },
-      );
+      const onR = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       assert.equal(onR.code, 0, `stderr: ${onR.stderr}`);
       const enabled = await readJson(vscodePath);
       assert.equal(enabled.length, 2); // user provider + fireconnect provider
@@ -281,13 +275,9 @@ describe("vscode harness integration", () => {
       const original = `${JSON.stringify([userProvider()])}\n`;
       await writeFile(vscodePath, original);
 
-      const first = await runCli(
-        [
-          "vscode", "on", "--api-key", "fw_cataloged_v1_adversarial000000",
-          "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force",
-        ],
-        { home, env: secretEnv() },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_cataloged_v1_adversarial000000"], { home, env: secretEnv() }), await runCli([
+          "vscode", "on",
+          "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       assert.equal(first.code, 0, first.stderr);
       let models = await readJson(vscodePath);
       const provider = models.find(isFireconnectProvider);
@@ -335,10 +325,7 @@ describe("vscode harness integration", () => {
   it("on --model selects the requested model", async () => {
     await withTempHome("vscode-main-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      const r = await runCli(
-        ["vscode", "on", "--api-key", "fw_test_key_12345", "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force"],
-        { home, env: secretEnv() },
-      );
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       assert.equal(arr[0].models[0].id, "deepseek-v4-flash");
@@ -348,10 +335,7 @@ describe("vscode harness integration", () => {
   it("rejects --model firerouter in VS Code", async () => {
     await withTempHome("vscode-on-firerouter-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      const on = await runCli(
-        ["vscode", "on", "--model", "firerouter", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"],
-        { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" } },
-      );
+      const on = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" } }), await runCli(["vscode", "on", "--model", "firerouter", "--vscode-path", vscodePath, "--force"], { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" } }));
       assert.notEqual(on.code, 0);
       assert.match(on.stderr, /is no longer supported/);
     });
@@ -361,17 +345,12 @@ describe("vscode harness integration", () => {
     const anthropicKey = "sk-ant-vscode-firerouter-12345";
     await withTempHome("vscode-on-firerouter-byok-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      const on = await runCli(
-        [
+      const on = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }), await runCli([
           "vscode", "on",
           "--model", "firerouter",
-          "--api-key", "fw_test_key_12345",
           "--anthropic-api-key", anthropicKey,
           "--vscode-path", vscodePath,
-          "--force",
-        ],
-        { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
-      );
+          "--force"], { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }));
       assert.notEqual(on.code, 0);
       assert.match(on.stderr, /is no longer supported/);
     });
@@ -381,17 +360,12 @@ describe("vscode harness integration", () => {
     const openaiKey = "sk-proj-vscode-firerouter-12345";
     await withTempHome("vscode-on-firerouter-openai-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      const on = await runCli(
-        [
+      const on = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }), await runCli([
           "vscode", "on",
           "--model", "firerouter",
-          "--api-key", "fw_test_key_12345",
           "--openai-api-key", openaiKey,
           "--vscode-path", vscodePath,
-          "--force",
-        ],
-        { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
-      );
+          "--force"], { home, env: { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }));
       assert.notEqual(on.code, 0);
       assert.match(on.stderr, /is no longer supported/);
     });
@@ -400,7 +374,7 @@ describe("vscode harness integration", () => {
   it("status --json reports provider, model url, and registered models", async () => {
     await withTempHome("vscode-status-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       const legacy = await readJson(vscodePath);
       const provider = legacy.find(isFireconnectProvider);
       provider.models = [{
@@ -431,7 +405,7 @@ describe("vscode harness integration", () => {
   itIfSqlite("off with no backup strips fireconnect-managed provider only", async () => {
     await withTempHome("vscode-strip-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       const enabled = await readJson(vscodePath);
       const secretId = fireconnectSecretIds(enabled)[0];
 
@@ -458,11 +432,11 @@ describe("vscode harness integration", () => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       // Keep this sequence independent of automatic FireRouter registration.
       const env = { ...secretEnv(), FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" };
-      await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env }));
       await runCli(["vscode", "on", "--model", "deepseek-v4-flash", "--vscode-path", vscodePath, "--force"], { home, env });
 
       // Re-run on (e.g. to rotate the key) without --model.
-      const r = await runCli(["vscode", "on", "--api-key", "fw_test_key_99999", "--vscode-path", vscodePath, "--force"], { home, env });
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_99999"], { home, env }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       const ids = arr.find(isFireconnectProvider).models.map((m) => m.id);
@@ -479,7 +453,7 @@ describe("vscode harness integration", () => {
       await mkdir(path.dirname(vscodePath), { recursive: true });
       await writeFile(vscodePath, JSON.stringify({ not: "an array" }, null, "\t") + "\n");
 
-      const r = await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       const arr = await readJson(vscodePath);
       assert.ok(Array.isArray(arr));
@@ -493,7 +467,7 @@ describe("vscode harness integration", () => {
       await mkdir(path.dirname(vscodePath), { recursive: true });
       await writeFile(vscodePath, "{ broken json,,,");
 
-      const r = await runCli(["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() });
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: secretEnv() }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: secretEnv() }));
       assert.notEqual(r.code, 0);
       assert.match(r.stderr, /not valid JSON/);
     });

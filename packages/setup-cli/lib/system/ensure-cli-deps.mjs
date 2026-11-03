@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { npmCommand } from "./win-command.mjs";
 
 /**
  * Absolute path to packages/setup-cli (where package.json and node_modules live).
@@ -68,9 +69,13 @@ export function cliDependenciesMissingMessage() {
  * `npm install` in packages/setup-cli, or a broken partial install.
  *
  * @param {string} [setupDir]
+ * @param {{ npmCommandFn?: typeof npmCommand, execFileSyncFn?: typeof execFileSync }} [options]
  * @returns {boolean} true when all runtime deps are present after this call
  */
-export function ensureCliDependencies(setupDir = resolveSetupCliDir()) {
+export function ensureCliDependencies(setupDir = resolveSetupCliDir(), {
+  npmCommandFn = npmCommand,
+  execFileSyncFn = execFileSync,
+} = {}) {
   if (runtimeDepsInstalled(setupDir)) {
     return true;
   }
@@ -78,16 +83,17 @@ export function ensureCliDependencies(setupDir = resolveSetupCliDir()) {
     return false;
   }
 
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   try {
-    execFileSync(
+    const [npm, npmArgs, npmOptions] = npmCommandFn(["install", "--omit=dev", "--no-fund", "--no-audit", "--ignore-scripts"]);
+    execFileSyncFn(
       npm,
-      ["install", "--omit=dev", "--no-fund", "--no-audit"],
+      npmArgs,
       {
         cwd: setupDir,
         env: { ...process.env, NEXUS_SKIP_POSTINSTALL_FINALIZE: "1" },
         stdio: "pipe",
         encoding: "utf8",
+        ...npmOptions,
       },
     );
   } catch {

@@ -1,10 +1,47 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { lstat, readFile, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { keyExportCommand } from "../cli/path.mjs";
 import { readGlobalConfig } from "../config/global-config.mjs";
 import { shouldInstallShellEnvHook } from "../keys/api-key.mjs";
 import { needsFireworksShellExport } from "./shell-fireworks-consumers.mjs";
+import { writeFileAtomic } from "./atomic-write.mjs";
+
+/**
+ * Rewrite a shell config atomically, so a crash never truncates it. A
+ * symlinked rc (dotfiles) is written at its target to keep the link.
+ * @param {string} filePath
+ * @param {string} data
+ */
+async function writeShellConfig(filePath, data) {
+  let target = filePath;
+  let hops = 0;
+  while (true) {
+    let parent = path.dirname(target);
+    try {
+      parent = await realpath(parent);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    target = path.join(parent, path.basename(target));
+    let info;
+    try {
+      info = await lstat(target);
+    } catch (error) {
+      if (error?.code === "ENOENT") break;
+      throw error;
+    }
+    if (!info.isSymbolicLink()) break;
+    if (hops >= 40) {
+      const error = new Error(`Too many symbolic links while resolving ${filePath}`);
+      error.code = "ELOOP";
+      throw error;
+    }
+    hops += 1;
+    target = path.resolve(parent, await readlink(target));
+  }
+  await writeFileAtomic(target, data);
+}
 
 export const SHELL_HOOK_BEGIN = "# >>> nexus >>>";
 export const SHELL_HOOK_END = "# <<< nexus <<<";
@@ -126,7 +163,7 @@ export async function removeLegacyShellHooks(home) {
     }
     const next = stripMarkedBlock(raw, LEGACY_SHELL_HOOK_BEGIN, LEGACY_SHELL_HOOK_END);
     if (next !== raw) {
-      await writeFile(filePath, next, "utf8");
+      await writeShellConfig(filePath, next);
       changed = true;
     }
   }
@@ -157,7 +194,7 @@ export async function installShellEnvHook(home) {
   const without = stripShellHookBlock(raw);
   const separator = without && !without.endsWith("\n") ? "\n" : "";
   const next = `${without}${separator}${without ? "\n" : ""}${block}`;
-  await writeFile(filePath, next, "utf8");
+  await writeShellConfig(filePath, next);
   return filePath;
 }
 
@@ -171,9 +208,9 @@ export async function removeShellEnvHook(home) {
   }
   const next = stripShellHookBlock(raw);
   if (next.trim()) {
-    await writeFile(filePath, next, "utf8");
+    await writeShellConfig(filePath, next);
   } else {
-    await writeFile(filePath, "", "utf8");
+    await writeShellConfig(filePath, "");
   }
   return true;
 }

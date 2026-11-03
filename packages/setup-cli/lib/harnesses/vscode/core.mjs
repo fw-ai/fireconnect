@@ -21,7 +21,7 @@ import {
   MISSING_FIREWORKS_API_KEY_MESSAGE,
 } from "../../keys/key-type.mjs";
 import { resolveModelDisplayMetadata } from "../../fireworks/model-display.mjs";
-import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { planModelList } from "../../harness/catalog-refresh.mjs";
 import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import {
   AZURE_API_KEY_ENV,
@@ -48,6 +48,7 @@ import {
   isSecretEncryptionAvailable,
   linuxEncryptUsesBasicTextBackend,
   linuxSecretUsesKeyringBackend,
+  secretDecryptsWithoutKeychain,
   secretEncryptionUnavailableMessage,
   storedSecretHasCiphertext,
 } from "./safestorage.mjs";
@@ -484,8 +485,11 @@ const VSCODE_PROCESS_SPEC = {
   linuxPattern: "[/]code(-insiders)?([[:space:]]|$)",
   // Electron spawns `/usr/share/code/code --type=…` helpers that can outlive a
   // closed window or linger briefly after File > Quit. Only the main process
-  // (no `--type=`) owns state.vscdb and must block writes.
-  linuxCmdlineMatches: (cmdline) => !/\s--type=/.test(cmdline),
+  // (no `--type=`) owns state.vscdb and must block writes. `code serve-web` /
+  // `code tunnel` are headless server modes sharing the binary — common on
+  // cloud dev boxes — that never own the desktop GUI's store either.
+  linuxCmdlineMatches: (cmdline) =>
+    !/\s--type=/.test(cmdline) && !/\s(serve-web|tunnel)(\s|$)/.test(cmdline),
   windowsImage: "Code( - Insiders)?\\.exe",
 };
 
@@ -692,12 +696,10 @@ export async function enableVscodeFireworks({
   const obfuscatedKey = linuxEncryptUsesBasicTextBackend(encrypted);
   await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
 
-  // Preserve previously registered models when re-running `on` (for example to
-  // rotate a key). With `--model`, ensure that model is present; without it,
-  // keep the existing list and only seed the default when the list is empty.
+  // Reconcile the registered models with the catalog (see planModelList);
+  // the selected model is always present.
   let models = computeVscodeModels(
     existing,
-    modelId,
     resolvedModel,
     catalogModelIds,
     catalogAvailable,
@@ -808,11 +810,10 @@ export async function enableVscodeAzure({
 /**
  * Compute the models list for the nexus provider on `on`.
  * @param {object | undefined} existing the current nexus provider, if any
- * @param {string | undefined} modelId the `--model` argument (raw)
  * @param {string} resolvedModel the normalized default/`--model` model id
  * @returns {object[]}
  */
-export function computeVscodeModels(existing, modelId, resolvedModel, catalogModelIds = [], catalogAvailable = false) {
+export function computeVscodeModels(existing, resolvedModel, catalogModelIds = [], catalogAvailable = false) {
   const existingModels = (existing?.models ?? []).map((model) => ({
     ...model,
     id: shortFireworksModelRef(model.id),
@@ -825,49 +826,30 @@ export function computeVscodeModels(existing, modelId, resolvedModel, catalogMod
       byId.delete(id);
     }
   }
-  const ensure = (id) => {
-    const storedId = shortFireworksModelRef(id);
-    if (storedId && !byId.has(storedId)) {
-      byId.set(storedId, buildModelEntry(id));
+  // Shared list policy (lib/harness/catalog-refresh.mjs); this function only
+  // translates ids to rows. Kept rows are re-rendered from fresh entries
+  // (display metadata drifts as the serverless catalog evolves) but keep
+  // their request headers — the write-time header merge updates telemetry on
+  // top of them. An unavailable catalog keeps rows verbatim.
+  const ids = planModelList({
+    currentIds: [...byId.keys()],
+    freshIds: catalogModelIds.map((id) => shortFireworksModelRef(id)).filter(Boolean),
+    catalogAvailable,
+    freshInstall: !existing,
+    selectedId: shortFireworksModelRef(resolvedModel),
+    keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
+  });
+  return ids.map((id) => {
+    const previous = byId.get(id);
+    if (previous && !catalogAvailable) {
+      return previous;
     }
-  };
-  if (!existing) {
-    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
-    ensure(resolvedModel);
-    for (const id of catalogModelIds) {
-      ensure(id);
+    const fresh = buildModelEntry(id);
+    if (previous?.requestHeaders) {
+      fresh.requestHeaders = previous.requestHeaders;
     }
-  } else if (modelId) {
-    ensure(resolvedModel);
-  } else if (catalogAvailable) {
-    // Shared catalog-refresh policy: prune delisted ids, add newly served
-    // ones, and re-render kept rows from the fresh entries (display metadata
-    // drifts as the serverless catalog evolves).
-    const plan = planCatalogRefresh({
-      currentIds: [...byId.keys()],
-      freshIds: catalogModelIds.map((id) => shortFireworksModelRef(id)).filter(Boolean),
-      keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
-    });
-    for (const id of plan.pruned) {
-      byId.delete(id);
-    }
-    for (const id of [...plan.kept, ...plan.added]) {
-      const fresh = buildModelEntry(id);
-      // Metadata refresh must not drop request headers the user (or an
-      // earlier run) set on the row — the write-time header merge updates
-      // telemetry on top of these.
-      const previous = byId.get(id);
-      if (previous?.requestHeaders) {
-        fresh.requestHeaders = previous.requestHeaders;
-      }
-      byId.set(id, fresh);
-    }
-  }
-  const merged = [...byId.values()];
-  if (existing && catalogAvailable && !modelId) {
-    return merged;
-  }
-  return merged.length > 0 ? merged : [buildModelEntry(resolvedModel)];
+    return fresh;
+  });
 }
 
 /**
@@ -1032,6 +1014,28 @@ export async function refreshVscodeGatewayKey({ vscodePath, stateDbPath, firewor
 }
 
 /**
+ * {@link readVscodeStoredKey} for `status`: "" whenever decrypting would need
+ * the OS keychain (see secretDecryptsWithoutKeychain), so it never prompts.
+ * @param {string} vscodePath
+ * @param {string} [stateDbPath]
+ * @param {unknown[]} [arr] chatLanguageModels.json entries, when already read
+ * @returns {Promise<string>}
+ */
+export async function readVscodeStoredKeyWithoutKeychain(vscodePath, stateDbPath, arr) {
+  const providerArr = arr ?? await readChatLanguageModels(vscodePath);
+  const secretId = fireconnectSecretIds(providerArr)[0];
+  if (!secretId) {
+    return "";
+  }
+  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
+  const stored = await readItemTableValue(dbPath, secretStorageKey(secretId));
+  if (!stored || !secretDecryptsWithoutKeychain(stored)) {
+    return "";
+  }
+  return readVscodeStoredKey(vscodePath, stateDbPath, providerArr);
+}
+
+/**
  * Read and decrypt the `secret://<secretId>` row from `state.vscdb`, returning it
  * verbatim (no Fireworks-shape filter). Returns "" when the row is absent or
  * cannot be decrypted. Unlike `readVscodeStoredKey`, this does not filter by key
@@ -1046,6 +1050,20 @@ export async function readVscodeSecret({ vscodePath, stateDbPath, secretId }) {
   if (!stored) return "";
   const key = decryptSecret(stored, { variant: currentVariant(vscodePath), localStatePath: vscodeLocalStatePath({ vscodePath }) });
   return typeof key === "string" ? key.trim() : "";
+}
+
+/**
+ * Whether the `secret://<secretId>` row holds a non-empty secret, without
+ * decrypting it. Decrypting reads VS Code's Safe Storage password from the OS
+ * keychain, which on macOS prompts in every new process until the user picks
+ * "Always Allow" — so read-only paths like `status` ask only this.
+ * @param {{ vscodePath: string, stateDbPath?: string, secretId: string }} opts
+ * @returns {Promise<boolean>}
+ */
+export async function vscodeSecretStored({ vscodePath, stateDbPath, secretId }) {
+  if (!secretId) return false;
+  const dbPath = stateDbPath || vscodeStateDbPath({ vscodePath });
+  return storedSecretHasCiphertext(await readItemTableValue(dbPath, secretStorageKey(secretId)) ?? "");
 }
 
 /* -------------------------------------------------------------------------- */

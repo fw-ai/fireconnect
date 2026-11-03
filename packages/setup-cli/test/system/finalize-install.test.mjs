@@ -7,6 +7,7 @@ import process from "node:process";
 import { describe, it } from "node:test";
 
 import { finalizeInstallOrUpgrade, refreshModelSources } from "../../lib/system/finalize-install.mjs";
+import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import {
   readCatalogCache,
   setServerlessCatalogSnapshot,
@@ -201,7 +202,8 @@ describe("refreshModelSources", () => {
     const prevKey = process.env.FIREWORKS_API_KEY;
     const previousFetch = globalThis.fetch;
     process.env.HOME = home;
-    process.env.FIREWORKS_API_KEY = "fw_test_refresh_key";
+    delete process.env.FIREWORKS_API_KEY;
+    await writeGlobalConfig(home, { apiKey: "fw_test_refresh_key" });
     globalThis.fetch = async () => ({
       ok: true,
       json: async () => ({ object: "list", data: [mockServerlessModel()] }),
@@ -245,7 +247,8 @@ describe("refreshModelSources", () => {
     const prevKey = process.env.FIREWORKS_API_KEY;
     const previousFetch = globalThis.fetch;
     process.env.HOME = home;
-    process.env.FIREWORKS_API_KEY = "fw_test_refresh_key";
+    delete process.env.FIREWORKS_API_KEY;
+    await writeGlobalConfig(home, { apiKey: "fw_test_refresh_key" });
     globalThis.fetch = async () => {
       throw new Error("network unreachable");
     };

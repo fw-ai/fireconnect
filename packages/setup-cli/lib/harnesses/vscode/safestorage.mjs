@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
+import { spawnSyncCommand } from "../../system/win-command.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -268,6 +269,19 @@ function linuxCiphertextVersion(encryptedJson) {
 }
 
 /**
+ * Whether {@link decryptSecret} can read `stored` cheaply and without asking
+ * an OS keychain: the plaintext test seam or a Linux basic_text (v10) blob.
+ * macOS and Linux keyring blobs need the Safe Storage password, which can
+ * prompt; Windows needs a PowerShell DPAPI call, too slow for a polled
+ * `status`.
+ * @param {string} stored
+ * @returns {boolean}
+ */
+export function secretDecryptsWithoutKeychain(stored) {
+  return plaintextMode() || linuxEncryptUsesBasicTextBackend(stored);
+}
+
+/**
  * Whether a `state.vscdb` secret value holds real ciphertext — i.e. it is not
  * absent, not the empty-buffer "cleared" marker, and not unparseable garbage.
  * Lets callers tell "nothing stored" apart from "stored but undecryptable",
@@ -352,10 +366,17 @@ export function aesDecrypt(blob, masterPassword, iterations = MAC_ITERATIONS) {
  * Per-process cache of macOS Safe Storage master passwords. Each lookup runs
  * `security find-generic-password`, which can show a Keychain prompt; macOS
  * "Allow" is one-shot, so cursor/vscode `on` (decrypt + encrypt + availability
- * checks) used to re-prompt until the user chose "Always Allow".
+ * checks) used to re-prompt until the user chose "Always Allow". A failed
+ * lookup (Deny, no item, timeout) is cached as "" so it isn't asked again.
  * @type {Map<string, string>}
  */
 const macMasterPasswordCache = new Map();
+
+/**
+ * How long one keychain lookup may wait on its prompt. Long enough to type a
+ * password; bounded so a prompt nobody answers can't hang the CLI forever.
+ */
+const MAC_KEYCHAIN_TIMEOUT_MS = 120_000;
 
 /** Test seam: clear cached macOS Safe Storage master passwords. */
 export function resetMacMasterPasswordCacheForTests() {
@@ -375,11 +396,9 @@ function macReadMasterPassword(variant) {
   const service = `${appNameFor(variant)} Safe Storage`;
   const r = spawnSync("security", ["find-generic-password", "-s", service, "-w"], {
     encoding: "utf8",
+    timeout: MAC_KEYCHAIN_TIMEOUT_MS,
   });
-  if (r.status !== 0) {
-    return "";
-  }
-  const password = (r.stdout || "").replace(/\n$/, "");
+  const password = r.status === 0 ? (r.stdout || "").replace(/\n$/, "") : "";
   macMasterPasswordCache.set(cacheKey, password);
   return password;
 }
@@ -400,7 +419,16 @@ const PYTHON_OSCRYPT_V2_LOOKUP = [
   "try:",
   "    import secretstorage",
   "except ImportError:",
-  "    raise SystemExit(0)",
+  // -I drops the user site and PYTHONPATH; a `pip install --user` copy or
+  // an absolute PYTHONPATH entry is still the user's own, so look there
+  // last (never the working directory).
+  "    import site",
+  "    sys.path.append(site.getusersitepackages())",
+  "    sys.path.extend(p for p in os.environ.get('FC_PYTHONPATH', '').split(os.pathsep) if os.path.isabs(p))",
+  "    try:",
+  "        import secretstorage",
+  "    except ImportError:",
+  "        raise SystemExit(0)",
   "bus = secretstorage.dbus_init()",
   "coll = secretstorage.get_default_collection(bus)",
   "items = list(coll.search_items({'xdg:schema': schema, 'application': app}))",
@@ -441,14 +469,28 @@ function linuxOsCryptV2PasswordLookup(application) {
  * @param {string} application
  * @returns {string}
  */
-function linuxPythonOsCryptV2PasswordLookup(application) {
+export function linuxPythonOsCryptV2PasswordLookup(application) {
   if (!linuxDBusSecretServiceHasOwner()) {
     return "";
   }
-  const r = spawnSync("python3", ["-c", PYTHON_OSCRYPT_V2_LOOKUP], {
+  // Isolated mode (-I) from a fixed directory: `import secretstorage` must
+  // never resolve against the directory the user ran nexus from, and the
+  // helper sees only what the D-Bus lookup needs, not the CLI's secrets.
+  // The locale passes through so the interpreter decodes paths and output
+  // the way it does for the user. (PYTHONHOME and other PYTHON* variables
+  // would be ignored under -I anyway; a venv's python3 finds its own prefix.)
+  const locale = Object.fromEntries(Object.entries(process.env)
+    .filter(([name, value]) => (name === "LANG" || name === "LANGUAGE" || name.startsWith("LC_")) && value));
+  const r = spawnSync("python3", ["-I", "-c", PYTHON_OSCRYPT_V2_LOOKUP], {
     encoding: "utf8",
+    cwd: "/",
     env: {
-      ...process.env,
+      ...locale,
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}),
+      ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}),
+      ...(process.env.PYTHONPATH ? { FC_PYTHONPATH: process.env.PYTHONPATH } : {}),
       FC_OSCRYPT_APPLICATION: application,
       FC_OSCRYPT_SCHEMA: LINUX_OSCRYPT_V2_SCHEMA,
     },
@@ -540,7 +582,7 @@ function linuxReadMasterPassword(variant, { forEncrypt = false } = {}) {
  * @returns {string}
  */
 function runPowerShell(script) {
-  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+  const r = spawnSyncCommand("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8",
   });
   if (r.status !== 0) {

@@ -87,17 +87,11 @@ describe("opencode harness integration", () => {
       }),
     ]);
 
-    const onResult = await runFireconnect(
-      [
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect([
         "opencode",
         "on",
-        "--api-key",
-        "fw_test_key_12345",
         "--model",
-        "accounts/fireworks/routers/glm-fast-latest",
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+        "accounts/fireworks/routers/glm-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0);
     assert.match(onResult.stdout, /OpenCode → Fireworks · glm-fast-latest/);
     assert.doesNotMatch(onResult.stdout, /Tip:|Next →|firerouter --anthropic-api-key/);
@@ -136,10 +130,7 @@ describe("opencode harness integration", () => {
     })}\n`;
     await writeFile(configPath, original);
 
-    const first = await runFireconnect(
-      ["opencode", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
     let config = JSON.parse(await readFile(configPath, "utf8"));
     assert.equal(config.model, "fireworks-ai/glm-fast-latest");
@@ -218,10 +209,7 @@ describe("opencode harness integration", () => {
       }),
     ]);
 
-    const onResult = await runFireconnect(
-      ["opencode", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const enabled = JSON.parse(await readFile(configPath, "utf8"));
@@ -255,7 +243,7 @@ describe("opencode harness integration", () => {
     // A "cataloged" key gets a live catalog from the mock gateway, so re-on
     // prunes against it instead of trusting the offline set.
     const apiKey = "fw_test_cataloged_v2_key_12345";
-    let on = await runFireconnect(["opencode", "on", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" });
+    let on = await (await runFireconnect(["login", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     // Simulate a model that was registered previously but is no longer in the catalog.
@@ -266,7 +254,7 @@ describe("opencode harness integration", () => {
     await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
 
     // Re-on removes entries absent from the current catalog.
-    on = await runFireconnect(["opencode", "on", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" });
+    on = await (await runFireconnect(["login", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const models = JSON.parse(await readFile(configPath, "utf8")).provider[OPENCODE_FIREWORKS_PROVIDER_ID].models;
     assert.equal(Object.keys(models).includes(staleId), false, "stale model should be dropped on re-on");
@@ -285,19 +273,13 @@ describe("opencode harness integration", () => {
 
     const dataDirArg = ["--data-dir", customDataDir];
 
-    const directOn = await runFireconnect(
-      ["opencode", "on", ...dataDirArg, "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const directOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on", ...dataDirArg], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(directOn.code, 0);
 
     const backupPath = opencodeBackupPath(opencodeDataDir(home, customDataDir), configPath);
     assert.equal((await readJsonIfExists(backupPath)).snapshot?.raw, original);
 
-    const routerOn = await runFireconnect(
-      ["opencode", "on", "--model", "glm-latest", ...dataDirArg, "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const routerOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on", "--model", "glm-latest", ...dataDirArg], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(routerOn.code, 0);
     assert.equal((await readJsonIfExists(backupPath)).snapshot?.raw, original);
 
@@ -313,15 +295,10 @@ describe("opencode harness integration", () => {
     await mkdir(path.dirname(configPath), { recursive: true });
     const anthropicKey = "sk-ant-opencode-firerouter-12345";
 
-    const on = await runFireconnect(
-      [
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect([
         "opencode", "on",
-        "--api-key", "fw_test_key_12345",
         "--model", "firerouter",
-        "--anthropic-api-key", anthropicKey,
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+        "--anthropic-api-key", anthropicKey], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(on.code, 0);
     assert.match(on.stderr, /is no longer supported/);
     assert.equal(existsSync(configPath), false);
@@ -333,15 +310,10 @@ describe("opencode harness integration", () => {
     await mkdir(path.dirname(configPath), { recursive: true });
     const openaiKey = "sk-proj-opencode-firerouter-12345";
 
-    const on = await runFireconnect(
-      [
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect([
         "opencode", "on",
-        "--api-key", "fw_test_key_12345",
         "--model", "firerouter",
-        "--openai-api-key", openaiKey,
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+        "--openai-api-key", openaiKey], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(on.code, 0);
     assert.match(on.stderr, /is no longer supported/);
     assert.equal(existsSync(configPath), false);
@@ -352,7 +324,9 @@ describe("opencode harness integration", () => {
     const configPath = opencodeConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
     const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" };
-    const onArgs = ["opencode", "on", "--api-key", "fw_test_key_12345"];
+    const seed = await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env);
+    assert.equal(seed.code, 0, seed.stderr);
+    const onArgs = ["opencode", "on"];
     const headersOf = async () =>
       JSON.parse(await readFile(configPath, "utf8")).provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers ?? {};
 
@@ -376,10 +350,7 @@ describe("opencode harness integration", () => {
     const configPath = opencodeConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
 
-    const on = await runFireconnect(
-      ["opencode", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter/sol"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect(["opencode", "on", "--model", "firerouter/sol"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(on.code, 0);
     assert.match(on.stderr, /--model firerouter\/sol is no longer supported/);
     assert.equal(existsSync(configPath), false);
@@ -391,10 +362,7 @@ describe("opencode harness integration", () => {
     await mkdir(path.dirname(configPath), { recursive: true });
     const openaiKey = "sk-proj-opencode-reen-12345";
 
-    const first = await runFireconnect(
-      ["opencode", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
 
     // What an earlier release wrote for `--model firerouter --openai-api-key …`.
@@ -406,10 +374,7 @@ describe("opencode harness integration", () => {
     };
     await writeFile(configPath, `${JSON.stringify(seeded, null, 2)}\n`);
 
-    const second = await runFireconnect(
-      ["opencode", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+    const second = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.equal(second.code, 0, second.stderr);
 
     const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -530,16 +495,19 @@ describe("opencode harness integration", () => {
       const home = await mkdtemp(path.join(os.tmpdir(), "fc-opencode-catalog-byok-"));
       const configPath = opencodeConfigPath(home);
       await mkdir(path.dirname(configPath), { recursive: true });
-      const on = await runFireconnect(
-        ["opencode", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
-        {
+      const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
           HOME: home,
           FIREWORKS_API_KEY: "",
           ANTHROPIC_API_KEY: "sk-ant-should-not-attach-12345",
           NEXUS_GATEWAY_URL: gateway.url,
           NEXUS_GATEWAY_GRPC_WEB_URL: `${gateway.url}/grpc`,
-        },
-      );
+        }), await runFireconnect(["opencode", "on", "--model", "glm-fast-latest"], {
+          HOME: home,
+          FIREWORKS_API_KEY: "",
+          ANTHROPIC_API_KEY: "sk-ant-should-not-attach-12345",
+          NEXUS_GATEWAY_URL: gateway.url,
+          NEXUS_GATEWAY_GRPC_WEB_URL: `${gateway.url}/grpc`,
+        }));
       assert.equal(on.code, 0, on.stderr);
       const config = JSON.parse(await readFile(configPath, "utf8"));
       const headers = config.provider[OPENCODE_FIREWORKS_PROVIDER_ID].options.headers ?? {};

@@ -48,10 +48,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_AUTH_TOKEN: "",
       };
 
-      await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        env,
-      );
+      await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
 
       let settings = JSON.parse(await readFile(settingsPath, "utf8"));
       settings.model = `${KIMI_MODEL}[1m]`;
@@ -74,10 +71,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_AUTH_TOKEN: "",
       };
 
-      const enabled = await runFireconnect(
-        ["claude", "on", "--model", "kimi-fast-latest", "--api-key", FIREWORKS_KEY],
-        env,
-      );
+      const enabled = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on", "--model", "kimi-fast-latest"], env));
       assert.equal(enabled.code, 0, enabled.stderr);
       let settings = JSON.parse(await readFile(settingsPath, "utf8"));
       assert.equal(settings.model, KIMI_MODEL_STORED);
@@ -108,10 +102,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_AUTH_TOKEN: "",
       };
 
-      const enabled = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        env,
-      );
+      const enabled = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
       assert.equal(enabled.code, 0, enabled.stderr);
 
       // Simulate the user's /model Enter: picker row saved as top-level model.
@@ -136,7 +127,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
       };
-      const enabled = await runFireconnect(["claude", "on", "--api-key", FIREWORKS_KEY], env);
+      const enabled = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
       assert.equal(enabled.code, 0, enabled.stderr);
 
       let settings = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -162,10 +153,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
       };
-      const first = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        env,
-      );
+      const first = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
       assert.equal(first.code, 0, first.stderr);
 
       const drifted = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -192,10 +180,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
       };
-      const first = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        env,
-      );
+      const first = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
       assert.equal(first.code, 0, first.stderr);
 
       const drifted = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -224,15 +209,17 @@ describe("Claude main model storage", () => {
       }, null, 2)}\n`;
       await writeFile(settingsPath, original);
 
-      const result = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        {
+      const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], {
           HOME: home,
           FIREWORKS_API_KEY: "",
           ANTHROPIC_API_KEY: "",
           ANTHROPIC_AUTH_TOKEN: "",
-        },
-      );
+        }), await runFireconnect(["claude", "on"], {
+          HOME: home,
+          FIREWORKS_API_KEY: "",
+          ANTHROPIC_API_KEY: "",
+          ANTHROPIC_AUTH_TOKEN: "",
+        }));
       assert.equal(result.code, 0, result.stderr);
       const settings = JSON.parse(await readFile(settingsPath, "utf8"));
       assert.equal(settings.modelPicker.options[0].model, "claude-sonnet-4-6");
@@ -282,10 +269,7 @@ describe("Claude main model storage", () => {
         ANTHROPIC_AUTH_TOKEN: "",
       };
 
-      const enabled = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        env,
-      );
+      const enabled = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
       assert.equal(enabled.code, 0, enabled.stderr);
 
       let settings = JSON.parse(await readFile(settingsPath, "utf8"));

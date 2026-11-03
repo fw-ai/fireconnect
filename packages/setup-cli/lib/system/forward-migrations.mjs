@@ -12,8 +12,10 @@ import {
 import {
   migrateCodexCatalogConstantsOnUpgrade,
   migrateCodexWebSearchOnUpgrade,
+  repairCodexDuplicateHttpHeadersOnUpgrade,
 } from "../harnesses/codex/upgrade-migrations.mjs";
 import {
+  migrateOpencodeReasoningEffortOnUpgrade,
   migrateOpencodeFirerouterOnUpgrade,
   migrateOpencodePickerDuplicatesOnUpgrade,
   migrateOpencodeV2ProvidersOnUpgrade,
@@ -24,6 +26,7 @@ import { migrateCopilotAppFirerouterOnUpgrade } from "../harnesses/copilot-app/u
 import { migrateCursorFirerouterOnUpgrade } from "../harnesses/cursor/upgrade-migrations.mjs";
 import { migrateDeepseekFirerouterOnUpgrade } from "../harnesses/deepseek/upgrade-migrations.mjs";
 import {
+  migrateClaudeDesktopEgressOnUpgrade,
   migrateClaudeDesktopFirerouterOnUpgrade,
   restartClaudeDesktopShimOnUpgrade,
 } from "../harnesses/claude-desktop/upgrade-migrations.mjs";
@@ -81,12 +84,12 @@ function joinLabels(labels) {
  * @param {string} home
  * @returns {Promise<string[]>}
  */
-async function migrateAutoCatalogNotes(home) {
+async function migrateAutoCatalogNotes(home, autoCatalogOpts = {}) {
   const added = [];
   const notes = [];
   for (const [harnessId, label, hint] of AUTO_CATALOG_MIGRATIONS) {
     try {
-      if (await ensureAutoCatalogEntry(harnessId, home)) {
+      if (await ensureAutoCatalogEntry(harnessId, home, autoCatalogOpts)) {
         added.push(label);
       }
     } catch {
@@ -139,6 +142,11 @@ const HARNESS_FORWARD_MIGRATIONS = [
     failure: "Couldn't migrate Claude to native web search — re-run nexus claude on.",
   },
   {
+    run: repairCodexDuplicateHttpHeadersOnUpgrade,
+    success: "Repaired ~/.codex/config.toml, which listed Codex's Fireworks headers twice and kept it from starting. Restart Codex to pick it up.",
+    failure: "Couldn't repair ~/.codex/config.toml. Delete its [model_providers.fireworks-ai.http_headers] table, then re-run nexus codex on.",
+  },
+  {
     run: migrateCodexWebSearchOnUpgrade,
     success: "Enabled Codex web search — restart Codex to pick it up.",
     failure: "Couldn't enable Codex web search — re-run nexus codex on.",
@@ -162,6 +170,11 @@ const HARNESS_FORWARD_MIGRATIONS = [
     run: migrateOpencodeFirerouterOnUpgrade,
     success: "FireRouter is now Nexus Auto: moved OpenCode to `auto`. Restart OpenCode to pick it up.",
     failure: "Couldn't move OpenCode from FireRouter to Nexus Auto. Re-run nexus opencode on.",
+  },
+  {
+    run: migrateOpencodeReasoningEffortOnUpgrade,
+    success: "Updated effort settings for OpenCode's Fireworks models. Restart OpenCode to pick them up.",
+    failure: "Couldn't update effort settings for OpenCode's Fireworks models. Re-run nexus opencode on.",
   },
   {
     run: refreshPiCatalogForHome,
@@ -225,6 +238,11 @@ const HARNESS_FORWARD_MIGRATIONS = [
     run: migrateClaudeDesktopFirerouterOnUpgrade,
     success: "FireRouter is now Nexus Auto: removed the FireRouter rows from Claude Desktop's picker. Use `auto` instead. Restart Claude Desktop to pick it up.",
     failure: "Couldn't remove the FireRouter rows from Claude Desktop. Re-run nexus claude-desktop on.",
+  },
+  {
+    run: migrateClaudeDesktopEgressOnUpgrade,
+    success: "Claude Desktop's Cowork and Chat can now open websites, not just search. Restart Claude Desktop to pick it up.",
+    failure: "Couldn't turn on website access for Claude Desktop's Cowork and Chat. Re-run nexus claude-desktop on.",
   },
   {
     run: restartClaudeDesktopShimOnUpgrade,
@@ -298,9 +316,12 @@ async function migrationNote({ run, success, failure, skipped }, home) {
 
 /**
  * @param {string} home
+ * @param {{ autoCatalog?: { isRunning?: () => boolean } }} [opts]
+ *   `autoCatalog` reaches ensureAutoCatalogEntry: a test seam for the
+ *   running-IDE guard. Production callers pass nothing.
  * @returns {Promise<string[]>}
  */
-export async function runHarnessForwardMigrations(home) {
+export async function runHarnessForwardMigrations(home, { autoCatalog = {} } = {}) {
   if (!home) {
     return [];
   }
@@ -312,6 +333,6 @@ export async function runHarnessForwardMigrations(home) {
     }
   }
   notes.push(...await migrateRetiredRoutingPreferenceNotes(home));
-  notes.push(...await migrateAutoCatalogNotes(home));
+  notes.push(...await migrateAutoCatalogNotes(home, autoCatalog));
   return notes;
 }

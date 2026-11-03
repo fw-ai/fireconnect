@@ -51,10 +51,11 @@ import { isChatGptRunning } from "../harnesses/codex/ide-running.mjs";
 import {
   OPENCODE_FIREWORKS_PROVIDER_ID,
   buildOpencodeModelEntry,
+  opencodeAutoModelKey,
   opencodeConfigPath,
-  opencodeProviderModelKey,
   opencodeProviderStatus,
   readRawIfExists,
+  withOpencodeReasoningEffort,
   writeOpencodeConfig,
 } from "../harnesses/opencode/core.mjs";
 import {
@@ -154,7 +155,7 @@ async function ensureOpencodeAuto(home) {
   }
   const provider = config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID] ?? {};
   const models = { ...(provider.models ?? {}) };
-  if (Object.keys(models).some((id) => opencodeProviderModelKey(id) === "auto")) {
+  if (Object.keys(models).some((id) => opencodeAutoModelKey(id) === "auto")) {
     return false;
   }
   const storedApiKey = provider.options?.apiKey;
@@ -164,7 +165,7 @@ async function ensureOpencodeAuto(home) {
       ...config.provider,
       [OPENCODE_FIREWORKS_PROVIDER_ID]: {
         ...provider,
-        models: { auto: buildOpencodeModelEntry("auto"), ...models },
+        models: { auto: withOpencodeReasoningEffort("auto", buildOpencodeModelEntry("auto"), provider.npm), ...models },
       },
     },
   }, { mode: typeof storedApiKey === "string" && storedApiKey ? 0o600 : undefined });
@@ -225,7 +226,7 @@ async function ensureCursorAuto(home, { isRunning = isCursorRunning } = {}) {
   if (isRunning()) {
     return false;
   }
-  const { blob, openAIKey } = await readCursorState(resolvedDbPath);
+  const { blob, openAIKey } = await readCursorState(resolvedDbPath, { keychain: false });
   if (cursorProviderStatus(blob, openAIKey) !== "fireworks") {
     return false;
   }

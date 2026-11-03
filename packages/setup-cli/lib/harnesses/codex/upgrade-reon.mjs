@@ -5,7 +5,7 @@ import { autoProviderKeysInScope } from "../../config/auto-providers.mjs";
 import { HARNESS } from "../../harness/id.mjs";
 import { readJsonIfExists } from "../../io/json.mjs";
 import { isRetiredModelId } from "../../fireworks/model-id.mjs";
-import { missingCodexSignInRows } from "./catalog.mjs";
+import { isStaleCodexAutoLabel, isStaleCodexAutoLadder, missingCodexSignInRows } from "./catalog.mjs";
 import {
   CODEX_PROVIDER_TABLE,
   codexCatalogPath,
@@ -35,6 +35,16 @@ export const CODEX_SAVED_ANTHROPIC_KEY_NOTE =
 export const CODEX_FIREROUTER_MIGRATION_NOTE =
   "FireRouter is now Nexus Auto: moved Codex to `auto` and removed the FireRouter rows from its "
   + "model list. Restart Codex to pick it up.";
+
+export const CODEX_DUPLICATE_KEY_REPAIR_NOTE =
+  "Repaired Codex's config.toml: it defined Nexus's Fireworks settings twice, so Codex and the "
+  + "ChatGPT app reported a duplicate key and couldn't load it. Restart Codex to pick it up.";
+
+export const CODEX_AUTO_RENAME_NOTE =
+  "Renamed Auto to Nexus Auto in Codex's model list. Restart Codex to pick it up.";
+
+export const CODEX_AUTO_EFFORT_NOTE =
+  "Added Extra High and Max effort to Nexus Auto in Codex. Restart Codex to pick it up.";
 
 export const CODEX_UPGRADE_REON_FAILURE =
   "Couldn't update Codex's Fireworks settings. Run nexus codex on.";
@@ -67,7 +77,10 @@ function modelsAddedNote(ids) {
  * @returns {Promise<string>}
  */
 async function codexReonReason(home) {
-  const { doc } = await readCodexTomlIfExists(codexConfigPath(home));
+  const { doc, repaired } = await readCodexTomlIfExists(codexConfigPath(home));
+  if (repaired) {
+    return CODEX_DUPLICATE_KEY_REPAIR_NOTE;
+  }
   if (fireconnectManagedVariant(doc) !== "fireworks") {
     return "";
   }
@@ -94,7 +107,13 @@ async function codexReonReason(home) {
     return CODEX_FIREROUTER_MIGRATION_NOTE;
   }
   const missing = missingCodexSignInRows(models);
-  return missing.length ? modelsAddedNote(missing) : "";
+  if (missing.length) {
+    return modelsAddedNote(missing);
+  }
+  if (models.some(isStaleCodexAutoLabel)) {
+    return CODEX_AUTO_RENAME_NOTE;
+  }
+  return models.some(isStaleCodexAutoLadder) ? CODEX_AUTO_EFFORT_NOTE : "";
 }
 
 /**

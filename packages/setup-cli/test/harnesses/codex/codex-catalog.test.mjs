@@ -18,8 +18,10 @@ import {
   codexRowHasUsableContext,
   filterPickerCatalogForCodex,
   MODEL_OVERRIDES,
-  pruneCodexCatalogRows,
   refreshCodexCatalogRows,
+  isStaleCodexAutoLabel,
+  isStaleCodexAutoLadder,
+  withCodexAutoRows,
   withCodexConstantFields,
 } from "../../../lib/harnesses/codex/catalog.mjs";
 import {
@@ -109,6 +111,21 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
     assert.ok(rows.every((row) => row.supports_search_tool === true), rows.map((row) => row.slug).join(","));
   });
 
+  it("offers auto low through max, and keeps the standard ladder elsewhere", () => {
+    const efforts = (row) => row.supported_reasoning_levels.map((level) => level.effort);
+    assert.deepEqual(efforts(buildCodexAutoCatalogEntry("auto")), ["low", "medium", "high", "xhigh", "max"]);
+    assert.deepEqual(efforts(buildCodexAutoCatalogEntry("auto-instant")), ["low", "medium", "high"]);
+    assert.deepEqual(efforts(buildCodexFirerouterCatalogEntry()), ["low", "medium", "high"]);
+
+    const old = { slug: "auto", display_name: "Nexus Auto", supported_reasoning_levels: [{ effort: "low" }], priority: 1 };
+    assert.equal(isStaleCodexAutoLadder(old), true);
+    assert.equal(isStaleCodexAutoLabel(old), false);
+    const [restamped] = withCodexAutoRows([old]);
+    assert.deepEqual(efforts(restamped), ["low", "medium", "high", "xhigh", "max"]);
+    assert.deepEqual(Object.keys(restamped), Object.keys(old));
+    assert.equal(isStaleCodexAutoLadder(restamped), false);
+  });
+
   it("re-stamps tool search onto old rows without reordering keys", () => {
     const rows = [
       { slug: "glm-5p2", supports_search_tool: false, priority: 1 },
@@ -150,7 +167,6 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
   });
 
   for (const [modelName, efforts, summaryFormat] of [
-    ["accounts/fireworks/models/glm-5p2", ["low", "medium", "high", "max"], "experimental"],
     ["accounts/fireworks/models/glm-5p3", ["low", "medium", "high", "max"], "experimental"],
     ["accounts/fireworks/models/glm-5p3-fast", ["low", "medium", "high", "max"], "experimental"],
     ["accounts/fireworks/models/glm-5p3-flash", ["low", "medium", "high", "max"], "experimental"],
@@ -237,7 +253,6 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
       routerBaseModelById: new Map([
         ["accounts/fireworks/routers/glm-5p3-fast", "accounts/fireworks/models/glm-5p3"],
         ["accounts/fireworks/routers/glm-5p3-flash-us", "accounts/fireworks/models/glm-5p3-flash"],
-        ["accounts/fireworks/routers/glm-5p2-fast", "accounts/fireworks/models/glm-5p2"],
       ]),
       contextLengthById: new Map(),
       supportsToolsById: new Map(),
@@ -246,7 +261,6 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
       for (const name of [
         "accounts/fireworks/routers/glm-5p3-fast",
         "accounts/fireworks/routers/glm-5p3-flash-us",
-        "accounts/fireworks/routers/glm-5p2-fast",
       ]) {
         const entry = buildCodexCatalogEntry(mockModel({ name }));
         assert.equal(entry.default_reasoning_level, undefined, name);
@@ -301,14 +315,11 @@ describe("codex-catalog buildCodexCatalogEntry", () => {
   });
 
   it("falls back from a versioned slug to the unversioned base reasoning config", () => {
-    // Live catalog returns versioned slugs (e.g. deepseek-v4-flash-0731); the
-    // reasoning table is keyed by the unversioned base (deepseek-v4-flash).
-    const flash = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/deepseek-v4-flash-0731" }));
-    assert.equal(flash.default_reasoning_level, undefined);
-    assert.deepEqual(flash.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
-    const pro = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/deepseek-v4-pro-0813" }));
-    assert.equal(pro.default_reasoning_level, undefined);
-    assert.deepEqual(pro.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
+    // Live catalog returns versioned slugs; the reasoning table is keyed by
+    // the unversioned base (e.g. a dated GLM 5.3 slug resolves to glm-5p3).
+    const entry = buildCodexCatalogEntry(mockModel({ name: "accounts/fireworks/models/glm-5p3-0901" }));
+    assert.equal(entry.default_reasoning_level, undefined);
+    assert.deepEqual(entry.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "max"]);
   });
 
   it("uses the kimi-k3 reasoning config for the current Kimi generation", () => {
@@ -370,7 +381,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     const models = addCodexSelectedModel(base.models, base, "auto");
     const entry = models.find((model) => model.slug === "auto");
     assert.ok(entry);
-    assert.equal(entry.display_name, "Auto");
+    assert.equal(entry.display_name, "Nexus Auto");
     assert.equal(entry.context_window, 1_048_575);
     assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
@@ -388,7 +399,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     const models = addCodexSelectedModel(base.models, base, "auto-instant");
     const entry = models.find((model) => model.slug === "auto-instant");
     assert.ok(entry);
-    assert.equal(entry.display_name, "Auto Instant");
+    assert.equal(entry.display_name, "Nexus Auto Instant");
     assert.equal(entry.context_window, 1_048_575);
     assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
@@ -404,7 +415,7 @@ describe("codex-catalog buildCodexCatalog", () => {
     const catalog = buildCodexCatalogFromSnapshot({ ...snapshot, entries }, [mockModel()]);
     const entry = catalog.models.find((model) => model.slug === "auto");
     assert.ok(entry, "auto is missing from the Codex catalog");
-    assert.equal(entry.display_name, "Auto");
+    assert.equal(entry.display_name, "Nexus Auto");
     assert.equal(entry.context_window, 1_048_575);
     assert.equal(entry.auto_compact_token_limit, 838860);
     assert.deepEqual(entry.input_modalities, ["text", "image"]);
@@ -769,166 +780,29 @@ describe("codex-catalog buildCodexCatalog", () => {
   });
 });
 
-describe("codex-catalog pruneCodexCatalogRows", () => {
-  function pruneRows({ existingModels, snapshot }) {
-    return pruneCodexCatalogRows(existingModels, snapshot);
-  }
-  function suitableRows() {
-    return [
-      mockServerlessModel({
-        id: "accounts/fireworks/models/glm-5p2",
-        display_name: "GLM 5.2",
-        supports_tools: true,
-      }),
-      mockServerlessModel({
-        id: "accounts/fireworks/models/glm-5p2",
-        display_name: "GLM 5.2",
-        supports_tools: true,
-        serverless_mode: "fast",
-        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
-      }),
-      mockServerlessModel({
-        id: "accounts/fireworks/models/glm-5p3",
-        display_name: "GLM-5.3",
-        supports_tools: true,
-        aliases: ["accounts/fireworks/routers/glm-latest"],
-      }),
-    ];
-  }
-
-  function snapshotFor(rows) {
-    return buildServerlessCatalogSnapshot(rows);
-  }
-
-  it("is a no-op when nothing changed", () => {
-    const rows = suitableRows();
-    const fresh = buildCodexCatalogFromSnapshot(snapshotFor(rows), rows).models;
-    const merged = pruneRows({
-      existingModels: JSON.parse(JSON.stringify(fresh)),
-      snapshot: snapshotFor(rows),
-    });
-    assert.deepEqual(merged, fresh);
-  });
-
-  it("does not add newly served models", () => {
-    const rows = suitableRows();
-    const fresh = buildCodexCatalogFromSnapshot(snapshotFor(rows), rows).models;
-    const existing = fresh.filter((entry) => entry.slug !== "glm-5p3");
-    const merged = pruneRows({
-      existingModels: existing,
-      snapshot: snapshotFor(rows),
-    });
-    assert.deepEqual(merged.map((entry) => entry.slug), existing.map((entry) => entry.slug));
-  });
-
-  it("keeps existing metadata for served rows", () => {
-    const rows = suitableRows();
-    const fresh = buildCodexCatalogFromSnapshot(snapshotFor(rows), rows).models;
-    const existing = JSON.parse(JSON.stringify(fresh)).map((entry) => (
-      entry.slug === "glm-5p2" ? { ...entry, display_name: "STALE" } : entry
-    ));
-    const merged = pruneRows({
-      existingModels: existing,
-      snapshot: snapshotFor(rows),
-    });
-    assert.equal(merged.find((entry) => entry.slug === "glm-5p2").display_name, "STALE");
-  });
-
-  it("keeps a served concrete router omitted from the preferred set", () => {
-    const rows = suitableRows();
-    const snapshot = snapshotFor(rows);
-    const carried = [{
-      ...buildCodexCatalogFromSnapshot(snapshot, rows).models
-        .find((entry) => entry.slug === "glm-5p2-fast"),
-      display_name: "STALE",
-    }];
-    const merged = pruneRows({
-      existingModels: carried,
-      snapshot,
-    });
-    const router = merged.find((entry) => entry.slug === "glm-5p2-fast");
-    assert.ok(router);
-    assert.equal(router.display_name, "STALE");
-    assert.equal(router.context_window, 1048576);
-  });
-
-  it("removes carried rows missing from serverless", () => {
-    const rows = suitableRows();
-    const snapshot = snapshotFor(rows);
-    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows).models;
-    const merged = pruneRows({
-      existingModels: [...fresh, { slug: "retired-x", display_name: "Retired", context_window: 10 }],
-      snapshot,
-    });
-    assert.ok(!merged.some((entry) => entry.slug === "retired-x"));
-  });
-
-  it("keeps synthetic auto and firerouter rows verbatim", () => {
-    const rows = suitableRows();
-    const snapshot = snapshotFor(rows);
-    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows).models;
-    const auto = { slug: "auto", display_name: "Auto", context_window: 1048575 };
-    const firerouter = { slug: "firerouter", display_name: "FireRouter", context_window: 1048575 };
-    const merged = pruneRows({
-      existingModels: [...fresh, auto, firerouter],
-      snapshot,
-    });
-    assert.deepEqual(merged.find((entry) => entry.slug === "auto"), auto);
-    assert.deepEqual(merged.find((entry) => entry.slug === "firerouter"), firerouter);
-  });
-
-  it("does not re-add a carried MiniMax row that serverless still serves", () => {
-    const rows = [
-      ...suitableRows(),
-      mockServerlessModel({
-        id: "accounts/fireworks/models/minimax-m3",
-        display_name: "MiniMax M3",
-        supports_tools: true,
-      }),
-    ];
-    const snapshot = snapshotFor(rows);
-    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows).models;
-    assert.ok(!fresh.some((entry) => entry.slug === "minimax-m3"), "fresh build excludes it");
-    const carriedMinimax = {
-      slug: "minimax-m3",
-      display_name: "MiniMax M3",
-      context_window: 1048576,
-      max_context_window: 1048576,
-    };
-    const merged = pruneRows({
-      existingModels: [...fresh, carriedMinimax],
-      snapshot,
-    });
-    assert.ok(!merged.some((entry) => entry.slug === "minimax-m3"));
-  });
-
-});
-
 describe("codex-catalog metadata tables", () => {
   it("snapshot maps usage_identifier routers to base models", () => {
     const snapshot = buildServerlessCatalogSnapshot([
       mockModel({
-        name: "accounts/fireworks/models/glm-5p2",
+        name: "accounts/fireworks/models/glm-5p3",
         serverless_mode: "fast",
-        usage_identifier: "accounts/fireworks/routers/glm-5p2-fast",
+        usage_identifier: "accounts/fireworks/routers/glm-5p3-fast",
       }),
     ]);
     assert.equal(
-      snapshot.routerBaseModelById.get("accounts/fireworks/routers/glm-5p2-fast"),
-      "accounts/fireworks/models/glm-5p2",
+      snapshot.routerBaseModelById.get("accounts/fireworks/routers/glm-5p3-fast"),
+      "accounts/fireworks/models/glm-5p3",
     );
   });
 
   it("MODEL_REASONING has entries for all documented models", () => {
     const expected = [
-      "accounts/fireworks/models/glm-5p2",
       "accounts/fireworks/models/glm-5p3",
       "accounts/fireworks/models/glm-5p3-fast",
       "accounts/fireworks/models/glm-5p3-flash",
-      "accounts/fireworks/models/deepseek-v4-flash",
-      "accounts/fireworks/models/deepseek-v4-pro",
-      "accounts/fireworks/models/kimi-k2p6",
-      "accounts/fireworks/models/kimi-k2p7-code",
+      "accounts/fireworks/models/deepseek-v4p1-flash",
+      "accounts/fireworks/models/minimax-m3p1-flash",
+      "accounts/fireworks/models/muse-spark-open",
       "accounts/fireworks/models/minimax-m2p7",
       "accounts/fireworks/models/minimax-m3",
       "accounts/fireworks/models/gpt-oss-120b",
@@ -1009,6 +883,16 @@ describe("codex-catalog refreshCodexCatalogRows", () => {
     const row = merged.find((entry) => entry.slug === "gpt-6-astra");
     assert.deepEqual(row, carried);
     assert.equal(merged.at(-1).slug, "gpt-6-astra", "position preserved");
+  });
+
+  it("keeps the selected row the catalog no longer lists, and every row offline", () => {
+    const snapshot = buildServerlessCatalogSnapshot(rows());
+    const fresh = buildCodexCatalogFromSnapshot(snapshot, rows()).models;
+    const selected = { slug: "retired-x", display_name: "Retired", context_window: 10 };
+    const kept = refreshCodexCatalogRows([...fresh, selected], snapshot, fresh, { selected: "retired-x" });
+    assert.deepEqual(kept.at(-1), selected);
+    const stale = [{ ...fresh[0], display_name: "STALE" }, selected];
+    assert.deepEqual(refreshCodexCatalogRows(stale, snapshot, fresh, { catalogAvailable: false }), stale);
   });
 
   it("drops a carried FireRouter row on refresh", () => {

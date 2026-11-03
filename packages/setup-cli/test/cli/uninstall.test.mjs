@@ -50,12 +50,9 @@ describe("uninstall", () => {
     ].join("\n") + "\n";
     await writeFile(codexPath, codexOriginal);
 
-    await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], { HOME: home });
-    await runFireconnect(["opencode", "on", "--api-key", "fw_test_key_12345"], { HOME: home });
-    await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home }), await runFireconnect(["claude", "on"], { HOME: home }));
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home }), await runFireconnect(["opencode", "on"], { HOME: home }));
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
 
     // Regression (gh fw-ai/nexus-cli#12): a leftover ~/.nexus file
     // (e.g. the update-check cache) must not survive uninstall.
@@ -123,10 +120,7 @@ describe("uninstall", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-codex-off-fail-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
-    await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
 
     const configPath = codexConfigPath(home);
     const catalogPath = path.join(home, ".codex/fireworks-model-catalog.json");
@@ -154,10 +148,7 @@ describe("uninstall", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-keep-catalog-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
 
-    await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
 
     const configPath = codexConfigPath(home);
     const catalogPath = path.join(home, ".codex/fireworks-model-catalog.json");
@@ -540,6 +531,26 @@ describe("uninstall (interactive path)", () => {
     assert.match(stdout, /Nexus CLI is not installed\./);
   });
 
+  it("non-interactive --force stops before cleanup when a restore fails", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-force-fail-"));
+    await writeGlobalConfig(home, { harnesses: { opencode: { enabled: true } } });
+    await mkdir(path.join(home, ".nexus/opencode"), { recursive: true });
+    await writeFile(path.join(home, ".nexus/opencode/marker"), "1");
+    await mkdir(path.join(home, ".nexus/cli"), { recursive: true });
+    const restore = stubHarness(HARNESS.OPENCODE, { off: async () => { throw new Error("boom"); } });
+    const origExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withHome(home, () => runUninstallCommand({ force: true }));
+      assert.equal(process.exitCode, 1);
+    } finally {
+      restore();
+      process.exitCode = origExitCode;
+    }
+    assert.equal(await pathExists(path.join(home, ".nexus/opencode/marker")), true, "backup kept for a retry");
+    assert.equal(await pathExists(path.join(home, ".nexus/cli")), true, "CLI kept for a retry");
+  });
+
   it("non-interactive --force path still forces every off", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-force-flag-"));
     await writeGlobalConfig(home, { harnesses: { claude: { enabled: true } } });
@@ -611,6 +622,125 @@ describe("legacy data directory next to an existing ~/.nexus", () => {
     assert.equal(await pathExists(path.join(home, ".nexus")), false);
     assert.equal(await pathExists(path.join(home, ".fireconnect")), false);
   });
+  it("keeps an unrecorded ~/.nexus-pre with nested personal files and prints no note", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-personal-"));
+    await mkdir(path.join(home, ".nexus-pre/cli"), { recursive: true });
+    await writeFile(path.join(home, ".nexus-pre/cli/personal-notes.txt"), "personal notes");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await pathExists(path.join(home, ".nexus-pre")), true);
+    assert.equal(await readFile(path.join(home, ".nexus-pre/cli/personal-notes.txt"), "utf8"), "personal notes");
+    assert.doesNotMatch(result.stdout, /Left ~\/\.nexus-pre:/);
+  });
+
+  it("leaves stored keys and other files in an unrecorded aside and names the keys", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-strong-"));
+    await mkdir(path.join(home, ".nexus-pre"), { recursive: true });
+    await writeFile(path.join(home, ".nexus-pre/key-storage.json"), "{}");
+    await writeFile(path.join(home, ".nexus-pre/.api-key"), "synthetic-api-key");
+    await writeFile(path.join(home, ".nexus-pre/.secret-memory-abc"), "synthetic-memory-key");
+    await writeFile(path.join(home, ".nexus-pre/minted-key.json"), JSON.stringify({ keyId: "key-123" }));
+    await writeFile(path.join(home, ".nexus-pre/notes.txt"), "personal notes");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await pathExists(path.join(home, ".nexus-pre")), true);
+    assert.equal(await readFile(path.join(home, ".nexus-pre/key-storage.json"), "utf8"), "{}");
+    assert.equal(await readFile(path.join(home, ".nexus-pre/.api-key"), "utf8"), "synthetic-api-key");
+    assert.equal(await readFile(path.join(home, ".nexus-pre/.secret-memory-abc"), "utf8"), "synthetic-memory-key");
+    assert.equal(await readFile(path.join(home, ".nexus-pre/notes.txt"), "utf8"), "personal notes");
+    assert.equal(
+      await readFile(path.join(home, ".nexus-pre/minted-key.json"), "utf8"),
+      JSON.stringify({ keyId: "key-123" }),
+    );
+    assert.match(result.stdout, /Left ~\/\.nexus-pre: it looks like a backup from an older Nexus version and still holds stored keys \(\.api-key, \.secret-memory-abc\)\. Delete it yourself if you don't need it\./);
+  });
+
+  it("leaves another tool's key-storage.json and .api-key in an unrecorded aside", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-foreign-nexus-pre-"));
+    const aside = path.join(home, ".nexus-pre");
+    await mkdir(aside, { recursive: true });
+    await writeFile(path.join(aside, "key-storage.json"), '{"owner":"other-tool"}');
+    await writeFile(path.join(aside, ".api-key"), "synthetic-other-tool-key");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await readFile(path.join(aside, "key-storage.json"), "utf8"), '{"owner":"other-tool"}');
+    assert.equal(await readFile(path.join(aside, ".api-key"), "utf8"), "synthetic-other-tool-key");
+    assert.match(result.stdout, /still holds stored keys \(\.api-key\)\./);
+  });
+
+  it("prints the backup note when an unrecorded aside has no detected key files", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-no-keys-"));
+    await mkdir(path.join(home, ".nexus-pre"), { recursive: true });
+    await writeFile(path.join(home, ".nexus-pre/key-storage.json"), "{}");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await readFile(path.join(home, ".nexus-pre/key-storage.json"), "utf8"), "{}");
+    assert.match(result.stdout, /Left ~\/\.nexus-pre: it looks like a backup from an older Nexus version\. Delete it yourself if you don't need it\./);
+  });
+
+  it("does not follow a key-file symlink in an unrecorded aside", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-symlink-"));
+    const aside = path.join(home, ".nexus-pre");
+    const outsideKey = path.join(home, "outside-api-key.txt");
+    await mkdir(aside, { recursive: true });
+    await writeFile(path.join(aside, "key-storage.json"), "{}");
+    await writeFile(path.join(aside, ".secret-memory-abc"), "synthetic-memory-key");
+    await writeFile(outsideKey, "synthetic-external-api-key");
+    await symlink(outsideKey, path.join(aside, ".api-key"));
+    await mkdir(path.join(aside, "cli"), { recursive: true });
+    await writeFile(path.join(aside, "notes.txt"), "personal notes");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal((await lstat(path.join(aside, ".api-key"))).isSymbolicLink(), true);
+    assert.equal(await readFile(outsideKey, "utf8"), "synthetic-external-api-key");
+    assert.equal(await readFile(path.join(aside, ".secret-memory-abc"), "utf8"), "synthetic-memory-key");
+    assert.equal(await readFile(path.join(aside, "key-storage.json"), "utf8"), "{}");
+    assert.equal(await readFile(path.join(aside, "notes.txt"), "utf8"), "personal notes");
+    assert.match(result.stdout, /still holds stored keys \(\.secret-memory-abc\)\./);
+  });
+
+  it("keeps an unrecorded ~/.nexus-pre with only .api-key and prints no note", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-api-key-only-"));
+    await mkdir(path.join(home, ".nexus-pre"), { recursive: true });
+    await writeFile(path.join(home, ".nexus-pre/.api-key"), "synthetic-api-key");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await readFile(path.join(home, ".nexus-pre/.api-key"), "utf8"), "synthetic-api-key");
+    assert.doesNotMatch(result.stdout, /Left ~\/\.nexus-pre:|Removed stored keys from ~\/\.nexus-pre/);
+  });
+
+  it("removes a recorded ~/.nexus-pre aside", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-recorded-"));
+    await mkdir(path.join(home, ".nexus-pre"), { recursive: true });
+    await writeFile(path.join(home, ".nexus-pre/legacy-copy.txt"), "recorded aside");
+    await mkdir(path.join(home, ".nexus"), { recursive: true });
+    await writeFile(path.join(home, ".nexus/set-aside.json"), '[".nexus-pre"]\n');
+
+    const result = await runFireconnect(["uninstall"], { HOME: home });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await pathExists(path.join(home, ".nexus-pre")), false);
+    assert.doesNotMatch(result.stdout, /Left ~\/\.nexus-pre:/);
+  });
+
   it("removes a kept ~/.nexus-pre, and only the link when it points into dotfiles", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-nexus-pre-"));
     await mkdir(path.join(home, "dotfiles/fireconnect"), { recursive: true });
@@ -626,4 +756,3 @@ describe("legacy data directory next to an existing ~/.nexus", () => {
     assert.equal(await readFile(path.join(home, "dotfiles/fireconnect/config.json"), "utf8"), "{}");
   });
 });
-

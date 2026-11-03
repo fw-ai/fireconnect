@@ -20,13 +20,16 @@ import {
   enableVscodeFireworks,
   fireconnectRegisteredModels,
   fireconnectSecretId,
+  fireconnectSecretIds,
   findFireconnectProvider,
   fireworksProviderStatus,
   readChatLanguageModels,
   readVscodeSecret,
   readVscodeStoredKey,
+  readVscodeStoredKeyWithoutKeychain,
   relocateLegacyVscodeBackups,
   vscodeAzureProviderStatus,
+  vscodeSecretStored,
   vscodeStoredByokHeaders,
 } from "./core.mjs";
 import { DEFAULT_AZURE_MODEL } from "../../fireworks/azure-core.mjs";
@@ -182,6 +185,17 @@ export default defineHarnessProfile({
     return fireworksProviderStatus(arr);
   },
 
+  // null where the safeStorage secret can only be decrypted via the keychain.
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.VSCODE);
+    const { vscodePath, stateDbPath } = vscodePathsFor(ctx);
+    const arr = await readChatLanguageModels(vscodePath);
+    if (vscodeAzureProviderStatus(arr) === "azure" || fireworksProviderStatus(arr) !== "fireworks") {
+      return null;
+    }
+    return (await readVscodeStoredKeyWithoutKeychain(vscodePath, stateDbPath, arr)) || null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.VSCODE);
     const paths = vscodePathsFor(ctx);
@@ -195,16 +209,15 @@ export default defineHarnessProfile({
       const deployment = azureProvider?.models?.[0]?.id ?? null;
       const azureBaseUrl = azureProvider?.models?.[0]?.url ?? null;
       const azureSecretId = azureProvider ? fireconnectSecretId(azureProvider.apiKey) : null;
-      const azureKey = azureSecretId
-        ? await readVscodeSecret({ vscodePath, stateDbPath, secretId: azureSecretId })
-        : "";
+      // Presence only: decrypting would prompt for the keychain on every status.
+      const hasKey = await vscodeSecretStored({ vscodePath, stateDbPath, secretId: azureSecretId });
       const payload = {
         harness: HARNESS.VSCODE,
         enabled,
         provider: "azure",
         baseUrl: azureBaseUrl,
         modelProvider: "fireworks-azure",
-        hasKey: Boolean(azureKey),
+        hasKey,
         defaults: { main: DEFAULT_AZURE_MODEL },
         current: { main: deployment },
       };
@@ -224,7 +237,7 @@ export default defineHarnessProfile({
 
     const provider = fireworksProviderStatus(arr);
     const registered = fireconnectRegisteredModels(arr);
-    const storedKey = await readVscodeStoredKey(vscodePath, stateDbPath, arr);
+    const hasKey = await vscodeSecretStored({ vscodePath, stateDbPath, secretId: fireconnectSecretIds(arr)[0] });
     const keyType = provider === "none" ? "none" : "fireworks";
 
     const payload = {
@@ -232,7 +245,7 @@ export default defineHarnessProfile({
       enabled,
       provider,
       modelUrl: registered.length ? VSCODE_FIREWORKS_MODEL_URL : null,
-      hasKey: Boolean(storedKey),
+      hasKey,
       keyType,
       registeredModels: registered,
     };

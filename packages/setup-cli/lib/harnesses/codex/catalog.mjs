@@ -21,7 +21,7 @@ import {
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
 import { rowSupportsImageInput } from "../../fireworks/vision.mjs";
-import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { planModelList } from "../../harness/catalog-refresh.mjs";
 import { cachedListRateTable } from "../../pricing/list-price-cache.mjs";
 import { cachedCodexStockModels } from "./stock-models.mjs";
 
@@ -96,6 +96,35 @@ export function withCodexConstantFields(models = [], stock = cachedCodexStockMod
     }
     return { ...row, ...CODEX_CONSTANT_FIELDS };
   });
+}
+
+/** Whether an auto row carries an earlier release's label. */
+export function isStaleCodexAutoLabel(row) {
+  return isAutoModelId(row?.slug ?? "") && row.display_name !== autoDisplayName(row.slug);
+}
+
+/** Whether an auto row carries an earlier release's effort ladder. */
+export function isStaleCodexAutoLadder(row) {
+  return isAutoModelId(row?.slug ?? "")
+    && JSON.stringify(row.supported_reasoning_levels) !== JSON.stringify(reasoningConfigFor(row.slug).levels);
+}
+
+/**
+ * Bring auto rows an earlier release wrote up to the current label and effort
+ * ladder. `codex on` otherwise keeps them verbatim (offline re-runs, `--model`
+ * re-runs).
+ * @template {{ slug?: string, display_name?: string, supported_reasoning_levels?: object[] }} T
+ * @param {T[]} models
+ * @returns {T[]}
+ */
+export function withCodexAutoRows(models = []) {
+  return models.map((row) => (isAutoModelId(row?.slug ?? "")
+    ? {
+      ...row,
+      display_name: autoDisplayName(row.slug),
+      supported_reasoning_levels: reasoningConfigFor(row.slug).levels,
+    }
+    : row));
 }
 
 // Auto-compact at 80% of the window, not Codex's 90% default for an unset
@@ -455,24 +484,13 @@ function codexRowMatchesModelId(row, modelId) {
   return codexCatalogContainsModel({ models: [row] }, modelId);
 }
 
-/** Remove rows no longer present in the serverless catalog. */
-export function pruneCodexCatalogRows(models = [], snapshot = null) {
-  return models.filter((row) => {
-    const slug = typeof row?.slug === "string" ? row.slug : "";
-    if (!slug || isCodexUnsupportedMiniMaxModel(slug)) {
-      return false;
-    }
-    return isFirerouterModelPattern(slug)
-      || isAutoModelId(slug)
-      || isCodexOpenaiModelSlug(slug)
-      || Boolean(findSnapshotEntry(snapshot, slug));
-  });
-}
-
 /**
- * Re-`on` refresh of a managed catalog, per the shared catalog-refresh policy:
- * prune delisted rows, append rows newly served by serverless, and re-render
- * kept rows from the fresh catalog (display names / context windows drift).
+ * Re-`on` of a managed catalog, per the shared list policy
+ * (lib/harness/catalog-refresh.mjs `planModelList`): prune delisted rows,
+ * append rows newly served by serverless, and re-render kept rows from the
+ * fresh catalog (display names / context windows drift). `selected` keeps
+ * its row even when the catalog no longer lists it. An unavailable catalog
+ * (`catalogAvailable: false`) keeps every row as it is.
  * The catalog file is fireconnect-owned, so the picker tracks the live catalog
  * instead of going stale until the next fresh setup or upgrade.
  * Kept rows keep their position; only their metadata is replaced. Rows the
@@ -481,8 +499,15 @@ export function pruneCodexCatalogRows(models = [], snapshot = null) {
  * tell it apart from its own write, so it is left alone. FireRouter rows are
  * the exception — a plain re-`on` drops them (see `enableCodexFireworks`,
  * which re-adds the row only for an explicit FireRouter selection).
+ * @param {Array<{ slug?: string }>} [models]
+ * @param {import("../../fireworks/serverless-catalog-cache.mjs").ServerlessCatalogSnapshot | null} [snapshot]
+ * @param {Array<{ slug?: string }>} [freshModels]
+ * @param {{ catalogAvailable?: boolean, selected?: string }} [options]
  */
-export function refreshCodexCatalogRows(models = [], snapshot = null, freshModels = []) {
+export function refreshCodexCatalogRows(models = [], snapshot = null, freshModels = [], {
+  catalogAvailable = true,
+  selected = "",
+} = {}) {
   const freshBySlug = new Map();
   for (const row of freshModels) {
     const slug = typeof row?.slug === "string" ? row.slug : "";
@@ -490,9 +515,18 @@ export function refreshCodexCatalogRows(models = [], snapshot = null, freshModel
       freshBySlug.set(slug, row);
     }
   }
-  const plan = planCatalogRefresh({
-    currentIds: models.map((row) => (typeof row?.slug === "string" ? row.slug : "")),
+  const slugOf = (row) => (typeof row?.slug === "string" ? row.slug : "");
+  const currentBySlug = new Map();
+  for (const row of models) {
+    if (slugOf(row) && !currentBySlug.has(slugOf(row))) {
+      currentBySlug.set(slugOf(row), row);
+    }
+  }
+  const slugs = planModelList({
+    currentIds: [...currentBySlug.keys()],
     freshIds: [...freshBySlug.keys()],
+    catalogAvailable,
+    selectedId: selected,
     keepUnserved: (slug) => (
       !isCodexUnsupportedMiniMaxModel(slug)
       && !isFirerouterModelPattern(slug)
@@ -501,21 +535,10 @@ export function refreshCodexCatalogRows(models = [], snapshot = null, freshModel
         || Boolean(findSnapshotEntry(snapshot, slug)))
     ),
   });
-  const keptSet = new Set(plan.kept);
-  const emitted = new Set();
-  return [
-    ...models
-      .filter((row) => {
-        const slug = typeof row?.slug === "string" ? row.slug : "";
-        if (!keptSet.has(slug) || emitted.has(slug)) {
-          return false;
-        }
-        emitted.add(slug);
-        return true;
-      })
-      .map((row) => freshBySlug.get(row.slug) ?? row),
-    ...plan.added.map((slug) => freshBySlug.get(slug)).filter(Boolean),
-  ];
+  // A selection with no row yet is left to addCodexSelectedModel.
+  return slugs
+    .map((slug) => (catalogAvailable ? freshBySlug.get(slug) : undefined) ?? currentBySlug.get(slug))
+    .filter(Boolean);
 }
 
 /** Add the selected model without changing existing rows. */

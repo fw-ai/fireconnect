@@ -5,11 +5,13 @@ import assert from "node:assert/strict";
 import { globalConfigPath } from "../../lib/config/global-config.mjs";
 import { piModelsPath } from "../../lib/harnesses/pi/core.mjs";
 import { copilotProvidersPath } from "../../lib/harnesses/copilot-cli/config.mjs";
-import { runFireconnect, withTempHome } from "../helpers.mjs";
+import { runFireconnect, seedKeychainConfig, splitLoginArgs, withTempHome } from "../helpers.mjs";
 
 const FW_KEY = "fw_test_key_12345";
 const ANTHROPIC_KEY = "sk-ant-example-auto-0000";
 const OPENAI_KEY = "sk-proj-example-auto-0000";
+
+const VSCODE_PLAINTEXT = { NEXUS_VSCODE_SECRET_PLAINTEXT: "1" };
 
 function env(home, extra = {}) {
   return {
@@ -22,7 +24,12 @@ function env(home, extra = {}) {
 }
 
 async function ok(home, args, extra) {
-  const result = await runFireconnect(args, env(home, extra));
+  const { login, rest } = splitLoginArgs(args);
+  if (login) {
+    const seed = await runFireconnect(login, env(home, extra));
+    assert.equal(seed.code, 0, seed.stderr);
+  }
+  const result = await runFireconnect(rest, env(home, extra));
   assert.equal(result.code, 0, result.stderr);
   return result;
 }
@@ -55,14 +62,15 @@ describe("provider keys for Nexus Auto, saved with nexus auto", () => {
 
   it("shows account Provider Keys on the auto screen, next to local keys", async () => {
     await withTempHome("auto-keys-provider-keys-", async (home) => {
-      const result = await ok(home, ["auto"], { FIREWORKS_API_KEY: "fw_providerkeys_test" });
+      await seedKeychainConfig(home, "fw_providerkeys_test");
+      const result = await ok(home, ["auto"]);
       assert.match(result.stdout, /Local keys \(this machine\):/);
       assert.match(result.stdout, /Provider Keys \(your Fireworks account\):/);
       assert.match(result.stdout, /Anthropic: Connected \(sk-ant-••••2kAA\), covers every harness/);
       assert.match(result.stdout, /OpenAI: +Not connected/);
       assert.match(result.stdout, /Manage keys: https:\/\/app\.fireworks\.ai\/settings\/provider-keys/);
 
-      const json = JSON.parse((await ok(home, ["auto", "--json"], { FIREWORKS_API_KEY: "fw_providerkeys_test" })).stdout);
+      const json = JSON.parse((await ok(home, ["auto", "--json"])).stdout);
       assert.equal(json.providerKeys.outcome, "ok");
       assert.equal(json.providerKeys.anthropic.state, "connected");
       assert.equal(json.providerKeys.openai.state, "not-connected");
@@ -71,16 +79,16 @@ describe("provider keys for Nexus Auto, saved with nexus auto", () => {
 
   it("a connected Provider Key does not block saving a local key; the local key overrides it", async () => {
     await withTempHome("auto-keys-connected-override-", async (home) => {
+      await seedKeychainConfig(home, "fw_providerkeys_test");
       const saved = await ok(
         home,
         ["auto", "--anthropic-api-key", ANTHROPIC_KEY],
-        { FIREWORKS_API_KEY: "fw_providerkeys_test" },
       );
       assert.match(saved.stdout, /Saved the Anthropic key for Nexus Auto/);
       const config = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
       assert.equal(config.anthropicApiKey, ANTHROPIC_KEY);
 
-      const result = await ok(home, ["auto"], { FIREWORKS_API_KEY: "fw_providerkeys_test" });
+      const result = await ok(home, ["auto"]);
       assert.match(result.stdout, /Anthropic key: +saved/);
       assert.match(result.stdout, /Anthropic: Connected \(sk-ant-••••2kAA\), covers every harness/);
       assert.match(result.stdout, /A saved local key overrides the Provider Key for that provider\./);
@@ -89,7 +97,8 @@ describe("provider keys for Nexus Auto, saved with nexus auto", () => {
 
   it("shows Provider Keys as not enabled when the account has not enabled them", async () => {
     await withTempHome("auto-keys-provider-keys-off-", async (home) => {
-      const result = await ok(home, ["auto"], { FIREWORKS_API_KEY: "fw_providerkeys-not-enabled_test" });
+      await seedKeychainConfig(home, "fw_providerkeys-not-enabled_test");
+      const result = await ok(home, ["auto"]);
       assert.match(result.stdout, /Anthropic: Not enabled on this account/);
       assert.match(result.stdout, /OpenAI: +Not enabled on this account/);
     });
@@ -174,7 +183,8 @@ describe("provider keys for Nexus Auto, saved with nexus auto", () => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       await writeFile(vscodePath, "[]\n");
       await ok(home, ["auto", "--anthropic-api-key", ANTHROPIC_KEY]);
-      await ok(home, ["vscode", "on", "--api-key", FW_KEY, "--vscode-path", vscodePath, "--force"]);
+      // Plaintext secret seam: on macOS the real path needs Code's Keychain entry.
+      await ok(home, ["vscode", "on", "--api-key", FW_KEY, "--vscode-path", vscodePath, "--force"], VSCODE_PLAINTEXT);
       const provider = JSON.parse(await readFile(vscodePath, "utf8"))
         .find((entry) => entry.name === "Fireworks");
       const auto = provider.models.find((row) => row.id === "auto");

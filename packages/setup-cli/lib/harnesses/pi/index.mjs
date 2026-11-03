@@ -148,6 +148,17 @@ export default defineHarnessProfile({
     return piNexusProviderStatus({ ...piPathsFor(ctx), home: ctx.home });
   },
 
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.PI);
+    const { settingsPath, authPath } = piPathsFor(ctx);
+    if (await piNexusProviderStatus({ settingsPath, authPath, home: ctx.home }) !== "fireworks") {
+      return null;
+    }
+    const authKey = piStoredApiKeyRef(await readJsonFile(authPath));
+    // An env reference sends whatever the shell exports: can't tell.
+    return piAuthKeyMode(authKey) === "env-reference" ? null : authKey || null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.PI);
     const { settingsPath, authPath, modelsPath } = piPathsFor(ctx);
@@ -189,7 +200,7 @@ export default defineHarnessProfile({
     const payload = {
       harness: HARNESS.PI,
       provider,
-      hasAuthToken: Boolean(authKey || process.env.FIREWORKS_API_KEY),
+      hasAuthToken: Boolean(resolvePiApiKeyValue(authKey)),
       apiKeyMode: piAuthKeyMode(authKey),
       defaults: { main: defaultMainModel() },
       current: { main: currentModel },

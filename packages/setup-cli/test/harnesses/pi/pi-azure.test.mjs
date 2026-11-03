@@ -7,14 +7,26 @@ import assert from "node:assert/strict";
 
 import { PI_AZURE_PROVIDER, piSettingsPath, piModelsPath } from "../../../lib/harnesses/pi/core.mjs";
 import { lookupAzureFoundryModelLimits } from "../../../lib/fireworks/azure-core.mjs";
-import { harnessTestArgs, isolatedChildHome, seedOnCommandCatalog } from "../../helpers.mjs";
+import { harnessTestArgs, isolatedChildHome, seedOnCommandCatalog, splitAzureKeyArgs } from "../../helpers.mjs";
+import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "..", "bin", "nexus.mjs");
-const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
-const AZURE_BASE_URL = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1";
+const AZURE_ENDPOINT = "https://example-resource.services.ai.azure.com";
+const AZURE_BASE_URL = "https://example-resource.services.ai.azure.com/openai/v1";
 const AZURE_KEY = "azure-test-key-1234567890";
 
-function runFireconnect(args, env = {}) {
+async function runFireconnect(args, env = {}) {
+  // `on --azure --api-key` is gone: store the Foundry key the way
+  // `nexus configure --provider azure` does, then run `on` without the flag.
+  const home = isolatedChildHome(env);
+  const { azure, rest } = splitAzureKeyArgs(args);
+  if (azure) {
+    await writeGlobalConfig(home, { azure });
+  }
+  return spawnFireconnect(rest, { ...env, HOME: home });
+}
+
+function spawnFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     if (args.includes("on")) { seedOnCommandCatalog(env.HOME, args); }
     const child = spawn(process.execPath, [CLI, ...harnessTestArgs(args)], {
@@ -61,15 +73,15 @@ describe("pi azure harness", () => {
       assert.match(noKey.stderr, /No Azure API key/);
 
       const noEndpoint = await runFireconnect(
-        ["pi", "on", "--azure", "--api-key", AZURE_KEY],
-        { HOME: home },
+        ["pi", "on", "--azure"],
+        { HOME: home, AZURE_API_KEY: AZURE_KEY },
       );
       assert.notEqual(noEndpoint.code, 0);
       assert.match(noEndpoint.stderr, /No Azure endpoint/);
     });
   });
 
-  it("registers a custom openai-completions provider with a literal key (--api-key)", async () => {
+  it("registers a custom openai-completions provider with a literal key (configured key)", async () => {
     await withHome(async (home) => {
       const result = await runFireconnect(
         ["pi", "on", "--azure", "--base-url", AZURE_ENDPOINT, "--api-key", AZURE_KEY, "--model", "FW-MiniMax-M2.5"],
@@ -250,10 +262,7 @@ describe("pi azure harness", () => {
         )).code,
         0,
       );
-      const fw = await runFireconnect(
-        ["pi", "on", "--api-key", "fw_test_key_12345"],
-        { HOME: home, FIREWORKS_API_KEY: "" },
-      );
+      const fw = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
       assert.equal(fw.code, 0, fw.stderr);
 
       const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
@@ -282,10 +291,7 @@ describe("pi azure harness", () => {
         0,
       );
       assert.equal(
-        (await runFireconnect(
-          ["pi", "on", "--api-key", "fw_test_key_12345"],
-          { HOME: home, FIREWORKS_API_KEY: "" },
-        )).code,
+        (await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }))).code,
         0,
       );
       assert.equal((await runFireconnect(["pi", "off"], { HOME: home })).code, 0);

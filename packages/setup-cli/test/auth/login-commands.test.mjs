@@ -10,16 +10,9 @@ import { after, before, describe, it } from "node:test";
 import { runCli, seedKeychainConfig, withTempHome } from "../helpers.mjs";
 import { readGlobalConfig, writeGlobalConfig } from "../../lib/config/global-config.mjs";
 import { pbDecode, pbStringAt } from "../../lib/auth/grpc-web.mjs";
-import { runInteractiveSignIn } from "../../lib/auth/login/flows.mjs";
-import { installShellEnvHook } from "../../lib/io/shell-env-hook.mjs";
+import { runInteractiveSignIn, signedInIdentityLine } from "../../lib/auth/login/flows.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LEGACY_CODEX_ANTHROPIC_HOOK = [
-  "# >>> fireconnect >>>",
-  'export ANTHROPIC_API_KEY="$(fireconnect key export --stored-only --anthropic 2>/dev/null)"',
-  "# <<< fireconnect <<<",
-  "",
-].join("\n");
 const CLI = path.join(__dirname, "../../bin/nexus.mjs");
 
 const VALID_KEY = "fw_login_test_key_000000000000000";
@@ -201,86 +194,33 @@ describe("fireconnect login / logout", () => {
     });
   });
 
-  it("login refuses to store a key while FIREWORKS_API_KEY is set", async () => {
+  it("login stores the flag key while FIREWORKS_API_KEY is set (env ignored)", async () => {
     await withTempHome("login-env-conflict-", async (home) => {
       const result = await runCli(["login", "--api-key", VALID_KEY], {
         home,
-        env: {
-          FIREWORKS_API_KEY: VALID_KEY,
-          // Conflict detection happens before verification.
-          NEXUS_GATEWAY_URL: "http://127.0.0.1:1",
-        },
+        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
       });
-      assert.equal(result.code, 1);
-      assert.match(result.stderr, /FIREWORKS_API_KEY is already set/);
-      assert.match(result.stderr, /unset FIREWORKS_API_KEY/);
-      await assert.rejects(access(path.join(home, ".nexus", ".secret-memory")));
+      assert.equal(result.code, 0, result.stderr);
     });
   });
 
-  it("interactive sign-in flows reject an environment credential before prompting", async () => {
+  it("interactive sign-in ignores an environment credential", async () => {
     await withTempHome("login-interactive-env-conflict-", async (home) => {
-      const previous = process.env.FIREWORKS_API_KEY;
-      process.env.FIREWORKS_API_KEY = VALID_KEY;
-      try {
-        await assert.rejects(
-          runInteractiveSignIn(home, { method: "paste" }),
-          /FIREWORKS_API_KEY is already set/,
-        );
-        await assert.rejects(access(path.join(home, ".nexus", ".secret-memory")));
-      } finally {
-        if (previous === undefined) {
-          delete process.env.FIREWORKS_API_KEY;
-        } else {
-          process.env.FIREWORKS_API_KEY = previous;
-        }
-      }
-    });
-  });
-
-  it("login verifies and uses FIREWORKS_API_KEY without storing it", async () => {
-    await withTempHome("login-env-only-", async (home) => {
+      // env is not a credential source: bare `login` sees no credential, so
+      // non-interactive runs point at --with-token instead of "already
+      // signed in".
       const result = await runCli(["login"], {
         home,
         env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
       });
-      assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, new RegExp(`Already signed in as ${EMAIL}`));
-      assert.match(result.stdout, /from FIREWORKS_API_KEY/);
-      assert.match(result.stdout, /update FIREWORKS_API_KEY/);
-      assert.match(result.stdout, /unset FIREWORKS_API_KEY/);
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, /--with-token/);
+      assert.doesNotMatch(result.stderr, /Already signed in/);
       await assert.rejects(access(path.join(home, ".nexus", ".secret-memory")));
     });
   });
 
-  it("login with FIREWORKS_API_KEY and a fireconnect shell hook points at unset+login", async () => {
-    await withTempHome("login-env-hook-", async (home) => {
-      process.env.SHELL = "/bin/zsh";
-      await installShellEnvHook(home);
-      const result = await runCli(["login"], {
-        home,
-        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
-      });
-      assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /shell hook exports this from the keychain/);
-      assert.match(result.stdout, /unset FIREWORKS_API_KEY.*nexus login/);
-      assert.doesNotMatch(result.stdout, /update FIREWORKS_API_KEY wherever you export it/);
-    });
-  });
 
-  it("login with FIREWORKS_API_KEY and an Anthropic-only shell hook does not claim FireConnect exports it", async () => {
-    await withTempHome("login-env-anthropic-hook-", async (home) => {
-      process.env.SHELL = "/bin/zsh";
-      await writeFile(path.join(home, ".zshrc"), LEGACY_CODEX_ANTHROPIC_HOOK);
-      const result = await runCli(["login"], {
-        home,
-        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
-      });
-      assert.equal(result.code, 0, result.stderr);
-      assert.doesNotMatch(result.stdout, /shell hook exports this from the keychain/);
-      assert.match(result.stdout, /update FIREWORKS_API_KEY wherever you export it/);
-    });
-  });
 
   it("login re-points the key baked into Claude's Fireworks settings", async () => {
     await withTempHome("login-router-refresh-", async (home) => {
@@ -329,7 +269,7 @@ describe("fireconnect login / logout", () => {
     return settingsPath;
   }
 
-  it("login with a rotated FIREWORKS_API_KEY re-points Claude's baked key", async () => {
+  it("login ignores FIREWORKS_API_KEY: no sign-in, no baked-key update", async () => {
     await withTempHome("login-env-rotate-", async (home) => {
       const settingsPath = await seedStaleClaudeSettings(home);
 
@@ -337,19 +277,14 @@ describe("fireconnect login / logout", () => {
         home,
         env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
       });
-      assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /Already signed in/);
-      assert.match(result.stdout, /Updated Claude Code's Fireworks settings/);
+      assert.notEqual(result.code, 0);
 
       const settings = JSON.parse(await readFile(settingsPath, "utf8"));
-      assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, `X-Fireworks-Api-Key: ${VALID_KEY}`);
+      assert.equal(
+        settings.env.ANTHROPIC_CUSTOM_HEADERS,
+        "X-Fireworks-Api-Key: fw_stale_key_000000000000000000",
+      );
       await assert.rejects(access(path.join(home, ".nexus", ".secret-memory")));
-
-      const again = await runCli(["login"], {
-        home,
-        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
-      });
-      assert.doesNotMatch(again.stdout, /Updated Claude Code/);
     });
   });
 
@@ -369,11 +304,12 @@ describe("fireconnect login / logout", () => {
 
   it("login leaves baked keys alone when the active key can't be verified", async () => {
     await withTempHome("login-unverified-no-sync-", async (home) => {
+      await seedKeychainConfig(home, VALID_KEY);
       const settingsPath = await seedStaleClaudeSettings(home);
 
       const result = await runCli(["login"], {
         home,
-        env: { NEXUS_GATEWAY_URL: "http://127.0.0.1:1", FIREWORKS_API_KEY: VALID_KEY },
+        env: { NEXUS_GATEWAY_URL: "http://127.0.0.1:1" },
       });
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /couldn't verify/);
@@ -441,6 +377,21 @@ describe("fireconnect login / logout", () => {
 
       const check = await runCli(["status"], { home, env: gatewayEnv });
       assert.equal(check.code, 1);
+    });
+  });
+
+  it("logout says connected harnesses keep their copy of the key", async () => {
+    await withTempHome("logout-baked-", async (home) => {
+      await mkdir(path.join(home, ".nexus"), { recursive: true });
+      await seedKeychainConfig(home, VALID_KEY);
+      const { writeGlobalConfig } = await import("../../lib/config/global-config.mjs");
+      await writeGlobalConfig(home, { harnesses: { opencode: { enabled: true }, pi: { enabled: true, provider: "azure" } } });
+
+      const result = await runCli(["logout"], { home });
+      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stdout, /OpenCode still has a copy of the key in its settings/);
+      assert.match(result.stdout, /nexus opencode off/);
+      assert.doesNotMatch(result.stdout, /nexus pi off/);
     });
   });
 
@@ -654,6 +605,30 @@ describe("fireconnect login / logout", () => {
     }
   });
 
+  it("logout points a Nexus account at the Nexus keys page, then forgets the account kind", async () => {
+    const grpc = await startMockGrpcGateway();
+    try {
+      await withTempHome("logout-nexus-", async (home) => {
+        await seedKeychainConfig(home, VALID_KEY);
+        await seedMintedState(home);
+        const configPath = path.join(home, ".nexus", "config.json");
+        const config = JSON.parse(await readFile(configPath, "utf8"));
+        await writeFile(configPath, JSON.stringify({ ...config, nexusAccount: true }));
+
+        const result = await runCli(["logout"], {
+          home,
+          env: { NEXUS_GATEWAY_GRPC_WEB_URL: grpc.url },
+        });
+        assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+        assert.match(result.stdout, /nexus\.fireworks\.ai\/settings\/api-keys/);
+        assert.doesNotMatch(result.stdout, /app\.fireworks\.ai/);
+        assert.equal(JSON.parse(await readFile(configPath, "utf8")).nexusAccount, false);
+      });
+    } finally {
+      grpc.server.close();
+    }
+  });
+
   it("logout still completes when revocation is refused, and says so", async () => {
     const grpc = await startMockGrpcGateway({ status: 7, detail: "permission denied" });
     try {
@@ -684,6 +659,20 @@ describe("fireconnect login / logout", () => {
       const result = await runCli(["logout"], { home });
       assert.equal(result.code, 0, `stderr: ${result.stderr}`);
       assert.match(result.stdout, /Not signed in/);
+    });
+  });
+
+  it("logout with no stored key notes an enabled Fireworks harness keeps its copy", async () => {
+    await withTempHome("logout-none-baked-", async (home) => {
+      const { writeGlobalConfig } = await import("../../lib/config/global-config.mjs");
+      await writeGlobalConfig(home, {
+        harnesses: { claude: { enabled: true, provider: "fireworks" } },
+      });
+
+      const result = await runCli(["logout"], { home });
+      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+      assert.match(result.stdout, /Claude Code still has a copy of the key in/);
+      assert.match(result.stdout, /nexus claude off/);
     });
   });
 
@@ -786,8 +775,8 @@ describe("fireconnect login / logout", () => {
     });
 
     it("Enter takes the remembered id; without one it re-asks", async () => {
-      const remembered = await runAccountIdPrompt("uber", "\n");
-      assert.equal(parseMethod(remembered.stdout), "uber");
+      const remembered = await runAccountIdPrompt("example-account", "\n");
+      assert.equal(parseMethod(remembered.stdout), "example-account");
 
       const reasked = await runAccountIdPrompt("", "\nacme\n");
       assert.match(reasked.stdout, /Enter your account ID/);
@@ -795,7 +784,7 @@ describe("fireconnect login / logout", () => {
     });
 
     it("q and EOF cancel", async () => {
-      const cancelled = await runAccountIdPrompt("uber", "q\n");
+      const cancelled = await runAccountIdPrompt("example-account", "q\n");
       assert.equal(parseMethod(cancelled.stdout), null);
       const eof = await runAccountIdPrompt("", "");
       assert.equal(parseMethod(eof.stdout), null);
@@ -904,6 +893,60 @@ describe("fireconnect login / logout", () => {
       assert.match(topic.stdout, /--account/);
       assert.match(topic.stdout, /--force/);
       assert.match(topic.stdout, /--paste/);
+    });
+  });
+});
+
+describe("signedInIdentityLine", () => {
+  it("names the returned email and account before a key is created", () => {
+    assert.equal(
+      signedInIdentityLine("user@example.com", "accounts/example-account"),
+      "Signed in as user@example.com — creating a key in account example-account.",
+    );
+    assert.match(signedInIdentityLine("", "accounts/example-account"), /no email/);
+    assert.doesNotMatch(signedInIdentityLine("a\u001b[2Jb@example.com", "accounts/x"), /\u001b/);
+  });
+});
+
+
+describe("desktop plaintext-token account metadata", () => {
+  let gateway;
+  before(async () => { gateway = await startMockGateway(); });
+  after(() => gateway.server.close());
+
+  it("applies Nexus, explicit Platform, unknown and omitted metadata on repeated saves", async () => {
+    await withTempHome("login-account-kind-", async (home) => {
+      await writeGlobalConfig(home, { ssoAccountId: "keep-me" });
+      for (const kind of ["nexus", "platform", "nexus", "unknown", "nexus", null]) {
+        const result = await runCliWithStdin(["login", "--with-token", ...(kind ? ["--account-type", kind] : [])], {
+          home, env: { NEXUS_GATEWAY_URL: gateway.url }, input: `${VALID_KEY}\n`,
+        });
+        assert.equal(result.code, 0, result.stderr);
+        const config = await readGlobalConfig(home);
+        assert.equal(config.nexusAccount, kind === "nexus");
+        assert.equal(config.ssoAccountId, "keep-me");
+        assert.ok(!(result.stdout + result.stderr).includes(VALID_KEY));
+      }
+    });
+  });
+
+  it("does not reclassify the previous credential after verification rejects a replacement", async () => {
+    await withTempHome("login-account-kind-rejected-", async (home) => {
+      await writeGlobalConfig(home, { nexusAccount: true });
+      const result = await runCliWithStdin(["login", "--with-token", "--account-type", "platform"], {
+        home, env: { NEXUS_GATEWAY_URL: gateway.url }, input: REJECTED_KEY,
+      });
+      assert.notEqual(result.code, 0);
+      assert.equal((await readGlobalConfig(home)).nexusAccount, true);
+    });
+  });
+
+  it("logout clears stale account metadata even without a stored credential", async () => {
+    await withTempHome("logout-stale-kind-", async (home) => {
+      await writeGlobalConfig(home, { nexusAccount: true });
+      const result = await runCli(["logout"], { home });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal((await readGlobalConfig(home)).nexusAccount, false);
     });
   });
 });

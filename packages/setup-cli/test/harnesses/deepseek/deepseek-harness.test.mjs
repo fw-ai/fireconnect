@@ -8,6 +8,7 @@ import {
   deepseekBackupPath,
   deepseekCredentialsPath,
   deepseekCurrentModelId,
+  deepseekEnvPath,
   deepseekDataDir,
   enableDeepseekFireworks,
   migrateDeepseekFirerouterModel,
@@ -17,6 +18,7 @@ import {
   patchDeepseekProfilePatchEntries,
   stripDeepseekProfilePatchEntries,
   readDeepseekSettingsIfExists,
+  refreshDeepseekGatewayKey,
 } from "../../../lib/harnesses/deepseek/core.mjs";
 import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 import { lookupFireworksModelLimits } from "../../../lib/fireworks/model-specs.mjs";
@@ -47,6 +49,10 @@ describe("buildDeepseekFireworksModelEntry catalog metadata", () => {
     assert.equal(entry.id, "deepseek-v4-flash");
     assert.equal(entry.contextWindow, limits.contextWindow);
     assert.equal(entry.maxTokens, limits.maxTokens);
+  });
+
+  it("names auto Nexus Auto when no name is given", () => {
+    assert.equal(buildDeepseekFireworksModelEntry("auto").name, "Nexus Auto");
   });
 });
 
@@ -79,17 +85,11 @@ describe("deepseek harness integration", () => {
   it("rejects an explicit firerouter selection", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-firerouter-manual-"));
     await mkdir(path.join(home, ".dsh"), { recursive: true });
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect([
         "deepseek",
         "on",
-        "--api-key",
-        "fw_test_key_12345",
         "--model",
-        "accounts/fireworks/routers/firerouter",
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+        "accounts/fireworks/routers/firerouter"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /is no longer supported/);
     const { settings } = await readDeepseekSettingsIfExists(deepseekSettingsPath(home));
@@ -99,14 +99,35 @@ describe("deepseek harness integration", () => {
   it("rejects bare firerouter without a forwardable Anthropic key", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-firerouter-refused-"));
     await mkdir(path.join(home, ".dsh"), { recursive: true });
-    const result = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "firerouter"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /is no longer supported/);
     const { settings } = await readDeepseekSettingsIfExists(deepseekSettingsPath(home));
     assert.equal(deepseekCurrentModelId(settings), null);
+  });
+
+  it("key refresh writes a missing .env fallback even when the credentials document is current", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-env-"));
+    await mkdir(path.join(home, ".dsh"), { recursive: true });
+    const settingsPath = deepseekSettingsPath(home);
+    const credentialsPath = deepseekCredentialsPath(home);
+    const envPath = deepseekEnvPath(credentialsPath);
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
+    assert.equal(onResult.code, 0, onResult.stderr);
+    const credentialsBefore = await readFile(credentialsPath, "utf8");
+
+    // A setup connected before the .env layer existed: same key, no .env.
+    await unlink(envPath);
+    assert.equal(await refreshDeepseekGatewayKey({ settingsPath, credentialsPath, fireworksKey: "fw_test_key_12345" }), true);
+    assert.match(await readFile(envPath, "utf8"), /^FIREWORKS_API_KEY=fw_test_key_12345$/m);
+    assert.equal(await readFile(credentialsPath, "utf8"), credentialsBefore, "a current credentials document is left alone");
+
+    // A stale .env is brought up to date too.
+    await writeFile(envPath, "OTHER=1\nFIREWORKS_API_KEY=fw_old_key_00000\n");
+    assert.equal(await refreshDeepseekGatewayKey({ settingsPath, credentialsPath, fireworksKey: "fw_test_key_12345" }), true);
+    assert.equal(await readFile(envPath, "utf8"), "OTHER=1\nFIREWORKS_API_KEY=fw_test_key_12345\n");
+
+    assert.equal(await refreshDeepseekGatewayKey({ settingsPath, credentialsPath, fireworksKey: "fw_test_key_12345" }), false);
   });
 
   it("on/off round-trip restores settings.yaml and credentials.yaml", async () => {
@@ -126,10 +147,7 @@ describe("deepseek harness integration", () => {
     await writeFile(settingsPath, originalSettings);
     await writeFile(credentialsPath, originalCredentials);
 
-    const onResult = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const enabledSettings = await readFile(settingsPath, "utf8");
@@ -140,13 +158,46 @@ describe("deepseek harness integration", () => {
     assert.match(enabledSettings, /mode: dark/);
 
     const enabledCredentials = await readFile(credentialsPath, "utf8");
+    assert.match(enabledCredentials, /version: 1\n/);
+    assert.match(enabledCredentials, /refs:\n/);
     assert.match(enabledCredentials, /FIREWORKS_API_KEY: fw_test_key_12345/);
     assert.match(enabledCredentials, /DEEPSEEK_API_KEY: sk-deepseek-test/);
+
+    // Headless boots disable dsh's managed-credentials plugin, so the same
+    // key also lands in the launch-time `.env` fallback layer.
+    const envFile = await readFile(deepseekEnvPath(credentialsPath), "utf8");
+    assert.match(envFile, /FIREWORKS_API_KEY=fw_test_key_12345/);
 
     const offResult = await runFireconnect(["deepseek", "off"], { HOME: home });
     assert.equal(offResult.code, 0, offResult.stderr);
     assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
     assert.equal(await readFile(credentialsPath, "utf8"), originalCredentials);
+    await assert.rejects(readFile(deepseekEnvPath(credentialsPath), "utf8"), { code: "ENOENT" });
+  });
+
+  it("on folds a flat legacy credentials file under refs: and preserves a version-1 records section", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-v1-"));
+    await mkdir(path.join(home, ".dsh"), { recursive: true });
+    const credentialsPath = deepseekCredentialsPath(home);
+    await writeFile(credentialsPath, [
+      "version: 1",
+      "refs:",
+      "  OTHER_KEY: keep-me",
+      "records:",
+      "  account/main:",
+      "    kind: token",
+      "    value: record-stays",
+      "",
+    ].join("\n"));
+
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
+    assert.equal(onResult.code, 0, onResult.stderr);
+
+    const credentials = await readFile(credentialsPath, "utf8");
+    assert.match(credentials, /FIREWORKS_API_KEY: fw_test_key_12345/);
+    assert.match(credentials, /OTHER_KEY: keep-me/);
+    assert.match(credentials, /records:\n/);
+    assert.match(credentials, /account\/main:/);
   });
 
   it("on bakes keychain key into credentials", async () => {
@@ -164,10 +215,7 @@ describe("deepseek harness integration", () => {
   it("on reuses baked credentials when global config and env are unset", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-reuse-"));
     await mkdir(path.join(home, ".dsh"), { recursive: true });
-    const first = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "deepseek-v4-flash"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "deepseek-v4-flash"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
 
     await writeGlobalConfig(home, { apiKey: "" });
@@ -188,10 +236,7 @@ describe("deepseek harness integration", () => {
   it("status reports fireworks provider and model", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-status-"));
     await mkdir(path.join(home, ".dsh"), { recursive: true });
-    const on = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "deepseek-v4-flash"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "deepseek-v4-flash"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     const status = await runFireconnect(
@@ -267,10 +312,7 @@ describe("deepseek profile patch (dsh 0.1.7+)", () => {
     const originalPatch = "- id: theme\n  config: { mode: dark }\n";
     await writeFile(patchPath, originalPatch);
 
-    const on = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "glm-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     const patched = await readFile(patchPath, "utf8");
@@ -289,10 +331,7 @@ describe("deepseek profile patch (dsh 0.1.7+)", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-home-patch-"));
     const homePatchPath = path.join(home, ".dsh", "cordis.patch.yml");
 
-    const on = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "glm-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const patched = await readFile(homePatchPath, "utf8");
     assert.match(patched, /id: llm-pi-ai/);
@@ -321,10 +360,7 @@ describe("deepseek profile patch (dsh 0.1.7+)", () => {
     await mkdir(path.dirname(homePatchPath), { recursive: true });
     await writeFile(homePatchPath, original);
 
-    const on = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "glm-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const patched = await readFile(homePatchPath, "utf8");
     assert.match(patched, /provider: fireworks/);
@@ -337,10 +373,7 @@ describe("deepseek profile patch (dsh 0.1.7+)", () => {
 
   it("off strips the fireworks route from profiles created after on", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-late-profile-"));
-    const on = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "glm-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     // A profile that only appears after `on` (dsh booted a new profile and
@@ -380,17 +413,11 @@ describe("deepseek profile patch (dsh 0.1.7+)", () => {
 
     // First on/off cycle; simulate the backup being lost so the next on sees
     // a patch still carrying the fireworks route.
-    const first = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "glm-fast-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "glm-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
     await unlink(deepseekBackupPath(deepseekDataDir(home), deepseekSettingsPath(home)));
 
-    const second = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "kimi-fast-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const second = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "kimi-fast-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(second.code, 0, second.stderr);
 
     const off = await runFireconnect(["deepseek", "off"], { HOME: home });
@@ -400,10 +427,7 @@ describe("deepseek profile patch (dsh 0.1.7+)", () => {
 
   it("status falls back to the profile patch after dsh migrates settings.yaml away", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-deepseek-migrated-"));
-    const on = await runFireconnect(
-      ["deepseek", "on", "--api-key", "fw_test_key_12345", "--model", "deepseek-v4-flash"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["deepseek", "on", "--model", "deepseek-v4-flash"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     // Simulate dsh 0.1.7's legacy import: settings.yaml is renamed away and the

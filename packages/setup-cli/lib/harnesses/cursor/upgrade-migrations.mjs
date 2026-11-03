@@ -36,7 +36,7 @@ export async function migrateCursorFirerouterOnUpgrade(home, { isRunning = isCur
   if (!existsSync(dbPath)) {
     return false;
   }
-  const { blob, openAIKey } = await readCursorState(dbPath);
+  const { blob, openAIKey } = await readCursorState(dbPath, { keychain: false });
   if (cursorProviderStatus(blob, openAIKey) !== "fireworks") {
     return false;
   }

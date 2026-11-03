@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -59,7 +60,8 @@ export function resolveStoredApiKey(stored) {
     return "";
   }
   if (stored === FIREWORKS_API_KEY_ENV_REF) {
-    return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+    // env is not a credential source; the ref is dead
+    return "";
   }
   if (stored === FIREWORKS_API_KEY_KEYCHAIN_REF) {
     return "";
@@ -210,6 +212,9 @@ export async function readGlobalConfig(home) {
     // Remembered enterprise SSO account (not a secret — just the org slug),
     // so `login` can reuse it instead of re-asking every time.
     ssoAccountId: typeof existing.ssoAccountId === "string" ? existing.ssoAccountId : "",
+    // Whether the account browser sign-in created the key in is a Nexus
+    // account (not a secret). Picks which site the CLI's key links open.
+    nexusAccount: existing.nexusAccount === true,
     provider: normalizeProvider(existing.provider),
     azure: normalizeAzureSettings(existing.azure),
     auto: normalizeAutoSettings(existing.auto),
@@ -232,6 +237,21 @@ export async function readProviderSettings(home) {
         : config.azure.apiKey,
     },
   };
+}
+
+/**
+ * Synchronous provider read for sites that can't await (the parser is sync).
+ * Mirrors the `provider` field of readProviderSettings.
+ * @param {string} home
+ * @returns {"azure" | "fireworks"}
+ */
+export function readConfiguredProviderSync(home) {
+  try {
+    const raw = JSON.parse(readFileSync(globalConfigPath(home), "utf8"));
+    return normalizeProvider(raw?.provider);
+  } catch {
+    return "fireworks";
+  }
 }
 
 /**
@@ -269,6 +289,7 @@ export async function persistGlobalOpenaiApiKey(home, openaiApiKey) {
  *   anthropicApiKey?: string,
  *   openaiApiKey?: string,
  *   ssoAccountId?: string,
+ *   nexusAccount?: boolean,
  *   provider?: "azure" | "fireworks",
  *   azure?: { baseUrl?: string, apiKey?: string },
  *   auto?: { providers?: string[] | null },
@@ -289,6 +310,9 @@ export async function writeGlobalConfig(home, config) {
   const ssoAccountId = config.ssoAccountId !== undefined
     ? config.ssoAccountId
     : (typeof existing.ssoAccountId === "string" ? existing.ssoAccountId : "");
+  const nexusAccount = config.nexusAccount !== undefined
+    ? config.nexusAccount === true
+    : existing.nexusAccount === true;
   const provider = config.provider !== undefined
     ? normalizeProvider(config.provider)
     : normalizeProvider(existing.provider);
@@ -311,6 +335,7 @@ export async function writeGlobalConfig(home, config) {
     anthropicApiKey,
     openaiApiKey,
     ssoAccountId,
+    nexusAccount,
     provider,
     azure,
     auto,

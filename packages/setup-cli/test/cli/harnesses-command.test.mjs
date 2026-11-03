@@ -66,7 +66,7 @@ describe("fireconnect harnesses", () => {
       const { harnesses } = JSON.parse(await captureHarnessesOutput(home, { json: true }));
       assert.deepEqual(harnesses.filter((row) => row.connected).map((row) => row.command), ["claude-desktop"]);
       assert.equal(harnesses.find((row) => row.command === "chatgpt").id, "codex");
-      assert.match(await captureHarnessesOutput(home), /claude-desktop\s+Claude Desktop \(Fireworks inference\)\s+on/);
+      assert.match(await captureHarnessesOutput(home), /claude-desktop\s+Claude Desktop \(Limited\)\s+on/);
     });
   });
 });

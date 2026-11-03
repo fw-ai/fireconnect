@@ -34,13 +34,13 @@ import { HARNESSES } from "./id.mjs";
  * @property {boolean} [verbose]
  * @property {boolean} [plain]   // claude usage: force plain summary instead of interactive TUI
  * @property {"auto"|"prompt"|"skip"} [onboardingMode] // claude on model onboarding policy
+ * @property {"nexus"|"platform"|"unknown"|""} [accountType] // login --with-token metadata
  * @property {boolean} json
  * @property {string} [dbPath]   // cursor: explicit state.vscdb path
  * @property {boolean} [force]   // cursor/vscode: write even if the IDE is running
  * @property {boolean} [quiet]   // uninstall/upgrade: suppress per-harness on/off narration
  * @property {boolean} [storedOnly] // key export: prefer secret store; env only when nothing stored
  * @property {string} [vscodePath]      // vscode: explicit chatLanguageModels.json path
- * @property {boolean} [modelImplied] // `main` came from resolveOnContext (default or current model), not --model
  */
 
 /**
@@ -54,6 +54,11 @@ import { HARNESSES } from "./id.mjs";
  *   Read the harness's real config and return the active provider, the same
  *   ground truth `status` reports. Used by global `nexus status` so the
  *   per-harness summary reflects what's actually routed, not a stale flag.
+ * @property {(ctx: HarnessContext) => Promise<string | typeof import("../keys/key-current.mjs").LIVE_KEY | null>} [keyInUse]
+ *   The Fireworks key the harness sends while it is on Fireworks: its literal
+ *   copy, LIVE_KEY when it fetches the key from Nexus per request, or null when
+ *   off, an env reference, or unreadable without a keychain prompt. Never prompts. Feeds `nexus status`'s
+ *   `perHarness[].keyCurrent` (see harnessKeyCurrent).
  * @property {(ctx: HarnessContext) => Promise<void>} [usage]
  * @property {(ctx: HarnessContext) => Promise<void>} [live]
  * @property {(ctx: HarnessContext) => Promise<string>} resolveKey

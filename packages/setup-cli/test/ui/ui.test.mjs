@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { isColorEnabled, loadBannerArt, printBanner } from "../../lib/ui/index.mjs";
 import { stripBannerMarkup } from "../../lib/ui/banner-render.mjs";
-import { callbackPage } from "../../lib/auth/browser-auth.mjs";
-import { terminalTheme } from "../../lib/ui/color.mjs";
+import { callbackPage, signInPage } from "../../lib/auth/sign-in-page.mjs";
+import { terminalTheme, truecolorSupported } from "../../lib/ui/color.mjs";
 import { logoGradientAt } from "../../lib/ui/theme.mjs";
 import { CLI_COLORS, LOGO_GRADIENT } from "../../lib/ui/tokens.mjs";
 import {
@@ -33,8 +33,14 @@ const BANNER_SCRIPT = path.join(__dirname, "../../bin/nexus-banner.mjs");
 
 function runBannerScript(args = [], env = {}) {
   return new Promise((resolve, reject) => {
+    // An explicit `undefined` deletes the key from the child env; spreading it
+    // would spawn the child with the literal string "undefined".
+    const childEnv = { ...process.env, ...env };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete childEnv[key];
+    }
     const child = spawn(process.execPath, [BANNER_SCRIPT, ...args], {
-      env: { ...process.env, ...env },
+      env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -47,8 +53,37 @@ function runBannerScript(args = [], env = {}) {
 }
 
 describe("ui tokens", () => {
-  it("uses the primary color in the OAuth callback SVG", () => {
-    assert.match(callbackPage(true), new RegExp(`fill:${CLI_COLORS.dark.primary}`));
+  it("renders the sign-in pages in the Fireworks brand, self-contained", () => {
+    const pages = [callbackPage(true), callbackPage(false), signInPage("https://auth.example.com/oauth2/authorize?a=1&b=2")];
+    for (const page of pages) {
+      assert.match(page, /\.sym path\{fill:#F9F7F5\}/);
+      assert.match(page, /color:#280016/);
+      assert.doesNotMatch(page, /—|·/, "no em dash or middle dot");
+      assert.doesNotMatch(page, /<(script|link|img|iframe)\b|url\(/i, "no scripts or network assets");
+    }
+    assert.match(callbackPage(false), /Use an API key instead/);
+    assert.doesNotMatch(callbackPage(true), /Use an API key instead/);
+    assert.match(callbackPage(true), /Return to your terminal\./);
+    assert.match(callbackPage(false, { returnTo: "app" }), /Return to the Nexus app to try again\./);
+    assert.match(callbackPage(true, { returnTo: "app" }), /Return to the Nexus app\./);
+    // Pasting a key is a CLI fallback, not offered in the app.
+    assert.doesNotMatch(callbackPage(false, { returnTo: "app" }), /Use an API key instead|terminal/);
+  });
+
+  it("offers Google, GitHub, LinkedIn and email, with the authorize URL escaped", () => {
+    const page = signInPage(`https://auth.example.com/oauth2/authorize?a=1&b="x"`);
+    for (const provider of ["Google", "GitHub", "LinkedIn"]) {
+      assert.ok(page.includes(`href="https://auth.example.com/oauth2/authorize?a=1&amp;b=&quot;x&quot;&amp;identity_provider=${provider}"`), provider);
+      assert.match(page, new RegExp(`Continue with ${provider}`));
+    }
+    assert.match(page, /href="https:\/\/auth\.example\.com\/oauth2\/authorize\?a=1&amp;b=&quot;x&quot;"[^>]*>.*Continue with email/s);
+    assert.match(page, /href="https:\/\/nexus\.fireworks\.ai\/signup"[^>]*>Create an account/);
+  });
+
+  it("escapes single quotes as well as double quotes in the authorize URL", () => {
+    const page = signInPage("https://auth.example.com/oauth2/authorize?a='x'");
+    assert.ok(page.includes("a=&#39;x&#39;"));
+    assert.doesNotMatch(page, /a='x'/);
   });
 });
 
@@ -158,10 +193,49 @@ describe("color guide", () => {
   });
 
   it("paints the banner only on the install screen", async () => {
-    const install = await runBannerScript(["--context", "install"], { FORCE_COLOR: "1" });
+    // Pin a truecolor terminal: an inherited TERM_PROGRAM=Apple_Terminal
+    // (without COLORTERM) would downsample the gradient to 256 colors.
+    const install = await runBannerScript(["--context", "install"], { FORCE_COLOR: "1", TERM_PROGRAM: undefined, COLORTERM: undefined });
     assert.match(install.stdout, /\x1b\[38;2;217;117;71m/, "gradient starts at the first stop");
     const other = await runFireconnect(["banner"], { FORCE_COLOR: "1" });
     assert.doesNotMatch(other.stdout, /\x1b\[/);
+  });
+
+  it("uses truecolor everywhere except Terminal.app without COLORTERM", () => {
+    assert.equal(truecolorSupported({}), true);
+    assert.equal(truecolorSupported({ TERM_PROGRAM: "iTerm.app" }), true);
+    assert.equal(truecolorSupported({ TERM_PROGRAM: "Apple_Terminal" }), false);
+    assert.equal(truecolorSupported({ TERM_PROGRAM: "Apple_Terminal", COLORTERM: "truecolor" }), true);
+    assert.equal(truecolorSupported({ TERM_PROGRAM: "Apple_Terminal", COLORTERM: "24bit" }), true);
+  });
+
+  it("paints the install banner in 256 colors on Terminal.app", async () => {
+    // Clear COLORTERM: shells such as VS Code and iTerm export
+    // COLORTERM=truecolor, which would otherwise survive the spread of
+    // process.env and make the child report truecolor support.
+    const install = await runBannerScript(["--context", "install"], { FORCE_COLOR: "1", TERM_PROGRAM: "Apple_Terminal", COLORTERM: undefined });
+    assert.match(install.stdout, /\x1b\[38;5;\d+m/);
+    assert.doesNotMatch(install.stdout, /\x1b\[[34]8;2;/);
+  });
+
+  it("downsamples the shared palette on Terminal.app", () => {
+    const palette = path.join(__dirname, "../../lib/ui/palette.mjs");
+    const script = `const { ANSI, DATA, METER } = await import(${JSON.stringify(palette)});
+      console.log(JSON.stringify([ANSI.primary, ANSI.accent, ...Object.values(DATA), ...METER.modelPalette]));`;
+    const read = (env) => {
+      // Same `undefined`-deletes convention as runBannerScript, so an
+      // inherited COLORTERM/TERM_PROGRAM cannot leak into either case.
+      const childEnv = { ...process.env, ...env };
+      for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) delete childEnv[key];
+      }
+      return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+        env: childEnv,
+        encoding: "utf8",
+      }));
+    };
+    assert.ok(read({ TERM_PROGRAM: "Apple_Terminal", COLORTERM: undefined }).every((sgr) => /^(\x1b\[)?38;5;\d+m?$/.test(sgr)));
+    assert.ok(read({ TERM_PROGRAM: undefined, COLORTERM: undefined }).every((sgr) => /^(\x1b\[)?38;2;\d+;\d+;\d+m?$/.test(sgr)));
   });
 });
 

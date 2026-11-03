@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, cp, mkdtemp, rm } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { access, cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +34,49 @@ describe("ensure-cli-deps", () => {
     assert.ok(names.includes("smol-toml"));
     assert.ok(names.includes("ansis"));
     assert.ok(names.includes("cross-keychain"));
+  });
+
+  it("handles an npm PATH-resolution error like an install failure", async () => {
+    const setupDir = await mkdtemp(path.join(os.tmpdir(), "fc-npm-unavailable-"));
+    try {
+      await writeFile(path.join(setupDir, "package.json"), JSON.stringify({
+        dependencies: { "cross-keychain": "*" },
+      }));
+      assert.equal(
+        ensureCliDependencies(setupDir, {
+          npmCommandFn: () => { throw new Error("npm not found on PATH"); },
+        }),
+        false,
+      );
+    } finally {
+      await rm(setupDir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes npm spawn options through to execFileSync", async () => {
+    const setupDir = await mkdtemp(path.join(os.tmpdir(), "fc-npm-options-"));
+    try {
+      await writeFile(path.join(setupDir, "package.json"), JSON.stringify({
+        dependencies: { "cross-keychain": "*" },
+      }));
+      let call;
+      const installed = ensureCliDependencies(setupDir, {
+        npmCommandFn: () => ["npm", ["install"], { windowsVerbatimArguments: true }],
+        execFileSyncFn: (command, args, options) => {
+          call = { command, args, options };
+          const dependencyDir = path.join(setupDir, "node_modules", "cross-keychain");
+          mkdirSync(dependencyDir, { recursive: true });
+          writeFileSync(path.join(dependencyDir, "package.json"), "{}");
+        },
+      });
+
+      assert.equal(installed, true);
+      assert.equal(call.command, "npm");
+      assert.deepEqual(call.args, ["install"]);
+      assert.equal(call.options.windowsVerbatimArguments, true);
+    } finally {
+      await rm(setupDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -105,20 +149,30 @@ describe("dep-less checkout configure", () => {
     // empty cache so `on` takes the stale-cache path like other CLI specs.
     seedOnCommandCatalog(home, ["claude", "on"]);
 
+    // Keys enter through `login` only; `on` resolves the stored key.
+    const login = spawnSync(
+      process.execPath,
+      [
+        path.join(setupDir, "bin/nexus.mjs"),
+        "--home", home,
+        "login", "--api-key", "fw_fallback_test_key",
+      ],
+      { env, encoding: "utf8", timeout: 120000 },
+    );
+    assert.equal(login.status, 0, `${login.stderr}\n${login.stdout}`);
     const res = spawnSync(
       process.execPath,
       [
         path.join(setupDir, "bin/nexus.mjs"),
         "--home", home,
         "claude", "on", "--skip-install-check",
-        "--api-key", "fw_fallback_test_key",
       ],
       { env, encoding: "utf8", timeout: 120000 },
     );
     assert.equal(res.status, 0, `${res.stderr}\n${res.stdout}`);
     await assert.doesNotReject(access(path.join(home, "data/keyring/secrets.json")));
     assert.doesNotMatch(
-      `${res.stdout}\n${res.stderr}`,
+      `${res.stdout}\n${res.stderr}\n${login.stdout}\n${login.stderr}`,
       /cross-keychain secret module could not be loaded/,
     );
   });
@@ -157,13 +211,22 @@ describe("dep-less checkout configure", () => {
     const env = fileBackendEnv(home);
     seedOnCommandCatalog(home, ["claude", "on"]);
 
+    const login = spawnSync(
+      process.execPath,
+      [
+        path.join(setupDir, "bin/nexus.mjs"),
+        "--home", home,
+        "login", "--api-key", "fw_builtin_only_key",
+      ],
+      { env, encoding: "utf8", timeout: 120000 },
+    );
+    assert.equal(login.status, 0, `${login.stderr}\n${login.stdout}`);
     const res = spawnSync(
       process.execPath,
       [
         path.join(setupDir, "bin/nexus.mjs"),
         "--home", home,
         "claude", "on", "--skip-install-check",
-        "--api-key", "fw_builtin_only_key",
       ],
       { env, encoding: "utf8", timeout: 120000 },
     );

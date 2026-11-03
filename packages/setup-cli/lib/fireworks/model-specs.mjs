@@ -165,7 +165,7 @@ export const FIREWORKS_MODEL_SPECS = {
     capabilities: { contextWindow: 262_144, maxOutputTokens: 32_768, vision: false, toolCalling: true },
   },
   firerouter: {
-    label: "Auto",
+    label: "Nexus Auto",
     capabilities: {
       contextWindow: 1_048_575,
       maxOutputTokens: 131_072,
@@ -174,7 +174,7 @@ export const FIREWORKS_MODEL_SPECS = {
     },
   },
   auto: {
-    label: "Auto",
+    label: "Nexus Auto",
     capabilities: {
       contextWindow: 1_048_575,
       maxOutputTokens: 131_072,
@@ -461,6 +461,11 @@ export function requiresFastTierPricing(modelRef) {
     || shortId.endsWith("-turbo");
 }
 
+/** True for Spot routers (`*-spot`), which bill their own discounted rates. */
+export function requiresSpotTierPricing(modelRef) {
+  return specShortIdFromModelRef(modelRef).endsWith("-spot");
+}
+
 /** True when cached pricing tier matches what a model/router ref expects. */
 export function pricingMatchesModelRefTier(modelRef, pricing) {
   if (!pricing) {
@@ -468,6 +473,14 @@ export function pricingMatchesModelRefTier(modelRef, pricing) {
   }
   if (pricing.tier === "priority") {
     return false;
+  }
+  if (requiresSpotTierPricing(modelRef)) {
+    return pricing.tier === "spot";
+  }
+  // Other mode tiers (spot, or a mode added later) only price their own
+  // `*-<mode>` router, never a standard ref.
+  if (pricing.tier && pricing.tier !== "standard" && pricing.tier !== "fast") {
+    return specShortIdFromModelRef(modelRef).endsWith(`-${pricing.tier}`);
   }
   const wantsFast = requiresFastTierPricing(modelRef);
   return wantsFast ? pricing.tier === "fast" : pricing.tier !== "fast";

@@ -3,28 +3,34 @@ import { createHash, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import process from "node:process";
 import { link, openInBrowser } from "../ui/term.mjs";
+import { sanitize } from "../ui/sanitize.mjs";
+import { isLoopbackHostname, loopbackHostHeaders } from "../system/loopback.mjs";
 import { isRemoteContext } from "../config/remote-context.mjs";
-import { CLI_COLORS } from "../ui/tokens.mjs";
+import { PAGE_HEADERS, callbackPage, firstWindowPage, openingPage, signInPage } from "./sign-in-page.mjs";
 
 /**
  * Browser sign-in for `nexus login`.
  *
- * Primary flow: OAuth authorization-code + PKCE against the Cognito hosted UI,
- * catching the redirect on http://localhost:18000 — the redirect URI already
- * registered on the developer app client (firectl signin uses the same one).
+ * Primary flow: OAuth authorization-code + PKCE against Cognito, catching the
+ * redirect on http://localhost:18000 — the redirect URI already registered on
+ * the developer app client (firectl signin uses the same one). For the Nexus
+ * client (`nexusSignInPage`), the same listener serves our own sign-in page
+ * at that root (sign-in-page.mjs) first: the Google, GitHub and LinkedIn
+ * buttons go to Cognito's authorize endpoint with identity_provider set,
+ * which forwards straight to that provider, and email goes to Cognito's
+ * hosted UI, so the CLI never sees a password. Other callers (SSO accounts'
+ * own pools) open Cognito's authorize URL directly.
  *
  * Fallback flow (SSH / --no-browser): the RFC 8628 device-authorization
- * service at device-auth.fireworks.ai. The client is complete, but the
- * service's ALB is currently torn down (dangling CNAME, no IaC) — init fails
- * with a network error and callers degrade to the paste flow. When the
- * service is redeployed this lights up with no CLI change.
+ * service at device-auth.fireworks.ai. When the service is unreachable, init
+ * fails with a network error and callers degrade to the paste flow.
  *
  * Both flows yield a Cognito id_token; mint-api-key.mjs exchanges that for
  * the fw_ key everything downstream of auth actually uses.
  *
  * The client id, domains, and pool id are public values (the app client is a
- * public OAuth client — no secret exists). Env overrides are for pointing at
- * the dev pool during development.
+ * public OAuth client — no secret exists). Env overrides point the CLI at a
+ * different pool.
  */
 export const OAUTH_CLIENT_ID = process.env.NEXUS_OAUTH_CLIENT_ID?.trim()
   || "sueas7prsfrdp16nantbeqcjv";
@@ -32,13 +38,16 @@ export const COGNITO_DOMAIN = process.env.NEXUS_COGNITO_DOMAIN?.trim()
   || "https://fireworks.auth.us-west-2.amazoncognito.com";
 export const COGNITO_POOL_ID = process.env.NEXUS_COGNITO_POOL_ID?.trim()
   || "us-west-2_feAWJl2Gd";
+const DEFAULT_DEVICE_AUTH_URL = "https://device-auth.fireworks.ai";
 export const DEVICE_AUTH_URL = process.env.NEXUS_DEVICE_AUTH_URL?.trim()
-  || "https://device-auth.fireworks.ai";
+  || DEFAULT_DEVICE_AUTH_URL;
 
 /** The exact redirect URI registered on the Cognito app client (root path, port 18000). */
 export const CALLBACK_URI = "http://localhost:18000";
 const CALLBACK_PORT = 18000;
 const CALLBACK_TIMEOUT_MS = 300_000;
+/** How long a request still in flight when sign-in finishes may keep its connection. */
+const LINGER_MS = 1_000;
 
 const base64url = (buf) => buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
@@ -68,77 +77,104 @@ export function jwtClaims(token) {
 
 const failed = (failure, fatal = false) => ({ ok: false, idToken: "", email: "", failure, fatal });
 
-/**
- * The HTML served on localhost after the redirect lands. Self-contained — no
- * external assets, the page must render without touching the network — and
- * static: only fixed strings we control are interpolated. Its only job is to
- * send the user back to the terminal.
- * @param {boolean} ok
- */
-export function callbackPage(ok) {
-  const title = ok ? "Signed in" : "Sign-in failed";
-  const term = ok
-    ? `<span style="color:#4ade80">✓</span> authenticated · return to your terminal`
-    : `<span style="color:#c76b6b">✗</span> auth failed · return to your terminal to try again`;
-  const fallback = ok
-    ? ""
-    : `\n<a class="fallback" href="https://app.fireworks.ai/settings/users/api-keys">Or use an API key instead</a>`;
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} — Nexus</title>
-<style>
-:root{color-scheme:dark}
-body{margin:0;background:#121212;color:#ededed;min-height:100vh;box-sizing:border-box;padding:24px;
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
-.cb{width:360px;max-width:100%;box-sizing:border-box;background:#1a1a1a;border:1px solid #2a2a2a;
-  border-radius:16px;box-shadow:0 8px 44px rgba(0,0,0,.5);padding:40px 32px 34px;text-align:center}
-.mark{width:88px;height:auto;display:block;margin:0 auto 24px;overflow:visible}
-.mark path{fill:${ok ? CLI_COLORS.dark.primary : "#3a3a3a"}}
-h1{margin:0 0 20px;font-size:24px;font-weight:600;letter-spacing:-.02em;
-  font-family:"Space Grotesk","Avenir Next","Segoe UI",system-ui,sans-serif}
-.term{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;
-  background:#0e0e0e;border:1px solid #262626;border-radius:8px;padding:12px 14px;color:#a0a0a0}
-.fallback{display:inline-block;margin-top:16px;font-size:13px;color:${CLI_COLORS.dark.accent};text-decoration:none}
-.fallback:hover{text-decoration:underline}
-.foot{font-size:12px;color:#777777}
-@keyframes burst{0%{transform:scale(.2);opacity:0}60%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}
-.mark g{transform-box:fill-box;transform-origin:center${ok ? ";animation:burst 520ms cubic-bezier(.2,.8,.2,1) both" : ""}}
-@media(prefers-reduced-motion:reduce){.mark g{animation:none}}
-</style></head>
-<body>
-<div class="cb">
-<svg class="mark" viewBox="0 0 638 315" fill="none" aria-hidden="true"><g>
-<path d="M318.563 221.755C300.863 221.755 284.979 211.247 278.206 194.978L196.549 0H244.342L318.842 178.361L393.273 0H441.066L358.92 195.048C352.112 211.247 336.263 221.755 318.563 221.755Z"/>
-<path d="M425.111 314.933C407.481 314.933 391.667 304.494 384.824 288.366C377.947 272.097 381.507 253.524 393.936 240.921L542.657 90.2803L561.229 134.094L425.076 271.748L619.147 270.666L637.72 314.479L425.146 315.003L425.076 314.933H425.111Z"/>
-<path d="M0 314.408L18.5727 270.595L212.643 271.677L76.525 133.988L95.0977 90.1748L243.819 240.816C256.247 253.384 259.843 272.026 252.93 288.26C246.088 304.424 230.203 314.827 212.643 314.827L0.0698221 314.339L0 314.408Z"/>
-</g></svg>
-<h1>${title}</h1>
-<div class="term">${term}</div>${fallback}
-</div>
-<div class="foot">Nexus CLI · Fireworks AI</div>
-</body></html>`;
+const PAGE_OWNER_COOKIE = "nexus_signin";
+export const PAGE_REUSED_FAILURE = "The sign-in link was opened in a second browser, so sign-in was stopped for safety; "
+  + "finish in the browser it opens.";
+
+/** One cookie's value from a Cookie header, or "". */
+function cookieValue(header, name) {
+  for (const part of String(header ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return "";
 }
 
 /**
  * Wait for the OAuth redirect on localhost:18000. Resolves with the
  * authorization code once the browser lands, or a failure line on
- * error/timeout. `onListening` runs after the port is bound (the listener must
- * exist before the browser navigates) to print status and open the browser.
+ * error/timeout. With `signInPage`, the listener also serves the sign-in page
+ * that links to `authorizeUrl`, at a secret path on 127.0.0.1 (see below).
+ * `onListening` runs after the port is bound (the listener must exist before
+ * the browser navigates) with the URL to open (that page, else `authorizeUrl`
+ * itself), to print status and open the browser.
  * @param {string} authorizeUrl
  * @param {string} state
  * @param {(url: string) => Promise<void>} onListening
- * @param {{ timeoutMs?: number, port?: number }} [options]
+ * @param {{ timeoutMs?: number, port?: number, signInPage?: boolean }} [options]
  * @returns {Promise<{ code: string, failure: string, fatal: boolean }>}
  */
-function waitForCallback(authorizeUrl, state, onListening, { timeoutMs = CALLBACK_TIMEOUT_MS, port = CALLBACK_PORT } = {}) {
+function waitForCallback(authorizeUrl, state, onListening, { timeoutMs = CALLBACK_TIMEOUT_MS, port = CALLBACK_PORT, signInPage: servePage = false, returnTo = "terminal" } = {}) {
   return new Promise((resolve) => {
-    const server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", CALLBACK_URI);
+    // The sign-in page carries state and the PKCE challenge in its links, so
+    // it lives at a path only the opened URL knows. That URL is passed to
+    // the browser opener as an argument, which other OS users on the same
+    // machine may be able to read, so the page also belongs to the first
+    // browser that opens it (a cookie): reloads and Back there still work,
+    // and a load from any other browser stops the sign-in, so whoever else
+    // has the URL can never finish it with their own account. The first
+    // load without the cookie gets one retry instead (no state in it): a
+    // browser that opened the link twice at once (two tabs) sends its second
+    // request before the cookie is stored, and its retry carries the cookie.
+    // Later loads with no cookie at all (cookies blocked, a prerender, a
+    // restored tab) get a page with no state either, and sign-in goes on in
+    // the first window; only a cookie that isn't ours stops it.
+    const pagePath = `/s/${base64url(randomBytes(32))}`;
+    const pageOwner = base64url(randomBytes(32));
+    let pageClaimed = false;
+    let strangerRetried = false;
+    const hosts = loopbackHostHeaders(port);
+    const handle = (req, res) => {
       // "Connection: close" everywhere: a lingering keep-alive socket would
       // otherwise outlive server.close() and hold the process open after
       // sign-in finishes.
+      // Only answer requests addressed to this listener by name, before
+      // anything else looks at the request: a DNS-rebinding page reaches
+      // loopback under its own Host and gets nothing (no page, and no say in
+      // the callback's outcome).
+      if (!hosts.includes(req.headers.host ?? "")) {
+        res.writeHead(400, { Connection: "close" });
+        res.end();
+        return;
+      }
+      // Any page the user visits can send a request here (an <img> tag), so
+      // a target that doesn't parse is answered, never thrown.
+      let url;
+      try {
+        url = new URL(req.url ?? "/", CALLBACK_URI);
+      } catch {
+        res.writeHead(400, { Connection: "close" });
+        res.end();
+        return;
+      }
+      if (servePage && url.pathname === pagePath) {
+        const owner = cookieValue(req.headers.cookie, PAGE_OWNER_COOKIE);
+        if (pageClaimed && owner !== pageOwner && !strangerRetried) {
+          strangerRetried = true;
+          res.writeHead(200, { ...PAGE_HEADERS, Refresh: "1", Connection: "close" });
+          res.end(openingPage());
+          return;
+        }
+        if (pageClaimed && !owner) {
+          res.writeHead(200, { ...PAGE_HEADERS, Connection: "close" });
+          res.end(firstWindowPage());
+          return;
+        }
+        if (pageClaimed && owner !== pageOwner) {
+          res.writeHead(409, { ...PAGE_HEADERS, "Content-Type": "text/plain; charset=utf-8", Connection: "close" });
+          res.end("This sign-in link was opened in another browser, so this sign-in was stopped. Run nexus login again.\n");
+          finish({ code: "", failure: PAGE_REUSED_FAILURE, fatal: true });
+          return;
+        }
+        pageClaimed = true;
+        res.writeHead(200, {
+          ...PAGE_HEADERS,
+          "Set-Cookie": `${PAGE_OWNER_COOKIE}=${pageOwner}; Path=/s/; HttpOnly; SameSite=Lax`,
+          Connection: "close",
+        });
+        res.end(signInPage(authorizeUrl));
+        return;
+      }
       if (url.pathname !== "/") {
         res.writeHead(404, { Connection: "close" });
         res.end();
@@ -148,8 +184,8 @@ function waitForCallback(authorizeUrl, state, onListening, { timeoutMs = CALLBAC
       const code = url.searchParams.get("code") ?? "";
       const stateOk = url.searchParams.get("state") === state;
       const ok = !error && stateOk && Boolean(code);
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
-      res.end(callbackPage(ok));
+      res.writeHead(200, { ...PAGE_HEADERS, Connection: "close" });
+      res.end(callbackPage(ok, { returnTo }));
       // A stray request shouldn't kill the wait unless Cognito reported a
       // real outcome — and "real" means the CSRF state matches, for errors
       // too (RFC 6749 §4.1.2.1 echoes state on error redirects). Otherwise
@@ -162,7 +198,33 @@ function waitForCallback(authorizeUrl, state, onListening, { timeoutMs = CALLBAC
       } else if (error && stateOk) {
         finish({ code: "", failure: `The sign-in page reported an error (${error}).`, fatal: false });
       }
-    });
+    };
+
+    // The registered redirect is http://localhost, which browsers may resolve
+    // to either loopback address, so listen on both: a process holding [::1]
+    // would otherwise receive the callback (and its state) and leave the
+    // browser on its own page mid-sign-in. No IPv6 on the machine is fine.
+    const servers = [createServer(handle), createServer(handle)];
+
+    // Browsers open spare connections ahead of time (Chrome preconnects to
+    // the page's own origin). One that never sends a request isn't idle to
+    // Node, so server.close() would wait out the 60s headers timeout with
+    // `nexus login` stuck after "Signed in". Those are dropped at finish;
+    // anything else still open (a request that never completed) gets a
+    // moment to flush, then goes too.
+    const sockets = new Set();
+    const unused = new Set();
+    for (const server of servers) {
+      server.on("connection", (socket) => {
+        sockets.add(socket);
+        unused.add(socket);
+        socket.once("data", () => unused.delete(socket));
+        socket.once("close", () => {
+          sockets.delete(socket);
+          unused.delete(socket);
+        });
+      });
+    }
 
     let timer = null;
     let settled = false;
@@ -173,35 +235,86 @@ function waitForCallback(authorizeUrl, state, onListening, { timeoutMs = CALLBAC
       }
       settled = true;
       clearTimeout(timer);
-      server.close();
+      for (const server of servers) {
+        server.close();
+      }
+      for (const socket of unused) {
+        socket.destroy();
+      }
+      setTimeout(() => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+      }, LINGER_MS).unref();
       resolve(result);
     };
-    server.on("error", (error) => {
-      finish({
-        code: "",
-        failure: error?.code === "EADDRINUSE"
-          ? `Port ${port} is in use (is another sign-in running?).`
-          : `Couldn't start the local sign-in listener (${error?.message ?? "unknown error"}).`,
-        fatal: false,
+    const failedToListen = (error) => finish({
+      code: "",
+      failure: error?.code === "EADDRINUSE"
+        ? `Port ${port} is in use (is another sign-in running?).`
+        : `Couldn't start the local sign-in listener (${error?.message ?? "unknown error"}).`,
+      fatal: false,
+    });
+    const listen = (server, host) => new Promise((done) => {
+      server.once("error", done);
+      server.listen(port, host, () => {
+        server.off("error", done);
+        server.on("error", failedToListen);
+        done(null);
       });
     });
-    // Loopback only — the redirect is http://localhost, so nothing off-host
-    // ever belongs here. Browsers that try ::1 first fall back to 127.0.0.1
-    // when the connection is refused.
-    server.listen(port, "127.0.0.1", async () => {
+
+    (async () => {
+      // Loopback only — nothing off-host ever belongs here.
+      const v4 = await listen(servers[0], "127.0.0.1");
+      if (v4) {
+        failedToListen(v4);
+        return;
+      }
+      const v6 = await listen(servers[1], "::1");
+      if (v6 && v6.code === "EADDRINUSE") {
+        failedToListen(v6);
+        return;
+      }
+      if (v6) {
+        servers.pop();
+      }
+      if (settled) {
+        return;
+      }
       timer = setTimeout(() => {
         finish({ code: "", failure: "Timed out waiting for the browser sign-in.", fatal: false });
       }, timeoutMs);
-      await onListening(authorizeUrl);
-    });
+      // The page opens on the IP literal (RFC 8252 §8.3); the Cognito
+      // callback comes back on the registered http://localhost, which both
+      // binds above answer.
+      await onListening(servePage ? `http://127.0.0.1:${port}${pagePath}` : authorizeUrl);
+    })();
   });
 }
 
 /**
- * Primary flow: authorization-code + PKCE via the Cognito hosted UI, redirect
- * caught on localhost. `onStatus` receives user-facing progress lines.
- * `open` is the browser opener (injectable for tests).
- * @param {{ onStatus?: (line: string) => void, openBrowser?: boolean, open?: (url: string) => Promise<boolean>, cognitoDomain?: string, clientId?: string, timeoutMs?: number }} [options]
+ * Where the result page sends the user back to. `nexus login` always runs on
+ * a terminal; Nexus desktop drives this module from a helper process whose
+ * stdio are pipes, so no terminal means the app started the sign-in.
+ * @param {{ stdin?: { isTTY?: boolean }, stdout?: { isTTY?: boolean } }} [stdio]
+ * @returns {"terminal" | "app"}
+ */
+export function defaultReturnTo({ stdin = process.stdin, stdout = process.stdout } = {}) {
+  return stdin?.isTTY || stdout?.isTTY ? "terminal" : "app";
+}
+
+/**
+ * Primary flow: authorization-code + PKCE via Cognito, redirect caught on
+ * localhost. `nexusSignInPage` (the Nexus client only) starts from our own
+ * sign-in page instead of Cognito's hosted UI. `returnTo` picks the result
+ * page's wording (terminal or app; see defaultReturnTo). `onStatus`
+ * receives user-facing progress lines. `open` is the browser opener
+ * (injectable for tests and for apps that compose this flow). Its second
+ * argument carries `authorizeUrl`, the hosted authorize URL behind our own
+ * sign-in page: a caller that needs it must take it from here, never by
+ * loading the page, since the first load claims the page for its browser.
+ * @param {{ onStatus?: (line: string) => void, openBrowser?: boolean, open?: (url: string, info: { authorizeUrl: string }) => Promise<boolean>, cognitoDomain?: string, clientId?: string, nexusSignInPage?: boolean, returnTo?: "terminal" | "app", timeoutMs?: number }} [options]
  * @returns {Promise<TokenResult>}
  */
 export async function signInViaLocalhostCallback({
@@ -210,9 +323,11 @@ export async function signInViaLocalhostCallback({
   // opener entirely and print the URL (it still completes sign-in via WSL's
   // Windows browser or an SSH port-forward to localhost:18000).
   openBrowser = !isRemoteContext(),
-  open = openInBrowser,
+  open = (url) => openInBrowser(url),
   cognitoDomain = COGNITO_DOMAIN,
   clientId = OAUTH_CLIENT_ID,
+  nexusSignInPage = false,
+  returnTo = defaultReturnTo(),
   timeoutMs = CALLBACK_TIMEOUT_MS,
 } = {}) {
   const verifier = base64url(randomBytes(32));
@@ -231,14 +346,14 @@ export async function signInViaLocalhostCallback({
       onStatus(`Open this URL to sign in:\n  ${link(url)}`);
       return;
     }
-    if (await open(url)) {
+    if (await open(url, { authorizeUrl })) {
       onStatus("Opened your browser — finish signing in there.");
       onStatus(`If nothing opened, sign in at:\n  ${link(url)}`);
       return;
     }
     onStatus(`Couldn't open a browser here. To sign in, open this URL in a browser on this machine:\n  ${link(url)}`);
     onStatus("Or press Ctrl+C and run  nexus login --paste  to paste a key instead.");
-  }, { timeoutMs });
+  }, { timeoutMs, signInPage: nexusSignInPage, returnTo });
   if (!code) {
     return failed(failure, fatal);
   }
@@ -265,6 +380,30 @@ export async function signInViaLocalhostCallback({
   }
   const email = typeof jwtClaims(tokens.id_token).email === "string" ? jwtClaims(tokens.id_token).email : "";
   return { ok: true, idToken: tokens.id_token, email, failure: "", fatal: false };
+}
+
+/**
+ * The verification URL to open or print, or "" when it isn't on the sign-in
+ * service's own origin over https (plain http only when the service itself
+ * is a loopback address, as in development). The service builds the link
+ * from its own public address, which stays the default sign-in host when
+ * the CLI reaches the service under another name, so that origin is
+ * accepted too.
+ * @param {unknown} candidate
+ * @param {string} serviceUrl
+ */
+export function trustedVerificationUrl(candidate, serviceUrl) {
+  try {
+    const url = new URL(String(candidate));
+    const service = new URL(serviceUrl);
+    const loopback = isLoopbackHostname(service.hostname);
+    const schemeOk = url.protocol === "https:" || (loopback && url.protocol === "http:" && service.protocol === "http:");
+    const sameOrigin = url.hostname === service.hostname && url.port === service.port;
+    if (!schemeOk || !(sameOrigin || url.origin === DEFAULT_DEVICE_AUTH_URL) || url.username || url.password) return "";
+    return url.href;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -309,8 +448,11 @@ export async function signInViaDeviceFlow({
     return failed(`Couldn't reach the browser sign-in service (${error?.message ?? "network error"}).`);
   }
 
-  const verifyUrl = init.verification_uri_complete || init.verification_uri;
-  onStatus(`Your one-time code is  ${init.user_code}`);
+  const verifyUrl = trustedVerificationUrl(init.verification_uri_complete || init.verification_uri, serviceUrl);
+  if (!verifyUrl) {
+    return failed("Browser sign-in service returned an unexpected verification link.");
+  }
+  onStatus(`Your one-time code is  ${sanitize(init.user_code)}`);
   if (openBrowser && await openInBrowser(verifyUrl)) {
     onStatus("Opened your browser — approve the sign-in there (the code is pre-filled).");
   } else {

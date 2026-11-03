@@ -10,6 +10,8 @@ Nexus CLI points each harness at Fireworks by editing that harness's own setting
 - **`nexus <harness> off`** puts your original settings back **exactly as they were**, byte for byte.
 - One Fireworks key is stored once (OS keychain where available) and shared by every harness you connect.
 
+> **Only works on this computer.** Nexus CLI changes the settings of harnesses running on the machine where you run it. Cloud and remote agents (for example Cursor background agents, Claude Code on the web, or Copilot coding agent) run on someone else's machine, never read those settings, and aren't supported — even when you're signed in to the same account.
+
 **Contents:** [Quick start](#quick-start) · [Supported harnesses](#supported-harnesses) ·
 [Default models](#default-models) · [Claude Code](#claude-code) · [Codex](#codex) ·
 [OpenCode](#opencode) · [Pi](#pi) · [Cursor](#cursor) · [VS Code Chat](#vs-code-chat) ·
@@ -47,6 +49,7 @@ nexus claude       # routes through Fireworks, appends the catalog to /model
 
 ```text
 ✓ Claude Code → Fireworks · auto
+Only works on this computer. Cloud and remote agents aren't supported.
 Model picker
   Anthropic model slots → unchanged
   Fireworks catalog → appended in /model
@@ -122,7 +125,7 @@ Every harness supports `on`, `off`, `status`, and `help`, and every model change
 | [GitHub Copilot app](#github-copilot-app) | `nexus copilot-app` | `~/.copilot/data.db` (SQLite) | **Quit Copilot first** |
 | [GitHub Copilot CLI](#github-copilot-cli) | `nexus copilot-cli` | `~/.copilot/providers.json` + `settings.json` | Restart `copilot` after |
 | [DeepSeek Harness](#deepseek-harness) | `nexus deepseek` | `~/.dsh/settings.yaml` + patch layers | Restart `dsh` after |
-| [Claude Desktop](#claude-desktop) | `nexus claude-desktop` | Claude-3p provider profile + loopback shim | **Quit and reopen Desktop after** |
+| [Claude Desktop](#claude-desktop) (Limited) | `nexus claude-desktop` | Claude-3p provider profile + loopback shim | **Quit and reopen Desktop after** |
 
 `off` restores from a snapshot kept under `~/.nexus/` (files) or removes exactly what Nexus CLI
 added (IDEs and databases). Your own providers, models, and settings are never touched.
@@ -281,7 +284,7 @@ models answer** — Cursor's built-ins are hidden until `nexus cursor off`, whic
 what Nexus CLI added. `--db-path <path>` for a non-default database (e.g. Insiders).
 
 ```bash
-nexus cursor --api-key fw_...
+nexus cursor
 nexus cursor --model glm-fast-latest
 nexus cursor off
 ```
@@ -297,7 +300,7 @@ either way, with a warning). `off` restores the JSON exactly and deletes the sec
 providers you set up yourself are untouched. `--vscode-path <path>` for a non-default file.
 
 ```bash
-nexus vscode --api-key fw_...
+nexus vscode
 nexus vscode --model deepseek-flash-latest
 nexus vscode off
 ```
@@ -312,7 +315,7 @@ BYOK models in the app don't get image input, the hover Context row, or AI-credi
 > **Quit GitHub Copilot before `on` or `off`**, same rule as Cursor.
 
 ```bash
-nexus copilot-app --api-key fw_...
+nexus copilot-app
 nexus copilot-app --model glm-latest
 nexus copilot-app off
 ```
@@ -329,7 +332,7 @@ anything you added yourself. The desktop app and the CLI share a folder but no s
 turn on either, both, or neither.
 
 ```bash
-nexus copilot-cli --api-key fw_...
+nexus copilot-cli
 nexus copilot-cli --model glm-latest
 nexus copilot-cli off
 ```
@@ -349,6 +352,8 @@ nexus deepseek off
 ```
 
 ## Claude Desktop
+
+> **Limited: while Nexus is on, Claude Desktop opens a new local workspace without your chats, and each imported connector needs a one-time re-auth. To return to your main workspace, run `nexus claude-desktop off` and reopen Claude Desktop. Nothing is lost. For the fullest experience, use Claude Code, Codex, or the ChatGPT desktop app.**
 
 Runs Claude Desktop's Chat, Cowork, and Code surfaces on Fireworks models, with the
 Fireworks line-up and per-model effort menus in the picker. Family defaults start on
@@ -394,6 +399,7 @@ in third-party mode:
 | Third-party mode does not show your claude.ai chats, projects, artifacts, memory, or scheduled tasks. Nothing is deleted, and `off` brings them back. | Recreate what you need while connected |
 | New chats, projects, artifacts, and memory are saved only on this computer. They don't appear on claude.ai web or mobile and can't be shared. | Run `off` to share or work on the web |
 | Skills and plugins are copied over on `on`. Run `on` again to copy ones you add later. | Re-run `nexus claude-desktop on` |
+| Cowork and Chat can reach any website. To limit that, set Allowed egress hosts in Developer → Configure Third-Party Inference; `on` keeps your list. | Third-party mode blocks all hosts when the list is unset, so `on` writes `coworkEgressAllowedHosts: ["*"]` |
 | Scheduled tasks run only while the computer is awake; Chat has no past-chat search; voice mode is unavailable | `off` restores them |
 
 Anthropic's own summary: [third-party feature matrix](https://claude.com/docs/third-party/claude-desktop/feature-matrix).
@@ -548,6 +554,8 @@ nexus <harness> status --json  Same state as JSON (for CI checks).
 nexus <harness> help         Help for that harness.
 ```
 
+`keyCurrent` in `nexus status --json` says whether a harness that's on sends your stored Fireworks key: `true` (it holds that key, or fetches it per request through Nexus, like Claude Code's `nexus key export` helper), `false` (it still holds a different Fireworks key, e.g. after switching accounts; run `nexus <harness> on` again), or `null` (off, no key, a `$FIREWORKS_API_KEY` reference whose value Nexus doesn't control, or a copy that can only be read through a keychain prompt, which `status` never triggers). Keys are compared in memory and never printed.
+
 Claude adds `nexus claude usage` and `nexus claude demo`. A few plumbing commands also exist but stay out of the main flow: `nexus key export` (print a stored key), `nexus claude-desktop mcp list|add|remove|sync`, and `nexus claude demo clean`.
 
 **Global**
@@ -556,6 +564,7 @@ Claude adds `nexus claude usage` and `nexus claude demo`. A few plumbing command
 nexus login                  Sign in: browser (creates a key) or paste a key you have.
 nexus logout                 Clear the stored key (keychain entry + config ref).
 nexus status                 Show sign-in state, environment, key storage, and each harness (on/off, installed).
+nexus status --json          Same as JSON. Each `perHarness` entry has `id`, `enabled`, `installed`, and `keyCurrent`.
 nexus model list             Browse the serverless catalog (`models` is an alias).
 nexus configure              Set the provider (Azure/Foundry).
 nexus auto                   Show the auto router's provider scope and saved keys.
@@ -609,6 +618,7 @@ anything. Unset it first. `<harness> on` may still read, save, and bake it into 
 | A harness gets 401s after you rotated your key | Run `nexus login` — it re-saves the new key everywhere. Quit VS Code first. |
 | `login` fails with a key-storage conflict | `FIREWORKS_API_KEY` is set. Unset it so Nexus CLI can store a key. |
 | ChatGPT app thread ignores Fireworks models | Threads keep the provider they started on. Start a new thread (see [Codex](#codex)). |
+| Codex or the ChatGPT app says `duplicate key` in `config.toml` | Quit the app, then run `nexus update` (or `nexus codex on`): it keeps the newest Fireworks headers and removes the stale copy. |
 | Something else | `nexus status` shows sign-in, environment, storage, and whether each harness is on and installed. |
 
 ### Text-only models and images

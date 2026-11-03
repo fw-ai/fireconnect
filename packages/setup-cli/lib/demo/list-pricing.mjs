@@ -76,8 +76,8 @@ const ANTHROPIC_LIST_RATES = {
 /** USD per 1M tokens, list price. Embedded reference — verify at the source URL.
  * Verified 2026-07-06 against https://openai.com/api/pricing/.
  * GPT-5.5 / 5.6 / 6-Astra short tiers + the 272K long-context tier verified
- * against the same card via firerouter/litellm.yaml (developers.openai.com
- * pricing, 2026-08-02; Astra 2026-09-03): above 272K input tokens the full
+ * against developers.openai.com pricing (2026-08-02; Astra 2026-09-03):
+ * above 272K input tokens the full
  * request bills at ~2x input/cache and 1.5x output. OpenAI prompt-cache reads
  * bill at 0.1x input and cache writes at 1.25x input on these models (single
  * automatic cache — no 5m/1h TTL split, so both write fields carry one rate).
@@ -88,7 +88,7 @@ const OPENAI_LONG_CONTEXT_INPUT_TOKENS = 272_000;
 const OPENAI_LIST_RATES = {
   // GPT-6 Astra (OpenAI 2026-09-03). Short-context rates below; the `long`
   // tier applies to the FULL request once input exceeds 272K tokens.
-  // Aliases (gpt-6 / gpt6 / astra, per firerouter/litellm.yaml) live in
+  // Aliases (gpt-6 / gpt6 / astra) live in
   // OPENAI_ALIASES so there is one rate row to keep correct.
   "gpt-6-astra": {
     input: 10, cacheRead: 1.0, cacheWrite5m: 12.5, cacheWrite1h: 12.5, output: 50,
@@ -159,7 +159,7 @@ const OPENAI_LIST_RATES = {
 const DEFAULT_ANTHROPIC_RATE = { input: 2, output: 10, label: "Claude Sonnet (reference)" };
 const DEFAULT_OPENAI_RATE = { input: 2.5, output: 10, label: "GPT-4o (reference)" };
 
-/** Short ids that name a table row without being one (gpt-6 / gpt6 / astra per firerouter/litellm.yaml). */
+/** Short ids that name a table row without being one (gpt-6 / gpt6 / astra). */
 const OPENAI_ALIASES = {
   "gpt-6": "gpt-6-astra",
   gpt6: "gpt-6-astra",

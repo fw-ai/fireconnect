@@ -16,8 +16,8 @@ describe("fireworks-reasoning", () => {
     }
   });
 
-  it("advertises max for GLM and DeepSeek, standard ladder elsewhere", () => {
-    for (const slug of ["glm-5p2", "glm-5p3", "glm-5p3-fast", "glm-5p3-flash", "deepseek-v4-flash", "deepseek-v4-pro"]) {
+  it("advertises max for GLM 5.3 and DeepSeek V4.1, standard ladder elsewhere", () => {
+    for (const slug of ["glm-5p3", "glm-5p3-fast", "glm-5p3-flash", "deepseek-v4p1-flash"]) {
       const config = MODEL_REASONING[`accounts/fireworks/models/${slug}`];
       assert.deepEqual(config.levels.map((level) => level.effort), ["low", "medium", "high", "max"], slug);
     }
@@ -34,9 +34,20 @@ describe("fireworks-reasoning", () => {
 
   it("resolves versioned slugs to their unversioned base", () => {
     assert.deepEqual(
-      reasoningEffortNamesFor("accounts/fireworks/models/deepseek-v4-flash-0731"),
+      reasoningEffortNamesFor("accounts/fireworks/models/glm-5p3-0901"),
       ["low", "medium", "high", "max"],
     );
+    assert.deepEqual(
+      reasoningEffortNamesFor("accounts/fireworks/models/deepseek-v4p1-flash-1017"),
+      ["low", "medium", "high", "max"],
+    );
+    for (const slug of ["minimax-m3p1-flash", "muse-spark-open"]) {
+      assert.deepEqual(
+        reasoningEffortNamesFor(`accounts/fireworks/models/${slug}`),
+        ["low", "medium", "high"],
+        slug,
+      );
+    }
   });
 
   it("inherits the ladder from the live router base-model mapping", () => {

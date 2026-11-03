@@ -75,6 +75,44 @@ describe("fireworks-pricing", () => {
     assert.equal(pricing.output, 6.60);
   });
 
+  it("never prices a standard model with its spot router's rates", () => {
+    try {
+      buildPickerCatalogFromApiModels([
+        mockServerlessModel({
+          id: "accounts/fireworks/models/example-model",
+          display_name: "Example Model",
+          aliases: ["accounts/fireworks/routers/example-latest"],
+          pricing: [
+            { sku: "LLM input tokens (uncached)", amount: "1" },
+            { sku: "LLM output tokens", amount: "4" },
+          ],
+        }),
+        mockServerlessModel({
+          id: "accounts/fireworks/models/example-model",
+          display_name: "Example Model",
+          serverless_mode: "spot",
+          usage_identifier: "accounts/fireworks/routers/example-model-spot",
+          pricing: [
+            { sku: "LLM input tokens (uncached)", amount: "0.7" },
+            { sku: "LLM output tokens", amount: "2.8" },
+          ],
+        }),
+      ]);
+      for (const ref of ["example-model", "accounts/fireworks/models/example-model", "example-latest"]) {
+        const pricing = lookupFireworksPricing(ref);
+        assert.equal(pricing?.tier, "standard", ref);
+        assert.equal(pricing?.input, 1, ref);
+        assert.equal(pricing?.output, 4, ref);
+      }
+      const spot = lookupFireworksPricing("example-model-spot");
+      assert.equal(spot?.tier, "spot");
+      assert.equal(spot?.input, 0.7);
+      assert.equal(spot?.output, 2.8);
+    } finally {
+      seedPricingCache();
+    }
+  });
+
   it("US-only routers price from their static specs, not borrowed base rates", () => {
     // US rows aren't in the catalog; their documented premium rates come from
     // the static specs rather than the global base model's.

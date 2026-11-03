@@ -72,11 +72,11 @@ describe("normalizeAzureBaseUrl", () => {
 
   it("reduces a portal project endpoint to the resource-root openai/v1 base", () => {
     assert.equal(
-      normalizeAzureBaseUrl("https://my-res.services.ai.azure.com/api/projects/msft-fw-foundry"),
+      normalizeAzureBaseUrl("https://my-res.services.ai.azure.com/api/projects/example-project"),
       "https://my-res.services.ai.azure.com/openai/v1",
     );
     assert.equal(
-      normalizeAzureBaseUrl("https://my-res.services.ai.azure.com/api/projects/msft-fw-foundry/"),
+      normalizeAzureBaseUrl("https://my-res.services.ai.azure.com/api/projects/example-project/"),
       "https://my-res.services.ai.azure.com/openai/v1",
     );
   });
@@ -124,7 +124,7 @@ describe("resolveAzureBaseUrl", () => {
 });
 
 describe("resolveAzureOnApiKey", () => {
-  it("uses flag, then active harness key, then configured key, then env", async () => {
+  it("uses flag, then configured key, then active harness key, then env", async () => {
     const flagged = await resolveAzureOnApiKey({
       apiKey: "flag",
       apiKeyFromFlag: true,
@@ -133,8 +133,15 @@ describe("resolveAzureOnApiKey", () => {
     });
     assert.equal(flagged.apiKey, "flag");
 
-    const stored = await resolveAzureOnApiKey({
+    // `configure` rotates: a configured literal wins over the harness-stored key.
+    const rotated = await resolveAzureOnApiKey({
       configuredApiKey: "configured",
+      getExistingKey: async () => "stored",
+    });
+    assert.equal(rotated.apiKey, "configured");
+    assert.equal(rotated.reusedExistingKey, false);
+
+    const stored = await resolveAzureOnApiKey({
       getExistingKey: async () => "stored",
     });
     assert.equal(stored.apiKey, "stored");

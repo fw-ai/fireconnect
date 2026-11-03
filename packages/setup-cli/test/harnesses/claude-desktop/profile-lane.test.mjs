@@ -1,14 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-import { createAutoKeysLoader, createAutoProvidersLoader, createShimServer } from "../../../lib/harnesses/claude-desktop/shim.mjs";
+import {
+  createAutoKeysLoader, createAutoProvidersLoader, createGatewayKeyLoader, createShimServer, isEntrypoint,
+} from "../../../lib/harnesses/claude-desktop/shim.mjs";
 import {
   detectConnectors, migrateSkillsPlugin, DEFAULT_MODEL_MAP, firstPartyDir, thirdPartyDir,
+  disableProfileLane, egressHosts, enableProfileLane, readProfileStatus, shimNotReadyMessage, waitForShim,
+  syncReportLines,
 } from "../../../lib/harnesses/claude-desktop/profile-lane.mjs";
+import { ensureShimSecret, readShimSecret, shimSecretPath } from "../../../lib/harnesses/claude-desktop/shim-auth.mjs";
+import { migrateClaudeDesktopEgressOnUpgrade } from "../../../lib/harnesses/claude-desktop/upgrade-migrations.mjs";
+import { seedKeychainConfig, withoutEnvFireworksKey } from "../../helpers.mjs";
 
 process.env.NEXUS_TEST = "1";
 
@@ -188,7 +197,7 @@ test("sync rebuilds from sources; org-registered entries kept with oauth", async
   } finally { await cleanup(); }
 });
 
-import { parseClaudeMcpList, connectorSlug } from "../../../lib/harnesses/claude-desktop/profile-lane.mjs";
+import { parseClaudeMcpList, connectorSlug, durableClientFor, listOrgConnectorsViaClaudeCli } from "../../../lib/harnesses/claude-desktop/profile-lane.mjs";
 
 test("connectorSlug turns display names into managed-MCP-safe names", () => {
   assert.equal(connectorSlug("Google Drive"), "google-drive");
@@ -322,6 +331,20 @@ test("desktopOAuth pins localhost for pre-registered clients with a fixed port",
   assert.equal(desktopOAuth(undefined), undefined);
 });
 
+test("desktopOAuth supplies the issuer a client secret needs", () => {
+  assert.deepEqual(desktopOAuth({ clientId: "c", clientSecret: "s" }, "https://mcp.slack.com/mcp").authorizationServer,
+    ["https://slack.com"]);
+  assert.deepEqual(desktopOAuth({ clientId: "c", clientSecret: "s" }, "https://mcp.figma.com/mcp").authorizationServer,
+    ["https://api.figma.com"]);
+  assert.deepEqual(desktopOAuth({ clientId: "c", clientSecret: "s" }, "https://gmailmcp.googleapis.com/mcp/v1").authorizationServer,
+    ["https://accounts.google.com"]);
+  // Unknown issuers are left for the user to pass explicitly.
+  assert.equal(desktopOAuth({ clientId: "c", clientSecret: "s" }, "https://mcp.example.com/mcp").authorizationServer,
+    undefined);
+  assert.equal(desktopOAuth({ clientId: "c", clientSecret: "s", authorizationServer: ["https://as.example"] }, "https://mcp.slack.com/mcp").authorizationServer[0],
+    "https://as.example");
+});
+
 test("sync upgrades an existing oauth entry to pin localhost", async () => {
   const { home, cleanup } = await tempHome();
   try {
@@ -421,10 +444,171 @@ test("off never leaves a shim-pointing profile applied (stale backup appliedId)"
     const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
     const state = JSON.parse(await readFile(statePath, "utf8"));
     await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    current.entries.unshift({ id: "old-fw", name: "Fireworks" });
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify(current));
     await disableProfileLane(home, { log: () => {} });
     const meta = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
     assert.equal(meta.appliedId, null);
     assert.deepEqual(meta.entries.map((e) => e.id), ["old-fw"]); // entry kept, just not applied
+  } finally { await cleanup(); }
+});
+
+test("off keeps profiles the user added or edited after on", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
+    await enableFakeProfile(home);
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const backup = path.join(home, ".nexus", "claude-desktop", "profile-backup", "configLibrary-later");
+    await mkdir(backup, { recursive: true });
+    await writeFile(path.join(backup, "user-prof.json"), JSON.stringify({ inferenceGatewayBaseUrl: "https://old.example.com" }));
+    await writeFile(path.join(backup, "_meta.json"), JSON.stringify({
+      appliedId: "user-prof", entries: [{ id: "user-prof", name: "Mine" }],
+    }));
+    const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    // While Nexus is on, the user edits their profile and adds another.
+    const edited = JSON.stringify({ inferenceGatewayBaseUrl: "https://edited.example.com" });
+    await writeFile(path.join(lib, "user-prof.json"), edited);
+    await writeFile(path.join(lib, "added-prof.json"), JSON.stringify({ inferenceGatewayBaseUrl: "https://added.example.com" }));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    current.entries.push({ id: "user-prof", name: "Mine" }, { id: "added-prof", name: "Added" });
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify(current));
+
+    await disableProfileLane(home, { log: () => {} });
+
+    assert.equal(await readFile(path.join(lib, "user-prof.json"), "utf8"), edited);
+    assert.match(await readFile(path.join(lib, "added-prof.json"), "utf8"), /added\.example\.com/);
+    await assert.rejects(readFile(path.join(lib, `${state.profileId}.json`)), { code: "ENOENT" });
+    const meta = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    assert.deepEqual(meta.entries.map((e) => e.id), ["user-prof", "added-prof"]);
+    assert.equal(meta.appliedId, "user-prof");
+  } finally { await cleanup(); }
+});
+
+test("off keeps the user's selected existing profile", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
+    await enableFakeProfile(home);
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const backup = path.join(home, ".nexus", "claude-desktop", "profile-backup", "configLibrary-selection");
+    await mkdir(backup, { recursive: true });
+    for (const id of ["A", "B"]) {
+      await writeFile(path.join(backup, `${id}.json`), JSON.stringify({ inferenceGatewayBaseUrl: `https://${id}.example.com` }));
+    }
+    await writeFile(path.join(backup, "_meta.json"), JSON.stringify({
+      appliedId: "A",
+      entries: [{ id: "A", name: "A" }, { id: "B", name: "B" }],
+    }));
+    const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify({
+      ...current,
+      appliedId: "B",
+      entries: [{ id: "A", name: "A" }, { id: "B", name: "B" }, ...current.entries],
+    }));
+
+    await disableProfileLane(home, { log: () => {} });
+
+    const meta = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    assert.equal(meta.appliedId, "B");
+    assert.deepEqual(meta.entries.map((entry) => entry.id), ["A", "B"]);
+  } finally { await cleanup(); }
+});
+
+test("off preserves an explicit Default selection made while connected", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
+    await enableFakeProfile(home);
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const backup = path.join(home, ".nexus", "claude-desktop", "profile-backup", "configLibrary-default-selection");
+    await mkdir(backup, { recursive: true });
+    await writeFile(path.join(backup, "P.json"), JSON.stringify({ inferenceGatewayBaseUrl: "https://profile.example.com" }));
+    await writeFile(path.join(backup, "_meta.json"), JSON.stringify({
+      appliedId: "P",
+      entries: [{ id: "P", name: "Profile P" }],
+    }));
+    const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify({
+      ...current,
+      appliedId: null,
+      entries: [{ id: "P", name: "Profile P" }, ...current.entries],
+    }));
+
+    await disableProfileLane(home, { log: () => {} });
+
+    const meta = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    assert.equal(meta.appliedId, null);
+    assert.ok(meta.entries.some((entry) => entry.id === "P"));
+  } finally { await cleanup(); }
+});
+
+test("off fails safely when the live profile library cannot be read", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
+    await enableFakeProfile(home);
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const backup = path.join(home, ".nexus", "claude-desktop", "profile-backup", "configLibrary-read-denied");
+    await mkdir(backup, { recursive: true });
+    await writeFile(path.join(backup, "_meta.json"), JSON.stringify({ appliedId: null, entries: [] }));
+    const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    const snapshot = async () => {
+      const names = (await readdir(lib)).sort();
+      return Promise.all(names.map(async (name) => [name, await readFile(path.join(lib, name))]));
+    };
+    const before = await snapshot();
+    const readdirFn = async (target, options) => {
+      if (target === lib) {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      }
+      return readdir(target, options);
+    };
+
+    await assert.rejects(
+      disableProfileLane(home, { log: () => {}, readdirFn }),
+      { code: "EACCES" },
+    );
+
+    assert.deepEqual(await snapshot(), before);
+    assert.deepEqual(
+      (await readdir(path.dirname(lib))).filter((name) => name.startsWith(`${path.basename(lib)}.nexus-restore-`)),
+      [],
+    );
+  } finally { await cleanup(); }
+});
+
+test("off restores an unchanged backup byte for byte", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
+    await enableFakeProfile(home);
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const backup = path.join(home, ".nexus", "claude-desktop", "profile-backup", "configLibrary-same");
+    await mkdir(backup, { recursive: true });
+    const metaRaw = JSON.stringify({ appliedId: "user-prof", entries: [{ id: "user-prof", name: "Mine" }] });
+    await writeFile(path.join(backup, "user-prof.json"), "{\"inferenceGatewayBaseUrl\":\"https://gateway.example.com\"}");
+    await writeFile(path.join(backup, "_meta.json"), metaRaw);
+    const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify({
+      ...current, entries: [{ id: "user-prof", name: "Mine" }, ...current.entries],
+    }));
+    await disableProfileLane(home, { log: () => {} });
+    assert.equal(await readFile(path.join(lib, "_meta.json"), "utf8"), metaRaw);
   } finally { await cleanup(); }
 });
 
@@ -443,9 +627,48 @@ test("off keeps a healthy non-shim appliedId from the backup", async () => {
     const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
     const state = JSON.parse(await readFile(statePath, "utf8"));
     await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    current.entries.unshift({ id: "user-prof", name: "Mine" });
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify(current));
     await disableProfileLane(home, { log: () => {} });
     const meta = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
     assert.equal(meta.appliedId, "user-prof");
+  } finally { await cleanup(); }
+});
+
+test("off leaves out profiles the user deleted after on", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const { disableProfileLane } = await import("../../../lib/harnesses/claude-desktop/profile-lane.mjs");
+    await enableFakeProfile(home);
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const backup = path.join(home, ".nexus", "claude-desktop", "profile-backup", "configLibrary-deleted");
+    await mkdir(backup, { recursive: true });
+    for (const id of ["A", "B"]) {
+      const body = JSON.stringify({ inferenceGatewayBaseUrl: `https://${id}.example.com` });
+      await writeFile(path.join(backup, `${id}.json`), body);
+      await writeFile(path.join(lib, `${id}.json`), body);
+    }
+    await writeFile(path.join(backup, "_meta.json"), JSON.stringify({
+      appliedId: "B",
+      entries: [{ id: "A", name: "A" }, { id: "B", name: "B" }],
+    }));
+    const statePath = path.join(home, ".nexus", "claude-desktop", "profile-state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, backup }));
+    // While Nexus is on, the user deletes B (the one the backup had applied).
+    await rm(path.join(lib, "B.json"));
+    const current = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    current.entries.unshift({ id: "A", name: "A" });
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify(current));
+
+    await disableProfileLane(home, { log: () => {} });
+
+    const meta = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    assert.deepEqual(meta.entries.map((entry) => entry.id), ["A"]);
+    assert.equal(meta.appliedId, null, "a deleted profile is not re-applied");
+    await assert.rejects(readFile(path.join(lib, "B.json")), { code: "ENOENT" });
+    assert.match(await readFile(path.join(lib, "A.json"), "utf8"), /A\.example\.com/);
   } finally { await cleanup(); }
 });
 
@@ -595,11 +818,13 @@ test("shim sends keys saved with nexus auto on auto-routed turns only, live from
     modelMap: DEFAULT_MODEL_MAP, catalogDir,
     upstreamOrigin: `http://127.0.0.1:${upstream.address().port}`,
     autoKeysLoader: loader,
-    log: () => {},
+    gatewayKeyLoader: async () => "fw_TEST_PROFILE_KEY",
+    log: (line) => logs.push(line),
   });
+  const logs = [];
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const post = (model, headers = {}) => fetch(`http://127.0.0.1:${server.address().port}/v1/messages`, {
-    method: "POST", headers: { "content-type": "application/json", ...headers },
+    method: "POST", headers: { "content-type": "application/json", "x-api-key": "fw_TEST_PROFILE_KEY", ...headers },
     body: JSON.stringify({ model, messages: [] }),
   });
   try {
@@ -609,6 +834,26 @@ test("shim sends keys saved with nexus auto on auto-routed turns only, live from
       { model: "auto", anthropic: "sk-ant-example-0000", openai: undefined },
       { model: "glm-latest", anthropic: undefined, openai: undefined },
     ]);
+
+    // Only the user's own client gets them: the profile's key, sent as JSON.
+    await post("claude-opus-4-8", { "x-api-key": "fw_SOMEONE_ELSE" });
+    await post("claude-opus-4-8", { "x-api-key": "" });
+    await post("claude-opus-4-8", { "content-type": "text/plain" });
+    assert.deepEqual(seen.slice(-3).map((r) => r.anthropic), [undefined, undefined, undefined]);
+    // Each withheld turn says why, without any key in the log.
+    const withheld = logs.filter((l) => l.includes("saved provider keys not sent"));
+    // (The text/plain body is never parsed, so it isn't an auto turn at all.)
+    assert.equal(withheld.length, 2);
+    for (const line of withheld) assert.match(line, /does not match the applied profile's key/);
+    // A verified turn says what it sent, by provider name only.
+    assert.ok(logs.some((l) => l.includes("auto turn: client verified; saved provider keys sent (anthropic)")));
+    assert.ok(logs.every((l) => !l.includes("fw_") && !l.includes("sk-ant")));
+
+    // An unverified caller's own provider-key headers never go upstream either.
+    await post("claude-opus-4-8", {
+      "x-api-key": "fw_SOMEONE_ELSE", "x-anthropic-api-key": "sk-ant-spoofed", "x-openai-api-key": "sk-proj-spoofed",
+    });
+    assert.deepEqual(seen.at(-1), { model: "auto", anthropic: undefined, openai: undefined });
 
     // `nexus auto --unset anthropic-api-key` applies on the next request.
     await writeFile(configPath, JSON.stringify({ anthropicApiKey: "" }));
@@ -654,6 +899,92 @@ test("reliesOnClaudeAiLogin flags control-plane hosts unless own client exists",
   assert.equal(reliesOnClaudeAiLogin({ name: "linear", url: "https://mcp.linear.app/mcp" }), false);
   assert.equal(reliesOnClaudeAiLogin({ name: "slack", url: "https://mcp.slack.com/mcp" }), false);
   assert.equal(reliesOnClaudeAiLogin({ name: "bad", url: "not a url" }), false);
+});
+
+test("reliesOnClaudeAiLogin flags the claude.ai connector relay", () => {
+  // Session files for hosted connectors carry the relay URL; the relay only
+  // answers claude.ai sessions, so a 3p profile must never keep it.
+  assert.equal(reliesOnClaudeAiLogin({ name: "slack", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" }), true);
+  assert.equal(reliesOnClaudeAiLogin({ name: "slack", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1", oauth: { clientId: "mine" } }), false);
+});
+
+test("detectConnectors skips relay URLs so another source's URL can win", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    await writeSession(home, "Claude", "acct-1", "local_a.json", [
+      { uuid: "srv_1", name: "Slack", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" },
+    ]);
+    const fp = firstPartyDir(home);
+    await mkdir(fp, { recursive: true });
+    await writeFile(path.join(fp, "claude_desktop_config.json"), JSON.stringify({
+      mcpServers: { slack: { type: "http", url: "https://mcp.slack.com/mcp" } },
+    }));
+    // First-in-order would be the relay URL; it must not shadow the config's.
+    assert.deepEqual(await detectConnectors(home), [
+      { name: "slack", transport: "http", url: "https://mcp.slack.com/mcp" },
+    ]);
+  } finally { await cleanup(); }
+});
+
+test("sync drops relay-URL detections; the org registry's vendor URL still lands", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    await enableFakeProfile(home);
+    await writeSession(home, "Claude", "acct-1", "local_a.json", [
+      { uuid: "srv_1", name: "Linear", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" },
+    ]);
+    const { total } = await syncProfileConnectors(home, {
+      listOrgConnectors: async () => [{ name: "linear", transport: "http", url: "https://mcp.linear.app/mcp" }],
+    });
+    assert.equal(total, 1);
+    const list = await listProfileConnectors(home);
+    assert.equal(list[0].url, "https://mcp.linear.app/mcp");
+  } finally { await cleanup(); }
+});
+
+test("sync purges a relay-URL entry already in the profile, even with a client", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    await enableFakeProfile(home, [
+      { name: "slack", transport: "http", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" },
+      // The relay answers claude.ai sessions only — an OAuth client cannot
+      // save the entry, so it is dropped like the bare one.
+      { name: "relay2", transport: "http", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_2", oauth: { clientId: "x" } },
+    ]);
+    await syncProfileConnectors(home, { listOrgConnectors: async () => [] });
+    assert.equal((await listProfileConnectors(home)).length, 0);
+  } finally { await cleanup(); }
+});
+
+test("sync reports migrated connectors by name and skipped ones with a reason", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    await enableFakeProfile(home);
+    await writeSession(home, "Claude", "acct-1", "local_a.json", [
+      { uuid: "srv_1", name: "slack", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" },
+      { uuid: "srv_2", name: "linear", url: "https://mcp.linear.app/mcp" },
+      { uuid: "srv_3", name: "figma", url: "https://mcp.figma.com/mcp" },
+      { uuid: "srv_4", name: "slack-eng", url: "https://mcp.slack.com/mcp" },
+      { uuid: "srv_5", name: "gdrive", url: "https://drivemcp.googleapis.com/mcp/v1" },
+    ]);
+    const synced = await syncProfileConnectors(home, { listOrgConnectors: async () => [] });
+    // Slack's hosted OAuth works without a client of our own, so it migrates.
+    assert.deepEqual(synced.migrated.map((e) => e.name), ["linear", "slack-eng"]);
+    assert.deepEqual(synced.skipped, [
+      { name: "slack", reason: "requires claude.ai account" },
+      { name: "figma", reason: "requires OAuth client ID and secret" },
+      { name: "gdrive", reason: "requires OAuth client ID and secret" },
+    ]);
+    assert.deepEqual(syncReportLines(synced), [
+      "  Migrated:",
+      "    linear",
+      "    slack-eng",
+      "  Not migrated:",
+      "    slack: requires claude.ai account",
+      "    figma: requires OAuth client ID and secret",
+      "    gdrive: requires OAuth client ID and secret",
+    ]);
+  } finally { await cleanup(); }
 });
 
 test("sync drops claude.ai-reliant entries from the profile", async () => {
@@ -816,5 +1147,411 @@ test("upgrade scrub removes FireRouter custom models from manual list, shim map,
     assert.deepEqual(profile.inferenceModels, [{ name: "claude-keep" }]);
 
     assert.equal(await migrateClaudeDesktopFirerouterOnUpgrade(home), false, "second run no-ops");
+  } finally { await cleanup(); }
+});
+
+
+test("egressHosts: the profile's own list, else the saved one, else every host", () => {
+  assert.deepEqual(egressHosts(null), ["*"]);
+  assert.deepEqual(egressHosts({ coworkEgressAllowedHosts: [] }), ["*"]);
+  assert.deepEqual(egressHosts({ coworkEgressAllowedHosts: "example.com" }), ["*"]);
+  assert.deepEqual(egressHosts(null, ["example.com"]), ["example.com"]);
+  assert.deepEqual(egressHosts({ coworkEgressAllowedHosts: ["a.example.com"] }, ["b.example.com"]), ["a.example.com"]);
+});
+
+test("on allows every host and keeps a user-set egress list across on and off/on", async () => {
+  const { home, cleanup } = await tempHome();
+  const quiet = { log: () => {} };
+  const readHosts = async () => {
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    const { appliedId } = JSON.parse(await readFile(path.join(lib, "_meta.json"), "utf8"));
+    const file = path.join(lib, `${appliedId}.json`);
+    return { file, profile: JSON.parse(await readFile(file, "utf8")) };
+  };
+  try {
+    await seedKeychainConfig(home, "fw_example_key");
+    await withoutEnvFireworksKey(async () => {
+      await enableProfileLane(home, quiet);
+      const first = await readHosts();
+      assert.deepEqual(first.profile.coworkEgressAllowedHosts, ["*"]);
+
+      const narrowed = ["example.com", "*.example.org"];
+      await writeFile(first.file, JSON.stringify({ ...first.profile, coworkEgressAllowedHosts: narrowed }));
+      await enableProfileLane(home, quiet);
+      assert.deepEqual((await readHosts()).profile.coworkEgressAllowedHosts, narrowed);
+
+      await disableProfileLane(home, quiet);
+      await enableProfileLane(home, quiet);
+      assert.deepEqual((await readHosts()).profile.coworkEgressAllowedHosts, narrowed);
+    });
+  } finally { await cleanup(); }
+});
+
+test("upgrade writes the egress default into an older profile once and leaves a user list alone", async () => {
+  const { home, cleanup } = await tempHome();
+  const profilePath = () => path.join(thirdPartyDir(home), "configLibrary", "prof-1.json");
+  const readProfile = async () => JSON.parse(await readFile(profilePath(), "utf8"));
+  try {
+    assert.equal(await migrateClaudeDesktopEgressOnUpgrade(home), false);
+    await enableFakeProfile(home);
+    await rm(profilePath());
+    assert.equal(await migrateClaudeDesktopEgressOnUpgrade(home), false);
+    await assert.rejects(stat(profilePath()), { code: "ENOENT" });
+
+    await enableFakeProfile(home);
+    assert.equal(await migrateClaudeDesktopEgressOnUpgrade(home), true);
+    assert.deepEqual((await readProfile()).coworkEgressAllowedHosts, ["*"]);
+    assert.deepEqual((await readProfile()).managedMcpServers, []);
+    assert.equal(await migrateClaudeDesktopEgressOnUpgrade(home), false);
+
+    await writeFile(profilePath(), JSON.stringify({ coworkEgressAllowedHosts: ["example.com"] }));
+    assert.equal(await migrateClaudeDesktopEgressOnUpgrade(home), false);
+    assert.deepEqual((await readProfile()).coworkEgressAllowedHosts, ["example.com"]);
+  } finally { await cleanup(); }
+});
+
+const SHIM_URL = new URL("../../../lib/harnesses/claude-desktop/shim.mjs", import.meta.url).href;
+const SETUP_CLI_DIR = fileURLToPath(new URL("../../../", import.meta.url));
+
+async function freePort() {
+  const server = http.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+test("isEntrypoint matches the shim through a symlinked directory or a path with spaces", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const realPath = fileURLToPath(SHIM_URL);
+    const linkDir = path.join(home, "linked cli");
+    await symlink(SETUP_CLI_DIR, linkDir, "dir");
+    assert.equal(isEntrypoint(SHIM_URL, realPath), true);
+    assert.equal(isEntrypoint(SHIM_URL, path.join(linkDir, "lib/harnesses/claude-desktop/shim.mjs")), true);
+    assert.equal(isEntrypoint(SHIM_URL, path.join(linkDir, "lib/harnesses/claude-desktop/core.mjs")), false);
+    assert.equal(isEntrypoint(SHIM_URL, path.join(home, "missing.mjs")), false);
+    assert.equal(isEntrypoint(SHIM_URL, undefined), false);
+  } finally { await cleanup(); }
+});
+
+test("shim launched through a symlinked path listens instead of exiting silently", async () => {
+  const { home, cleanup } = await tempHome();
+  const linkDir = path.join(home, "dot nexus link");
+  await symlink(SETUP_CLI_DIR, linkDir, "dir");
+  const port = await freePort();
+  const dataDir = path.join(home, ".nexus", "claude-desktop");
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(dataDir, "shim-state.json"), JSON.stringify({ port, modelMap: DEFAULT_MODEL_MAP }));
+  const child = spawn(process.execPath, [path.join(linkDir, "lib/harnesses/claude-desktop/shim.mjs"), "--home", home], {
+    env: { ...process.env, HOME: home }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    const outcome = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve("timeout"), 10_000);
+      child.stdout.on("data", (chunk) => {
+        if (String(chunk).includes("listening")) { clearTimeout(timer); resolve("listening"); }
+      });
+      child.once("exit", (code) => { clearTimeout(timer); resolve(`exited ${code}`); });
+    });
+    assert.equal(outcome, "listening");
+    assert.equal(await (await fetch(`http://127.0.0.1:${port}/`)).text(), "ok");
+  } finally {
+    child.kill();
+    await cleanup();
+  }
+});
+
+test("shimNotReadyMessage names the cause: port conflict, crash output, or a silent exit", () => {
+  const inUse = shimNotReadyMessage({ port: 8799, newErrors: "Error: listen EADDRINUSE: address already in use 127.0.0.1:8799" });
+  assert.match(inUse, /Another program is using port 8799/);
+  assert.match(inUse, /lsof -nP -iTCP:8799 -sTCP:LISTEN/);
+
+  const crash = shimNotReadyMessage({
+    port: 8799,
+    newErrors: Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n"),
+  });
+  assert.match(crash, /It reported:\n(line \d+\n){7}line 11\n/);
+  assert.doesNotMatch(crash, /line 3\n/);
+  assert.match(crash, /shim\.err\.log/);
+
+  assert.match(shimNotReadyMessage({ port: 8799, newErrors: "", platform: "darwin" }), /launchctl print gui\/\$\(id -u\)\//);
+  assert.match(shimNotReadyMessage({ port: 8799, newErrors: "", platform: "linux" }), /systemctl --user status /);
+});
+
+test("shim identity: an impostor answering on the port is never taken for the shim", async () => {
+  const { home, cleanup } = await tempHome();
+  const dataDir = path.join(home, ".nexus", "claude-desktop");
+  // Any listener can answer GET / with 200 "ok" — and echo whatever it is sent.
+  const impostor = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end(req.url === "/" ? "ok" : new URL(req.url, "http://x").searchParams.get("n") ?? "ok");
+  });
+  await new Promise((resolve) => impostor.listen(0, "127.0.0.1", resolve));
+  const port = impostor.address().port;
+  try {
+    const secret = await ensureShimSecret(dataDir);
+    assert.equal((await stat(shimSecretPath(dataDir))).mode & 0o077, 0);
+    assert.equal(await ensureShimSecret(dataDir), secret, "the secret is stable across calls");
+    // A secret file that came in readable by others is made owner-only...
+    await chmod(shimSecretPath(dataDir), 0o644);
+    assert.equal(await ensureShimSecret(dataDir), secret);
+    assert.equal((await stat(shimSecretPath(dataDir))).mode & 0o077, 0);
+    // ...and a malformed one is replaced owner-only, whatever its mode was.
+    await writeFile(shimSecretPath(dataDir), "garbage\n", { mode: 0o644 });
+    await chmod(shimSecretPath(dataDir), 0o644);
+    const replaced = await ensureShimSecret(dataDir);
+    assert.match(replaced, /^[0-9a-f]{64}$/);
+    assert.equal((await stat(shimSecretPath(dataDir))).mode & 0o077, 0);
+    await writeFile(shimSecretPath(dataDir), `${secret}\n`);
+    await writeFile(path.join(dataDir, "profile-state.json"), JSON.stringify({ enabled: true, lane: "profile", port }));
+
+    const status = await readProfileStatus(home);
+    assert.equal(status.shimHealthy, false);
+    assert.equal(status.shimUnverified, true);
+    await assert.rejects(waitForShim(port, { secret, timeoutMs: 300 }), /did not start/);
+
+    // A logged port conflict is named once the wait runs out.
+    const errorPath = path.join(dataDir, "shim.err.log");
+    await writeFile(errorPath, "Error: listen EADDRINUSE: address already in use\n");
+    await assert.rejects(waitForShim(port, { secret, errorPath, timeoutMs: 300 }), /Another program is using port/);
+
+    // A conflict logged only before the respawn grace is waited out...
+    let started = Date.now();
+    await assert.rejects(waitForShim(port, { secret, errorPath, timeoutMs: 1_500, conflictGraceMs: 300 }), /Another program is using port/);
+    assert.ok(Date.now() - started >= 1_400, "an early conflict doesn't cut the wait short");
+    // ...and one logged again after it is current: it fails without the full wait.
+    started = Date.now();
+    const offset = (await stat(errorPath)).size;
+    const again = setTimeout(() => {
+      writeFile(errorPath, "Error: listen EADDRINUSE: address already in use\n", { flag: "a" }).catch(() => {});
+    }, 600);
+    try {
+      await assert.rejects(
+        waitForShim(port, { secret, errorPath, errorOffset: offset, timeoutMs: 20_000, conflictGraceMs: 300 }),
+        /Another program is using port/,
+      );
+    } finally { clearTimeout(again); }
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    await new Promise((resolve) => impostor.close(resolve));
+    await cleanup();
+  }
+});
+
+test("shim identity: the real shim proves the per-install secret", async () => {
+  const { home, cleanup } = await tempHome();
+  const dataDir = path.join(home, ".nexus", "claude-desktop");
+  const catalogDir = await mkdtemp(path.join(tmpdir(), "fc-shim-catalog-"));
+  const secret = await ensureShimSecret(dataDir);
+  const server = createShimServer({
+    modelMap: DEFAULT_MODEL_MAP, catalogDir, log: () => {}, secretLoader: () => readShimSecret(dataDir),
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  try {
+    await writeFile(path.join(dataDir, "profile-state.json"), JSON.stringify({ enabled: true, lane: "profile", port }));
+    await waitForShim(port, { secret, timeoutMs: 2_000 });
+    assert.equal((await readProfileStatus(home)).shimHealthy, true);
+    // A wrong secret does not verify.
+    await assert.rejects(waitForShim(port, { secret: "0".repeat(64), timeoutMs: 300 }), /did not start/);
+    // A rebinding page (foreign Host, or any Origin) gets no digest to track by.
+    const health = (headers) => new Promise((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, path: "/__nexus_health?n=fixed", headers }, (res) => {
+        let body = "";
+        res.on("data", (c) => { body += c; });
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal((await health({ host: `127.0.0.1:${port}` })).status, 200);
+    assert.equal((await health({ host: `rebound.example:${port}` })).status, 403);
+    const fromPage = await health({ host: `127.0.0.1:${port}`, origin: "http://rebound.example" });
+    assert.equal(fromPage.status, 403);
+    assert.doesNotMatch(fromPage.body, /[0-9a-f]{64}/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(catalogDir, { recursive: true, force: true });
+    await cleanup();
+  }
+});
+
+test("shim still serves any Host, but saved keys go only to loopback names", async () => {
+  const catalogDir = await mkdtemp(path.join(tmpdir(), "fc-shim-catalog-"));
+  const seen = [];
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => { seen.push(req.headers["x-anthropic-api-key"]); res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); });
+  });
+  await new Promise((r) => upstream.listen(0, "127.0.0.1", r));
+  const server = createShimServer({
+    modelMap: DEFAULT_MODEL_MAP, catalogDir, log: () => {},
+    upstreamOrigin: `http://127.0.0.1:${upstream.address().port}`,
+    autoKeysLoader: async () => ({ anthropicKey: "sk-ant-example-0000", openaiKey: "" }),
+    gatewayKeyLoader: async () => "fw_TEST_PROFILE_KEY",
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  const post = (host) => new Promise((resolve, reject) => {
+    const req = http.request({
+      host: "127.0.0.1", port, path: "/v1/messages", method: "POST",
+      headers: { host, "content-type": "application/json", "x-api-key": "fw_TEST_PROFILE_KEY" },
+    }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on("error", reject);
+    req.end(JSON.stringify({ model: "claude-opus-4-8", messages: [] }));
+  });
+  try {
+    assert.equal(await post(`127.0.0.1:${port}`), 200);
+    assert.equal(await post(`localhost:${port}`), 200);
+    assert.equal(await post(`rebound.example:${port}`), 200);
+    assert.equal(await post("127.0.0.1:1"), 200);
+    assert.deepEqual(seen, ["sk-ant-example-0000", "sk-ant-example-0000", undefined, undefined]);
+  } finally {
+    await new Promise((r) => upstream.close(r));
+    await new Promise((r) => server.close(r));
+    await rm(catalogDir, { recursive: true, force: true });
+  }
+});
+
+test("createGatewayKeyLoader reads the applied profile's key, or nothing", async () => {
+  const { home, cleanup } = await tempHome();
+  const dataDir = path.join(home, ".nexus", "claude-desktop");
+  try {
+    const loader = createGatewayKeyLoader({ home, dataDir });
+    assert.equal(await loader(), "");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(path.join(dataDir, "profile-state.json"), JSON.stringify({ enabled: true, profileId: "p1" }));
+    const lib = path.join(thirdPartyDir(home), "configLibrary");
+    await mkdir(lib, { recursive: true });
+    await writeFile(path.join(lib, "p1.json"), JSON.stringify({ inferenceGatewayApiKey: "fw_TEST_PROFILE_KEY" }));
+    assert.equal(await loader(), "fw_TEST_PROFILE_KEY");
+    await writeFile(path.join(dataDir, "profile-state.json"), JSON.stringify({ enabled: true, profileId: "../p1" }));
+    assert.equal(await loader(), "");
+    // Older installs without profile-state.json: the applied profile decides.
+    await rm(path.join(dataDir, "profile-state.json"));
+    await writeFile(path.join(lib, "_meta.json"), JSON.stringify({ appliedId: "p1", entries: [{ id: "p1" }] }));
+    assert.equal(await loader(), "fw_TEST_PROFILE_KEY");
+  } finally { await cleanup(); }
+});
+
+test("sync never moves a saved OAuth client to a different URL under the same name", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    await enableFakeProfile(home);
+    const client = { clientId: "example-client", clientSecret: "example-secret" };
+    await addProfileConnector(home, { name: "notes", url: "https://mcp.notes.example/mcp", oauth: client });
+    // An org row with the same name but another server.
+    const org = { listOrgConnectors: async () => parseClaudeMcpList("claude.ai Notes: https://other.example/mcp - \u2713 Connected") };
+    await syncProfileConnectors(home, org);
+    // The source's entry wins as before, but without the client.
+    const notes = (await listProfileConnectors(home)).filter((c) => c.name === "notes");
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].url, "https://other.example/mcp");
+    assert.equal(notes[0].oauth, undefined);
+
+    // With the manual entry gone, the durable client still only matches its URL.
+    await writeFile(path.join(thirdPartyDir(home), "configLibrary", "prof-1.json"), JSON.stringify({}));
+    await syncProfileConnectors(home, org);
+    const rebuilt = (await listProfileConnectors(home)).find((c) => c.name === "notes");
+    assert.equal(rebuilt.url, "https://other.example/mcp");
+    assert.equal(rebuilt.oauth, undefined);
+    const durable = JSON.parse(await readFile(path.join(home, ".nexus", "claude-desktop", "oauth-clients.json"), "utf8"));
+    assert.equal(durable.notes.registeredUrl, "https://mcp.notes.example/mcp");
+    assert.equal(durableClientFor(durable, "notes", "https://mcp.notes.example/mcp").registeredUrl, undefined);
+  } finally { await cleanup(); }
+});
+
+test("org connector discovery runs claude in a fresh private directory", { skip: process.platform === "win32" }, async () => {
+  const { home, cleanup } = await tempHome();
+  const bin = path.join(home, "bin");
+  await mkdir(bin);
+  await writeFile(path.join(bin, "claude"), "#!/bin/sh\nprintf 'claude.ai Cwd: https://example.test/%s - ok\\n' \"$(pwd)\"\n", { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, NEXUS_TEST: process.env.NEXUS_TEST };
+  process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
+  delete process.env.NEXUS_TEST;
+  try {
+    const [row] = await listOrgConnectorsViaClaudeCli({ timeoutMs: 5_000 });
+    const cwd = new URL(row.url).pathname;
+    const { realpath } = await import("node:fs/promises");
+    assert.notEqual(cwd, await realpath(tmpdir()));
+    assert.match(path.basename(cwd), /^nexus-mcp-list-/);
+    await assert.rejects(stat(cwd), "the directory is removed afterwards");
+  } finally {
+    process.env.PATH = saved.PATH;
+    process.env.NEXUS_TEST = saved.NEXUS_TEST;
+    await cleanup();
+  }
+});
+
+test("a client saved before URLs were recorded takes its URL from the profile once", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const url = "https://mcp.notes.example/mcp";
+    await enableFakeProfile(home, [{ name: "notes", transport: "http", url, oauth: { clientId: "example-client" } }]);
+    const clientsPath = path.join(home, ".nexus", "claude-desktop", "oauth-clients.json");
+    await writeFile(clientsPath, JSON.stringify({ notes: { clientId: "example-client" } }));
+    await syncProfileConnectors(home, { listOrgConnectors: async () => [] });
+    const durable = JSON.parse(await readFile(clientsPath, "utf8"));
+    assert.equal(durable.notes.registeredUrl, url);
+    assert.equal((await stat(clientsPath)).mode & 0o077, 0);
+  } finally { await cleanup(); }
+});
+
+test("a client saved before URLs were recorded and not in the profile binds to the first detected URL", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const url = "https://mcp.notes.example/mcp";
+    await enableFakeProfile(home);
+    const clientsPath = path.join(home, ".nexus", "claude-desktop", "oauth-clients.json");
+    await writeFile(clientsPath, JSON.stringify({ notes: { clientId: "example-client" } }));
+    const org = (u) => ({ listOrgConnectors: async () => parseClaudeMcpList(`claude.ai Notes: ${u} - ✓ Connected`) });
+    await syncProfileConnectors(home, org(url));
+    const notes = (await listProfileConnectors(home)).find((c) => c.name === "notes");
+    assert.equal(notes.url, url);
+    assert.equal(notes.oauth?.clientId, "example-client");
+    const durable = JSON.parse(await readFile(clientsPath, "utf8"));
+    assert.equal(durable.notes.registeredUrl, url);
+    // Bound now: a later source with another URL under that name doesn't get it.
+    await writeFile(path.join(thirdPartyDir(home), "configLibrary", "prof-1.json"), JSON.stringify({}));
+    await syncProfileConnectors(home, org("https://other.example/mcp"));
+    const moved = (await listProfileConnectors(home)).find((c) => c.name === "notes");
+    assert.equal(moved.oauth, undefined);
+  } finally { await cleanup(); }
+});
+
+test("a saved URL-less client skips the relay placeholder and binds to the real URL", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    const url = "https://mcp.notes.example/mcp";
+    await enableFakeProfile(home);
+    await writeSession(home, "Claude", "acct-1", "local_a.json", [
+      { uuid: "srv_1", name: "notes", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" },
+    ]);
+    const clientsPath = path.join(home, ".nexus", "claude-desktop", "oauth-clients.json");
+    await writeFile(clientsPath, JSON.stringify({ notes: { clientId: "example-client" } }));
+    await syncProfileConnectors(home, { listOrgConnectors: async () => [{ name: "notes", transport: "http", url }] });
+    const notes = (await listProfileConnectors(home)).find((c) => c.name === "notes");
+    assert.equal(notes.url, url);
+    assert.equal(notes.oauth?.clientId, "example-client");
+    const durable = JSON.parse(await readFile(clientsPath, "utf8"));
+    assert.equal(durable.notes.registeredUrl, url);
+  } finally { await cleanup(); }
+});
+
+test("a purged relay profile entry is not reported skipped when the name migrates", async () => {
+  const { home, cleanup } = await tempHome();
+  try {
+    await enableFakeProfile(home, [
+      { name: "linear", transport: "http", url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1" },
+    ]);
+    const fp = firstPartyDir(home);
+    await mkdir(fp, { recursive: true });
+    await writeFile(path.join(fp, "claude_desktop_config.json"), JSON.stringify({
+      mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
+    }));
+    const synced = await syncProfileConnectors(home, { listOrgConnectors: async () => [] });
+    assert.deepEqual(synced.migrated.map((e) => e.name), ["linear"]);
+    assert.deepEqual(synced.skipped, []);
   } finally { await cleanup(); }
 });

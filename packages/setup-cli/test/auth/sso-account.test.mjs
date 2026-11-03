@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import { pbDecode, pbString, pbStringAt } from "../../lib/auth/grpc-web.mjs";
-import { createUserJit, getOAuthArgumentsForAccount } from "../../lib/auth/sso-account.mjs";
+import { createUserJit, getOAuthArgumentsForAccount, normalizeCognitoDomain } from "../../lib/auth/sso-account.mjs";
 import { mintApiKeyForAccount } from "../../lib/keys/mint-api-key.mjs";
 
 const ID_TOKEN = "header.payload.sig";
@@ -43,21 +43,43 @@ describe("getOAuthArgumentsForAccount", () => {
       assert.equal(req.headers.authorization, undefined);
       assert.equal(req.headers["x-api-key"], undefined);
       const request = pbDecode(body.subarray(5));
-      assert.equal(pbStringAt(request, 1), "uber");
+      assert.equal(pbStringAt(request, 1), "example-account");
       res.writeHead(200, { "Content-Type": "application/grpc-web+proto" });
       res.end(grpcWebFrames(Buffer.concat([
         pbString(1, "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_abc"),
         pbString(2, "tenant-client-id"),
         // No scheme — the normalizer must add https://
-        pbString(3, "uber.auth.us-west-2.amazoncognito.com/"),
+        pbString(3, "example-pool.auth.example.com/"),
       ])));
     });
-    const result = await getOAuthArgumentsForAccount("uber", { baseUrl: url });
+    const result = await getOAuthArgumentsForAccount("example-account", { baseUrl: url });
     assert.equal(result.ok, true, result.failure);
     assert.equal(result.clientId, "tenant-client-id");
-    assert.equal(result.cognitoDomain, "https://uber.auth.us-west-2.amazoncognito.com");
+    assert.equal(result.cognitoDomain, "https://example-pool.auth.example.com");
     assert.equal(result.issuerUrl, "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_abc");
     server.close();
+  });
+
+  it("normalizeCognitoDomain keeps https domains (port and path too) and drops anything else", () => {
+    assert.equal(normalizeCognitoDomain("example-pool.auth.example.com"), "https://example-pool.auth.example.com");
+    assert.equal(normalizeCognitoDomain("https://example-pool.auth.example.com/"), "https://example-pool.auth.example.com");
+    // Shapes an existing account may already use keep working.
+    assert.equal(normalizeCognitoDomain("https://auth.example.com:8443/tenant/"), "https://auth.example.com:8443/tenant");
+    assert.equal(normalizeCognitoDomain("http://localhost:9229"), "http://localhost:9229");
+    // A scheme-less host:port is a host, as it always was.
+    assert.equal(normalizeCognitoDomain("example-pool.auth.example.com:443"), "https://example-pool.auth.example.com");
+    assert.equal(normalizeCognitoDomain("auth.example.com:8443/x"), "https://auth.example.com:8443/x");
+    assert.equal(normalizeCognitoDomain("localhost:9000"), "https://localhost:9000");
+    for (const bad of [
+      "http://example-pool.auth.example.com",
+      "javascript:alert(1)",
+      "https://example-pool.auth.example.com?x=1&y=2",
+      "https://example-pool.auth.example.com#frag",
+      "https://user@example-pool.auth.example.com",
+      "example.com&other",
+    ]) {
+      assert.equal(normalizeCognitoDomain(bad), "", bad);
+    }
   });
 
   it("maps an unknown account (PERMISSION_DENIED) to a check-your-id line", async () => {
@@ -85,7 +107,7 @@ describe("getOAuthArgumentsForAccount", () => {
   });
 
   it("fails softly on network errors and empty input", async () => {
-    const unreachable = await getOAuthArgumentsForAccount("uber", { baseUrl: "http://127.0.0.1:1" });
+    const unreachable = await getOAuthArgumentsForAccount("example-account", { baseUrl: "http://127.0.0.1:1" });
     assert.equal(unreachable.ok, false);
     assert.match(unreachable.failure, /Couldn't reach/);
     assert.equal((await getOAuthArgumentsForAccount("  ")).ok, false);

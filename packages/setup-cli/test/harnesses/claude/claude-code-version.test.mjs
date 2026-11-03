@@ -67,13 +67,19 @@ describe("Claude Code version check", () => {
         name: "accounts/fireworks/models/glm-5p3",
         aliases: ["accounts/fireworks/routers/glm-latest"],
       })]);
-      const result = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], {
+      const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
         NEXUS_TEST_CLAUDE_VERSION: version,
-      });
+      }), await runFireconnect(["claude", "on"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+        NEXUS_TEST_CLAUDE_VERSION: version,
+      }));
       assert.equal(result.code, 0, result.stderr);
       return result.stdout;
     };

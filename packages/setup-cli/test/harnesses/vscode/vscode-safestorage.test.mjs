@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -12,6 +13,7 @@ import {
   linuxEncryptUsesBasicTextBackend,
   linuxDBusSecretServiceHasOwner,
   linuxNativeKeyringAvailable,
+  linuxPythonOsCryptV2PasswordLookup,
   linuxSafeStorageIsObfuscatedFallback,
   linuxSafeStorageObfuscatedKeyNote,
   linuxSecretServiceReachable,
@@ -110,7 +112,7 @@ describe("vscode-safestorage Linux OSCrypt prefix/iteration matrix", () => {
 /* -------------------------------------------------------------------------- */
 /* Windows OSCrypt: AES-256-GCM with v10 prefix. Layout:                       */
 /* v10(3) + nonce(12) + ciphertext + tag(16). Confirmed by ground-truth probe  */
-/* against Electron safeStorage on Windows (dev-cloudpos, Electron 42).        */
+/* against Electron safeStorage on Windows (Electron 42).                      */
 /* These tests use a fixed 32-byte key and are platform-independent (pure      */
 /* crypto).                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -426,5 +428,79 @@ describe("vscode-safestorage Linux Secret Service detection", () => {
         process.env.NEXUS_VSCODE_SECRET_PLAINTEXT = prev;
       }
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Linux python3 Secret Service fallback runs isolated: never imports from    */
+/* the user's working directory, never sees the CLI's environment.            */
+/* -------------------------------------------------------------------------- */
+
+describe("vscode-safestorage python3 fallback isolation", { skip: process.platform === "win32" }, () => {
+  async function withStubs(fn) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "fc-safestorage-py-"));
+    const bin = path.join(root, "bin");
+    const repo = path.join(root, "repo");
+    const marker = path.join(root, "planted-ran");
+    mkdirSync(bin);
+    mkdirSync(repo);
+    // A Secret Service owner is reachable; secret-tool is absent.
+    writeFileSync(path.join(bin, "dbus-send"), "#!/bin/sh\necho ' boolean true'\n");
+    chmodSync(path.join(bin, "dbus-send"), 0o755);
+    // A planted module in the directory nexus runs from.
+    writeFileSync(path.join(repo, "secretstorage.py"), [
+      `open(${JSON.stringify(marker)}, "w").write("ran")`,
+      "class _I:\n    def get_secret(self): return b'planted'",
+      "class _C:\n    def search_items(self, a): return [_I()]",
+      "def dbus_init(): return None",
+      "def get_default_collection(b): return _C()",
+    ].join("\n"));
+    const saved = { PATH: process.env.PATH, FIREWORKS_API_KEY: process.env.FIREWORKS_API_KEY, cwd: process.cwd() };
+    // A PYTHONPATH the user set is passed on for absolute entries only.
+    const savedPythonPath = process.env.PYTHONPATH;
+    process.env.PYTHONPATH = `.${path.delimiter}${root}`;
+    process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
+    process.env.FIREWORKS_API_KEY = "fw_TEST_NOT_A_REAL_KEY";
+    process.chdir(repo);
+    try {
+      return await fn({ lookup: linuxPythonOsCryptV2PasswordLookup, bin, marker });
+    } finally {
+      process.chdir(saved.cwd);
+      if (savedPythonPath === undefined) delete process.env.PYTHONPATH;
+      else process.env.PYTHONPATH = savedPythonPath;
+      process.env.PATH = saved.PATH;
+      if (saved.FIREWORKS_API_KEY === undefined) delete process.env.FIREWORKS_API_KEY;
+      else process.env.FIREWORKS_API_KEY = saved.FIREWORKS_API_KEY;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("runs python3 -I from a fixed directory with a minimal environment", async () => {
+    await withStubs(async ({ lookup, bin }) => {
+      const record = path.join(bin, "record.json");
+      writeFileSync(path.join(bin, "python3"), [
+        "#!/bin/sh",
+        `node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))' ${JSON.stringify(record)} "$@"`,
+        "printf stub-password",
+      ].join("\n"));
+      chmodSync(path.join(bin, "python3"), 0o755);
+      assert.equal(lookup("code"), "stub-password");
+      const seen = JSON.parse(readFileSync(record, "utf8"));
+      assert.equal(seen.argv[0], "-I");
+      assert.equal(seen.cwd, "/");
+      assert.equal(seen.env.FC_OSCRYPT_APPLICATION, "code");
+      assert.equal(seen.env.FIREWORKS_API_KEY, undefined);
+      assert.equal(seen.env.PYTHONPATH, undefined);
+      assert.ok(seen.env.FC_PYTHONPATH.length > 0, "user PYTHONPATH handed over for absolute-entry lookup");
+    });
+  });
+
+  it("never imports secretstorage.py from the working directory", async () => {
+    const hasPython = spawnSync("python3", ["-c", "0"]).status === 0;
+    if (!hasPython) return;
+    await withStubs(async ({ lookup, marker }) => {
+      assert.notEqual(lookup("code"), "planted");
+      assert.equal(existsSync(marker), false);
+    });
   });
 });

@@ -9,6 +9,7 @@ import {
   readFile,
   readlink,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -479,16 +480,22 @@ echo notes-ok
 });
 
 describe("install.sh download", () => {
-  async function runDownload(root, home, source) {
+  async function runDownload(root, home, source, extraEnv = {}, { ensureDependencies = false } = {}) {
     const installSource = await readFile(INSTALL_PATH, "utf8");
     const runner = path.join(root, "download-runner.sh");
+    const ensureDependenciesCall = ensureDependencies ? "\nensure_dependencies" : "";
     await writeFile(
       runner,
-      installSource.replace(/\nmain "\$@"\s*$/, '\nCLI=""\nSOURCE="$NEXUS_TEST_SOURCE"\nensure_durable_source\necho "cli=${CLI}"\n'),
+      installSource.replace(
+        /\nmain "\$@"\s*$/,
+        '\nCLI=""\nSOURCE="$NEXUS_TEST_SOURCE"\nensure_durable_source'
+          + ensureDependenciesCall
+          + '\necho "cli=${CLI}"\n',
+      ),
     );
     return spawnSync("bash", [runner], {
       encoding: "utf8",
-      env: { ...process.env, HOME: home, NEXUS_TEST_SOURCE: source },
+      env: { ...process.env, HOME: home, NEXUS_TEST_SOURCE: source, ...extraEnv },
     });
   }
 
@@ -521,6 +528,113 @@ describe("install.sh download", () => {
       const source = path.join(root, "source");
       await mkdir(path.join(source, "packages/setup-cli/bin"), { recursive: true });
       await writeFile(path.join(source, "packages/setup-cli/bin/nexus.mjs"), "// downloaded\n");
+      await writeFile(path.join(source, "packages/setup-cli/package.json"), "{}\n");
+      const git = (...args) => spawnSync("git", ["-C", source, ...args], { encoding: "utf8" });
+      git("init", "-q");
+      git("add", ".");
+      git("-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "init");
+
+      const stubBin = path.join(root, "stub-bin");
+      const npmLog = path.join(root, "npm-calls.log");
+      const npm = path.join(stubBin, "npm");
+      await mkdir(stubBin);
+      await writeFile(npm, `#!/usr/bin/env bash\nprintf '%s\\n' "$PWD" >> '${npmLog}'\n`);
+      await chmod(npm, 0o755);
+
+      const result = await runDownload(
+        root,
+        home,
+        source,
+        { PATH: `${stubBin}:${process.env.PATH ?? ""}` },
+        { ensureDependencies: true },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /cli=.*\.nexus\/cli\/packages\/setup-cli\/bin\/nexus\.mjs/);
+      assert.equal(await readFile(installed, "utf8"), "// downloaded\n");
+      assert.deepEqual(
+        (await readFile(npmLog, "utf8")).trim().split("\n"),
+        [path.join(home, ".nexus/cli.download/packages/setup-cli")],
+        "npm runs exactly once in the staging checkout",
+      );
+    });
+  });
+
+  // Build a GitHub-style tarball (single top-level directory) under `root`.
+  async function makeTarball(root, files) {
+    const archiveRoot = path.join(root, "archive", "nexus-cli-main");
+    for (const [relative, content] of Object.entries(files)) {
+      const target = path.join(archiveRoot, relative);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
+    const archive = path.join(root, "archive.tar.gz");
+    const tar = spawnSync(
+      "tar",
+      ["-czf", archive, "-C", path.dirname(archiveRoot), path.basename(archiveRoot)],
+      { encoding: "utf8" },
+    );
+    assert.equal(tar.status, 0, tar.stderr);
+    return archive;
+  }
+
+  const DEFAULT_SOURCE_URL = "https://github.com/fw-ai/nexus-cli.git";
+
+  it("downloads the default source as an HTTPS tarball, ignoring a broken git/SSH setup", async () => {
+    // Regression: a global `url.<ssh>.insteadOf` rewrite plus a bad SSH key made
+    // `git clone` of the public HTTPS repo fail with "Permission denied
+    // (publickey)". The default source must install without git at all.
+    await withInstalledCli(async ({ root, home, installed }) => {
+      const archive = await makeTarball(root, {
+        "packages/setup-cli/bin/nexus.mjs": "// tarball\n",
+      });
+      // Sabotage git: rewrite every HTTPS GitHub URL to SSH, with no
+      // usable key.
+      await writeFile(path.join(home, ".gitconfig"), "[url \"git@github.com:\"]\n\tinsteadOf = https://github.com/\n");
+
+      const result = await runDownload(root, home, DEFAULT_SOURCE_URL, {
+        NEXUS_TARBALL_URL: `file://${archive}`,
+        GIT_SSH_COMMAND: "/bin/false",
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /cli=.*\.nexus\/cli\/packages\/setup-cli\/bin\/nexus\.mjs/);
+      assert.equal(await readFile(installed, "utf8"), "// tarball\n");
+      assert.equal(existsSync(path.join(home, ".nexus/cli.download")), false);
+    });
+  });
+
+  it("installs the default source on a machine without git", async () => {
+    await withInstalledCli(async ({ root, home, installed }) => {
+      const archive = await makeTarball(root, {
+        "packages/setup-cli/bin/nexus.mjs": "// no-git\n",
+      });
+
+      // A PATH with everything the download path needs — except git.
+      const stubBin = path.join(root, "stub-bin");
+      await mkdir(stubBin);
+      // tar spawns gzip (its "grandchild") for -z, so gzip must be here too.
+      for (const command of ["bash", "curl", "tar", "gzip", "rm", "mkdir", "dirname", "grep", "mv"]) {
+        const resolved = spawnSync("bash", ["-c", `command -v ${command}`], { encoding: "utf8" }).stdout.trim();
+        assert.ok(resolved, `expected ${command} on PATH`);
+        await symlink(resolved, path.join(stubBin, command));
+      }
+
+      const result = await runDownload(root, home, DEFAULT_SOURCE_URL, {
+        NEXUS_TARBALL_URL: `file://${archive}`,
+        PATH: stubBin,
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(await readFile(installed, "utf8"), "// no-git\n");
+    });
+  });
+
+  it("still clones non-default sources with git", async () => {
+    await withInstalledCli(async ({ root, home, installed }) => {
+      const source = path.join(root, "source");
+      await mkdir(path.join(source, "packages/setup-cli/bin"), { recursive: true });
+      await writeFile(path.join(source, "packages/setup-cli/bin/nexus.mjs"), "// cloned\n");
       const git = (...args) => spawnSync("git", ["-C", source, ...args], { encoding: "utf8" });
       git("init", "-q");
       git("add", ".");
@@ -529,8 +643,7 @@ describe("install.sh download", () => {
       const result = await runDownload(root, home, source);
 
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /cli=.*\.nexus\/cli\/packages\/setup-cli\/bin\/nexus\.mjs/);
-      assert.equal(await readFile(installed, "utf8"), "// downloaded\n");
+      assert.equal(await readFile(installed, "utf8"), "// cloned\n");
     });
   });
 });

@@ -15,10 +15,12 @@ import {
   readCopilotCliState,
   selectCopilotCliModel,
 } from "../../../lib/harnesses/copilot-cli/config.mjs";
+import { describeCopilotModels } from "../../../lib/harnesses/copilot-shared.mjs";
 import {
   runCli,
   runCliJson,
   runFireconnect,
+  seedKeychainConfig,
   withTempHome,
   FW_OPENCODE_KEY,
 } from "../../helpers.mjs";
@@ -36,6 +38,12 @@ async function withCliDir(fn) {
     await (await import("node:fs/promises")).rm(dir, { recursive: true, force: true });
   }
 }
+
+describe("describeCopilotModels", () => {
+  it("names auto Nexus Auto in both Copilot pickers", () => {
+    assert.equal(describeCopilotModels(["auto"])[0].displayName, "Nexus Auto");
+  });
+});
 
 describe("copilot-cli config", () => {
   it("qualifies selection ids with the provider name", () => {
@@ -196,9 +204,9 @@ describe("copilot-cli CLI", () => {
 
   it("on then off round-trips providers.json and settings.json", async () => {
     await withTempHome("copilot-cli-roundtrip-", async (home) => {
+      await seedKeychainConfig(home, FW_OPENCODE_KEY);
       const on = await runFireconnect(["copilot-cli", "on"], {
         HOME: home,
-        FIREWORKS_API_KEY: FW_OPENCODE_KEY,
       });
       assert.equal(on.code, 0, on.stderr);
       assert.match(on.stdout, /Copilot CLI → Fireworks/);

@@ -119,7 +119,7 @@ async function codexResolveOnContext(ctx) {
   if (current && !isRetiredModelId(current)) {
     return ctx;
   }
-  return { ...ctx, main: CODEX_DEFAULT_MODEL, modelImplied: true };
+  return { ...ctx, main: CODEX_DEFAULT_MODEL };
 }
 
 export default defineHarnessProfile({
@@ -171,7 +171,6 @@ export default defineHarnessProfile({
       catalog: codexCatalog,
       catalogSnapshot: snapshot,
       catalogAvailable,
-      refreshCatalog: ctx.modelImplied === true,
       telemetryHeaders,
       anthropicKey,
     });
@@ -220,6 +219,18 @@ export default defineHarnessProfile({
     return codexProviderStatus(doc);
   },
 
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CODEX);
+    const { doc } = await readCodexTomlIfExists(codexPathsFor(ctx).configPath);
+    if (codexProviderStatus(doc) !== "fireworks") {
+      return null;
+    }
+    const storedAuth = codexStoredAuthRef(doc);
+    // An env reference sends whatever the shell exports, which Nexus no
+    // longer ties to the stored key: can't tell.
+    return storedAuth === CODEX_API_KEY_ENV_REF ? null : storedAuth || null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CODEX);
     const { configPath, catalogPath } = codexPathsFor(ctx);
@@ -261,7 +272,7 @@ export default defineHarnessProfile({
       provider,
       baseUrl: CODEX_FIREWORKS_BASE_URL,
       modelProvider: CODEX_FIREWORKS_PROVIDER_ID,
-      hasAuthToken: Boolean(storedAuth || process.env.FIREWORKS_API_KEY),
+      hasAuthToken: Boolean(effectiveCodexApiKey(storedAuth)),
       chatgptLogin,
       ...(chatgptLogin ? { fireworksKeyHeader: CODEX_CHATGPT_FIREWORKS_KEY_HEADER } : {}),
       defaults: { main: CODEX_DEFAULT_MODEL },

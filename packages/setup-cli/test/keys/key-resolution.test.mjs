@@ -101,21 +101,12 @@ describe("harness resolveKey", () => {
     });
   });
 
-  test("opencode resolves env-ref to FIREWORKS_API_KEY", async () => {
+  test("opencode treats a legacy env-ref as missing", async () => {
     await withTempHome("opencode-envref", async (home) => {
       await writeOpencodeConfig(home, OPENCODE_API_KEY_ENV_REF);
-      const prev = process.env.FIREWORKS_API_KEY;
-      process.env.FIREWORKS_API_KEY = FW_OPENCODE_KEY;
-      try {
-        const key = await opencode.resolveKey(harnessCtx(home));
-        assert.equal(key, FW_OPENCODE_KEY);
-      } finally {
-        if (prev === undefined) {
-          delete process.env.FIREWORKS_API_KEY;
-        } else {
-          process.env.FIREWORKS_API_KEY = prev;
-        }
-      }
+      // env is not a credential source: a stored {env:FIREWORKS_API_KEY} ref is dead.
+      const key = await opencode.resolveKey(harnessCtx(home));
+      assert.equal(key, "");
     });
   });
 
@@ -129,21 +120,12 @@ describe("harness resolveKey", () => {
     });
   });
 
-  test("codex resolves env_key to FIREWORKS_API_KEY", async () => {
+  test("codex treats a legacy env_key as missing", async () => {
     await withTempHome("codex-envref", async (home) => {
       await writeCodexConfig(home, { envRef: true });
-      const prev = process.env.FIREWORKS_API_KEY;
-      process.env.FIREWORKS_API_KEY = FW_CODEX_KEY;
-      try {
-        const key = await codex.resolveKey(harnessCtx(home));
-        assert.equal(key, FW_CODEX_KEY);
-      } finally {
-        if (prev === undefined) {
-          delete process.env.FIREWORKS_API_KEY;
-        } else {
-          process.env.FIREWORKS_API_KEY = prev;
-        }
-      }
+      // env is not a credential source: a stored env_key ref is dead.
+      const key = await codex.resolveKey(harnessCtx(home));
+      assert.equal(key, "");
     });
   });
 
@@ -156,21 +138,12 @@ describe("harness resolveKey", () => {
     });
   });
 
-  test("pi resolves env-ref to FIREWORKS_API_KEY", async () => {
+  test("pi treats a legacy env-ref as missing", async () => {
     await withTempHome("pi-envref", async (home) => {
       await writePiAuth(home, PI_API_KEY_ENV_REF);
-      const prev = process.env.FIREWORKS_API_KEY;
-      process.env.FIREWORKS_API_KEY = FW_CLAUDE_KEY;
-      try {
-        const key = await pi.resolveKey(harnessCtx(home));
-        assert.equal(key, FW_CLAUDE_KEY);
-      } finally {
-        if (prev === undefined) {
-          delete process.env.FIREWORKS_API_KEY;
-        } else {
-          process.env.FIREWORKS_API_KEY = prev;
-        }
-      }
+      // env is not a credential source: a stored {env:FIREWORKS_API_KEY} ref is dead.
+      const key = await pi.resolveKey(harnessCtx(home));
+      assert.equal(key, "");
     });
   });
 });
@@ -190,19 +163,12 @@ describe("resolveFireworksApiKey with harness resolveKey", () => {
     });
   });
 
-  test("claude chain falls back to FIREWORKS_API_KEY env", async () => {
+  test("claude chain ignores FIREWORKS_API_KEY env", async () => {
     await withTempHome("chain-claude-env", async (home) => {
       await writeNativeAnthropicSettings(home);
       const ctx = harnessCtx(home);
-      const resolved = await resolveFireworksApiKey({
-        resolveKey: () => claude.resolveKey(ctx),
-        home,
-        apiKey: "",
-      });
-      // resolveFireworksApiKey reads process.env.FIREWORKS_API_KEY last;
-      // runCli clears it via NO_ENV_KEY but unit tests inherit shell env.
-      // Pass explicit env via the test's expectation: empty harness key + no global config
-      // means we need env set in process for this assertion.
+      // env is not a credential source: nothing stored means no key, even
+      // with FIREWORKS_API_KEY set.
       const prev = process.env.FIREWORKS_API_KEY;
       process.env.FIREWORKS_API_KEY = FW_CLAUDE_KEY;
       try {
@@ -210,7 +176,7 @@ describe("resolveFireworksApiKey with harness resolveKey", () => {
           resolveKey: () => claude.resolveKey(ctx),
           home,
         });
-        assert.equal(key, FW_CLAUDE_KEY);
+        assert.equal(key, "");
       } finally {
         if (prev === undefined) {
           delete process.env.FIREWORKS_API_KEY;
@@ -255,23 +221,25 @@ describe("resolveHarnessOnApiKey", () => {
     });
   });
 
-  test("uses legacy global env ref when FIREWORKS_API_KEY is set", async () => {
+  test("a legacy global env ref is dead: treated as missing", async () => {
     await withTempHome("on-global-envref", async (home) => {
       await writeGlobalConfig(home, {
         apiKey: FIREWORKS_API_KEY_ENV_REF,
         harnesses: { pi: { enabled: false } },
       });
 
+      // env is not a credential source, so the ref resolves to nothing even
+      // with FIREWORKS_API_KEY set.
       const prev = process.env.FIREWORKS_API_KEY;
       process.env.FIREWORKS_API_KEY = "fw_test_key_12345";
       try {
-        const resolved = await resolveHarnessOnApiKey({
-          home,
-          harnessEnvRef: PI_API_KEY_ENV_REF,
-        });
-        assert.equal(resolved.apiKey, "fw_test_key_12345");
-        assert.equal(resolved.apiKeyFromFlag, false);
-        assert.equal(resolved.source, "global-env-ref");
+        await assert.rejects(
+          () => resolveHarnessOnApiKey({
+            home,
+            harnessEnvRef: PI_API_KEY_ENV_REF,
+          }),
+          /No Fireworks API key found/,
+        );
       } finally {
         if (prev === undefined) {
           delete process.env.FIREWORKS_API_KEY;
@@ -282,17 +250,18 @@ describe("resolveHarnessOnApiKey", () => {
     });
   });
 
-  test("falls back to env when global config has no key", async () => {
+  test("an env-only key is ignored: treated as missing", async () => {
     await withTempHome("on-env-only", async (home) => {
       const prev = process.env.FIREWORKS_API_KEY;
       process.env.FIREWORKS_API_KEY = "fw_test_key_12345";
       try {
-        const resolved = await resolveHarnessOnApiKey({
-          home,
-          harnessEnvRef: OPENCODE_API_KEY_ENV_REF,
-        });
-        assert.equal(resolved.apiKey, "fw_test_key_12345");
-        assert.equal(resolved.source, "env");
+        await assert.rejects(
+          () => resolveHarnessOnApiKey({
+            home,
+            harnessEnvRef: OPENCODE_API_KEY_ENV_REF,
+          }),
+          /No Fireworks API key found/,
+        );
       } finally {
         if (prev === undefined) {
           delete process.env.FIREWORKS_API_KEY;

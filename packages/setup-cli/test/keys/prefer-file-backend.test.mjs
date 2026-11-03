@@ -4,7 +4,6 @@ import { describe, it } from "node:test";
 import {
   remoteSecretStorageDetail,
   shouldPreferFileBackendOnLinux,
-  shouldSkipEnvKeyAutoPersist,
 } from "../../lib/config/secret-storage-policy.mjs";
 import { withLinuxSshEnv } from "../helpers.mjs";
 
@@ -23,7 +22,6 @@ describe("secret storage policy", () => {
       }
       assert.equal(shouldPreferFileBackendOnLinux(), true);
       assert.match(remoteSecretStorageDetail() ?? "", /SSH\/remote/i);
-      assert.equal(shouldSkipEnvKeyAutoPersist(), true);
     });
   });
 

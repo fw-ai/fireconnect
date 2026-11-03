@@ -227,7 +227,7 @@ export async function runModelListCommand({ options, apiKey }) {
   // List prices refresh on the same cadence as the catalog read below: stale
   // caches warm in the background of every `model list`, `--refresh` forces.
   await refreshListPriceCache({ force: refresh });
-  const { catalog, source, updatedAt } = await withSpinner(
+  const { catalog, source, staleReason, updatedAt } = await withSpinner(
     refresh ? "Refreshing Fireworks model catalog…" : "Fetching Fireworks model catalog…",
     () => loadServerlessCatalog({ apiKey, refresh }),
   );
@@ -247,6 +247,7 @@ export async function runModelListCommand({ options, apiKey }) {
     const filtered = filterCatalogBySearch(enriched, options.search);
     console.log(JSON.stringify({
       source,
+      ...(staleReason ? { staleReason } : {}),
       updatedAt: catalogUpdatedAtIso(updatedAt),
       count: filtered.length,
       models: filtered,
@@ -254,10 +255,18 @@ export async function runModelListCommand({ options, apiKey }) {
     return;
   }
 
-  // A refresh that couldn't reach the gateway falls back to the last snapshot,
-  // so say so rather than presenting cached rows as freshly fetched.
-  if (refresh && source === "stale") {
-    console.log(warn("Couldn't reach Fireworks — showing the last cached catalog."));
+  // A failed fetch falls back to the last snapshot, which can predate new
+  // models, so say so rather than presenting cached rows as current.
+  if (source === "stale") {
+    const cachedAt = catalogUpdatedAtIso(updatedAt)
+      ? ` (last updated: ${formatCatalogUpdatedAt(updatedAt)})`
+      : "";
+    console.log(warn(
+      `Couldn't refresh the model catalog. Showing the cached copy${cachedAt}; newer models may be missing.`,
+    ));
+    if (staleReason) {
+      console.log(dim(`Reason: ${staleReason}`));
+    }
     console.log("");
   }
 

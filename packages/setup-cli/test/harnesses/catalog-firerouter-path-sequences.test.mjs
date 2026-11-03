@@ -8,22 +8,36 @@ import { OPENCODE_FIREWORKS_PROVIDER_ID, opencodeConfigPath } from "../../lib/ha
 import { piModelsPath, piSettingsPath } from "../../lib/harnesses/pi/core.mjs";
 import { USER_SETTINGS_RELATIVE_PATH } from "../../lib/harnesses/claude/core.mjs";
 import { isFireconnectProvider } from "../../lib/harnesses/vscode/core.mjs";
-import { runFireconnect, withTempHome } from "../helpers.mjs";
+import { runFireconnect, splitLoginArgs, withTempHome } from "../helpers.mjs";
 
 const API_KEY = "fw_cataloged_v1_adversarial000000";
 const FIREROUTER_TEST_PATH = "firerouter/test-model";
-const NO_ENV = { FIREWORKS_API_KEY: "" };
+// The plaintext secret seam keeps `vscode on` off the macOS Keychain (Code's
+// "Code Safe Storage" entry); other harnesses ignore it.
+const NO_ENV = { FIREWORKS_API_KEY: "", NEXUS_VSCODE_SECRET_PLAINTEXT: "1" };
+
+/** Seed `login --api-key` when the args carry the retired flag, then run `on`. */
+async function loginThenRun(home, args) {
+  const { login, rest } = splitLoginArgs(args);
+  if (login) {
+    const seed = await runFireconnect(login, { HOME: home, ...NO_ENV });
+    assert.equal(seed.code, 0, seed.stderr);
+  }
+  return { rest, env: { HOME: home, ...NO_ENV } };
+}
 
 /** Run an `on` step that must succeed. */
 async function onOk(home, args) {
-  const result = await runFireconnect(args, { HOME: home, ...NO_ENV });
+  const { rest, env } = await loginThenRun(home, args);
+  const result = await runFireconnect(rest, env);
   assert.equal(result.code, 0, result.stderr);
   return result;
 }
 
 /** Assert an explicit FireRouter selection is rejected and writes nothing new. */
 async function onRejected(home, args) {
-  const result = await runFireconnect(args, { HOME: home, ...NO_ENV });
+  const { rest, env } = await loginThenRun(home, args);
+  const result = await runFireconnect(rest, env);
   assert.notEqual(result.code, 0, args.join(" "));
   assert.match(result.stderr, /is no longer supported/, args.join(" "));
   return result;

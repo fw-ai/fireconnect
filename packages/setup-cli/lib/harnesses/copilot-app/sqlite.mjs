@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawnSyncCommand } from "../../system/win-command.mjs";
+import { loadNodeSqlite, sqlText } from "../../io/sqlite.mjs";
 import { ensureIdeStopped, isIdeRunning, quitInstruction } from "../../io/ide-running.mjs";
 
 /* -------------------------------------------------------------------------- */
@@ -24,31 +25,6 @@ import { ensureIdeStopped, isIdeRunning, quitInstruction } from "../../io/ide-ru
 /* ../vscode/vscdb-sqlite.mjs (zero-dependency, Node 18 compatible).           */
 /* -------------------------------------------------------------------------- */
 
-let NodeSqlite = null;
-let nodeSqliteChecked = false;
-
-async function loadNodeSqlite() {
-  if (nodeSqliteChecked) {
-    return NodeSqlite;
-  }
-  nodeSqliteChecked = true;
-  try {
-    // ExperimentalWarning is filtered by the persistent handler in
-    // bin/nexus.mjs (see vscdb-sqlite.mjs for why local suppression
-    // doesn't work).
-    const mod = await import("node:sqlite");
-    NodeSqlite = mod.DatabaseSync;
-  } catch {
-    NodeSqlite = null;
-  }
-  return NodeSqlite;
-}
-
-/** Escape a JS string into a SQL string literal body (single quotes doubled). */
-function sqlStringLiteral(s) {
-  return String(s).replace(/'/g, "''");
-}
-
 /** A finite number as a SQL literal, else NULL. */
 function sqlNumberOrNull(value) {
   return Number.isFinite(value) ? String(Math.trunc(value)) : "NULL";
@@ -57,7 +33,7 @@ function sqlNumberOrNull(value) {
 /** A non-empty string as a quoted SQL literal, else NULL. */
 function sqlTextOrNull(value) {
   const text = typeof value === "string" ? value.trim() : "";
-  return text ? `'${sqlStringLiteral(text)}'` : "NULL";
+  return text ? sqlText(text) : "NULL";
 }
 
 function isMissingTableError(error) {
@@ -98,7 +74,7 @@ export async function execCopilotSql(dbPath, statements) {
   // sqlite3 auto-commits each statement by default, so an explicit
   // BEGIN/COMMIT is what makes the batch atomic — a mid-batch failure rolls
   // the whole set back, matching the node:sqlite path above.
-  const result = spawnSync("sqlite3", [dbPath], {
+  const result = spawnSyncCommand("sqlite3", [dbPath], {
     input: `BEGIN;\n${statements.join("\n")}\nCOMMIT;`,
     encoding: "utf8",
   });
@@ -137,7 +113,7 @@ export async function queryCopilotSql(dbPath, sql) {
       db?.close();
     }
   }
-  const result = spawnSync("sqlite3", [dbPath, sql], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const result = spawnSyncCommand("sqlite3", [dbPath, sql], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (result.error) {
     throw result.error;
   }
@@ -237,7 +213,7 @@ export async function listCopilotProviders(dbPath) {
 export async function listCopilotProviderModels(dbPath, providerId) {
   const rows = await queryCopilotSql(
     dbPath,
-    `SELECT model_id, display_name, wire_model FROM provider_models WHERE provider_id = '${sqlStringLiteral(providerId)}';`,
+    `SELECT model_id, display_name, wire_model FROM provider_models WHERE provider_id = ${sqlText(providerId)};`,
   );
   return rows.map(([model_id, display_name, wire_model]) => ({
     model_id,
@@ -251,7 +227,7 @@ export async function listCopilotProviderModels(dbPath, providerId) {
  * single-row upgrade inserts so the column list can't drift between them.
  */
 function providerModelInsertStatement(providerId, model) {
-  return `INSERT INTO provider_models (id, provider_id, model_id, wire_model, display_name, max_prompt_tokens, max_output_tokens, wire_api_override, supported_reasoning_efforts) VALUES ('${sqlStringLiteral(newProviderModelId())}', '${sqlStringLiteral(providerId)}', '${sqlStringLiteral(model.id)}', '${sqlStringLiteral(model.wireModel || model.id)}', '${sqlStringLiteral(model.displayName)}', ${sqlNumberOrNull(model.maxPromptTokens)}, ${sqlNumberOrNull(model.maxOutputTokens)}, NULL, ${sqlTextOrNull(model.supportedReasoningEfforts)});`;
+  return `INSERT INTO provider_models (id, provider_id, model_id, wire_model, display_name, max_prompt_tokens, max_output_tokens, wire_api_override, supported_reasoning_efforts) VALUES (${sqlText(newProviderModelId())}, ${sqlText(providerId)}, ${sqlText(model.id)}, ${sqlText(model.wireModel || model.id)}, ${sqlText(model.displayName)}, ${sqlNumberOrNull(model.maxPromptTokens)}, ${sqlNumberOrNull(model.maxOutputTokens)}, NULL, ${sqlTextOrNull(model.supportedReasoningEfforts)});`;
 }
 
 /**
@@ -290,8 +266,8 @@ export async function upsertFireconnectProvider(dbPath, {
     wireApi: "completions",
   });
   const statements = [
-    `INSERT OR REPLACE INTO model_providers (id, name, type, settings_json, account_id) VALUES ('${sqlStringLiteral(providerId)}', '${COPILOT_PROVIDER_NAME}', '${COPILOT_PROVIDER_TYPE}', '${sqlStringLiteral(settings)}', NULL);`,
-    `DELETE FROM provider_models WHERE provider_id = '${sqlStringLiteral(providerId)}';`,
+    `INSERT OR REPLACE INTO model_providers (id, name, type, settings_json, account_id) VALUES (${sqlText(providerId)}, '${COPILOT_PROVIDER_NAME}', '${COPILOT_PROVIDER_TYPE}', ${sqlText(settings)}, NULL);`,
+    `DELETE FROM provider_models WHERE provider_id = ${sqlText(providerId)};`,
     // max_prompt_tokens / max_output_tokens drive the app's context-window
     // readout and supported_reasoning_efforts (a JSON array of effort names)
     // drives its reasoning-effort control; NULL in either makes the picker
@@ -338,9 +314,9 @@ export async function deleteCopilotProviderModels(dbPath, providerId, modelIds) 
   if (!ids.length) {
     return;
   }
-  const list = ids.map((id) => `'${sqlStringLiteral(id)}'`).join(", ");
+  const list = ids.map((id) => `${sqlText(id)}`).join(", ");
   await execCopilotSql(dbPath, [
-    `DELETE FROM provider_models WHERE provider_id = '${sqlStringLiteral(providerId)}' AND model_id IN (${list});`,
+    `DELETE FROM provider_models WHERE provider_id = ${sqlText(providerId)} AND model_id IN (${list});`,
   ]);
 }
 
@@ -371,8 +347,8 @@ export async function removeFireconnectProvider(dbPath, providerId) {
     return;
   }
   await execCopilotSql(dbPath, [
-    `DELETE FROM provider_models WHERE provider_id = '${sqlStringLiteral(providerId)}';`,
-    `DELETE FROM model_providers WHERE id = '${sqlStringLiteral(providerId)}';`,
+    `DELETE FROM provider_models WHERE provider_id = ${sqlText(providerId)};`,
+    `DELETE FROM model_providers WHERE id = ${sqlText(providerId)};`,
   ]);
 }
 
@@ -454,7 +430,7 @@ export async function refreshCopilotAppGatewayKey({ dbPath, fireworksKey }) {
   headers.Authorization = `Bearer ${fireworksKey}`;
   settings.headersJson = JSON.stringify(headers);
   await execCopilotSql(dbPath, [
-    `UPDATE model_providers SET settings_json = '${sqlStringLiteral(JSON.stringify(settings))}' WHERE id = '${sqlStringLiteral(provider.id)}';`,
+    `UPDATE model_providers SET settings_json = ${sqlText(JSON.stringify(settings))} WHERE id = ${sqlText(provider.id)};`,
   ]);
   return true;
 }
@@ -476,7 +452,7 @@ export async function rewriteCopilotAppProviderSettings(dbPath, rewrite) {
     return false;
   }
   await execCopilotSql(dbPath, [
-    `UPDATE model_providers SET settings_json = '${sqlStringLiteral(next)}' WHERE id = '${sqlStringLiteral(provider.id)}';`,
+    `UPDATE model_providers SET settings_json = ${sqlText(next)} WHERE id = ${sqlText(provider.id)};`,
   ]);
   return true;
 }

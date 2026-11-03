@@ -8,6 +8,7 @@ import { printBoolField, printField, printSectionHeader } from "../../harness/st
 import { listHarnesses } from "../../harness/registry.mjs";
 import { detectInstalledHarnessesAsync } from "../../harness/detect.mjs";
 import { harnessRows, printHarnessRows } from "./harnesses.mjs";
+import { harnessKeyCurrent } from "../../keys/key-current.mjs";
 
 /**
  * `nexus status`: report sign-in state, machine environment, and where
@@ -51,6 +52,17 @@ export async function runStatusCommand(ctx) {
   summary.perHarness = adapters.map((a) => byId.get(a.id)).filter(Boolean);
   const environment = detectEnvironment({ home });
   const { key: active, source } = await resolveFireworksKeyWithSource({ apiKey: "", home });
+  // Reuses the key resolved above (no second keychain read); only routed
+  // harnesses are compared, and no key ever leaves harnessKeyCurrent. This
+  // re-reads each routed harness's config (a sqlite3 read for Cursor, VS Code
+  // and the Copilot app) — file reads only, in parallel.
+  const harnessCtx = { ...ctx, home, settingsPath: "", configPath: "", dataDir: "" };
+  await Promise.all(adapters.map(async (adapter) => {
+    const entry = byId.get(adapter.id);
+    if (entry) {
+      entry.keyCurrent = entry.enabled ? await harnessKeyCurrent(adapter, harnessCtx, active) : null;
+    }
+  }));
   // The resolver prefers FIREWORKS_API_KEY, so when it is set it is the
   // credential actually in effect — phrase rejections around that.
   const fromEnv = source === "env";
@@ -203,13 +215,12 @@ function printStorage(summary, source) {
     printField("Backend issue", summary.backendError);
   }
   printBoolField("Key stored", summary.keychainPresent);
-  printBoolField("FIREWORKS_API_KEY in environment", summary.envPresent);
+  printBoolField("FIREWORKS_API_KEY in environment (ignored)", summary.envPresent);
   if (summary.backend === "file" && summary.keychainPresent) {
     console.log("");
     console.log(muted(
       "Sandbox/CI tip: file-config harnesses bake the API key into their config files. "
-        + "In non-interactive shells you can still export "
-        + "FIREWORKS_API_KEY directly (the key is in the encrypted file above).",
+        + "To inject the stored key elsewhere, use `nexus key export`.",
     ));
   }
 }

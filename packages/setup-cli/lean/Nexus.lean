@@ -13,3 +13,6 @@ import Nexus.CatalogRefreshPlan
 import Nexus.ShimHeaderOwnership
 import Nexus.SecretLifecycle
 import Nexus.DataDirMigrate
+import Nexus.OpencodeReasoningEffort
+import Nexus.KeyOrigin
+import Nexus.ServerlessTier

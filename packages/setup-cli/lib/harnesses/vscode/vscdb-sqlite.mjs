@@ -1,6 +1,7 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import path from "node:path";
+import { spawnSyncCommand } from "../../system/win-command.mjs";
+import { loadNodeSqlite, sqlText } from "../../io/sqlite.mjs";
 
 /* -------------------------------------------------------------------------- */
 /* Generic VS Code / Cursor `state.vscdb` ItemTable access.                    */
@@ -11,33 +12,6 @@ import path from "node:path";
 /* build on top. Prefer node:sqlite (Node >= 22), fall back to the `sqlite3`    */
 /* CLI so the harness works on Node 18 too. Both paths are zero-dependency.     */
 /* -------------------------------------------------------------------------- */
-
-let NodeSqlite = null;
-let nodeSqliteChecked = false;
-
-async function loadNodeSqlite() {
-  if (nodeSqliteChecked) {
-    return NodeSqlite;
-  }
-  nodeSqliteChecked = true;
-  try {
-    // `node:sqlite` emits an ExperimentalWarning on import. It is filtered by
-    // the persistent handler installed in bin/nexus.mjs — suppressing it
-    // around this import does not work, because `process.emitWarning` defers
-    // to `process.nextTick`, so the warning fires after any local window here
-    // would have closed.
-    const mod = await import("node:sqlite");
-    NodeSqlite = mod.DatabaseSync;
-  } catch {
-    NodeSqlite = null;
-  }
-  return NodeSqlite;
-}
-
-/** Escape a JS string into a SQL string literal body (single quotes doubled). */
-function sqlStringLiteral(s) {
-  return String(s).replace(/'/g, "''");
-}
 
 /**
  * True for "no such table: ItemTable" errors. A missing ItemTable just means no
@@ -90,7 +64,7 @@ export async function readItemTableValue(dbPath, key) {
     }
   }
 
-  const result = spawnSync("sqlite3", [dbPath, `SELECT value FROM ItemTable WHERE key='${sqlStringLiteral(key)}';`], {
+  const result = spawnSyncCommand("sqlite3", [dbPath, `SELECT value FROM ItemTable WHERE key=${sqlText(key)};`], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -116,6 +90,19 @@ export async function readItemTableValue(dbPath, key) {
  */
 export async function ensureItemTable(dbPath) {
   mkdirSync(path.dirname(dbPath), { recursive: true });
+  let fd;
+  try {
+    // The DB can contain a plaintext key cell, so create it owner-only.
+    fd = openSync(dbPath, "wx", 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") {
+      throw error;
+    }
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+  }
   const ddl = "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);";
   const DatabaseSync = await loadNodeSqlite();
   if (DatabaseSync) {
@@ -128,7 +115,7 @@ export async function ensureItemTable(dbPath) {
     }
     return;
   }
-  const result = spawnSync("sqlite3", [dbPath], { input: ddl, encoding: "utf8" });
+  const result = spawnSyncCommand("sqlite3", [dbPath], { input: ddl, encoding: "utf8" });
   if (result.error) {
     throw new Error(`sqlite3 failed: ${result.error.message}`);
   }
@@ -157,8 +144,8 @@ export async function writeItemTableValue(dbPath, key, value) {
     return;
   }
 
-  const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${sqlStringLiteral(key)}', '${sqlStringLiteral(value)}');`;
-  const result = spawnSync("sqlite3", [dbPath], { input: sql, encoding: "utf8" });
+  const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES (${sqlText(key)}, ${sqlText(value)});`;
+  const result = spawnSyncCommand("sqlite3", [dbPath], { input: sql, encoding: "utf8" });
   if (result.error) {
     throw new Error(`sqlite3 failed: ${result.error.message}`);
   }
@@ -189,7 +176,7 @@ export async function deleteItemTableValue(dbPath, key) {
     return;
   }
 
-  const result = spawnSync("sqlite3", [dbPath, `DELETE FROM ItemTable WHERE key='${sqlStringLiteral(key)}';`], {
+  const result = spawnSyncCommand("sqlite3", [dbPath, `DELETE FROM ItemTable WHERE key=${sqlText(key)};`], {
     encoding: "utf8",
   });
   if (result.error) {
@@ -242,10 +229,10 @@ export async function applyItemTableWrites(dbPath, mutations) {
   // wraps the whole input in an implicit transaction, so it's atomic too.
   const sql = mutations.map((m) =>
     m.op === "del"
-      ? `DELETE FROM ItemTable WHERE key='${sqlStringLiteral(m.key)}';`
-      : `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${sqlStringLiteral(m.key)}', '${sqlStringLiteral(m.value ?? "")}');`,
+      ? `DELETE FROM ItemTable WHERE key=${sqlText(m.key)};`
+      : `INSERT OR REPLACE INTO ItemTable (key, value) VALUES (${sqlText(m.key)}, ${sqlText(m.value ?? "")});`,
   ).join("\n");
-  const result = spawnSync("sqlite3", [dbPath], { input: sql, encoding: "utf8" });
+  const result = spawnSyncCommand("sqlite3", [dbPath], { input: sql, encoding: "utf8" });
   if (result.error) {
     throw new Error(`sqlite3 failed: ${result.error.message}`);
   }

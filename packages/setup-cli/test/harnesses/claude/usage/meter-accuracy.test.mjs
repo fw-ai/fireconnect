@@ -969,7 +969,7 @@ describe("syncAgentPane", () => {
 });
 
 
-describe("terminal stop reasons (Bugbot: refusal leaves meter spinning)", () => {
+describe("terminal stop reasons (refusal leaves meter spinning)", () => {
   /** Fullscreen frame for a single turn ending with `stop`. */
   async function frameForStop(stop) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "usage-meter-stop-"));
@@ -1045,7 +1045,7 @@ describe("terminal stop reasons (Bugbot: refusal leaves meter spinning)", () => 
   });
 });
 
-describe("pane focus cannot outlive the pane (Bugbot: stale pane focus)", () => {
+describe("pane focus cannot outlive the pane (stale pane focus)", () => {
   const main = { kind: "main", id: "main", label: "Main" };
   const sub = { kind: "subagent", id: "a1", label: "Explore" };
 

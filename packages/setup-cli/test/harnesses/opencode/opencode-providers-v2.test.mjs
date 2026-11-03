@@ -141,7 +141,8 @@ describe("opencode v2 providers on enable", () => {
       provider: { "fireworks-ai": { options: { apiKey: KEY }, models: { "glm-latest": null } } },
       model: "fireworks-ai/glm-latest",
     });
-    await enableAuto(paths);
+    // Offline, so the list policy keeps the malformed row as it is.
+    await enableAuto(paths, { catalogAvailable: false });
     const config = await readConfig(paths.configPath);
     assert.equal(config.provider["fireworks-ai"].models["glm-latest"], null);
     assert.equal(Object.hasOwn(config.providers["fireworks-ai"].models, "glm-latest"), false);
@@ -266,6 +267,66 @@ describe("opencodeV2ProviderEntry", () => {
         },
       },
     );
+  });
+
+  it("carries the reasoning flag as v2 capabilities.reasoning, never a boolean", () => {
+    const entry = (model) => opencodeV2ProviderEntry({ models: { m: model } }).models.m;
+    assert.deepEqual(
+      entry({ name: "M", reasoning: true }),
+      {
+        name: "M",
+        capabilities: {
+          reasoning: { supported: true, effort: ["low", "medium", "high"] },
+        },
+      },
+    );
+    assert.deepEqual(
+      entry({ name: "M", reasoning: false }).capabilities.reasoning,
+      { supported: false },
+    );
+    assert.deepEqual(
+      entry({
+        name: "M",
+        reasoning: true,
+        reasoning_options: [
+          { type: "effort", values: ["low", null, "high"] },
+          { type: "toggle" },
+          { type: "budget_tokens", min: 1024, max: "bad" },
+        ],
+      }).capabilities.reasoning,
+      { supported: true, effort: ["low", "high"], toggle: true, budget: { min: 1024 } },
+    );
+    // Options without the flag and malformed flags carry no capability.
+    assert.deepEqual(
+      entry({ name: "M", reasoning_options: [{ type: "effort", values: ["low"] }] }).capabilities.reasoning,
+      { supported: false },
+    );
+    assert.equal(entry({ name: "M", reasoning: "yes" }).capabilities, undefined);
+  });
+
+  it("leaves catalog input and tool capabilities unset for reasoning-only overrides", () => {
+    for (const control of [{ reasoning: true }, { reasoning: false }, { reasoning_options: [{ type: "toggle" }] }]) {
+      const source = { models: { m: { name: "M", ...control } } };
+      const original = structuredClone(source);
+      const capabilities = opencodeV2ProviderEntry(source).models.m.capabilities;
+      assert.equal(Object.hasOwn(capabilities, "input"), false);
+      assert.equal(Object.hasOwn(capabilities, "output"), false);
+      assert.equal(Object.hasOwn(capabilities, "tools"), false);
+      assert.equal(capabilities.reasoning.supported, control.reasoning === true);
+      assert.deepEqual(source, original);
+    }
+  });
+
+  it("keeps explicit input and tool overrides when reasoning is present", () => {
+    for (const input of [["text"], ["text", "image"], []]) {
+      const capabilities = opencodeV2ProviderEntry({ models: { m: {
+        reasoning: true, tool_call: false, modalities: { input, output: [] },
+      } } }).models.m.capabilities;
+      assert.deepEqual(capabilities, {
+        tools: false, input, output: [],
+        reasoning: { supported: true, effort: ["low", "medium", "high"] },
+      });
+    }
   });
 
   it("translates npm, api, body and hand-edited v1 model fields", () => {

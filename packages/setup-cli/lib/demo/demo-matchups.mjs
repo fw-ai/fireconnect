@@ -17,8 +17,8 @@ export const DEMO_MATCHUP_PRESETS = Object.freeze([
   },
   {
     id: "router-vs-direct",
-    label: "Auto router vs direct",
-    description: "Auto vs GLM Fast Latest",
+    label: "Nexus Auto vs direct",
+    description: "Nexus Auto vs GLM Fast Latest",
     leftModel: "auto",
     rightModel: "glm-fast-latest",
   },

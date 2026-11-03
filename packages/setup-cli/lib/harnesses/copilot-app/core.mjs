@@ -6,7 +6,7 @@ import {
   isRetiredModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
-import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { planModelList } from "../../harness/catalog-refresh.mjs";
 import {
   COPILOT_FIREWORKS_BASE_URL,
   copilotModelIds,
@@ -157,26 +157,17 @@ export async function enableCopilotFireworks({
       .map((model) => model.model_id)
       .filter((id) => !isRetiredModelId(id))
     : [];
-  const catalogModels = copilotModelIds(extraModels);
-  let toRegister;
-  if (!existing) {
-    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
-    toRegister = copilotModelIds([resolvedModel, ...extraModels]);
-  } else if (modelId) {
-    toRegister = [...new Set([...current, resolvedModel])];
-  } else if (catalogUnavailable) {
-    toRegister = current;
-  } else {
-    // Shared catalog-refresh policy: prune delisted ids, add newly served
-    // ones. describeCopilotAppModels rebuilds every row's metadata below, so
-    // kept rows are refreshed automatically.
-    const plan = planCatalogRefresh({
-      currentIds: current,
-      freshIds: catalogModels,
-      keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
-    });
-    toRegister = [...plan.kept, ...plan.added];
-  }
+  // Shared list policy (lib/harness/catalog-refresh.mjs).
+  // describeCopilotAppModels rebuilds every row's metadata below, so kept
+  // rows are refreshed automatically.
+  const toRegister = planModelList({
+    currentIds: current,
+    freshIds: copilotModelIds(extraModels),
+    catalogAvailable: !catalogUnavailable,
+    freshInstall: !existing,
+    selectedId: resolvedModel,
+    keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
+  });
   const models = describeCopilotAppModels(toRegister);
 
   await upsertFireconnectProvider(dbPath, { providerId, apiKey, models, extraHeaders });

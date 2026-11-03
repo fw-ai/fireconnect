@@ -26,6 +26,15 @@ describe("harness option validation", () => {
     await withTempHome("option-azure-", async (home) => {
       await rejects(home, ["claude", "on", "--azure"], /Claude does not support Azure mode/);
       await rejects(home, ["codex", "on", "--azure"], /Codex no longer supports Azure\/Foundry/);
+      // Without Azure support, --azure must not send the Foundry key down the
+      // Fireworks path.
+      for (const harness of ["deepseek", "copilot-cli", "copilot-app", "claude-desktop"]) {
+        await rejects(
+          home,
+          [harness, "on", "--azure"],
+          /does not support Azure mode/,
+        );
+      }
       await rejects(home, ["pi", "on", "--provider", "azure"], /--provider is configure-only/);
       await rejects(
         home,
@@ -99,11 +108,8 @@ describe("harness option validation", () => {
       const result = await runCli(
         [
           "codex", "on",
-          "--api-key", "fw_test_key_12345",
           "--model", "firerouter",
-          "--openai-api-key", "sk-proj-codex-flag-12345",
-        ],
-        {
+          "--openai-api-key", "sk-proj-codex-flag-12345"], {
           home,
           env: {
             FIREWORKS_API_KEY: "",
@@ -113,8 +119,7 @@ describe("harness option validation", () => {
             ZSH_VERSION: "",
             BASH_VERSION: "5",
           },
-        },
-      );
+        });
       assert.notEqual(result.code, 0);
       // The FireRouter model is rejected before the BYOK flag is considered.
       assert.match(result.stderr, /is no longer supported/);
@@ -132,11 +137,8 @@ describe("harness option validation", () => {
       const result = await runCli(
         [
           "codex", "on",
-          "--api-key", "fw_test_key_12345",
           "--model", "firerouter/opus",
-          "--anthropic-api-key", "sk-ant-codex-flag-12345",
-        ],
-        {
+          "--anthropic-api-key", "sk-ant-codex-flag-12345"], {
           home,
           env: {
             FIREWORKS_API_KEY: "",
@@ -146,8 +148,7 @@ describe("harness option validation", () => {
             ZSH_VERSION: "",
             BASH_VERSION: "5",
           },
-        },
-      );
+        });
       assert.notEqual(result.code, 0);
       // The FireRouter model is rejected before the BYOK flag is considered.
       assert.match(result.stderr, /is no longer supported/);
@@ -163,7 +164,7 @@ describe("harness option validation", () => {
     await withTempHome("option-claude-firerouter-", async (home) => {
       await rejects(
         home,
-        ["claude", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter"],
+        ["claude", "on", "--model", "firerouter"],
         /--model firerouter is no longer supported\. Use --model auto instead\./,
       );
     });

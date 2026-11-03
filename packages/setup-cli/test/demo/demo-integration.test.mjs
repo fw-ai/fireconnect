@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { SplitPaneRenderer } from "../../lib/demo/tui.mjs";
@@ -411,6 +411,21 @@ test("browser: compare.html is self-contained and inlines both apps", () => {
   assert.match(html, /4×/);
 });
 
+test("browser: the copy summary stays inside its script as a string", () => {
+  const summary = "Raced </script><script>window.pwned=1</script> $& $' vs GLM";
+  const html = buildCompareHtml({
+    result: sampleResult(),
+    incumbentAppHtml: "", fireworksAppHtml: "",
+    incumbentRunnable: false, fireworksRunnable: false,
+    incumbentLabel: "A", fireworksLabel: "B",
+    copySummary: summary,
+  });
+  assert.doesNotMatch(html, /<script>window\.pwned/);
+  const literal = /var text = (.*);/.exec(html)?.[1];
+  assert.ok(literal, "summary literal present");
+  assert.equal(JSON.parse(literal), summary);
+});
+
 test("browser: unavailable pricing is not rendered as a zero-cost comparison", () => {
   const result = sampleResult();
   result.fireworks.cost = null;
@@ -584,6 +599,22 @@ test("findStaleDemoTmp: matches only the demo's tmp prefixes", async () => {
   }
 });
 
+test("findStaleDemoTmp: skips symlinks and directories others can write", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "fc-clean-tmproot-"));
+  try {
+    await mkdir(path.join(root, "fc-demo-inc-mine"), { mode: 0o700 });
+    await mkdir(path.join(root, "target"));
+    await symlink(path.join(root, "target"), path.join(root, "fc-demo-fw-link"), "dir");
+    await mkdir(path.join(root, "fireconnect-demo-open"));
+    await chmod(path.join(root, "fireconnect-demo-open"), 0o777);
+    await writeFile(path.join(root, "fc-demo-inc-file"), "");
+    const found = (await findStaleDemoTmp(root)).map((p) => path.basename(p));
+    assert.deepEqual(found, ["fc-demo-inc-mine"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runDemoClean: removes a demo output dir + stale tmp, leaves a non-demo dir", async () => {
   const outDir = await mkdtemp(path.join(os.tmpdir(), "fc-clean-out-"));
   const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "fc-clean-troot-"));
@@ -711,7 +742,7 @@ test("providerListPricing: gpt-4o-mini does not match the gpt-4o tier", () => {
 });
 
 test("providerListPricing: [1m] tag and snapshot dates resolve to the base row", () => {
-  // Regression (bugbot): strict matching dropped Claude Code's `[1m]`
+  // Regression: strict matching dropped Claude Code's `[1m]`
   // context tag and Anthropic snapshot dates, unpricing legs that used to
   // resolve. Both normalize to the base row — never to a shorter key.
   const tagged = providerListPricing({ provider: "anthropic", modelId: "claude-opus-4-8[1m]" });
@@ -727,7 +758,7 @@ test("providerListPricing: [1m] tag and snapshot dates resolve to the base row",
 });
 
 test("providerListPricing: partial OpenAI ids stay estimated, never borrow rates", () => {
-  // Regression (bugbot): substring matching priced `gpt-5.6` at `gpt-5` rates
+  // Regression: substring matching priced `gpt-5.6` at `gpt-5` rates
   // and `o3-mini` at `o3` rates. Resolution is exact id, last path segment, or
   // explicit alias only — anything else gets the estimated reference row.
   for (const id of ["gpt-5.6-helios", "o3-mini", "gpt-4o-2024-08-06", "gpt-5.1-codex", "my-gpt-5-wrapper"]) {

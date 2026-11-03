@@ -10,6 +10,11 @@ import { fileURLToPath } from "node:url";
 // inject ANSI escape sequences even though spawned stdout is piped.
 process.env.FORCE_COLOR = "0";
 process.env.NO_COLOR = "1";
+// Specs that turn color back on assert exact truecolor sequences; running the
+// suite from macOS Terminal.app would otherwise downsample them to 256 colors,
+// and an inherited COLORTERM would defeat the Terminal.app 256-color specs.
+delete process.env.TERM_PROGRAM;
+delete process.env.COLORTERM;
 
 // Default every test process to the isolated secret store. Individual
 // secret-backend specs explicitly unset these and force file/null storage.
@@ -24,7 +29,7 @@ process.env.NEXUS_CACHE_DIR ??= mkdtempSync(path.join(os.tmpdir(), "fc-cache-glo
 
 // Preloaded via `--import` for every test process (see package.json `test`).
 //
-// `<harness> on --api-key` and `login` now strict-verify the key against the
+// `login --api-key` strict-verifies the key against the
 // gateway's GET /verifyApiKey before storing it. Specs that spawn the real CLI
 // with placeholder fw_ keys would otherwise make a live network call, so
 // stand up a permissive local double (200 + identity headers for any key) and

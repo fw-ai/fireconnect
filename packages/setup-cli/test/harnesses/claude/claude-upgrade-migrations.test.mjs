@@ -30,6 +30,7 @@ import {
 import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
 import {
   cacheServerlessCatalogSnapshot,
+  expireCatalogCache,
   setServerlessCatalogSnapshot,
 } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import { mockServerlessModel } from "../../helpers.mjs";
@@ -634,6 +635,79 @@ describe("migrateClaudeModelPickerOnUpgrade", () => {
       assert.ok(!options.some((row) => row.model.startsWith("firerouter")));
       // The rewrite must not widen the mode: the file holds the Fireworks key.
       assert.equal((await stat(settingsPath)).mode & 0o077, 0);
+    });
+  });
+
+  const AUTO_ROUTER_ROW = { id: "example-router/auto", object: "model", kind: "router", usage_identifier: "auto" };
+
+  async function withFetch(fetchImpl, fn) {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  }
+
+  it("prunes to auto when a fresh catalog fetch holds only the auto router row", async () => {
+    await withTempHome("claude-picker-auto-only-", async (home) => {
+      const { settingsPath } = await seedSettings(home, {
+        env: FIREWORKS_ENV,
+        modelPicker: managedPicker([
+          { model: "glm-latest[1m]", label: "GLM", description: "old" },
+          { model: "claude-sonnet-4-6", label: "Mine", description: "user row" },
+        ]),
+      });
+      const served = async () => ({ ok: true, json: async () => ({ object: "list", data: [AUTO_ROUTER_ROW] }) });
+
+      assert.equal(await withFetch(served, () => withHome(home, () => migrateClaudeModelPickerOnUpgrade(home))), true);
+
+      const ids = JSON.parse(await readFile(settingsPath, "utf8")).modelPicker.options.map((row) => row.model);
+      assert.ok(!ids.includes("glm-latest[1m]"));
+      assert.ok(ids.includes("claude-sonnet-4-6"));
+      assert.ok(ids.some((id) => id.startsWith("auto")));
+    });
+  });
+
+  it("prunes to auto for an account whose plan allows only auto, even when the catalog lists more", async () => {
+    await withTempHome("claude-picker-plan-auto-", async (home) => {
+      const { settingsPath } = await seedSettings(home, {
+        env: FIREWORKS_ENV,
+        modelPicker: managedPicker([
+          { model: "glm-latest[1m]", label: "GLM", description: "old" },
+          { model: "claude-sonnet-4-6", label: "Mine", description: "user row" },
+        ]),
+      });
+      const served = async () => ({ ok: true, json: async () => ({ object: "list", data: CATALOG_ROWS }) });
+      process.env.NEXUS_TEST_PLAN_TIER = "TEAMS";
+      try {
+        assert.equal(await withFetch(served, () => withHome(home, () => migrateClaudeModelPickerOnUpgrade(home))), true);
+      } finally {
+        delete process.env.NEXUS_TEST_PLAN_TIER;
+      }
+
+      const ids = JSON.parse(await readFile(settingsPath, "utf8")).modelPicker.options.map((row) => row.model);
+      assert.deepEqual(ids.filter((id) => !id.startsWith("claude-")).map((id) => id.replace("[1m]", "")), ["auto"]);
+      assert.ok(ids.includes("claude-sonnet-4-6"));
+    });
+  });
+
+  it("keeps the picker when only a stale auto-only catalog is available", async () => {
+    await withTempHome("claude-picker-auto-stale-", async (home) => {
+      const { settingsPath } = await seedSettings(home, {
+        env: FIREWORKS_ENV,
+        modelPicker: managedPicker([{ model: "glm-latest[1m]", label: "GLM", description: "old" }]),
+      });
+      await withHome(home, () => {
+        cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([AUTO_ROUTER_ROW]));
+        expireCatalogCache();
+      });
+      const before = await readFile(settingsPath, "utf8");
+      const offline = async () => { throw new TypeError("fetch failed"); };
+
+      assert.equal(await withFetch(offline, () => withHome(home, () => migrateClaudeModelPickerOnUpgrade(home))), false);
+      assert.equal(await readFile(settingsPath, "utf8"), before);
     });
   });
 

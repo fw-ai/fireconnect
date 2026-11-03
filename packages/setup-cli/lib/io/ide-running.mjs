@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import os from "node:os";
+import { spawnSyncCommand } from "../system/win-command.mjs";
 import { promptYesNo } from "../auth/login/prompts.mjs";
 
 /**
@@ -26,6 +27,14 @@ import { promptYesNo } from "../auth/login/prompts.mjs";
  *   applied to each Linux `pgrep -f` hit via `/proc/<pid>/cmdline`. Use this to
  *   ignore Electron helper processes that share the IDE binary but do not own
  *   the on-disk store (VS Code `--type=utility` children, etc.).
+ * @property {(cmdline: string) => boolean} [darwinCmdlineMatches] Optional filter
+ *   applied to each macOS `pgrep -f` hit via `ps -o args=`. macOS `pgrep -f`
+ *   does NOT exclude the searching `pgrep` itself — its argv carries the
+ *   pattern text verbatim, so every `pgrep -f` reports itself as a hit — and
+ *   Electron `--type=` helpers share the app binary path, so a bare pgrep hit
+ *   can never prove the GUI is open. The default verifier (see
+ *   {@link darwinSpecCmdlineMatches}) drops both; override only for a matcher
+ *   that also rules out `pgrep` invocations.
  * @property {string} windowsImage   Regex fragment for a whole `tasklist` image
  *   name, e.g. `Cursor\\.exe` or `Code(- Insiders)?\\.exe`. Matched anchored at
  *   the start of a line (tasklist lists the image name in column 0) so it isn't
@@ -100,6 +109,55 @@ export function anyLinuxPgrepHitMatches(pgrepOutput, cmdlineMatches) {
 }
 
 /**
+ * Full argv of one process, read via `ps -o args=` (macOS has no /proc).
+ * @param {string | number} pid
+ * @returns {string}
+ */
+function readDarwinCmdline(pid) {
+  try {
+    const r = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" });
+    return r.status === 0 ? (r.stdout || "").trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Default macOS hit filter, used when a spec supplies no darwinCmdlineMatches.
+ * macOS `pgrep -f` reports the searching `pgrep` process itself (its own argv
+ * contains the pattern text), so `pgrep` invocations never count as the GUI;
+ * Electron `--type=` helpers share the app binary path but do not own the
+ * on-disk store, so they don't either.
+ * @param {string} pattern spec.darwinPattern as a JS RegExp source
+ * @returns {(cmdline: string) => boolean}
+ */
+export function darwinSpecCmdlineMatches(pattern) {
+  const re = new RegExp(pattern);
+  return (cmdline) =>
+    !/(?:^|\s|\/)pgrep(\s|$)/.test(cmdline)
+    && !/\s--type=/.test(cmdline)
+    && re.test(cmdline);
+}
+
+/**
+ * @param {string} pgrepOutput
+ * @param {(cmdline: string) => boolean} cmdlineMatches
+ * @returns {boolean}
+ */
+export function anyDarwinPgrepHitMatches(pgrepOutput, cmdlineMatches) {
+  for (const pid of pgrepOutput.trim().split("\n")) {
+    if (!pid) {
+      continue;
+    }
+    const cmdline = readDarwinCmdline(pid);
+    if (cmdline && cmdlineMatches(cmdline)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * @param {IdeProcessSpec} spec
  * @returns {boolean} true if the IDE GUI process is currently running.
  */
@@ -107,7 +165,7 @@ export function isIdeRunning(spec) {
   const platform = os.platform();
   try {
     if (platform === "win32") {
-      const r = spawnSync("tasklist", ["/NH"], { encoding: "utf8" });
+      const r = spawnSyncCommand("tasklist", ["/NH"], { encoding: "utf8" });
       // Anchor at line start (tasklist puts the image name in column 0) and
       // require a word boundary after, so the pattern matches a whole image
       // name and not a substring (MyCode.exe / VSCode.exe vs Code.exe).
@@ -122,10 +180,26 @@ export function isIdeRunning(spec) {
     if (platform === "linux" && spec.linuxCmdlineMatches) {
       return anyLinuxPgrepHitMatches(r.stdout, spec.linuxCmdlineMatches);
     }
+    if (platform === "darwin") {
+      // Every macOS hit is re-verified: pgrep reports its own invocation (the
+      // pattern text is in its argv) and Electron helpers share the binary.
+      const cmdlineMatches = spec.darwinCmdlineMatches ?? darwinSpecCmdlineMatches(pattern);
+      return anyDarwinPgrepHitMatches(r.stdout, cmdlineMatches);
+    }
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * The running message as a warning for a write that goes ahead anyway: the
+ * "Or pass --force" escape is dropped because the user already took it.
+ * @param {string} runningMessage
+ * @returns {string}
+ */
+export function forcedWarning(runningMessage) {
+  return `Writing anyway (--force). ${runningMessage.replace(/\s*Or pass --force\b.*$/s, "")}`;
 }
 
 /**
@@ -139,7 +213,7 @@ export function assertIdeStopped(spec, runningMessage, { force = false } = {}) {
     return;
   }
   if (force) {
-    console.warn(uiWarn(runningMessage));
+    console.warn(uiWarn(forcedWarning(runningMessage)));
     return;
   }
   throw new Error(runningMessage);
@@ -240,7 +314,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
     return;
   }
   if (force) {
-    console.warn(uiWarn(runningMessage));
+    console.warn(uiWarn(forcedWarning(runningMessage)));
     return;
   }
   if (!stdin.isTTY) {
@@ -266,7 +340,7 @@ export async function ensureIdeStopped(spec, runningMessage, {
         return;
       }
       if (proceed) {
-        console.warn(uiWarn(runningMessage));
+        console.warn(uiWarn(forcedWarning(runningMessage)));
         return;
       }
       throw new Error(runningMessage);

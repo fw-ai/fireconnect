@@ -10,10 +10,19 @@ import {
   stripFireconnectRoutingRaw,
 } from "../../../lib/harnesses/codex/toml-patch.mjs";
 import { parseToml } from "../../../lib/harnesses/codex/toml.mjs";
+import { parse as parseTomlFull } from "smol-toml";
 import {
   codexCurrentModelId,
   fireconnectManaged,
 } from "../../../lib/harnesses/codex/core.mjs";
+
+const ROUTED_CHATGPT = () => patchFireconnectRoutingRaw('[tui]\nanimations = false\n', {
+  providerId: "fireworks-ai",
+  baseUrl: "https://api.fireworks.ai/inference/v1",
+  modelId: "glm-5p1",
+  chatgptLogin: true,
+  httpHeaders: { "x-fireworks-api-key": "fw_OLD" },
+});
 
 const ROUTING = {
   providerId: "fireworks-ai",
@@ -213,6 +222,29 @@ describe("codex-toml-patch", () => {
     assert.match(withAuth, /experimental_bearer_token = "fw_test_key_12345"/);
   });
 
+  it("escapes quotes, newlines and control characters so a value only sets its own key", () => {
+    const payload = 'x"\n[mcp_servers.injected]\ncommand = "sh"\n#\\\u0001\u007f';
+    const assertOnlyOwnKey = (raw) => {
+      const doc = parseTomlFull(raw);
+      assert.equal(doc.mcp_servers, undefined);
+      return doc;
+    };
+    const routed = patchFireconnectRoutingRaw("", {
+      ...ROUTING, modelId: payload, catalogPath: payload, apiKey: payload, literalAuth: true,
+    });
+    const doc = assertOnlyOwnKey(routed);
+    assert.equal(doc.model, payload);
+    assert.equal(doc.model_catalog_json, payload);
+    assert.equal(doc.model_providers["fireworks-ai"].experimental_bearer_token, payload);
+
+    assert.equal(assertOnlyOwnKey(patchCodexModelRaw(ROUTED_CHATGPT(), payload)).model, payload);
+    assert.equal(assertOnlyOwnKey(patchCodexCatalogRefRaw(ROUTED_CHATGPT(), payload)).model_catalog_json, payload);
+    const auth = patchCodexProviderAuthRaw(patchFireconnectRoutingRaw("", { ...ROUTING, apiKey: "fw_OLD", literalAuth: true }), {
+      apiKey: payload, literalAuth: true,
+    });
+    assert.equal(assertOnlyOwnKey(auth).model_providers["fireworks-ai"].experimental_bearer_token, payload);
+  });
+
   it("writes and parses static and env request headers", () => {
     const patched = patchFireconnectRoutingRaw("", {
       ...ROUTING,
@@ -343,6 +375,68 @@ describe("codex-toml-patch", () => {
     assert.match(patched, /model_catalog_json = "~\/\.codex\/fireworks-model-catalog\.json"/);
   });
 
+  it("on replaces every spelling of the provider table, sub-tables included", () => {
+    const body = [
+      'name = "Fireworks"',
+      'base_url = "https://api.fireworks.ai/inference/v1"',
+      "requires_openai_auth = true",
+    ];
+    const variants = {
+      "headers sub-table": [
+        "[model_providers.fireworks-ai]", ...body, "",
+        "[model_providers.fireworks-ai.http_headers]", 'x-fireworks-api-key = "fw_old"',
+      ],
+      "quoted key": ['[model_providers."fireworks-ai"]', ...body, 'http_headers = { "x-fireworks-api-key" = "fw_old" }'],
+      "spaces": ["[ model_providers . fireworks-ai ]", ...body, 'http_headers = { "x-fireworks-api-key" = "fw_old" }'],
+      "trailing comment": ["[model_providers.fireworks-ai] # Fireworks", ...body, 'http_headers = { "x-fireworks-api-key" = "fw_old" }'],
+    };
+    for (const [name, lines] of Object.entries(variants)) {
+      const input = ['"model" = "gpt-4.1"', 'model_provider = "fireworks-ai"', "", "[tui]", "show_tooltips = true", "", ...lines, ""].join("\n");
+      const patched = patchFireconnectRoutingRaw(input, {
+        ...ROUTING,
+        chatgptLogin: true,
+        httpHeaders: { "x-fireworks-api-key": "fw_new" },
+      });
+      const doc = parseToml(patched);
+      assert.equal(doc.root.model, ROUTING.modelId, name);
+      assert.deepEqual({ ...doc.tables["model_providers.fireworks-ai"].http_headers }, { "x-fireworks-api-key": "fw_new" }, name);
+      assert.equal(doc.tables.tui.show_tooltips, true, name);
+      assert.doesNotMatch(patched, /fw_old/, name);
+    }
+  });
+
+  it("key rotation rewrites an http_headers sub-table instead of defining http_headers twice", () => {
+    const input = [
+      'model_provider = "fireworks-ai"',
+      'model = "auto"',
+      "",
+      "[model_providers.fireworks-ai]",
+      'name = "Fireworks"',
+      'base_url = "https://api.fireworks.ai/inference/v1"',
+      "requires_openai_auth = true",
+      "",
+      "[model_providers.fireworks-ai.http_headers]",
+      '"X-Title" = "Codex"',
+      'x-fireworks-api-key = "fw_old"',
+      "",
+      "[tui]",
+      "show_tooltips = true",
+      "",
+    ].join("\n");
+    const rotated = patchCodexProviderAuthRaw(input, {
+      apiKey: "fw_new",
+      literalAuth: true,
+      chatgptLogin: true,
+      httpHeaders: { "X-Title": "Codex", "x-fireworks-api-key": "fw_new" },
+    });
+    const doc = parseToml(rotated);
+    assert.deepEqual(
+      { ...doc.tables["model_providers.fireworks-ai"].http_headers },
+      { "X-Title": "Codex", "x-fireworks-api-key": "fw_new" },
+    );
+    assert.equal(doc.tables.tui.show_tooltips, true);
+  });
+
   it("patchCodexCatalogRefRaw updates an existing model_catalog_json line", () => {
     const input = [
       'model_provider = "fireworks-ai"',
@@ -358,5 +452,86 @@ describe("codex-toml-patch", () => {
     );
     assert.match(patched, /model_catalog_json = "~\/\.codex\/fireworks-model-catalog\.json"/);
     assert.doesNotMatch(patched, /old-catalog\.json/);
+  });
+
+  // `nexus login --force` rewrites the key through patchCodexProviderAuthRaw; a
+  // headers subtable next to the new inline line made Codex refuse config.toml
+  // with "duplicate key" (the subtable's `http_headers` segment).
+  const CHATGPT_AUTH = { apiKey: "fw_NEW", literalAuth: true, chatgptLogin: true, httpHeaders: { "x-fireworks-api-key": "fw_NEW" } };
+
+  it("patchCodexProviderAuthRaw folds an http_headers subtable into the inline line", () => {
+    const input = [
+      'model_provider = "fireworks-ai"',
+      'model = "glm-5p1"',
+      "",
+      "[model_providers.fireworks-ai]",
+      'name = "Fireworks"',
+      "requires_openai_auth = true",
+      "",
+      "[model_providers.fireworks-ai.http_headers]",
+      'x-fireworks-api-key = "fw_OLD"',
+      "",
+      "[tui]",
+      "animations = false",
+      "",
+    ].join("\n");
+    const patched = patchCodexProviderAuthRaw(input, CHATGPT_AUTH);
+    const doc = parseToml(patched);
+    assert.deepEqual({ ...doc.tables["model_providers.fireworks-ai"].http_headers }, { "x-fireworks-api-key": "fw_NEW" });
+    assert.equal(doc.tables.tui.animations, false);
+    assert.doesNotMatch(patched, /fw_OLD/);
+  });
+
+  it("patchCodexProviderAuthRaw replaces dotted http_headers keys", () => {
+    const input = [
+      "[model_providers.fireworks-ai]",
+      "requires_openai_auth = true",
+      'http_headers.x-fireworks-api-key = "fw_OLD"',
+      "",
+    ].join("\n");
+    const patched = patchCodexProviderAuthRaw(input, CHATGPT_AUTH);
+    assert.equal(parseToml(patched).tables["model_providers.fireworks-ai"].http_headers["x-fireworks-api-key"], "fw_NEW");
+  });
+
+  it("patchCodexProviderAuthRaw finds a provider header spelled with spaces or quotes", () => {
+    for (const header of ["[ model_providers.fireworks-ai ]", '[model_providers."fireworks-ai"]', "[model_providers.fireworks-ai] # nexus"]) {
+      const input = [header, "requires_openai_auth = true", 'http_headers = { "x-fireworks-api-key" = "fw_OLD" }', ""].join("\n");
+      const patched = patchCodexProviderAuthRaw(input, CHATGPT_AUTH);
+      assert.equal(parseToml(patched).tables["model_providers.fireworks-ai"].http_headers["x-fireworks-api-key"], "fw_NEW", header);
+    }
+  });
+
+  it("patchCodexProviderAuthRaw keeps a headers subtable when the provider has no header of its own", () => {
+    const input = ["[model_providers.fireworks-ai.http_headers]", 'x-fireworks-api-key = "fw_OLD"', ""].join("\n");
+    assert.equal(patchCodexProviderAuthRaw(input, CHATGPT_AUTH), input);
+  });
+
+  it("repeated patchCodexProviderAuthRaw rotations do not add blank lines", () => {
+    const input = ROUTED_CHATGPT();
+    const once = patchCodexProviderAuthRaw(input, CHATGPT_AUTH);
+    const twice = patchCodexProviderAuthRaw(once, { ...CHATGPT_AUTH, apiKey: "fw_NEWER", httpHeaders: { "x-fireworks-api-key": "fw_NEWER" } });
+    assert.equal(twice.split("\n").length, once.split("\n").length);
+    assert.doesNotMatch(twice, /\n\n\n/);
+  });
+
+  it("patchFireconnectRoutingRaw replaces the provider's subtables instead of leaving them behind", () => {
+    const input = [
+      'model_provider = "fireworks-ai"',
+      'model = "glm-5p1"',
+      "",
+      "[model_providers.fireworks-ai]",
+      "requires_openai_auth = true",
+      "",
+      "[model_providers.fireworks-ai.http_headers]",
+      'x-fireworks-api-key = "fw_OLD"',
+      "",
+      "[tui]",
+      "animations = false",
+      "",
+    ].join("\n");
+    const patched = patchFireconnectRoutingRaw(input, { ...ROUTING, chatgptLogin: true, httpHeaders: { "x-fireworks-api-key": "fw_NEW" } });
+    const doc = parseToml(patched);
+    assert.deepEqual({ ...doc.tables["model_providers.fireworks-ai"].http_headers }, { "x-fireworks-api-key": "fw_NEW" });
+    assert.equal(doc.tables.tui.animations, false);
   });
 });

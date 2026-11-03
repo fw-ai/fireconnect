@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
@@ -39,6 +42,9 @@ function fakeGit({ head = "old", target = "new", events = [] } = {}) {
     }
     if (command[0] === "rev-parse" && command[1] === "FETCH_HEAD") {
       return `${target}\n`;
+    }
+    if (command[0] === "show") {
+      return JSON.stringify({ version: "1.0.0" });
     }
     return "";
   };
@@ -320,6 +326,55 @@ describe("upgrade fetch, compare, and reset ordering", () => {
     assert.equal(finalized, true);
   });
 
+  it("refuses to reset onto an older fetched version", async () => {
+    const events = [];
+    const git = fakeGit({ events });
+    await assert.rejects(
+      runUpgradeCommand(upgradeDependencies({
+        readVersion: async () => "0.9.0",
+        execFile: (file, args, options) => (args.includes("show")
+          ? (events.push("show"), JSON.stringify({ version: "0.1.0" }))
+          : git(file, args, options)),
+        preflight: async () => {
+          events.push("preflight");
+          return { proceed: true, restored: false };
+        },
+      })),
+      /older than the installed one/,
+    );
+    assert.equal(events.includes("preflight"), false);
+    assert.equal(events.some((event) => event.startsWith("reset")), false);
+  });
+
+  it("stops before preflight when the fetched release version cannot be read", async () => {
+    for (const show of [
+      () => JSON.stringify({}),
+      () => { throw new Error("missing object"); },
+    ]) {
+      const events = [];
+      const git = fakeGit({ events });
+      await assert.rejects(
+        runUpgradeCommand(upgradeDependencies({
+          readVersion: async () => "0.9.0",
+          execFile: (file, args, options) => {
+            if (args.includes("show")) {
+              events.push("show");
+              return show();
+            }
+            return git(file, args, options);
+          },
+          preflight: async () => {
+            events.push("preflight");
+            return { proceed: true, restored: false };
+          },
+        })),
+        /Update stopped: could not read the version of the fetched release/,
+      );
+      assert.equal(events.includes("preflight"), false);
+      assert.equal(events.some((event) => event.startsWith("reset")), false);
+    }
+  });
+
   it("cancels before reset when the user declines the preflight", async () => {
     const events = [];
     await runUpgradeCommand(upgradeDependencies({
@@ -334,6 +389,7 @@ describe("upgrade fetch, compare, and reset ordering", () => {
       "rev-parse HEAD",
       "fetch --depth=1 origin main --quiet",
       "rev-parse FETCH_HEAD",
+      "show new:packages/setup-cli/package.json",
       "preflight",
     ]);
   });
@@ -366,6 +422,7 @@ describe("upgrade fetch, compare, and reset ordering", () => {
       "rev-parse HEAD",
       "fetch --depth=1 origin main --quiet",
       "rev-parse FETCH_HEAD",
+      "show new:packages/setup-cli/package.json",
       "preflight",
       "reset --hard new",
       "diff --quiet old new -- packages/setup-cli/package-lock.json",
@@ -419,6 +476,26 @@ describe("upgrade fetch, compare, and reset ordering", () => {
     );
   });
 
+  it("stops when installed and fetched release versions are unreadable", async () => {
+    const events = [];
+    const git = fakeGit({ events });
+    await assert.rejects(
+      runUpgradeCommand(upgradeDependencies({
+        readVersion: async () => "",
+        execFile: (file, args, options) => {
+          if (args[2] === "show") {
+            events.push("show");
+            return "";
+          }
+          return git(file, args, options);
+        },
+      })),
+      /Update stopped: could not read the version of the fetched release/,
+    );
+    assert.ok(events.includes("show"));
+    assert.equal(events.some((event) => event.startsWith("reset")), false);
+  });
+
   it("runs npm install when the lockfile is unchanged but packages are missing", async () => {
     const events = [];
     await runUpgradeCommand(upgradeDependencies({
@@ -431,6 +508,9 @@ describe("upgrade fetch, compare, and reset ordering", () => {
           }
           if (command[0] === "rev-parse" && command[1] === "FETCH_HEAD") {
             return "new\n";
+          }
+          if (command[0] === "show") {
+            return JSON.stringify({ version: "1.0.0" });
           }
           return "";
         }
@@ -447,6 +527,309 @@ describe("upgrade fetch, compare, and reset ordering", () => {
       events.some((event) => /npm(\.cmd)? install --omit=dev/.test(event)),
       `expected npm install, got: ${events.join(" | ")}`,
     );
+  });
+});
+
+describe("tarball update (no .git install)", () => {
+  async function withTarballInstall(callback) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "nexus-tarball-update-"));
+    const home = path.join(root, "home");
+    const installDir = path.join(home, ".nexus/cli");
+    await mkdir(path.join(installDir, "packages/setup-cli/bin"), { recursive: true });
+    await writeFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "// old\n");
+    await writeFile(path.join(installDir, "packages/setup-cli/package.json"), JSON.stringify({ version: "0.9.0" }));
+    await writeFile(path.join(installDir, "packages/setup-cli/package-lock.json"), "old-lock\n");
+    try {
+      await callback({ root, home, installDir });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  // Writes the "downloaded tarball" contents into staging, like the real
+  // downloadCliTarball would after extraction.
+  function fakeDownload(files) {
+    return async (staging) => {
+      for (const [relative, content] of Object.entries(files)) {
+        const target = path.join(staging, relative);
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, content);
+      }
+    };
+  }
+
+  function tarballDeps(overrides = {}) {
+    return upgradeDependencies({
+      // Real fs: the install directory exists, but has no .git inside it, and
+      // the version is read from the package.json actually on disk.
+      exists: existsSync,
+      readVersion: async (dir) => {
+        try {
+          return JSON.parse(await readFile(path.join(dir, "packages/setup-cli/package.json"), "utf8")).version ?? "";
+        } catch {
+          return "";
+        }
+      },
+      runtimeDepsPresent: () => true,
+      preflight: async () => ({ proceed: true, restored: false }),
+      ...overrides,
+    });
+  }
+
+  it("swaps in the downloaded tarball and reinstalls deps when the lockfile changes", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      const events = [];
+      const output = [];
+      await runUpgradeCommand(tarballDeps({
+        home,
+        readRemoteVersion: async () => "1.0.0",
+        downloadTarball: fakeDownload({
+          "packages/setup-cli/bin/nexus.mjs": "// new\n",
+          "packages/setup-cli/package.json": JSON.stringify({ version: "1.0.0" }),
+          "packages/setup-cli/package-lock.json": "new-lock\n",
+        }),
+        execFile: (file, args) => {
+          events.push([file, ...args].join(" "));
+          return "";
+        },
+        finalize: async () => events.push("finalize"),
+        successFn: (message) => output.push(message),
+      }));
+
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// new\n");
+      assert.equal(existsSync(`${installDir}.download`), false, "staging directory is removed");
+      assert.equal(existsSync(`${installDir}.previous`), false, "the previous install is removed once the new one is in");
+      assert.ok(
+        events.some((event) => /npm(\.cmd)? install --omit=dev/.test(event)),
+        `expected npm install, got: ${events.join(" | ")}`,
+      );
+      assert.equal(events.at(-1), "finalize");
+      assert.deepEqual(output, ["Updated v0.9.0 → v1.0.0."]);
+    });
+  });
+
+  it("skips npm when the lockfile is unchanged and deps are present", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      const events = [];
+      await runUpgradeCommand(tarballDeps({
+        home,
+        readRemoteVersion: async () => "1.0.0",
+        downloadTarball: fakeDownload({
+          "packages/setup-cli/bin/nexus.mjs": "// new\n",
+          "packages/setup-cli/package.json": JSON.stringify({ version: "1.0.0" }),
+          "packages/setup-cli/package-lock.json": "old-lock\n",
+        }),
+        execFile: (file, args) => {
+          events.push([file, ...args].join(" "));
+          return "";
+        },
+      }));
+
+      assert.equal(
+        events.some((event) => /npm(\.cmd)? install/.test(event)),
+        false,
+        `unexpected npm install: ${events.join(" | ")}`,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// new\n");
+    });
+  });
+
+  it("puts the previous install back when the downloaded release cannot be moved into place", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      const staging = `${installDir}.download`;
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "1.0.0",
+          downloadTarball: fakeDownload({
+            "packages/setup-cli/bin/nexus.mjs": "// new\n",
+            "packages/setup-cli/package.json": JSON.stringify({ version: "1.0.0" }),
+          }),
+          renameDir: async (from, to) => {
+            if (from === staging) throw new Error("EXDEV: cross-device link not permitted");
+            return rename(from, to);
+          },
+          execFile: () => "",
+          finalize: async () => assert.fail("finalize must not run after a failed swap"),
+        })),
+        /could not move the downloaded release into place \(EXDEV.*\)\. Your existing install was left in place\./,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+      assert.equal(existsSync(`${installDir}.previous`), false);
+      assert.equal(existsSync(staging), false);
+    });
+  });
+
+  it("puts the previous install back when the new release's dependencies fail to install", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "1.0.0",
+          downloadTarball: fakeDownload({
+            "packages/setup-cli/bin/nexus.mjs": "// new\n",
+            "packages/setup-cli/package.json": JSON.stringify({ version: "1.0.0" }),
+            "packages/setup-cli/package-lock.json": "new-lock\n",
+          }),
+          execFile: () => { throw new Error("npm exited with code 1"); },
+          finalize: async () => assert.fail("finalize must not run after a failed dependency install"),
+        })),
+        /could not install dependencies \(npm exited with code 1\)\. Your previous install was put back/,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/package-lock.json"), "utf8"), "old-lock\n");
+      assert.equal(existsSync(`${installDir}.previous`), false);
+      assert.equal(existsSync(`${installDir}.download`), false);
+    });
+  });
+
+  it("refuses a published version older than the installed one", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      let downloaded = false;
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "0.8.0",
+          downloadTarball: async () => { downloaded = true; },
+        })),
+        /older than the installed one \(v0\.9\.0\)/,
+      );
+      assert.equal(downloaded, false);
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+    });
+  });
+
+  it("reports already up to date without downloading anything", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      const messages = [];
+      let finalized = false;
+      await runUpgradeCommand(tarballDeps({
+        home,
+        readRemoteVersion: async () => "0.9.0",
+        downloadTarball: async () => {
+          throw new Error("must not download when already current");
+        },
+        infoFn: (message) => messages.push(message),
+        finalize: async () => {
+          finalized = true;
+        },
+      }));
+
+      assert.ok(messages.includes("Already up to date (v0.9.0)."));
+      assert.equal(finalized, true);
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+    });
+  });
+
+  it("leaves the existing install in place when the download fails", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "1.0.0",
+          downloadTarball: async () => {
+            throw new Error("HTTP 502");
+          },
+        })),
+        /could not download the Nexus CLI tarball \(HTTP 502\)\. Your existing install was left in place\./,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+      assert.equal(existsSync(`${installDir}.download`), false);
+    });
+  });
+
+  it("refuses a tarball whose package version is older than the installed one", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "1.0.0",
+          downloadTarball: fakeDownload({
+            "packages/setup-cli/bin/nexus.mjs": "// too old\n",
+            "packages/setup-cli/package.json": JSON.stringify({ version: "0.1.0" }),
+          }),
+        })),
+        /older than the installed one/,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+      assert.equal(existsSync(`${installDir}.download`), false);
+    });
+  });
+
+  it("stops when the downloaded tarball has no readable package version", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "1.0.0",
+          downloadTarball: fakeDownload({
+            "packages/setup-cli/bin/nexus.mjs": "// new\n",
+          }),
+        })),
+        /could not read the version of the downloaded release/,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+      assert.equal(existsSync(`${installDir}.download`), false);
+    });
+  });
+
+  it("fails with a network hint when the latest version cannot be checked", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      await assert.rejects(
+        runUpgradeCommand(tarballDeps({
+          home,
+          readRemoteVersion: async () => "",
+        })),
+        /could not check the latest Nexus CLI version/,
+      );
+      assert.equal(await readFile(path.join(installDir, "packages/setup-cli/bin/nexus.mjs"), "utf8"), "// old\n");
+    });
+  });
+
+  it("runs the Claude preflight before swapping in the tarball", async () => {
+    await withTarballInstall(async ({ home, installDir }) => {
+      const events = [];
+      await runUpgradeCommand(tarballDeps({
+        home,
+        readRemoteVersion: async () => "1.0.0",
+        downloadTarball: async (staging) => {
+          events.push("download");
+          await fakeDownload({
+            "packages/setup-cli/bin/nexus.mjs": "// new\n",
+            "packages/setup-cli/package.json": JSON.stringify({ version: "1.0.0" }),
+            "packages/setup-cli/package-lock.json": "old-lock\n",
+          })(staging);
+        },
+        preflight: async ({ installedVersion }) => {
+          events.push(`preflight:${installedVersion}`);
+          return { proceed: true, restored: false };
+        },
+      }));
+
+      assert.deepEqual(events, ["preflight:0.9.0", "download"]);
+    });
+  });
+
+  it("still says nothing to update when no curl install exists at all", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "nexus-tarball-none-"));
+    try {
+      const home = path.join(root, "home");
+      await mkdir(home, { recursive: true });
+      const messages = [];
+      let finalized = false;
+      await runUpgradeCommand(tarballDeps({
+        home,
+        infoFn: (message) => messages.push(message),
+        finalize: async () => {
+          finalized = true;
+        },
+      }));
+
+      assert.ok(messages.some((message) => /Nothing to update/.test(message)));
+      assert.equal(finalized, true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

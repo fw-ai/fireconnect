@@ -11,8 +11,8 @@ import { PI_AZURE_PROVIDER, piModelsPath, piSettingsPath } from "../../lib/harne
 import { harnessTestArgs, isolatedChildHome, seedOnCommandCatalog } from "../helpers.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "..", "bin", "nexus.mjs");
-const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1/chat/completions";
-const AZURE_BASE_URL = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1";
+const AZURE_ENDPOINT = "https://example-resource.services.ai.azure.com/openai/v1/chat/completions";
+const AZURE_BASE_URL = "https://example-resource.services.ai.azure.com/openai/v1";
 const AZURE_KEY = "azure-test-key-1234567890";
 
 function runFireconnect(args, env = {}) {

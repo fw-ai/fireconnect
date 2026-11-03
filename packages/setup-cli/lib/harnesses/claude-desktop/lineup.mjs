@@ -50,7 +50,7 @@ export const DEFAULT_MODEL_MAP = {
     "claude-haiku-4-5": "glm-flash-latest",
   },
   families: { opus: AUTO_MODEL_ID, fable: AUTO_MODEL_ID, sonnet: "glm-latest", haiku: "glm-flash-latest" },
-  labels: { [AUTO_MODEL_ID]: "Auto (Fireworks)", "kimi-latest": "Kimi K3 (Fireworks)", "glm-latest": "GLM 5.3 (Fireworks)", "glm-flash-latest": "GLM 5.3 Flash (Fireworks)" },
+  labels: { [AUTO_MODEL_ID]: "Nexus Auto", "kimi-latest": "Kimi K3 (Fireworks)", "glm-latest": "GLM 5.3 (Fireworks)", "glm-flash-latest": "GLM 5.3 Flash (Fireworks)" },
 };
 
 /**
@@ -63,7 +63,7 @@ export const DEFAULT_MODEL_MAP = {
 export const PICKER_MODELS = [
   // Names must be catalog-present ids (the Effort submenu and descriptions
   // render only for models with thinking options in the signed catalog).
-  { name: "claude-opus-4-8", labelOverride: "Auto (Fireworks)", anthropicFamilyTier: "opus", isFamilyDefault: true, route: AUTO_MODEL_ID },
+  { name: "claude-opus-4-8", labelOverride: "Nexus Auto", anthropicFamilyTier: "opus", isFamilyDefault: true, route: AUTO_MODEL_ID },
   { name: "claude-sonnet-5-5", labelOverride: "GLM 5.3 (Fireworks)", anthropicFamilyTier: "sonnet", isFamilyDefault: true, route: "glm-latest" },
   { name: "claude-haiku-4-5-20251001", labelOverride: "GLM 5.3 Flash (Fireworks)", anthropicFamilyTier: "haiku", isFamilyDefault: true, route: "glm-flash-latest" },
 ];

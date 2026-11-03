@@ -116,6 +116,23 @@ export default defineHarnessProfile({
     return (await deepseekEffectiveFireworksState(settingsPath, settings)).provider;
   },
 
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.DEEPSEEK);
+    const { settingsPath, credentialsPath } = deepseekPathsFor(ctx);
+    const [{ settings }, { credentials }] = await Promise.all([
+      readDeepseekSettingsIfExists(settingsPath),
+      readDeepseekCredentialsIfExists(credentialsPath),
+    ]);
+    const { provider } = await deepseekEffectiveFireworksState(settingsPath, settings);
+    if (provider !== "fireworks") {
+      return null;
+    }
+    // Only a literal in the credentials file says which key it sends; an env
+    // reference sends whatever the shell exports.
+    const mode = deepseekAuthModeFor(provider, credentials);
+    return mode === "literal" ? resolveDeepseekApiKey({ mode, credentials }) || null : null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.DEEPSEEK);
     const { settingsPath, credentialsPath } = deepseekPathsFor(ctx);

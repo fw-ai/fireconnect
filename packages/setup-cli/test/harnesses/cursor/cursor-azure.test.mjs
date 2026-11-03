@@ -4,13 +4,24 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { CURSOR_DEFAULT_MODE, cursorCurrentModelId } from "../../../lib/harnesses/cursor/core.mjs";
-import { runCli, withTempHome } from "../../helpers.mjs";
+import { runCli as baseRunCli, splitAzureKeyArgs, withTempHome } from "../../helpers.mjs";
+import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
+
+// `on --azure --api-key` is gone: store the Foundry key the way
+// `nexus configure --provider azure` does, then run `on` without the flag.
+const runCli = async (args, opts = {}) => {
+  const { azure, rest } = splitAzureKeyArgs(args);
+  if (azure) {
+    await writeGlobalConfig(opts.home, { azure });
+  }
+  return baseRunCli(rest, opts);
+};
 
 const APPLICATION_USER_KEY =
   "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
 
-const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
-const AZURE_BASE_URL = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1";
+const AZURE_ENDPOINT = "https://example-resource.services.ai.azure.com";
+const AZURE_BASE_URL = "https://example-resource.services.ai.azure.com/openai/v1";
 const AZURE_KEY = "azure-test-key-1234567890";
 
 function baseBlob(overrides = {}) {
@@ -245,10 +256,7 @@ describe("cursor azure harness", () => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
 
-      const fw = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "", AZURE_API_KEY: "" } },
-      );
+      const fw = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "", AZURE_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "", AZURE_API_KEY: "" } }));
       assert.equal(fw.code, 0, fw.stderr);
 
       const az = await runCli(
@@ -281,13 +289,9 @@ describe("cursor azure harness", () => {
       );
       assert.equal(azure.code, 0, azure.stderr);
 
-      const fireworks = await runCli(
-        [
-          "cursor", "on", "--api-key", "fw_test_key_12345",
-          "--db-path", dbPath, "--force",
-        ],
-        { home, env: AZURE_ENV },
-      );
+      const fireworks = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: AZURE_ENV }), await runCli([
+          "cursor", "on",
+          "--db-path", dbPath, "--force"], { home, env: AZURE_ENV }));
       assert.equal(fireworks.code, 0, fireworks.stderr);
 
       const blob = readBlob(dbPath);

@@ -850,7 +850,7 @@ function friendlySecretError(error, home) {
   if (err instanceof KeyringTimeoutError || name === "KeyringTimeoutError") {
     return new Error(
       "The OS keychain did not respond in time (common on SSH without an unlocked keyring). "
-        + `Use ${formatKeyStorageOverrideHint("file")} or export FIREWORKS_API_KEY for this session.`,
+        + `Use ${formatKeyStorageOverrideHint("file")} to store keys in an encrypted file instead.`,
     );
   }
   const detail = err?.message ? ` ${err.message}` : "";

@@ -93,7 +93,7 @@ export async function migrateClaudeToolSearchOnUpgrade(home) {
  * Remove the `CLAUDE_CODE_AUTO_MODE_SERVER=0` pin an earlier upgrade or `on`
  * wrote. Pinning only kept auto mode from trying the server classifier; Claude
  * Code falls back to the local one on its own, and the pin would block the
- * server classifier once the gateway supports it.
+ * server classifier wherever it is available.
  * @param {string} home
  * @returns {Promise<boolean>} true when the file was updated
  */
@@ -317,7 +317,7 @@ export async function migrateClaudeModelPickerOnUpgrade(home) {
   if (!token) {
     return false;
   }
-  const { ids } = await loadRegisterableModels({ apiKey: token });
+  const { ids, served } = await loadRegisterableModels({ apiKey: token });
   if (!ids.length) {
     return false;
   }
@@ -326,6 +326,7 @@ export async function migrateClaudeModelPickerOnUpgrade(home) {
   // selection, which `migrateClaudeFirerouterOnUpgrade` moves to `auto`.
   const next = withFireconnectModelPicker(settings, ids, {
     refresh: true,
+    catalogServed: served,
     protectedIds: typeof settings.model === "string" && !isRetiredModelId(settings.model)
       ? [settings.model]
       : [],

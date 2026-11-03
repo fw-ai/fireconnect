@@ -66,7 +66,7 @@ export async function assertRequestedModelsServable(modelIds, { apiKey } = {}) {
     }
     throw new Error(
       `Model "${shortFireworksModelRef(id)}" is not available on Fireworks. `
-      + `Run \`nexus model list\` to see serverless models.`,
+      + `Run \`nexus model list --refresh\` to see serverless models.`,
     );
   }
 }

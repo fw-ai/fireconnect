@@ -63,14 +63,9 @@ describe("Claude FireRouter via --model", () => {
   it("rejects --model firerouter and writes nothing", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-model-router-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
-        "--model", "firerouter",
-      ],
-      cliEnv(home),
-    );
+        "--model", "firerouter"], cliEnv(home)));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /--model firerouter is no longer supported/);
     assert.equal(existsSync(userSettingsPath(home)), false);
@@ -80,11 +75,11 @@ describe("Claude FireRouter via --model", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-model-router-reject-"));
     seedCatalogFor(home);
     for (const args of [
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "firerouter", "--openai-api-key", "sk-proj-claude-12345"],
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "firerouter/gpt-5p6", "--openai-api-key", "sk-proj-claude-gpt-12345"],
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "firerouter/opus", "--openai-api-key", "sk-proj-claude-opus-12345"],
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "accounts/fireworks/routers/firerouter"],
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--opus", "firerouter/opus"],
+      ["claude", "on", "--model", "firerouter", "--openai-api-key", "sk-proj-claude-12345"],
+      ["claude", "on", "--model", "firerouter/gpt-5p6", "--openai-api-key", "sk-proj-claude-gpt-12345"],
+      ["claude", "on", "--model", "firerouter/opus", "--openai-api-key", "sk-proj-claude-opus-12345"],
+      ["claude", "on", "--model", "accounts/fireworks/routers/firerouter"],
+      ["claude", "on", "--opus", "firerouter/opus"],
     ]) {
       const result = await runFireconnect(args, cliEnv(home));
       assert.notEqual(result.code, 0, args.join(" "));
@@ -102,13 +97,8 @@ describe("Claude FireRouter via --model", () => {
     const original = '{"theme":"dark"}\n';
     await writeFile(settingsPath, original);
 
-    const result = await runFireconnect(
-      [
-        "claude", "on",
-        "--api-key", FIREWORKS_KEY,
-      ],
-      cliEnv(home),
-    );
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
+        "claude", "on"], cliEnv(home)));
 
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -122,10 +112,7 @@ describe("Claude FireRouter via --model", () => {
   it("keeps an Anthropic key the user set in Claude's settings before FireConnect", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-native-key-"));
     await writeJson(userSettingsPath(home), { env: { ANTHROPIC_API_KEY: ANTHROPIC_KEY } });
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY],
-      cliEnv(home),
-    );
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(settings.env.ANTHROPIC_API_KEY, ANTHROPIC_KEY);
@@ -136,14 +123,9 @@ describe("Claude FireRouter via --model", () => {
   it("pins per-tier slot flags on a plain on", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slot-firerouter-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
-        "--sonnet", "glm-latest",
-      ],
-      cliEnv(home),
-    );
+        "--sonnet", "glm-latest"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.match(settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL, /glm-latest/);
@@ -155,13 +137,8 @@ describe("Claude FireRouter via --model", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-model-reon-"));
     seedCatalogFor(home);
     const env = cliEnv(home);
-    const first = await runFireconnect(
-      [
-        "claude", "on",
-        "--api-key", FIREWORKS_KEY,
-      ],
-      env,
-    );
+    const first = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect([
+        "claude", "on"], env));
     assert.equal(first.code, 0, first.stderr);
 
     const reon = await runFireconnect(["claude", "on"], env);
@@ -193,10 +170,7 @@ describe("Claude FireRouter via --model", () => {
     }, null, 2)}\n`;
     await writeFile(settingsPath, original);
 
-    const on = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY],
-      cliEnv(home),
-    );
+    const on = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on"], cliEnv(home)));
     assert.equal(on.code, 0, on.stderr);
     const off = await runFireconnect(["claude", "off"], cliEnv(home));
     assert.equal(off.code, 0, off.stderr);
@@ -248,6 +222,39 @@ describe("Claude FireRouter via --model", () => {
     assert.match(headers, /x-anthropic-api-key: sk-ant-keep/);
   });
 
+  it("refreshes a stale fw_ key baked into ANTHROPIC_AUTH_TOKEN by ≤v0.9.x on", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-env-key-refresh-"));
+    const settingsPath = userSettingsPath(home);
+    await writeJson(settingsPath, {
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.fireworks.ai/inference",
+        ANTHROPIC_AUTH_TOKEN: "fw_old_key",
+        ANTHROPIC_API_KEY: "sk-ant-user-owned",
+        ANTHROPIC_CUSTOM_HEADERS: "X-Fireworks-Api-Key: fw_old_key",
+      },
+    });
+    assert.equal(
+      await refreshFirerouterClaudeKey({ settingsPath, fireworksKey: "fw_new_key" }),
+      true,
+    );
+    const { env } = await readJsonIfExists(settingsPath);
+    assert.equal(env.ANTHROPIC_AUTH_TOKEN, "fw_new_key");
+    assert.equal(env.ANTHROPIC_API_KEY, "sk-ant-user-owned");
+    assert.match(env.ANTHROPIC_CUSTOM_HEADERS, /X-Fireworks-Api-Key: fw_new_key/);
+  });
+
+  it("is a no-op when no fw_ credential is baked anywhere", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-env-key-noop-"));
+    const settingsPath = userSettingsPath(home);
+    await writeJson(settingsPath, {
+      env: { ANTHROPIC_API_KEY: "sk-ant-user-owned", ANTHROPIC_AUTH_TOKEN: "oauth-token" },
+    });
+    assert.equal(
+      await refreshFirerouterClaudeKey({ settingsPath, fireworksKey: "fw_new_key" }),
+      false,
+    );
+  });
+
   it("preserves the original backup across repeat connect", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-model-backup-"));
     const settingsPath = userSettingsPath(home);
@@ -257,13 +264,8 @@ describe("Claude FireRouter via --model", () => {
     await writeFile(settingsPath, original);
 
     assert.equal(
-      (await runFireconnect(
-        [
-          "claude", "on",
-          "--api-key", FIREWORKS_KEY,
-        ],
-        cliEnv(home),
-      )).code,
+      (await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
+          "claude", "on"], cliEnv(home)))).code,
       0,
     );
     assert.equal(
@@ -277,10 +279,7 @@ describe("Claude FireRouter via --model", () => {
   it("re-on strips a routing-preference header left by an earlier release", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-retired-routing-"));
     const env = cliEnv(home);
-    const on = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY],
-      env,
-    );
+    const on = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect(["claude", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     const settingsPath = userSettingsPath(home);
     const written = JSON.parse(await readFile(settingsPath, "utf8"));

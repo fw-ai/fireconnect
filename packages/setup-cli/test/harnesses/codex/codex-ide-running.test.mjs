@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-import { ensureIdeStopped } from "../../../lib/io/ide-running.mjs";
+import { darwinSpecCmdlineMatches, ensureIdeStopped } from "../../../lib/io/ide-running.mjs";
 import {
   CHATGPT_PROCESS_SPEC,
   CHATGPT_RUNNING_MESSAGE,
@@ -54,6 +54,16 @@ describe("ChatGPT app pgrep pattern", () => {
     assert.equal(linuxCmdlineMatches("/opt/ChatGPT/ChatGPT --type=utility --utility-sub-type=network.mojom.NetworkService"), false);
     assert.equal(linuxCmdlineMatches("/opt/ChatGPT/ChatGPT --type=renderer --enable-crashpad"), false);
     assert.equal(linuxCmdlineMatches("/opt/ChatGPT/ChatGPT --no-sandbox"), true);
+  });
+
+  it("macOS verifier drops the pgrep invocation itself and Electron helpers", () => {
+    // macOS `pgrep -f` does not exclude the searching pgrep: its argv carries
+    // the pattern text verbatim, so every lookup reports itself as a hit.
+    const matches = darwinSpecCmdlineMatches(SPEC.darwinPattern);
+    const pgrepArgv = `pgrep -f ${SPEC.darwinPattern}`;
+    assert.equal(matches(pgrepArgv), false);
+    assert.equal(matches("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --type=renderer"), false);
+    assert.equal(matches("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"), true);
   });
 });
 

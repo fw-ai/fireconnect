@@ -83,8 +83,8 @@ function assistantLine({ id, model, input = 0, output = 0, cacheRead = 0 }) {
 
 describe("claude status line", () => {
   it("resolves Fireworks model ids to their catalog label, ignoring the [1m] tag", () => {
-    assert.equal(claudeStatusLineModelLabel("firerouter[1m]"), "Auto");
-    assert.equal(claudeStatusLineModelLabel("firerouter"), "Auto");
+    assert.equal(claudeStatusLineModelLabel("firerouter[1m]"), "Nexus Auto");
+    assert.equal(claudeStatusLineModelLabel("firerouter"), "Nexus Auto");
     assert.equal(claudeStatusLineModelLabel("kimi-fast-latest[1m]"), "Kimi K3 Fast (Latest)");
     // No metadata for the id: the bare slug, never a crash.
     assert.equal(claudeStatusLineModelLabel("not-a-real-model"), "not-a-real-model");
@@ -92,8 +92,8 @@ describe("claude status line", () => {
   });
 
   it("labels leftover FireRouter ids like auto, and OpenAI ids by name", () => {
-    assert.equal(claudeStatusLineModelLabel("firerouter/astra"), "Auto");
-    assert.equal(claudeStatusLineModelLabel("firerouter/kimi-k3"), "Auto");
+    assert.equal(claudeStatusLineModelLabel("firerouter/astra"), "Nexus Auto");
+    assert.equal(claudeStatusLineModelLabel("firerouter/kimi-k3"), "Nexus Auto");
     // A served Astra id reads off the OpenAI list-price table.
     assert.equal(claudeStatusLineModelLabel("gpt-6-astra"), "GPT-6 Astra");
     assert.equal(claudeStatusLineModelLabel("astra"), "GPT-6 Astra");
@@ -123,10 +123,9 @@ describe("claude status line", () => {
   });
 
   it("labels an unshipped region-bound router the way shipped ones read", () => {
-    // The three shipped US specs all label themselves "... (US)".
-    assert.equal(claudeStatusLineModelLabel("glm-5p2-fast-us"), "GLM 5.2 Fast (US)");
-    // A US variant with no spec yet must read in that same shape rather than as
-    // a bare slug, so it is recognisable as the regional twin of its base row.
+    // Shipped US specs label themselves "... (US)". A US variant with no spec
+    // yet must read in that same shape rather than as a bare slug, so it is
+    // recognisable as the regional twin of its base row.
     assert.equal(claudeStatusLineModelLabel("glm-5p2-us"), "GLM 5.2 (US)");
     assert.equal(claudeStatusLineModelLabel("glm-5p9-fast-us"), "GLM 5.9 Fast (US)");
   });
@@ -134,10 +133,9 @@ describe("claude status line", () => {
   it("never prices an unshipped US variant off its global row", async () => {
     await withTempHome("statusline-us-unpriced", async (home) => {
       const transcript = path.join(home, "session.jsonl");
-      // US premiums are per-model, not a uniform uplift: the shipped rows carry
-      // +0% (glm-5p2-fast-us), +10% (kimi-k3-us) and +50% (glm-5p3-flash-us)
-      // over their global twins. Nothing can be inferred from the base rate, so
-      // an unknown US id must withhold a figure rather than understate the bill.
+      // US rates are set per model, so nothing can be inferred from the base
+      // rate: an unknown US id must withhold a figure rather than understate
+      // the bill.
       await writeFile(transcript, [
         assistantLine({ id: "m1", model: "accounts/fireworks/models/glm-5p2", output: 1_000_000 }),
         assistantLine({ id: "m2", model: "accounts/fireworks/models/glm-5p2-us", output: 1_000_000 }),
@@ -577,7 +575,7 @@ describe("claude status line", () => {
         transcript_path: transcript,
       }, { home }));
       // A session that has not been billed must not read as a free one.
-      assert.equal(plain, "Auto");
+      assert.equal(plain, "Nexus Auto");
       assert.doesNotMatch(plain, /\$/, plain);
     });
   });
@@ -643,7 +641,7 @@ describe("claude status line", () => {
         // A brand-new session: Claude Code names a transcript before writing it.
         transcript_path: path.join(home, "does-not-exist.jsonl"),
       }, { home });
-      assert.equal(stripAnsi(line), "Auto");
+      assert.equal(stripAnsi(line), "Nexus Auto");
     });
   });
 
@@ -1224,10 +1222,7 @@ describe("claude status line", () => {
         theme: "dark",
       }));
 
-      const on = await runFireconnect(
-        ["claude", "on", "--api-key", "fw_test_key_12345", "--non-interactive"],
-        { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" },
-      );
+      const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" }), await runFireconnect(["claude", "on", "--non-interactive"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" }));
       assert.equal(on.code, 0, on.stderr);
 
       const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -1252,10 +1247,7 @@ describe("claude status line", () => {
         statusLine: USER_STATUS_LINE,
       }));
 
-      const on = await runFireconnect(
-        ["claude", "on", "--api-key", "fw_test_key_12345", "--non-interactive"],
-        { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" },
-      );
+      const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" }), await runFireconnect(["claude", "on", "--non-interactive"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" }));
       assert.equal(on.code, 0, on.stderr);
       assert.deepEqual(
         JSON.parse(await readFile(settingsPath, "utf8")).statusLine,

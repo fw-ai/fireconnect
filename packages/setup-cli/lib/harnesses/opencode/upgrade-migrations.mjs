@@ -7,7 +7,11 @@ import {
   OPENCODE_MANAGED_PROVIDER_IDS,
   opencodeConfigPath,
   opencodeProviderStatus,
+  opencodeCurrentModelId,
+  opencodeProviderModelKey,
   readRawIfExists,
+  withAuthoredOpencodeReasoningEffort,
+  withOpencodeReasoningEffort,
   withoutModelsDevDuplicates,
   writeOpencodeConfig,
 } from "./core.mjs";
@@ -97,6 +101,41 @@ export async function migrateOpencodeFirerouterOnUpgrade(home) {
         models: keptModels,
       },
     },
+  });
+  return true;
+}
+
+/**
+ * Earlier releases wrote Auto and catalog-missing model rows without
+ * `reasoning: true`, so OpenCode 1.x sent no `reasoning_effort` for the
+ * effort a user picked. Add the flag to Auto, to models the reasoning
+ * table lists, and to the currently selected model (the row Nexus manages
+ * for this config, listed or not); values the user set stay as written.
+ * A config without an Auto row is left to the auto backfill.
+ * @param {string} home
+ * @returns {Promise<boolean>} true when opencode.json was updated
+ */
+export async function migrateOpencodeReasoningEffortOnUpgrade(home) {
+  const routed = await readRoutedOpencodeConfig(home, ["fireworks"]);
+  const provider = routed?.config.provider?.[OPENCODE_FIREWORKS_PROVIDER_ID];
+  const models = provider?.models;
+  if (!models || typeof models !== "object" || Array.isArray(models)) {
+    return false;
+  }
+  const next = Object.fromEntries(Object.entries(models)
+    .map(([id, entry]) => [id, withOpencodeReasoningEffort(id, entry, provider.npm)]));
+  const selected = routed ? opencodeCurrentModelId(routed.config) : null;
+  const selectedKey = selected ? opencodeProviderModelKey(selected) : "";
+  if (selectedKey && next[selectedKey]) {
+    next[selectedKey] = withAuthoredOpencodeReasoningEffort(selectedKey, next[selectedKey], provider.npm);
+  }
+  if (Object.entries(models).every(([id, entry]) => next[id] === entry)) {
+    return false;
+  }
+  const { config, configPath } = routed;
+  await writeOpencodeConfig(configPath, {
+    ...config,
+    provider: { ...config.provider, [OPENCODE_FIREWORKS_PROVIDER_ID]: { ...provider, models: next } },
   });
   return true;
 }

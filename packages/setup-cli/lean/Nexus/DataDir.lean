@@ -63,8 +63,8 @@ theorem strong_claims (entries : List String) (e : String)
   simp [hany]
 
 /-- A directory containing anything foreign-looking, with no strong
-claim, is not ours — the #518 guard holds, and uninstall never gets
-the chance to delete another program's data. -/
+claim, is not ours — the foreign-data guard holds, and uninstall never
+gets the chance to delete another program's data. -/
 theorem mixed_foreign_rejected (entries : List String) (f : String)
     (hmem : f ∈ entries) (hforeign : ownedEntry f = false)
     (hnotcfg : f ≠ "config.json")
@@ -86,7 +86,7 @@ theorem mixed_foreign_rejected (entries : List String) (f : String)
   simp [hne, hstrong, hi, hc, hall]
 
 /-- A fresh directory holding only Nexus's own early writes (however
-generic) is ours — the #523 race keeps working. -/
+generic) is ours — an early cache write never wedges the upgrade. -/
 theorem lone_generic_claims (g : String)
     (hg : ownedEntry g = true) (installTree configOurs : Bool) :
     isOurs [g] installTree configOurs = true := by

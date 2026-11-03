@@ -75,7 +75,7 @@ describe("pi harness only touches the fireworks provider", () => {
       [piSettingsPath(home), piModelsPath(home), piAuthPath(home)].map((p) => readFile(p, "utf8")),
     );
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    const on = await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    const on = await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     assert.equal(on.code, 0, on.stderr);
 
     const settings = await readJson(piSettingsPath(home));
@@ -100,7 +100,7 @@ describe("pi harness only touches the fireworks provider", () => {
   it("re-on after the user switched Pi to another provider keeps the first snapshot", async () => {
     const home = await seedUserPi();
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     const settings = await readJson(piSettingsPath(home));
     await writeFile(piSettingsPath(home), `${JSON.stringify({
       ...settings,
@@ -132,7 +132,7 @@ describe("pi harness only touches the fireworks provider", () => {
   it("keeps what Pi or the user changed while on, and still removes Nexus's key", async () => {
     const home = await seedUserPi();
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     // Pi rewrites auth.json itself (OAuth refresh, /login) and settings.json.
     const auth = await readJson(piAuthPath(home));
     auth.anthropic = { type: "oauth", refresh: "rotated-refresh", access: "a", expires: 1 };
@@ -151,12 +151,12 @@ describe("pi harness only touches the fireworks provider", () => {
   it("a model switch inside Pi plus a lost data dir doesn't leave Nexus's key behind", async () => {
     const home = await seedUserPi();
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     const settings = await readJson(piSettingsPath(home));
     await writeFile(piSettingsPath(home), `${JSON.stringify({ ...settings, defaultProvider: "ollama", defaultModel: "qwen3:8b" }, null, 2)}\n`);
     await rm(path.join(home, PI_DATA_RELATIVE_DIR), { recursive: true, force: true });
 
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     await runFireconnect(["pi", "off"], env);
     assert.deepEqual(await readJson(piAuthPath(home)), USER_AUTH);
     assert.equal((await readJson(piModelsPath(home))).providers.fireworks, undefined);
@@ -167,7 +167,7 @@ describe("pi harness only touches the fireworks provider", () => {
     const home = await seedUserPi();
     const original = await readFile(piSettingsPath(home), "utf8");
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     await rm(piSettingsPath(home));
     await runFireconnect(["pi", "off"], env);
     assert.equal(await readFile(piSettingsPath(home), "utf8"), original);
@@ -176,7 +176,7 @@ describe("pi harness only touches the fireworks provider", () => {
   it("upgrade without a cached catalog still drops the router glob and rows Pi carries", async () => {
     const home = await seedUserPi();
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     const settings = await readJson(piSettingsPath(home));
     await writeFile(piSettingsPath(home), `${JSON.stringify({
       ...settings,
@@ -201,7 +201,7 @@ describe("pi harness only touches the fireworks provider", () => {
   it("upgrade drops a FireRouter default and keeps its provider-key headers for Nexus Auto", async () => {
     const home = await seedUserPi();
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     const settings = await readJson(piSettingsPath(home));
     await writeFile(piSettingsPath(home), `${JSON.stringify({
       ...settings,
@@ -236,7 +236,7 @@ describe("pi harness only touches the fireworks provider", () => {
   it("parses Pi files with a UTF-8 BOM", async () => {
     const home = await seedUserPi();
     await writeFile(piModelsPath(home), `\uFEFF${JSON.stringify(USER_MODELS)}\n`);
-    const on = await runFireconnect(["pi", "on", "--api-key", KEY], { HOME: home, FIREWORKS_API_KEY: "" });
+    const on = await (await runFireconnect(["login", "--api-key", KEY], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
   });
 
@@ -249,7 +249,7 @@ describe("pi harness only touches the fireworks provider", () => {
     const before = await readFile(piSettingsPath(home), "utf8");
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
 
-    await runFireconnect(["pi", "on", "--api-key", KEY, "--model", "auto"], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on", "--model", "auto"], env));
     assert.equal((await readJson(piSettingsPath(home))).defaultModel, "auto");
     await runFireconnect(["pi", "on"], env);
     await runFireconnect(["pi", "off"], env);
@@ -262,7 +262,7 @@ describe("pi harness only touches the fireworks provider", () => {
     const commented = `{\n  // my local models\n  "providers": {\n    "ollama": { "baseUrl": "http://localhost:11434/v1", "api": "openai-completions", "apiKey": "ollama", "models": [{ "id": "qwen3:8b" },] },\n  },\n}\n`;
     await writeFile(piModelsPath(home), commented);
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    const on = await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    const on = await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     assert.ok((await readJson(piModelsPath(home))).providers.ollama);
     await runFireconnect(["pi", "off"], env);
@@ -274,7 +274,7 @@ describe("pi harness only touches the fireworks provider", () => {
     const ownAuth = { ...USER_AUTH, fireworks: { type: "api_key", key: "FIREWORKS_API_KEY" } };
     await writeFile(piAuthPath(home), `${JSON.stringify(ownAuth, null, 2)}\n`);
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     assert.equal((await readJson(piAuthPath(home))).fireworks.key, KEY);
 
     await runFireconnect(["pi", "off"], env);
@@ -284,7 +284,7 @@ describe("pi harness only touches the fireworks provider", () => {
   it("off deletes the Pi files on created when there was no Pi config", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-fw-only-fresh-"));
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    const on = await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    const on = await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     assert.equal((await readJson(piSettingsPath(home))).defaultProvider, "fireworks");
 
@@ -312,7 +312,7 @@ describe("pi harness only touches the fireworks provider", () => {
       fireworks: { type: "api_key", key: KEY, managedBy: "fireconnect" },
     }, null, 2)}\n`);
 
-    const on = await runFireconnect(["pi", "on", "--api-key", KEY], { HOME: home, FIREWORKS_API_KEY: "" });
+    const on = await (await runFireconnect(["login", "--api-key", KEY], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const fireworks = (await readJson(piModelsPath(home))).providers.fireworks;
     // Nexus owns providers.fireworks, so the whole entry is rewritten.
@@ -326,7 +326,7 @@ describe("pi harness only touches the fireworks provider", () => {
     await writeFile(piSettingsPath(home), "{}\n");
     await writeFile(piAuthPath(home), "{}\n");
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     await runFireconnect(["pi", "off"], env);
 
     assert.equal(await readFile(piSettingsPath(home), "utf8"), "{}\n");
@@ -419,7 +419,7 @@ describe("pi harness only touches the fireworks provider", () => {
     }, null, 2)}\n`);
 
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    const on = await runFireconnect(["pi", "on", "--api-key", KEY], env);
+    const on = await (await runFireconnect(["login", "--api-key", KEY], env), await runFireconnect(["pi", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     await runFireconnect(["pi", "off"], env);
     assert.deepEqual(await readJson(settingsPath), USER_SETTINGS);

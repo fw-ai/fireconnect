@@ -10,8 +10,9 @@ import {
   setServerlessCatalogSnapshot,
 } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import { FIRECONNECT_REFERER, mockServerlessModel, runFireconnect, seedServerlessCatalogCache } from "../../helpers.mjs";
+import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 
-const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
+const AZURE_ENDPOINT = "https://example-resource.services.ai.azure.com";
 const AZURE_KEY = "azure-test-key-1234567890";
 const USER_FIREWORKS_MODEL = {
   id: "accounts/fireworks/models/custom-user-model",
@@ -81,10 +82,7 @@ describe("pi harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-reon-model-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
 
-    const first = await runFireconnect(
-      ["pi", "on", "--api-key", "fw_test_key_12345", "--model", "deepseek-v4-flash"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on", "--model", "deepseek-v4-flash"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
     const settingsPath = piSettingsPath(home);
     const canonical = "accounts/fireworks/models/deepseek-v4-flash";
@@ -106,10 +104,7 @@ describe("pi harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-firerouter-status-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
 
-    const on = await runFireconnect(
-      ["pi", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     const status = await runFireconnect(["pi", "status", "--json"], {
@@ -127,15 +122,10 @@ describe("pi harness integration", () => {
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     const anthropicKey = "sk-ant-pi-firerouter-12345";
 
-    const on = await runFireconnect(
-      [
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect([
         "pi", "on",
-        "--api-key", "fw_test_key_12345",
         "--model", "firerouter",
-        "--anthropic-api-key", anthropicKey,
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+        "--anthropic-api-key", anthropicKey], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(on.code, 0);
     assert.match(on.stderr, /is no longer supported/);
   });
@@ -145,15 +135,10 @@ describe("pi harness integration", () => {
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     const openaiKey = "sk-proj-pi-firerouter-12345";
 
-    const on = await runFireconnect(
-      [
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }), await runFireconnect([
         "pi", "on",
-        "--api-key", "fw_test_key_12345",
         "--model", "firerouter",
-        "--openai-api-key", openaiKey,
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" },
-    );
+        "--openai-api-key", openaiKey], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" }));
     assert.notEqual(on.code, 0);
     assert.match(on.stderr, /is no longer supported/);
   });
@@ -174,10 +159,7 @@ describe("pi harness integration", () => {
         aliases: ["accounts/fireworks/routers/kimi-fast-latest"],
       }),
     ]);
-    const onResult = await runFireconnect(
-      ["pi", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
@@ -212,10 +194,7 @@ describe("pi harness integration", () => {
     await writeFile(authPath, originalAuth);
     await writeFile(modelsPath, originalModels);
 
-    const onResult = await runFireconnect(
-      ["pi", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0);
 
     const enabledSettings = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -249,10 +228,7 @@ describe("pi harness integration", () => {
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     const settingsPath = piSettingsPath(home);
     await writeFile(settingsPath, `${JSON.stringify({ enabledModels: ["ollama/*"] }, null, 2)}\n`);
-    const onResult = await runFireconnect(
-      ["pi", "on", "--api-key", "fw_cataloged_v1_adversarial000000", "--model", "kimi-latest"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_cataloged_v1_adversarial000000"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on", "--model", "kimi-latest"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0, onResult.stderr);
     const settings = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(settings.defaultModel, "accounts/fireworks/routers/kimi-latest");
@@ -274,10 +250,7 @@ describe("pi harness integration", () => {
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     const authPath = piAuthPath(home);
 
-    const onResult = await runFireconnect(
-      ["pi", "on"],
-      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0);
     assert.match(onResult.stdout, /Pi → Fireworks · auto/);
 
@@ -296,10 +269,7 @@ describe("pi harness integration", () => {
     await writeFile(settingsPath, originalSettings);
     await writeFile(authPath, originalAuth);
 
-    await runFireconnect(
-      ["pi", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     await runFireconnect(["pi", "off"], { HOME: home });
 
     const secondOff = await runFireconnect(["pi", "off"], { HOME: home });
@@ -314,7 +284,7 @@ describe("pi harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-no-models-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     await writeFile(piSettingsPath(home), `${JSON.stringify({ defaultProvider: "openai" }, null, 2)}\n`);
-    await runFireconnect(["pi", "on", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" });
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     await runFireconnect(["pi", "off"], { HOME: home });
     await assert.rejects(readFile(piModelsPath(home), "utf8"), { code: "ENOENT" });
   });
@@ -322,9 +292,9 @@ describe("pi harness integration", () => {
   it("on enables x-session-affinity on the rows Nexus registers, not provider-wide", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-session-affinity-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
-    const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
+    const env = { HOME: home, FIREWORKS_API_KEY: "" };
 
-    const result = await runFireconnect(["pi", "on"], env);
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["pi", "on"], env));
     assert.equal(result.code, 0, result.stderr);
 
     const models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
@@ -349,7 +319,7 @@ describe("pi harness integration", () => {
     const original = await readFile(piModelsPath(home), "utf8");
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
 
-    const on = await runFireconnect(["pi", "on", "--api-key", "fw_test_key_12345"], env);
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["pi", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     let models = JSON.parse(await readFile(piModelsPath(home), "utf8"));
     assert.deepEqual(models.providers.ollama, ollama);
@@ -358,8 +328,9 @@ describe("pi harness integration", () => {
     assert.equal(models.providers.fireworks.headers["X-Title"], "Pi");
     assert.equal(models.providers.fireworks.headers["x-routing-preference"], undefined);
 
+    await writeGlobalConfig(home, { azure: { baseUrl: AZURE_ENDPOINT, apiKey: AZURE_KEY } });
     const azure = await runFireconnect(
-      ["pi", "on", "--azure", "--base-url", AZURE_ENDPOINT, "--api-key", AZURE_KEY],
+      ["pi", "on", "--azure", "--base-url", AZURE_ENDPOINT],
       env,
     );
     assert.equal(azure.code, 0, azure.stderr);
@@ -378,10 +349,7 @@ describe("pi harness integration", () => {
     const settingsPath = piSettingsPath(home);
     await writeFile(settingsPath, `${JSON.stringify({ defaultProvider: "openai" }, null, 2)}\n`);
 
-    await runFireconnect(
-      ["pi", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     const onStatus = await runFireconnect(["pi", "status", "--json"], { HOME: home });
     assert.equal(onStatus.code, 0);
     assert.match(onStatus.stdout, /"provider": "fireworks"/);
@@ -405,11 +373,11 @@ describe("pi harness integration", () => {
 
     const originalSettings = await readFile(settingsPath, "utf8");
     const originalAuth = await readFile(authPath, "utf8");
-    await runFireconnect(["pi", "on", "--api-key", "fw_test_key_12345"], env);
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["pi", "on"], env));
 
     await rm(path.join(home, PI_DATA_RELATIVE_DIR), { recursive: true, force: true });
 
-    await runFireconnect(["pi", "on", "--api-key", "fw_test_key_12345"], env);
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["pi", "on"], env));
     await runFireconnect(["pi", "off"], env);
 
     assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
@@ -420,9 +388,9 @@ describe("pi harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-pi-glm-latest-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     seedFlatCatalogCache(home, GLM_ALIAS_CATALOG_ROWS);
-    const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
+    const env = { HOME: home, FIREWORKS_API_KEY: "" };
 
-    const result = await runFireconnect(["pi", "on", "--model", "glm-latest"], env);
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["pi", "on", "--model", "glm-latest"], env));
     assert.equal(result.code, 0, result.stderr);
 
     const settings = JSON.parse(await readFile(piSettingsPath(home), "utf8"));

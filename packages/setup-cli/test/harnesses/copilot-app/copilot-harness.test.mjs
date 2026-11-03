@@ -516,9 +516,10 @@ describe("copilot-app CLI", () => {
       // --force: the dev machine may have the real Copilot app open (the
       // quit-guard fires on the live process). Writes target a temp DB, so
       // forcing is safe here. Mirrors codexOnOffArgs.
+      await seedKeychainConfig(home, FW_OPENCODE_KEY);
       const on = await runFireconnect(["copilot-app", "on", "--db-path", dbPath, "--force"], {
         HOME: home,
-        FIREWORKS_API_KEY: FW_OPENCODE_KEY,
+        FIREWORKS_API_KEY: "",
       });
       assert.equal(on.code, 0, on.stderr);
       assert.match(on.stdout, /Copilot app → Fireworks/);

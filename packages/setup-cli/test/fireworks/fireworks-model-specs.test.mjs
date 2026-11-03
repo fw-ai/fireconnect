@@ -230,7 +230,7 @@ describe("fireworks-model-specs", () => {
 
     assert.equal(requiresFastTierPricing("kimi-fast-latest"), true);
     assert.equal(requiresFastTierPricing("kimi-k2p6-turbo"), true);
-    assert.equal(requiresFastTierPricing("glm-5p2-fast-us"), true);
+    assert.equal(requiresFastTierPricing("glm-5p9-fast-us"), true);
     assert.equal(requiresFastTierPricing("kimi-latest"), false);
 
     assert.equal(pricingMatchesModelRefTier("kimi-fast-latest", fastPricing), true);
@@ -241,6 +241,14 @@ describe("fireworks-model-specs", () => {
     assert.equal(isUsableCachedServerlessPricing("kimi-latest", fastPricing), false);
     assert.equal(isUsableCachedServerlessPricing("kimi-latest", standardPricing), true);
     assert.equal(isUsableCachedServerlessPricing("kimi-latest", priorityPricing), false);
+    const spotPricing = { ...standardPricing, tier: "spot" };
+    const futureModePricing = { ...standardPricing, tier: "ultrafast" };
+    assert.equal(pricingMatchesModelRefTier("example-model-spot", spotPricing), true);
+    assert.equal(pricingMatchesModelRefTier("example-model-spot", standardPricing), false);
+    assert.equal(pricingMatchesModelRefTier("example-model", spotPricing), false);
+    assert.equal(pricingMatchesModelRefTier("example-latest", spotPricing), false);
+    assert.equal(pricingMatchesModelRefTier("example-model-ultrafast", futureModePricing), true);
+    assert.equal(pricingMatchesModelRefTier("example-model", futureModePricing), false);
   });
 
   it("prefers live router base models over static spec slugs when catalog cache is warm", () => {
@@ -405,14 +413,14 @@ describe("fireworks-model-specs", () => {
 
   it("resolves firerouter from the shared model spec like other routers", () => {
     const spec = lookupModelSpec("accounts/fireworks/routers/firerouter");
-    assert.equal(spec?.label, "Auto");
+    assert.equal(spec?.label, "Nexus Auto");
     assert.equal(spec?.capabilities.vision, true);
     assert.equal(lookupFireworksModelLimits("firerouter").contextWindow, 1_048_575);
   });
 
   it("shares firerouter spec metadata for firerouter* model ids", () => {
     const spec = lookupModelSpec("firerouter/x");
-    assert.equal(spec?.label, "Auto");
+    assert.equal(spec?.label, "Nexus Auto");
     assert.equal(spec?.capabilities.vision, true);
     const limits = lookupFireworksModelLimits("firerouter/x");
     assert.equal(limits.contextWindow, 1_048_575);
@@ -421,7 +429,7 @@ describe("fireworks-model-specs", () => {
 
   it("resolves auto from the static spec without a catalog row", () => {
     const spec = lookupModelSpec("auto");
-    assert.equal(spec?.label, "Auto");
+    assert.equal(spec?.label, "Nexus Auto");
     assert.equal(spec?.capabilities.vision, true);
     const limits = lookupFireworksModelLimits("auto");
     assert.equal(limits.contextWindow, 1_048_575);
@@ -443,7 +451,7 @@ describe("fireworks-model-specs", () => {
     assert.equal(isAutoModelId("accounts/fireworks/deployments/auto-instant"), false);
     assert.equal(isAutoModelId("firerouter/auto-instant"), false);
     const spec = lookupModelSpec("auto-instant");
-    assert.equal(spec?.label, "Auto");
+    assert.equal(spec?.label, "Nexus Auto");
     assert.equal(spec?.capabilities.vision, true);
     const limits = lookupFireworksModelLimits("auto-instant");
     assert.equal(limits.contextWindow, 1_048_575);

@@ -51,13 +51,13 @@ describe("resolveFireworksKeyWithSource precedence", () => {
     });
   });
 
-  test("FIREWORKS_API_KEY env wins over the stored key", async () => {
+  test("the stored key wins over FIREWORKS_API_KEY env (env is not a source)", async () => {
     await withTempHome("src-env", async (home) => {
       resetSecretStoreForTests();
       await seedKeychainConfig(home, FW_CLAUDE_KEY);
       await withEnvFireworksKey(ENV_KEY, async () => {
         const res = await resolveFireworksKeyWithSource({ home });
-        assert.deepEqual(res, { key: ENV_KEY, source: "env" });
+        assert.deepEqual(res, { key: FW_CLAUDE_KEY, source: "stored" });
       });
     });
   });
@@ -103,14 +103,14 @@ describe("resolveFireworksKeyWithSource precedence", () => {
 });
 
 describe("activeKeySourceNote", () => {
-  test("warns and masks both keys when env overrides the stored key", () => {
+  test("notes the env var is ignored and masks the stored key", () => {
     withEnvFireworksKey("fw_env_override_9999", () => {
       const note = activeKeySourceNote("fw_stored_key_1234");
-      assert.match(note, /overrides the stored key/);
-      assert.match(note, /fw_…9999/);
+      assert.match(note, /Nexus ignores it/);
       assert.match(note, /fw_…1234/);
-      // Never leak the full key into output.
+      // Never leak the env or stored key into output.
       assert.doesNotMatch(note, /fw_env_override_9999/);
+      assert.doesNotMatch(note, /fw_stored_key_1234/);
     });
   });
 
@@ -120,9 +120,12 @@ describe("activeKeySourceNote", () => {
     });
   });
 
-  test("notes when the env key matches the stored key", () => {
+  test("points at login when only the env var is set", () => {
     withEnvFireworksKey("fw_same_key_5678", () => {
-      assert.match(activeKeySourceNote("fw_same_key_5678"), /matches the stored key/);
+      const note = activeKeySourceNote("");
+      assert.match(note, /Nexus ignores it/);
+      assert.match(note, /nexus login/);
+      assert.doesNotMatch(note, /fw_same_key_5678/);
     });
   });
 

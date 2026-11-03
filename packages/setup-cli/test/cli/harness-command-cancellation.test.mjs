@@ -18,8 +18,8 @@ describe("Claude on cancellation", () => {
     const succeeded = await finalizeClaudeOnOutcome(
       { cancelled: true },
       {
-        persistFireworksKey: () => persisted.push("fireworks"),
         persistAnthropicKey: () => persisted.push("anthropic"),
+        persistOpenaiKey: () => persisted.push("openai"),
       },
     );
 
@@ -33,12 +33,12 @@ describe("Claude on cancellation", () => {
     const succeeded = await finalizeClaudeOnOutcome(
       undefined,
       {
-        persistFireworksKey: () => persisted.push("fireworks"),
         persistAnthropicKey: () => persisted.push("anthropic"),
+        persistOpenaiKey: () => persisted.push("openai"),
       },
     );
 
     assert.equal(succeeded, true);
-    assert.deepEqual(persisted, ["fireworks", "anthropic"]);
+    assert.deepEqual(persisted, ["anthropic", "openai"]);
   });
 });

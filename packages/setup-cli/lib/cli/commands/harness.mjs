@@ -8,15 +8,6 @@ import { checkHarnessInstall } from "../../harness/detect.mjs";
 import { HARNESS_PATH_FLAGS } from "../parse-args.mjs";
 import { FILE_CONFIG_HARNESS_SET, HARNESS } from "../../harness/id.mjs";
 import { assertNotFirerouterModelId } from "../../fireworks/model-id.mjs";
-import {
-  assertFireworksKeyUsable,
-  assertFireworksKeyShape,
-  assertNoFireworksEnvForStorage,
-  canPersistApiKeyToKeychain,
-  persistApiKeyFromFlag,
-  persistApiKeyToKeychain,
-} from "../../keys/api-key.mjs";
-import { shouldSkipEnvKeyAutoPersist } from "../../config/secret-storage-policy.mjs";
 
 const IDE_HARNESSES = new Set([HARNESS.CURSOR, HARNESS.VSCODE, HARNESS.CODEX, HARNESS.COPILOT_APP]);
 
@@ -74,6 +65,15 @@ function validateHarnessOptions(route, ctx) {
   }
   if (ctx.azure && harnessId === HARNESS.CLAUDE) {
     throw new Error("Claude does not support Azure mode; omit --azure to use the Fireworks gateway.");
+  }
+  // Codex rejects --azure itself with a migration hint. Elsewhere, an adapter
+  // without Azure support would take the Fireworks path with the Azure key,
+  // storing it as the Fireworks key, so stop before any key handling.
+  if (ctx.azure && harnessId !== HARNESS.CODEX && !getHarness(harnessId)?.azure) {
+    throw new Error(
+      `${getHarness(harnessId)?.label ?? harnessId} does not support Azure mode; `
+        + "omit --azure to use the Fireworks gateway.",
+    );
   }
   if (ctx.baseUrlFromFlag && harnessId !== HARNESS.CLAUDE && !ctx.azure) {
     throw new Error("--base-url on this harness requires --azure.");
@@ -173,7 +173,6 @@ function validateHarnessOptions(route, ctx) {
 export async function finalizeClaudeOnOutcome(
   outcome,
   {
-    persistFireworksKey,
     persistAnthropicKey,
     persistOpenaiKey,
   } = {},
@@ -182,7 +181,6 @@ export async function finalizeClaudeOnOutcome(
     process.exitCode = 1;
     return false;
   }
-  await persistFireworksKey?.();
   await persistAnthropicKey?.();
   await persistOpenaiKey?.();
   return true;
@@ -246,47 +244,12 @@ export async function runHarnessCommand(route, ctx) {
         : `${message} Run: nexus ${route.harnessId} help`,
     );
   }
-  let deferredClaudeApiKey = "";
-  if (route.verb === "on" && home) {
-    const azureMode = ctx.azure === true || ctx.provider === "azure";
-    if (!azureMode && ctx.apiKeyFromFlag && ctx.apiKey?.trim()) {
-      assertNoFireworksEnvForStorage();
-      // Validate `--api-key` the same way `login` does — shape check then strict
-      // verify — BEFORE persisting or enabling anything, so a typo or dead key
-      // fails fast with a clear message instead of being baked into a harness
-      // config and surfacing as a 401 in-tool later. Throws on failure.
-      await assertFireworksKeyUsable(ctx.apiKey.trim());
-      // Through the keychain path so baked-key sync runs in exactly one
-      // place (inside persistApiKeyToKeychain). Adapters that persist the
-      // flag again (claude direct, cursor) hit the idempotent no-op path —
-      // no duplicate stores, no duplicate notes.
-      if (route.harnessId === HARNESS.CLAUDE) {
-        deferredClaudeApiKey = ctx.apiKey;
-      } else {
-        await persistApiKeyFromFlag(home, ctx.apiKey);
-      }
-    } else if (!azureMode && process.env.FIREWORKS_API_KEY?.trim()) {
-      const envKey = assertFireworksKeyShape(process.env.FIREWORKS_API_KEY);
-      if (
-        FILE_CONFIG_HARNESS_SET.has(route.harnessId)
-        && await canPersistApiKeyToKeychain(home)
-        && !shouldSkipEnvKeyAutoPersist()
-      ) {
-        await persistApiKeyToKeychain(home, envKey);
-      }
-    }
-  }
-
   const outcome = await dispatchHarnessCommand(adapter, route, onCtx);
   if (
     route.verb === "on"
     && route.harnessId === HARNESS.CLAUDE
     && home
   ) {
-    await finalizeClaudeOnOutcome(outcome, {
-      persistFireworksKey: deferredClaudeApiKey
-        ? () => persistApiKeyFromFlag(home, deferredClaudeApiKey)
-        : undefined,
-    });
+    await finalizeClaudeOnOutcome(outcome);
   }
 }

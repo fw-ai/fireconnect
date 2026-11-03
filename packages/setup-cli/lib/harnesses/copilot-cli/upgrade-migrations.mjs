@@ -51,7 +51,7 @@ export async function migrateCopilotCliFirerouterOnUpgrade(home) {
       (model) => !isRetiredModelId(typeof model?.id === "string" ? model.id : ""),
     );
     if (models.length !== config.models.length) {
-      await writeFileAtomic(paths.providersPath, `${JSON.stringify({ ...config, models }, null, 2)}\n`);
+      await writeFileAtomic(paths.providersPath, `${JSON.stringify({ ...config, models }, null, 2)}\n`, { mode: 0o600 });
       await chmod(paths.providersPath, 0o600).catch(() => {});
       changed = true;
     }

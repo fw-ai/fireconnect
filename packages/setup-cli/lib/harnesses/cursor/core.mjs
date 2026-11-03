@@ -41,6 +41,8 @@ import {
   encryptSecret,
   isSecretEncryptionAvailable,
   linuxEncryptUsesBasicTextBackend,
+  plaintextMode,
+  storedSecretHasCiphertext,
 } from "../vscode/safestorage.mjs";
 
 /**
@@ -161,10 +163,18 @@ export function cursorLocalStatePath(dbPath) {
 
 /**
  * Read the applicationUser blob + the OpenAI key cell.
+ *
+ * Pass `keychain: false` on read-only paths (status, routed checks, upgrade
+ * migrations). Decrypting the `secret://` cell reads Cursor's Safe Storage
+ * password from the OS keychain, and on macOS every new process that does so
+ * raises a password prompt until the user picks "Always Allow", so anything
+ * that polls `status` would stack those prompts up.
+ * See {@link readCursorOpenAiKeyWithoutKeychain} for what that read can tell.
  * @param {string} dbPath
- * @returns {Promise<{ blob: object, openAIKey: string, exists: boolean }>}
+ * @param {{ keychain?: boolean }} [options]
+ * @returns {Promise<{ blob: object, openAIKey: string, keyStored: boolean, exists: boolean }>}
  */
-export async function readCursorState(dbPath) {
+export async function readCursorState(dbPath, { keychain = true } = {}) {
   const raw = await readCursorValue(dbPath, APPLICATION_USER_KEY);
   let blob = {};
   let exists = false;
@@ -178,8 +188,42 @@ export async function readCursorState(dbPath) {
   if (!blob.aiSettings || typeof blob.aiSettings !== "object") {
     blob.aiSettings = {};
   }
+  if (!keychain) {
+    const { openAIKey, keyStored } = await readCursorOpenAiKeyWithoutKeychain(dbPath, blob);
+    return { blob, openAIKey, keyStored, exists };
+  }
   const openAIKey = await readCursorOpenAiKey(dbPath);
-  return { blob, openAIKey, exists };
+  return { blob, openAIKey, keyStored: Boolean(openAIKey), exists };
+}
+
+/**
+ * The OpenAI key as far as it can be known without the OS keychain.
+ *
+ * With no ciphertext in the `secret://` cell this is the same answer as
+ * {@link readCursorOpenAiKey}: the legacy plaintext cell. With ciphertext, the
+ * legacy cell (which `on` writes next to it) is only trusted while Cursor still
+ * points at the Fireworks gateway — a user who swaps in their own key and
+ * endpoint in Cursor's settings rewrites only the encrypted cell, leaving our
+ * old plaintext copy behind. Otherwise the key is reported as unknown (""), and
+ * `cursorProviderStatus` falls back to Nexus's own markers in the blob.
+ * @param {string} dbPath
+ * @param {object} blob the applicationUser blob
+ * @returns {Promise<{ openAIKey: string, keyStored: boolean }>}
+ */
+export async function readCursorOpenAiKeyWithoutKeychain(dbPath, blob) {
+  const secretRaw = await readCursorValue(dbPath, CURSOR_AUTH_OPENAI_KEY_SECRET);
+  const legacy = (await readCursorValue(dbPath, CURSOR_AUTH_OPENAI_KEY)) ?? "";
+  if (plaintextMode()) {
+    // The test seam stores the key as-is; reading it needs no keychain.
+    const openAIKey = await readCursorOpenAiKey(dbPath);
+    return { openAIKey, keyStored: Boolean(openAIKey) };
+  }
+  if (!storedSecretHasCiphertext(secretRaw ?? "")) {
+    return { openAIKey: legacy, keyStored: Boolean(legacy) };
+  }
+  const pointsAtFireworks = blob?.openAIBaseUrl === CURSOR_FIREWORKS_BASE_URL;
+  const openAIKey = pointsAtFireworks && isFireworksShapedKey(legacy) ? legacy : "";
+  return { openAIKey, keyStored: true };
 }
 
 /**
@@ -963,9 +1007,8 @@ export async function enableCursorFireworks({ dbPath, dataDir, apiKey, modelId, 
     // addUserModel dedupes, so the overlap between extraModels and
     // autoBackfill is added once.
     ? [resolvedModel, ...extraModels, ...autoBackfill]
-    : requestedModel
-      ? [resolvedModel, ...autoBackfill]
-      : [...autoBackfill, ...missingCatalog];
+    // `--model` picks the active model; the list still tracks the catalog.
+    : [...(requestedModel ? [resolvedModel] : []), ...autoBackfill, ...missingCatalog];
   for (const id of modelsToAdd) {
     if (id) {
       next = addUserModel(next, id);
@@ -1111,7 +1154,6 @@ export async function disableCursorFireworks({ dbPath, dataDir }) {
       );
     }
     const localStatePath = cursorLocalStatePath(dbPath);
-    const canEncrypt = isSecretEncryptionAvailable({ variant: "cursor", localStatePath });
     const { appUserExisted, appUserRaw: savedRaw, openAIKey } = backup.snapshot;
     const writes = [];
     if (appUserExisted && savedRaw) {
@@ -1121,7 +1163,9 @@ export async function disableCursorFireworks({ dbPath, dataDir }) {
     }
     if (openAIKey) {
       writes.push({ op: "set", key: CURSOR_AUTH_OPENAI_KEY, value: openAIKey });
-      if (canEncrypt) {
+      // Only restoring a key needs Safe Storage (a keychain read, which can
+      // prompt on macOS); the "no key" branch below writes a fixed value.
+      if (isSecretEncryptionAvailable({ variant: "cursor", localStatePath })) {
         writes.push({ op: "set", key: CURSOR_AUTH_OPENAI_KEY_SECRET, value: encryptSecret(openAIKey, { variant: "cursor", localStatePath }) });
       } else {
         writes.push({ op: "del", key: CURSOR_AUTH_OPENAI_KEY_SECRET });

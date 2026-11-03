@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseCli } from "../../lib/cli/parse-args.mjs";
+import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
+import { AZURE_ON_HARNESS_SET, HARNESSES } from "../../lib/harness/id.mjs";
+import { getHarness } from "../../lib/harness/registry.mjs";
 
 describe("parseCli", () => {
   it("routes bare invocation to the launcher", () => {
@@ -411,6 +417,84 @@ describe("parseCli contextual help guidance", () => {
         () => parseCli(argv),
         /Run: nexus help/,
       );
+    }
+  });
+});
+
+
+describe("login account metadata protocol", () => {
+  it("accepts only the explicit tri-state enum with plaintext-token stdin mode", () => {
+    for (const kind of ["nexus", "platform", "unknown"]) {
+      assert.equal(parseCli(["login", "--with-token", "--account-type", kind]).ctx.accountType, kind);
+    }
+    assert.equal(parseCli(["login", "--with-token"]).ctx.accountType, "");
+    for (const args of [
+      ["login", "--with-token", "--account-type", "nexus", "--force"],
+      ["login", "--with-token", "--account-type", "nexus", "--home", "/tmp/x"],
+      ["--account-type", "platform", "login", "--with-token"],
+    ]) assert.equal(parseCli(args).ctx.accountType, args[1] === "platform" ? "platform" : "nexus");
+    for (const args of [
+      ["login", "--with-token", "--account-type"],
+      ["login", "--with-token", "--account-type", "true"],
+      ["login", "--account-type", "nexus"],
+      ["logout", "--with-token", "--account-type", "nexus"],
+      ["claude", "on", "--with-token", "--account-type", "nexus"],
+      ["login", "--with-token", "--account-type", "nexus", "--paste"],
+      ["login", "--with-token", "--account-type", "nexus", "--api-key", "fw_fake"],
+      ["login", "--with-token", "--account-type", "nexus", "--account", "acme"],
+      ["login", "--with-token", "--account-type", "nexus", "--account-type", "platform"],
+      ["login", "--with-token", "--account-type", "nexus", "--revoke"],
+      ["login", "--with-token", "--account-type", "nexus", "--model", "auto"],
+      ["login", "--with-token", "--account-type", "nexus", "--non-interactive"],
+    ]) assert.throws(() => parseCli(args), /account-type/);
+  });
+});
+
+describe("<harness> on --api-key removal", () => {
+  it("rejects --api-key on explicit and implied on, pointing at login", () => {
+    for (const args of [
+      ["claude", "on", "--api-key", "fw_fake"],
+      ["claude", "--api-key", "fw_fake"],
+      ["codex", "on", "--api-key", "fw_fake", "--model", "glm-latest"],
+      ["opencode", "on", "--model", "glm-latest", "--api-key", "fw_fake"],
+    ]) assert.throws(() => parseCli(args), /isn't a .* on option.*nexus login/s);
+    // login keeps the flag: it is the only credential-entry path.
+    assert.equal(parseCli(["login", "--api-key", "fw_fake"]).ctx.apiKey, "fw_fake");
+    // Azure-mode `on` also rejects it, pointing at configure --provider azure.
+    for (const args of [
+      ["opencode", "on", "--azure", "--api-key", "az_fake"],
+      ["pi", "on", "--api-key", "az_fake", "--azure"],
+    ]) assert.throws(() => parseCli(args), /isn't a .* on option.*nexus configure --provider azure/s);
+    // configure keeps the flag: it stores the Foundry endpoint key.
+    assert.equal(
+      parseCli(["configure", "--provider", "azure", "--api-key", "az_fake"]).ctx.apiKey,
+      "az_fake",
+    );
+    // Read-path commands keep it (credential override, no storage).
+    assert.equal(parseCli(["model", "list", "--api-key", "fw_fake"]).ctx.apiKey, "fw_fake");
+    assert.equal(parseCli(["demo", "--api-key", "fw_fake"]).ctx.apiKey, "fw_fake");
+  });
+
+  it("reads the configured provider, not just flags, for the azure message", async () => {
+    const home = await mkdtemp(join(tmpdir(), "nexus-parse-"));
+    await writeGlobalConfig(home, { provider: "azure" });
+    // A plain `on` on an azure-configured install routes through Foundry — the
+    // rejection must name `configure`, not `login`.
+    assert.throws(
+      () => parseCli(["--home", home, "opencode", "on", "--api-key", "az_fake"]),
+      /isn't a .* on option.*nexus configure --provider azure/s,
+    );
+    // A harness without an azure profile still routes through Fireworks even
+    // when the configured provider is azure → the login message stays.
+    assert.throws(
+      () => parseCli(["--home", home, "claude", "on", "--api-key", "fw_fake"]),
+      /isn't a .* on option.*nexus login/s,
+    );
+  });
+
+  it("AZURE_ON_HARNESS_SET matches the adapters declaring an azure profile", () => {
+    for (const id of HARNESSES) {
+      assert.equal(AZURE_ON_HARNESS_SET.has(id), Boolean(getHarness(id)?.azure), id);
     }
   });
 });

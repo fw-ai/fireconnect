@@ -1,17 +1,18 @@
 import process, { stdin } from "node:process";
 
 import {
-  assertNoFireworksEnvForStorage,
+  keysUrlFor,
+  refreshCatalogCacheForHome,
   resolveFireworksApiKeyValue,
   tryReadKeychainSecret,
 } from "../../keys/api-key.mjs";
-import { readGlobalConfig, writeGlobalConfig } from "../../config/global-config.mjs";
+import { isEnabledFireworksHarness, readGlobalConfig, writeGlobalConfig } from "../../config/global-config.mjs";
+import { HARNESS_COMMANDS } from "../../harness/id.mjs";
 import { deleteSecret, hasSecret } from "../../keys/secret-store.mjs";
 import { syncBakedKeysAfterStore } from "../../keys/sync.mjs";
 import { identityLabel, verifyFireworksApiKey } from "../../keys/verify-api-key.mjs";
 import {
   clearMintedKeyState,
-  mintedKeyName,
   readMintedKeyState,
   revokeMintedKey,
 } from "../../keys/mint-api-key.mjs";
@@ -23,11 +24,9 @@ import { accent, check, link, withSpinner } from "../../ui/term.mjs";
 import { runInteractiveSignIn, runSsoBrowserFlow, signInSucceeded } from "../../auth/login/flows.mjs";
 import {
   fail,
-  KEYS_URL,
   loginNonInteractive,
 } from "../../auth/login/output.mjs";
 import { promptYesNo } from "../../auth/login/prompts.mjs";
-import { readShellConfig, SHELL_HOOK_BEGIN } from "../../io/shell-env-hook.mjs";
 
 export { KEYS_URL } from "../../auth/login/output.mjs";
 export {
@@ -62,47 +61,14 @@ function printKeyRotationHints({ tty = stdin.isTTY } = {}) {
   console.log(`  Or pass a key directly:      ${accent("nexus login --api-key <key>")}`);
 }
 
-async function fireconnectExportsEnvKey(home) {
-  try {
-    const { raw } = await readShellConfig(home);
-    return raw.includes(SHELL_HOOK_BEGIN) && raw.includes("export FIREWORKS_API_KEY");
-  } catch {
-    return false;
-  }
-}
-
-async function printEnvKeyRotationHints(home) {
-  if (await fireconnectExportsEnvKey(home)) {
-    console.log("  Nexus CLI's shell hook exports this from the keychain — login won't run while it's set.");
-    console.log(`  To rotate:  ${accent("unset FIREWORKS_API_KEY")}  then  ${accent("nexus login")}`);
-    console.log("  Your next shell picks up the new key automatically.");
-    return;
-  }
-  console.log("  This key comes from your environment — login won't store behind it.");
-  console.log(`  To rotate: update ${accent("FIREWORKS_API_KEY")} wherever you export it, then open a new shell.`);
-  console.log(`  To store in the keychain instead:  ${accent("unset FIREWORKS_API_KEY")}  then  ${accent("nexus login")}`);
-}
-
 /**
  * @param {import("../../harness/types.mjs").HarnessContext} ctx
  */
 export async function runLoginCommand(ctx) {
   const home = requireHome(ctx);
-  const explicitSignIn = ctx.withToken
-    || ctx.apiKeyFromFlag
-    || ctx.paste
-    || Boolean(ctx.account?.trim());
-  if (explicitSignIn) {
-    try {
-      assertNoFireworksEnvForStorage();
-    } catch (error) {
-      fail(error.message);
-      return;
-    }
-  }
 
   if (ctx.withToken) {
-    await loginNonInteractive(home, await readStdinToken());
+    await loginNonInteractive(home, await readStdinToken(), ctx.accountType || "unknown");
     return;
   }
 
@@ -134,15 +100,13 @@ export async function runLoginCommand(ctx) {
 
   const existing = await resolveFireworksApiKeyValue({ apiKey: "", home });
   if (existing) {
-    const fromEnv = existing === process.env.FIREWORKS_API_KEY?.trim();
     const result = await withSpinner("Checking your credentials…", () => verifyFireworksApiKey(existing));
     if (result.ok || result.reason !== "rejected") {
       const who = result.ok ? identityLabel(result) : "";
-      const suffix = fromEnv ? " (from FIREWORKS_API_KEY)" : "";
       console.log(
         result.ok
-          ? `${check()} Already signed in${who ? ` as ${who}` : ""}${suffix}.`
-          : `${check()} Already signed in${suffix} (couldn't verify with the Fireworks API right now).`,
+          ? `${check()} Already signed in${who ? ` as ${who}` : ""}.`
+          : `${check()} Already signed in (couldn't verify with the Fireworks API right now).`,
       );
       // Harness configs bake the key as a literal and go stale on rotation.
       if (result.ok) {
@@ -150,25 +114,17 @@ export async function runLoginCommand(ctx) {
           console.log(`  ${note}`);
         }
       }
-      // An environment credential is intentionally ephemeral: use it as-is,
-      // never offer to mint/paste/store a second key behind it.
-      if (fromEnv) {
-        await printEnvKeyRotationHints(home);
-        return;
-      }
       printKeyRotationHints();
-      if (!stdin.isTTY) {
+      const rotate = stdin.isTTY
+        && (ctx.force || await promptYesNo("  Sign in again and replace this machine's key?", { defaultYes: false }));
+      if (!rotate) {
+        // The account's plan may have changed since the catalog was cached.
+        // A rotation skips this: storing the new key refetches its catalog.
+        if (result.ok) {
+          await withSpinner("Refreshing your model list…", () => refreshCatalogCacheForHome(home, existing));
+        }
         return;
       }
-      if (!ctx.force) {
-        const rotate = await promptYesNo("  Sign in again and replace this machine's key?", { defaultYes: false });
-        if (!rotate) {
-          return;
-        }
-      }
-    } else if (fromEnv) {
-      fail(`The Fireworks API rejected the ${accent("FIREWORKS_API_KEY")} from your environment. Check or unset it to use a stored key instead.`);
-      return;
     } else {
       console.log("Your stored key was rejected by the Fireworks API — let's replace it.");
     }
@@ -185,22 +141,47 @@ export async function runLoginCommand(ctx) {
 /**
  * @param {import("../../harness/types.mjs").HarnessContext} ctx
  */
+/**
+ * Connected harnesses keep their own copy of the key in their settings, and
+ * logout leaves their routing alone: say so, and how to remove the copies.
+ * @param {Record<string, { enabled?: boolean, provider?: string }>} harnesses
+ */
+function bakedKeyCopiesNote(harnesses) {
+  const ids = Object.keys(harnesses).filter((id) => isEnabledFireworksHarness(harnesses, id));
+  if (!ids.length) {
+    return "";
+  }
+  const names = ids.map((id) => HARNESS_COMMANDS.find((entry) => entry.command === id)?.name ?? id);
+  const commands = ids.map((id) => accent(`nexus ${id} off`)).join(", ");
+  return `Note: ${names.join(", ")} still ${ids.length === 1 ? "has" : "have"} a copy of the key in `
+    + `${ids.length === 1 ? "its" : "their"} settings and can keep using it until it is revoked. `
+    + `To remove the ${ids.length === 1 ? "copy" : "copies"}: ${commands}`;
+}
+
 export async function runLogoutCommand(ctx) {
   const home = requireHome(ctx);
   const config = await readGlobalConfig(home);
   const hadSecret = await hasSecret(home);
   const envNote = process.env.FIREWORKS_API_KEY?.trim()
-    ? `Note: FIREWORKS_API_KEY is still set in your environment; commands keep using it until you unset it.`
+    ? `Note: FIREWORKS_API_KEY is still set in your environment; Nexus ignores it.`
     : "";
+  const bakedLine = bakedKeyCopiesNote(config.harnesses ?? {});
 
   const savedProviderKeys = savedAutoProviderKeyStatus(config);
   const providersToClear = ["anthropic", "openai"].filter((provider) => savedProviderKeys[provider]);
   if (!hadSecret && !config.apiKey) {
+    // A missing credential must not leave a previous account's classification.
+    if (config.nexusAccount) {
+      await writeGlobalConfig(home, { nexusAccount: false });
+    }
     if (providersToClear.length) {
       await unsetAutoProviderKeys(home, providersToClear);
       console.log("Logged out — removed the saved provider keys from this machine.");
     } else {
       console.log("Not signed in — no stored credentials to clear.");
+    }
+    if (bakedLine) {
+      console.log(bakedLine);
     }
     if (envNote) {
       console.log(envNote);
@@ -209,6 +190,7 @@ export async function runLogoutCommand(ctx) {
   }
 
   const minted = await readMintedKeyState(home);
+  const KEYS_URL = keysUrlFor(config.nexusAccount);
   let revokeLine = "";
   if (minted) {
     const label = minted.displayName || "the API key created by this machine";
@@ -234,8 +216,8 @@ export async function runLogoutCommand(ctx) {
   }
 
   await deleteSecret(home);
-  if (config.apiKey) {
-    await writeGlobalConfig(home, { apiKey: "" });
+  if (config.apiKey || config.nexusAccount) {
+    await writeGlobalConfig(home, { apiKey: "", nexusAccount: false });
   }
   // Saved Anthropic/OpenAI keys are credentials too: leaving them would let
   // the next account on this machine send (and be billed through) them.
@@ -245,6 +227,9 @@ export async function runLogoutCommand(ctx) {
   console.log("Logged out — removed the stored key from this machine.");
   if (revokeLine) {
     console.log(revokeLine);
+  }
+  if (bakedLine) {
+    console.log(bakedLine);
   }
   if (envNote) {
     console.log(envNote);

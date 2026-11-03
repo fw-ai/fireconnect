@@ -1,6 +1,28 @@
 {
   "releases": [
     {
+      "version": "0.11.0",
+      "highlights": [
+        "`nexus login` opens a new Nexus sign-in page: continue with Google, GitHub, LinkedIn, or email.",
+        "New installs no longer need git or a GitHub account: the installer downloads Nexus CLI over HTTPS. To switch an existing install, re-run the installer. `nexus update` never installs an older version than the one you have.",
+        "`auto` is labeled Nexus Auto in every harness model picker, and Codex offers `xhigh` and `max` effort on it. Pickers and `nexus model list` now show only the models your account can use, and after you switch accounts, `nexus login` refreshes the list so turning a harness on again picks up the new models.",
+        "Bare `nexus` now lists models in its menu, and turning on a harness reminds you that the setup only works on this computer: cloud and remote agents are not supported.",
+        "Your Fireworks key now comes only from `nexus login`. `on` no longer accepts `--api-key`, and Nexus ignores `FIREWORKS_API_KEY` in your shell: run `nexus login` once and turn your harnesses on."
+      ],
+      "improvements": [
+        "Claude Desktop is now labeled Limited in help, `nexus status`, and `nexus claude-desktop on`. Cowork and Chat can reach the web by default, and `nexus login` and `nexus update` now refresh the key Claude Desktop uses, so a new key no longer ends in 401 errors.",
+        "Claude Desktop connectors: `nexus claude-desktop mcp sync` and `on` list which connectors moved over and which did not and why, and connectors that only work with a claude.ai account are no longer copied. `nexus claude-desktop on` also connects when ~/.nexus is a link to ~/.fireconnect, and says so when another program holds its port.",
+        "Faster: turning on a harness or checking its status waits only a few seconds for a slow model listing before using the cached one, and `nexus model list` now says when it shows a cached copy and why.",
+        "Fixed: OpenCode sends the effort you pick for `auto` and other models, and Codex no longer ends up with a duplicate key in `config.toml`.",
+        "Fixed: `nexus deepseek on` works with current DeepSeek Harness versions, upgrading from FireConnect 0.9 no longer leaves Claude Code on your old key, and turning Codex, Cursor, or VS Code on or off no longer stops because it wrongly thinks the app is running.",
+        "Fixed: `nexus cursor status` and `nexus vscode status` no longer ask for your macOS keychain, the install banner shows the right colors in macOS Terminal, and Esc on the session list in `nexus claude usage` exits.",
+        "Turning on a harness now checks your saved Fireworks key first. If Fireworks rejects it, Nexus stops and tells you to run `nexus login`, instead of setting up a harness that fails on every turn.",
+        "Safer: `nexus uninstall` keeps your backup if turning a harness off fails, `nexus logout` lists the harnesses that still hold a copy of your key, and `--azure` is refused on harnesses without Azure support.",
+        "API keys that `nexus login` creates are now named after this computer, and for Nexus accounts the links to manage keys point to nexus.fireworks.ai."
+      ],
+      "footer": "After upgrading, restart your harnesses to load the updated settings. Codex and the Claude Code status line show the Nexus Auto name right away; other harnesses show it the next time you turn them on."
+    },
+    {
       "version": "0.10.1",
       "highlights": [
         "Nexus Auto can now use your own Anthropic and OpenAI keys. Save them once with `nexus auto --anthropic-api-key` and `nexus auto --openai-api-key` (each prompts for the key, so it never lands in your shell history), check them with `nexus auto`, and clear one with `nexus auto --unset openai-api-key`.",

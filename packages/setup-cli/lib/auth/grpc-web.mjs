@@ -119,12 +119,15 @@ export function pbStringAt(fields, field) {
  * @param {string | { apiKey: string } | null} auth
  *   A string is a bearer token (session JWT / Cognito id_token). An fw_ API
  *   key must go in `x-api-key` instead — the gateway's bearer path only
- *   understands JWTs (authn.go Authenticate) — so pass `{ apiKey }` for keys.
+ *   understands JWTs — so pass `{ apiKey }` for keys.
  *   `null`/"" sends no auth header (for unauthenticated RPCs like
  *   GetOAuthArguments).
+ * @param {{ signal?: AbortSignal }} [options]
+ *   `signal` aborts the request and its body read (an abort throws, like a
+ *   network error).
  * @returns {Promise<GrpcWebResult>}
  */
-export async function grpcWebCall(baseUrl, method, requestBytes, auth) {
+export async function grpcWebCall(baseUrl, method, requestBytes, auth, { signal } = {}) {
   const authHeader = auth == null || auth === ""
     ? {}
     : typeof auth === "string"
@@ -140,6 +143,7 @@ export async function grpcWebCall(baseUrl, method, requestBytes, auth) {
       ...authHeader,
     },
     body: Buffer.concat([header, requestBytes]),
+    signal,
   });
 
   const body = Buffer.from(await response.arrayBuffer());

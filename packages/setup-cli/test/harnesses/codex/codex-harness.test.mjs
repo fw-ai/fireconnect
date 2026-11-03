@@ -24,6 +24,7 @@ import {
   runFireconnect,
   seedKeychainConfig,
   seedServerlessCatalogCache,
+  splitLoginArgs,
   withoutEnvFireworksKey,
   writeCodexConfig,
 } from "../../helpers.mjs";
@@ -31,10 +32,7 @@ import {
 describe("codex harness integration", () => {
   it("rejects Claude Code context suffixes", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-context-suffix-"));
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "kimi-k3[1m]"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "kimi-k3[1m]"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /\[1m\] model suffixes are only supported by Claude Code/);
   });
@@ -54,10 +52,7 @@ describe("codex harness integration", () => {
       "",
     ].join("\n"));
 
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(result.code, 0, result.stderr);
     assert.equal(parseToml(await readFile(configPath, "utf8")).root.model, "o4-mini");
   });
@@ -72,9 +67,14 @@ describe("codex harness integration", () => {
       }),
     ]);
 
+    const seed = await runFireconnect(
+      ["login", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "" },
+    );
+    assert.equal(seed.code, 0, seed.stderr);
     for (const args of [
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "gpt-oss-120b"],
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
+      ["codex", "on", "--model", "gpt-oss-120b"],
+      ["codex", "on"],
     ]) {
       const result = await runFireconnect(args, { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(result.code, 0, result.stderr);
@@ -90,10 +90,7 @@ describe("codex harness integration", () => {
     await mkdir(path.join(home, ".codex"), { recursive: true });
     await writeFile(codexCatalogPath(home), '{"models":[]}\n');
 
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_cataloged_v1_adversarial000000"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_cataloged_v1_adversarial000000"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(result.code, 0, result.stderr);
     const catalog = JSON.parse(await readFile(codexCatalogPath(home), "utf8"));
     assert.ok(catalog.models.some((model) => model.slug === "kimi-latest"));
@@ -105,10 +102,7 @@ describe("codex harness integration", () => {
     const original = '{"models":[{"slug":"user-model"}]}\n';
     await writeFile(codexCatalogPath(home), original);
 
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_cataloged_v1_adversarial000000"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_cataloged_v1_adversarial000000"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const off = await runFireconnect(["codex", "off"], { HOME: home });
     assert.equal(off.code, 0, off.stderr);
@@ -125,10 +119,7 @@ describe("codex harness integration", () => {
       }),
     ]);
 
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "cached-model"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "cached-model"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(result.code, 0, result.stderr);
     const catalog = JSON.parse(await readFile(codexCatalogPath(home), "utf8"));
     assert.ok(catalog.models.some((model) => model.slug === "cached-model"));
@@ -137,17 +128,11 @@ describe("codex harness integration", () => {
   it("rejects the full firerouter router id as a model selection", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-firerouter-manual-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }), await runFireconnect([
         "codex",
         "on",
-        "--api-key",
-        "fw_test_key_12345",
         "--model",
-        "accounts/fireworks/routers/firerouter",
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" },
-    );
+        "accounts/fireworks/routers/firerouter"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /is no longer supported/);
     assert.equal(existsSync(codexConfigPath(home)), false);
@@ -156,10 +141,7 @@ describe("codex harness integration", () => {
   it("a first plain on selects auto without Anthropic credentials", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-plain-on-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }));
     assert.equal(result.code, 0, result.stderr);
     const config = await readFile(codexConfigPath(home), "utf8");
     assert.match(config, /model_provider = "fireworks-ai"/);
@@ -172,10 +154,7 @@ describe("codex harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-firerouter-path-reron-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
     const apiKey = "fw_cataloged_v1_adversarial000000";
-    const first = await runFireconnect(
-      ["codex", "on", "--api-key", apiKey],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
     // What an earlier release wrote for `--model firerouter/test-model`.
     const seededConfig = (await readFile(codexConfigPath(home), "utf8"))
@@ -188,10 +167,7 @@ describe("codex harness integration", () => {
     assert.match(afterSelect, /model = "firerouter\/test-model"/);
     assert.match(afterSelect, /model_catalog_json/);
 
-    const rerun = await runFireconnect(
-      ["codex", "on", "--api-key", apiKey],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const rerun = await (await runFireconnect(["login", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(rerun.code, 0, rerun.stderr);
     const afterRerun = await readFile(codexConfigPath(home), "utf8");
     assert.match(afterRerun, /^model = "auto"$/m);
@@ -217,10 +193,7 @@ describe("codex harness integration", () => {
         displayName: "Beta Two",
       }),
     ]);
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "beta-two"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "beta-two"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(result.code, 0, result.stderr);
     assert.match(await readFile(codexConfigPath(home), "utf8"), /model = "beta-two"/);
     const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8"))
@@ -232,7 +205,12 @@ describe("codex harness integration", () => {
   it("second on with no changes is a file-level no-op", async () => {
     // The thin mock catalog also exercises context repair.
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-rerun-noop-"));
-    const args = ["codex", "on", "--api-key", "fw_cataloged_rerun_key_0000000000", "--model", "kimi-latest"];
+    const { login, rest } = splitLoginArgs(
+      ["codex", "on", "--api-key", "fw_cataloged_rerun_key_0000000000", "--model", "kimi-latest"],
+    );
+    const seed = await runFireconnect(login, { HOME: home, FIREWORKS_API_KEY: "" });
+    assert.equal(seed.code, 0, seed.stderr);
+    const args = rest;
     const first = await runFireconnect(args, { HOME: home, FIREWORKS_API_KEY: "" });
     assert.equal(first.code, 0, first.stderr);
     const catalog = JSON.parse(await readFile(codexCatalogPath(home), "utf8"));
@@ -254,10 +232,7 @@ describe("codex harness integration", () => {
   it("rejects MiniMax models with an explanatory error", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-minimax-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "minimax-m3"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "minimax-m3"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /MiniMax is not supported with Codex/);
     assert.match(result.stderr, /Responses API/);
@@ -281,10 +256,7 @@ describe("codex harness integration", () => {
       "",
     ].join("\n"));
 
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /MiniMax is not supported with Codex/);
     assert.match(result.stderr, /Responses API/);
@@ -297,10 +269,7 @@ describe("codex harness integration", () => {
     const original = 'model = "example-model"\n';
     await writeFile(configPath, original);
 
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     assert.match(on.stdout, /sign in with ChatGPT and GPT turns use your plan/);
     assert.doesNotMatch(on.stdout, /fireconnect key export \| codex login --with-api-key/);
@@ -311,10 +280,7 @@ describe("codex harness integration", () => {
     assert.equal((await readGlobalConfig(home)).harnesses.codex?.chatgptLogin, undefined);
 
     // Upgrades and migrations re-run a plain `on`; the mode must survive it.
-    const reOn = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(reOn.code, 0, reOn.stderr);
     const reTable = parseToml(await readFile(configPath, "utf8")).tables["model_providers.fireworks-ai"];
     assert.equal(reTable.requires_openai_auth, true);
@@ -329,10 +295,7 @@ describe("codex harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-chatgpt-rotate-"));
     const configPath = codexConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     assert.equal(
@@ -349,13 +312,37 @@ describe("codex harness integration", () => {
     );
   });
 
+  it("key rotation replaces a stale key held in an http_headers sub-table", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-chatgpt-rotate-subtable-"));
+    const configPath = codexConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
+    assert.equal(on.code, 0, on.stderr);
+    const written = await readFile(configPath, "utf8");
+    const { http_headers: headers } = parseToml(written).tables["model_providers.fireworks-ai"];
+    const subTable = Object.entries({ ...headers, "x-fireworks-api-key": "fw_revoked_key_00000" })
+      .map(([name, value]) => `${name} = "${value}"`)
+      .join("\n");
+    await writeFile(
+      configPath,
+      `${written.replace(/^http_headers = .*\n/m, "")}\n[model_providers.fireworks-ai.http_headers]\n${subTable}\n`,
+    );
+
+    assert.equal(
+      await refreshCodexGatewayKey({ configPath, fireworksKey: "fw_rotated_key_67890" }),
+      true,
+    );
+    const rotated = await readFile(configPath, "utf8");
+    const table = parseToml(rotated).tables["model_providers.fireworks-ai"];
+    assert.deepEqual({ ...table.http_headers }, { ...headers, "x-fireworks-api-key": "fw_rotated_key_67890" });
+    assert.doesNotMatch(rotated, /fw_revoked_key_00000/);
+    assert.doesNotMatch(rotated, /\[model_providers\.fireworks-ai\.http_headers\]/);
+  });
+
   it("there is no flag to turn Codex's sign-in on or off", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-chatgpt-login-flag-"));
     for (const flag of ["--chatgpt-login", "--no-chatgpt-login"]) {
-      const result = await runFireconnect(
-        ["codex", "on", "--api-key", "fw_test_key_12345", flag],
-        { HOME: home, FIREWORKS_API_KEY: "" },
-      );
+      const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", flag], { HOME: home, FIREWORKS_API_KEY: "" }));
       assert.notEqual(result.code, 0, flag);
       assert.match(result.stderr, new RegExp(`Unknown argument: ${flag}`), flag);
     }
@@ -368,16 +355,10 @@ describe("codex harness integration", () => {
     seedServerlessCatalogCache(home, [
       mockServerlessModel({ name: "accounts/fireworks/models/example-model", displayName: "Example" }),
     ]);
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
-    const switched = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "example-model"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const switched = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "example-model"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(switched.code, 0, switched.stderr);
     assert.match(switched.stdout, /Codex keeps its own sign-in/);
     const doc = parseToml(await readFile(configPath, "utf8"));
@@ -396,18 +377,12 @@ describe("codex harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-chatgpt-gpt-pick-"));
     const configPath = codexConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     const picked = (await readFile(configPath, "utf8")).replace(/^model = .*$/m, 'model = "gpt-6-astra"');
     await writeFile(configPath, picked);
-    const reOn = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(reOn.code, 0, reOn.stderr);
     assert.doesNotMatch(reOn.stdout, /sign-in is off/);
     const doc = parseToml(await readFile(configPath, "utf8"));
@@ -426,10 +401,7 @@ describe("codex harness integration", () => {
     seedServerlessCatalogCache(home, [
       mockServerlessModel({ name: "accounts/fireworks/models/example-model", displayName: "Example" }),
     ]);
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "gpt-6-astra"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "gpt-6-astra"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     assert.match(on.stdout, /gpt-6-astra then needs an OpenAI Provider Key/);
     assert.match(on.stdout, /docs\.fireworks\.ai\/nexus\/provider-keys/);
@@ -445,10 +417,7 @@ describe("codex harness integration", () => {
     const catalog = JSON.parse(await readFile(codexCatalogPath(home), "utf8"));
     assert.ok(catalog.models.some((row) => row.slug === "gpt-6-astra"));
 
-    const unknown = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "gpt-example-model"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const unknown = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "gpt-example-model"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /not available on Fireworks/);
   });
@@ -504,10 +473,7 @@ describe("codex harness integration", () => {
       clearListPriceCache();
       process.env.HOME = prevHome;
     }
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "gpt-6-astra"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "gpt-6-astra"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const doc = parseToml(await readFile(codexConfigPath(home), "utf8"));
     assert.equal(doc.root.model, "gpt-6-astra");
@@ -592,10 +558,7 @@ describe("codex harness integration", () => {
   it("status reports Codex's sign-in mode and where the Fireworks key lives", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-chatgpt-status-"));
     await mkdir(path.dirname(codexConfigPath(home)), { recursive: true });
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
 
     const text = await runFireconnect(["codex", "status"], { HOME: home, FIREWORKS_API_KEY: "" });
@@ -612,10 +575,7 @@ describe("codex harness integration", () => {
     assert.equal(payload.current.main, "auto");
     assert.equal(payload.defaults.main, "auto");
 
-    await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "auto"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "auto"], { HOME: home, FIREWORKS_API_KEY: "" }));
     const plain = JSON.parse(
       (await runFireconnect(["codex", "status", "--json"], { HOME: home, FIREWORKS_API_KEY: "" })).stdout,
     );
@@ -632,27 +592,27 @@ describe("codex harness integration", () => {
     const providerTable = async () => parseToml(await readFile(configPath, "utf8"))
       .tables["model_providers.fireworks-ai"];
 
-    const on = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     assert.match(await readFile(configPath, "utf8"), /^model = "auto"$/m);
     assert.match(on.stdout, /Codex → Fireworks · auto\n/);
     assert.match(on.stdout, /GPT turns use your plan/);
     assert.equal((await providerTable()).requires_openai_auth, true);
 
-    const auto = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345", "--model", "auto"], env);
+    const auto = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on", "--model", "auto"], env));
     assert.equal(auto.code, 0, auto.stderr);
     assert.match(auto.stdout, /Codex keeps its own sign-in/);
     assert.equal((await providerTable()).experimental_bearer_token, undefined);
     assert.equal((await providerTable()).requires_openai_auth, true);
 
-    const reOn = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(reOn.code, 0, reOn.stderr);
     assert.match(await readFile(configPath, "utf8"), /^model = "auto"$/m);
     assert.equal((await providerTable()).requires_openai_auth, true);
 
     // After `off`, the next `on` is a first one again.
     assert.equal((await runFireconnect(["codex", "off"], env)).code, 0);
-    const again = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const again = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(again.code, 0, again.stderr);
     assert.match(await readFile(configPath, "utf8"), /^model = "auto"$/m);
     assert.equal((await providerTable()).requires_openai_auth, true);
@@ -690,14 +650,21 @@ describe("codex harness integration", () => {
     seedServerlessCatalogCache(home, [
       mockServerlessModel({ name: "accounts/fireworks/models/example-model", displayName: "Example" }),
     ]);
-    const on = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345", "--model", "gpt-9.4"], {
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
       HOME: home,
       FIREWORKS_API_KEY: "",
       OPENAI_API_KEY: "",
       NEXUS_TEST_CODEX_MODELS: JSON.stringify({
         models: [{ slug: "gpt-9.4", display_name: "GPT-9.4", visibility: "list", priority: 1, context_window: 200000 }],
       }),
-    });
+    }), await runFireconnect(["codex", "on", "--model", "gpt-9.4"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+      OPENAI_API_KEY: "",
+      NEXUS_TEST_CODEX_MODELS: JSON.stringify({
+        models: [{ slug: "gpt-9.4", display_name: "GPT-9.4", visibility: "list", priority: 1, context_window: 200000 }],
+      }),
+    }));
     assert.equal(on.code, 0, on.stderr);
     assert.equal(parseToml(await readFile(codexConfigPath(home), "utf8")).root.model, "gpt-9.4");
     const rows = JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models;
@@ -715,7 +682,7 @@ describe("codex harness integration", () => {
       mockServerlessModel({ name: "accounts/fireworks/models/example-model", displayName: "Example" }),
     ]);
 
-    const on = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     assert.doesNotMatch(on.stdout, /FireRouter is on/);
     const slugs = await catalogSlugs();
@@ -729,13 +696,13 @@ describe("codex harness integration", () => {
     assert.deepEqual(slugs.filter((slug) => slug.startsWith("firerouter")), []);
 
     // A re-on refreshes the catalog without dropping or duplicating the block.
-    const reOn = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(reOn.code, 0, reOn.stderr);
     assert.deepEqual(await catalogSlugs(), slugs);
 
     // FireRouter selections are rejected and leave the catalog alone.
     for (const model of ["firerouter", "firerouter/astra"]) {
-      const rejected = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345", "--model", model], env);
+      const rejected = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on", "--model", model], env));
       assert.notEqual(rejected.code, 0, model);
       assert.match(rejected.stderr, /is no longer supported/, model);
     }
@@ -748,7 +715,7 @@ describe("codex harness integration", () => {
     const configPath = codexConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    const on = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     // What an earlier release saved for `--model firerouter/astra`.
     await writeFile(
@@ -765,7 +732,7 @@ describe("codex harness integration", () => {
         .replace(/"HTTP-Referer" = "fireconnect\/[^"]*"/, '"HTTP-Referer" = "fireconnect/v0.9.9"'),
     );
 
-    const reOn = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(reOn.code, 0, reOn.stderr);
     assert.match(await readFile(configPath, "utf8"), /^model = "auto"$/m);
     const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models.map((row) => row.slug);
@@ -777,7 +744,7 @@ describe("codex harness integration", () => {
     const configPath = codexConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    assert.equal((await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env)).code, 0);
+    assert.equal((await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env))).code, 0);
     await writeFile(
       configPath,
       (await readFile(configPath, "utf8")).replace(/^model = "auto"$/m, 'model = "firerouter/astra"'),
@@ -787,7 +754,7 @@ describe("codex harness integration", () => {
     catalog.models.push({ slug: "firerouter/astra", display_name: "FireRouter", description: "Routes each user turn between GPT Astra, GPT Sol, and open models." });
     await writeFile(codexCatalogPath(home), JSON.stringify(catalog));
 
-    const reOn = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(reOn.code, 0, reOn.stderr);
     assert.match(await readFile(configPath, "utf8"), /^model = "auto"$/m);
     const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models.map((row) => row.slug);
@@ -803,13 +770,13 @@ describe("codex harness integration", () => {
     const configPath = codexConfigPath(home);
     await mkdir(path.dirname(configPath), { recursive: true });
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    assert.equal((await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345", "--model", "gpt-6.1-sol"], env)).code, 0);
+    assert.equal((await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on", "--model", "gpt-6.1-sol"], env))).code, 0);
     // 0.9.8 and 0.9.9 wrote the FireRouter row with the Astra slug.
     const catalog = JSON.parse(await readFile(codexCatalogPath(home), "utf8"));
     catalog.models.push({ slug: "firerouter/astra", display_name: "FireRouter" });
     await writeFile(codexCatalogPath(home), JSON.stringify(catalog));
 
-    const reOn = await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env);
+    const reOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env));
     assert.equal(reOn.code, 0, reOn.stderr);
     assert.match(await readFile(configPath, "utf8"), /^model = "gpt-6.1-sol"$/m);
     const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models.map((row) => row.slug);
@@ -819,10 +786,7 @@ describe("codex harness integration", () => {
   it("a model outside FireRouter still lists the OpenAI rows, with no FireRouter row", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-signin-rows-auto-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
-    const on = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "auto"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "auto"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(on.code, 0, on.stderr);
     const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models.map((row) => row.slug);
     assert.ok(slugs.includes("auto"));
@@ -835,10 +799,7 @@ describe("codex harness integration", () => {
     await mkdir(path.dirname(codexConfigPath(home)), { recursive: true });
     await writeGlobalConfig(home, { provider: "azure" });
 
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", AZURE_API_KEY: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", AZURE_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "", AZURE_API_KEY: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /no longer supports Azure\/Foundry/);
     assert.doesNotMatch(await readFile(codexConfigPath(home), "utf8").catch(() => ""), /firerouter/);
@@ -848,14 +809,15 @@ describe("codex harness integration", () => {
   it("does not attach env BYOK when firerouter is not selected", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-no-byok-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
-    const result = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "auto"],
-      {
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "sk-ant-should-not-attach-12345",
-      },
-    );
+      }), await runFireconnect(["codex", "on", "--model", "auto"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "sk-ant-should-not-attach-12345",
+      }));
     assert.equal(result.code, 0, result.stderr);
     const config = await readFile(codexConfigPath(home), "utf8");
     assert.match(config, /model = "auto"/);
@@ -916,10 +878,7 @@ describe("codex harness integration", () => {
     ].join("\n");
     await writeFile(configPath, original);
 
-    const onResult = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0);
 
     const enabled = await readFile(configPath, "utf8");
@@ -952,10 +911,7 @@ describe("codex harness integration", () => {
     const original = 'model_provider = "openai"\nmodel = "gpt-4.1"\n';
     await writeFile(configPath, original);
 
-    const first = await runFireconnect(
-      ["codex", "on", "--api-key", "fw_test_key_12345", "--model", "auto"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on", "--model", "auto"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
     let config = await readFile(configPath, "utf8");
     let table = parseToml(config).tables["model_providers.fireworks-ai"];
@@ -1043,12 +999,13 @@ describe("codex harness integration", () => {
     });
   });
 
-  it("on with env only writes the literal key into the Fireworks key header", async () => {
+  it("on with a stored key writes the literal key into the Fireworks key header", async () => {
     await withoutEnvFireworksKey(async () => {
       const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-env-on-"));
       await mkdir(path.join(home, ".codex"), { recursive: true });
+      await seedKeychainConfig(home, "fw_test_key_12345");
 
-      const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
+      const env = { HOME: home };
       const onResult = await runFireconnect(["codex", "on", "--model", "auto"], env);
       assert.equal(onResult.code, 0);
       assert.match(onResult.stdout, /Codex → Fireworks · auto/);
@@ -1064,8 +1021,9 @@ describe("codex harness integration", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-env-perms-"));
     await mkdir(path.join(home, ".codex"), { recursive: true });
     const configPath = codexConfigPath(home);
+    await seedKeychainConfig(home, "fw_test_key_12345");
 
-    const env = { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" };
+    const env = { HOME: home };
     const onResult = await runFireconnect(["codex", "on", "--model", "auto"], env);
     assert.equal(onResult.code, 0);
 
@@ -1075,6 +1033,80 @@ describe("codex harness integration", () => {
 
     const st = await stat(configPath);
     assert.equal(st.mode & 0o700, 0o600, "config.toml should remain owner-readable/writable");
+  });
+
+  // What an earlier `on` wrote over provider headers kept as a sub-table: Codex
+  // and the ChatGPT app refuse to load it ("duplicate key").
+  const DUPLICATE_HEADERS_CONFIG = [
+    'model_provider = "fireworks-ai"',
+    'model = "auto"',
+    "",
+    '[projects."/work/app"]',
+    'trust_level = "trusted"',
+    "",
+    "[model_providers.fireworks-ai.http_headers]",
+    'x-fireworks-api-key = "fw_stale_key_00000"',
+    "",
+    "[model_providers.fireworks-ai]",
+    'name = "Fireworks"',
+    'base_url = "https://api.fireworks.ai/inference/v1"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    'http_headers = { "x-fireworks-api-key" = "fw_stale_key_00000" }',
+    "",
+  ].join("\n");
+
+  it("on repairs a config.toml that defines the provider headers twice", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-duplicate-key-"));
+    const configPath = codexConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, DUPLICATE_HEADERS_CONFIG);
+
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
+    assert.equal(on.code, 0, on.stderr);
+    const raw = await readFile(configPath, "utf8");
+    const doc = parseToml(raw);
+    assert.equal(doc.tables["model_providers.fireworks-ai"].http_headers["x-fireworks-api-key"], "fw_test_key_12345");
+    assert.equal(doc.tables['projects./work/app'].trust_level, "trusted");
+    assert.doesNotMatch(raw, /fw_stale_key_00000/);
+  });
+
+  it("off repairs a config.toml that defines the provider headers twice", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-duplicate-key-off-"));
+    const configPath = codexConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, DUPLICATE_HEADERS_CONFIG);
+
+    const off = await runFireconnect(["codex", "off"], { HOME: home });
+    assert.equal(off.code, 0, off.stderr);
+    const raw = await readFile(configPath, "utf8");
+    const doc = parseToml(raw);
+    assert.equal(doc.root.model_provider, undefined);
+    assert.equal(doc.tables["model_providers.fireworks-ai"], undefined);
+    assert.equal(doc.tables['projects./work/app'].trust_level, "trusted");
+  });
+
+  it("on leaves config.toml unchanged rather than writing a file Codex can't load", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-codex-invalid-rewrite-"));
+    const configPath = codexConfigPath(home);
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const original = [
+      'model = "gpt-4.1"',
+      "",
+      "[model_providers]",
+      'fireworks-ai = { name = "Fireworks", base_url = "https://api.fireworks.ai/inference/v1", env_key = "FIREWORKS_API_KEY" }',
+      "",
+    ].join("\n");
+    await writeFile(configPath, original);
+
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
+    assert.notEqual(on.code, 0);
+    assert.match(on.stderr, /Left .*config\.toml unchanged/);
+    assert.doesNotMatch(on.stderr, /fw_test_key_12345/);
+    assert.equal(await readFile(configPath, "utf8"), original);
+    // Nothing is left behind for a later `off` to restore over the file.
+    await assert.rejects(access(codexBackupPath(codexDataDir(home), configPath)));
+    assert.equal(existsSync(codexCatalogPath(home)), false);
   });
 
   it("off strips routing when backup is missing or contains Fireworks config", async () => {
@@ -1089,7 +1121,7 @@ describe("codex harness integration", () => {
 
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
     assert.equal(
-      (await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345", "--model", "auto"], env)).code,
+      (await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on", "--model", "auto"], env))).code,
       0,
     );
 
@@ -1101,7 +1133,7 @@ describe("codex harness integration", () => {
       'model = "accounts/fireworks/routers/kimi-fast-latest"',
     );
     await writeFile(configPath, legacyCanonical);
-    assert.equal((await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env)).code, 0);
+    assert.equal((await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env))).code, 0);
     await assert.rejects(access(backupPath));
     assert.match(await readFile(configPath, "utf8"), /model = "auto"/);
 
@@ -1113,7 +1145,7 @@ describe("codex harness integration", () => {
     assert.doesNotMatch(restored, /model_provider = "fireworks-ai"/);
     assert.doesNotMatch(restored, /\[model_providers\.fireworks-ai\]/);
 
-    assert.equal((await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env)).code, 0);
+    assert.equal((await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env))).code, 0);
     const fireworksConfig = await readFile(configPath, "utf8");
     await writeJson(backupPath, {
       configPath: path.resolve(configPath),
@@ -1146,7 +1178,7 @@ describe("codex harness integration", () => {
     await writeFile(configPath, original);
 
     const env = { HOME: home, FIREWORKS_API_KEY: "" };
-    assert.equal((await runFireconnect(["codex", "on", "--api-key", "fw_test_key_12345"], env)).code, 0);
+    assert.equal((await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["codex", "on"], env))).code, 0);
 
     const enabled = await readFile(configPath, "utf8");
     assert.match(enabled, /model_provider = "fireworks-ai"/);
