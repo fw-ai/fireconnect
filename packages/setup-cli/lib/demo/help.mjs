@@ -30,7 +30,7 @@ Options:
   --right-model <model>     Right model (default: glm-fast-latest).
   --challenger <model>      Alias for --right-model.
   --anthropic-model <alias> Alias for --left-model (opus/sonnet/haiku/fable).
-  --api-key <key>           Fireworks API key (defaults to FIREWORKS_API_KEY / config).
+  --api-key <key>           Fireworks API key (defaults to the stored login key).
   --no-open                 Skip the browser handoff; leave outputs on disk.
   --out <dir>               Output directory (default: ./nexus-demo/).
   --yes                     Non-interactive: skip the setup form.

@@ -1,5 +1,5 @@
 /**
- * Output-directory writer for `nexus demo` (§8 of the brief).
+ * Output-directory writer for `nexus demo`.
  *
  * Everything the demo produces lands on disk for auditability and `--no-open`:
  *   {out}/prompt.txt            exact prompt sent to both

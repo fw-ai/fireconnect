@@ -28,8 +28,7 @@ export function catalogTtlMs() {
 // ~/.nexus. When set, it's scoped by HOME so spawned CLI children (which
 // inherit NEXUS_CACHE_DIR but each get their own temp HOME) read their own
 // cache file instead of all colliding on one.
-export function scopedCacheFilePath(filename) {
-  const home = process.env.HOME ?? os.homedir();
+export function scopedCacheFilePath(filename, home = process.env.HOME ?? os.homedir()) {
   let dir = process.env.NEXUS_CACHE_DIR;
   if (dir) {
     const scope = createHash("sha1").update(home).digest("hex").slice(0, 12);
@@ -40,8 +39,8 @@ export function scopedCacheFilePath(filename) {
   return path.join(dir, filename);
 }
 
-function cacheFilePath() {
-  return scopedCacheFilePath("catalog-cache.json");
+function cacheFilePath(home) {
+  return scopedCacheFilePath("catalog-cache.json", home);
 }
 
 function pairs(map) {
@@ -86,12 +85,14 @@ function deserializeSnapshot(value) {
  * pre-TTL format (a bare snapshot JSON without the wrapper) as an age-less
  * cache — `cachedAt` is 0, so it reads as stale and is refreshed on the next
  * eligible command. Returns null when the file is missing or unreadable.
- * @returns {{ cachedAt: number, snapshot: ServerlessCatalogSnapshot | null } | null}
+ * `keyFingerprint` identifies the API key the catalog was fetched with ("" for
+ * older caches); see {@link catalogKeyFingerprint}.
+ * @returns {{ cachedAt: number, snapshot: ServerlessCatalogSnapshot | null, keyFingerprint: string } | null}
  */
-export function readCatalogCache() {
+export function readCatalogCache(home) {
   let raw;
   try {
-    raw = readFileSync(cacheFilePath(), "utf8");
+    raw = readFileSync(cacheFilePath(home), "utf8");
   } catch {
     return null;
   }
@@ -104,7 +105,8 @@ export function readCatalogCache() {
     const hasWrapper = "snapshot" in value;
     const snapshot = deserializeSnapshot(hasWrapper ? value.snapshot : value);
     const cachedAt = hasWrapper && Number.isFinite(value.cachedAt) ? value.cachedAt : 0;
-    return { cachedAt, snapshot };
+    const keyFingerprint = hasWrapper && typeof value.keyFingerprint === "string" ? value.keyFingerprint : "";
+    return { cachedAt, snapshot, keyFingerprint };
   } catch {
     return null;
   }
@@ -127,7 +129,7 @@ function loadPersistedSnapshot() {
   return readCatalogCache()?.snapshot ?? null;
 }
 
-function persistSnapshot(snapshot) {
+function persistSnapshot(snapshot, keyFingerprint) {
   const cachedAt = snapshot ? Date.now() : null;
   try {
     const file = cacheFilePath();
@@ -138,6 +140,7 @@ function persistSnapshot(snapshot) {
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({
       cachedAt,
+      ...(keyFingerprint ? { keyFingerprint } : {}),
       snapshot: serializeSnapshot(snapshot),
     }));
   } catch {
@@ -164,12 +167,23 @@ export function setServerlessCatalogSnapshot(snapshot) {
  * process can recover the last-known catalog (e.g. offline registration or
  * `off` cleanup). Only call with a freshly-fetched authoritative snapshot.
  * @param {ServerlessCatalogSnapshot | null} snapshot
+ * @param {{ apiKey?: string }} [options] the key the catalog was fetched with.
  * @returns {number | null} Snapshot time, or null when clearing.
  */
-export function cacheServerlessCatalogSnapshot(snapshot) {
+export function cacheServerlessCatalogSnapshot(snapshot, { apiKey = "" } = {}) {
   activeSnapshot = snapshot;
   snapshotResolved = true;
-  return persistSnapshot(snapshot);
+  return persistSnapshot(snapshot, apiKey ? catalogKeyFingerprint(apiKey) : "");
+}
+
+/**
+ * A short one-way fingerprint of the API key a catalog belongs to. The catalog
+ * depends on the account (a plan can limit it), so a cache fetched with another
+ * key must not be served as fresh. Never store the key itself.
+ * @param {string} apiKey
+ */
+export function catalogKeyFingerprint(apiKey) {
+  return createHash("sha256").update(String(apiKey).trim()).digest("hex").slice(0, 16);
 }
 
 export function getServerlessCatalogSnapshot() {
@@ -193,6 +207,24 @@ export function reloadServerlessCatalogSnapshot() {
   }
   snapshotResolved = true;
   return activeSnapshot;
+}
+
+/**
+ * Mark the persisted catalog stale so the next eligible command refetches it.
+ * The snapshot stays on disk as the offline fallback.
+ */
+export function expireCatalogCache(home) {
+  const cache = readCatalogCache(home);
+  if (!cache?.snapshot || cache.cachedAt === 0) {
+    return;
+  }
+  try {
+    const file = cacheFilePath(home);
+    const value = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify({ ...value, cachedAt: 0 }));
+  } catch {
+    // Best-effort, like every other cache write.
+  }
 }
 
 /** Reset the persisted and in-memory catalog cache. */

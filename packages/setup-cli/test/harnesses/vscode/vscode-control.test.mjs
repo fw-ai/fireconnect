@@ -25,7 +25,8 @@ function hangingPrompt({ signal }) {
 const SPEC = {
   darwinPattern: "Visual Studio Code( - Insiders)?.app/Contents/MacOS/Electron",
   linuxPattern: "[/]code(-insiders)?([[:space:]]|$)",
-  linuxCmdlineMatches: (cmdline) => !/\s--type=/.test(cmdline),
+  linuxCmdlineMatches: (cmdline) =>
+    !/\s--type=/.test(cmdline) && !/\s(serve-web|tunnel)(\s|$)/.test(cmdline),
   windowsImage: "Code( - Insiders)?\\.exe",
 };
 const MSG =
@@ -59,6 +60,15 @@ describe("VS Code linux pgrep pattern", () => {
     );
     assert.equal(linuxCmdlineMatches("/usr/share/code/code --no-sandbox"), true);
     assert.equal(linuxCmdlineMatches("/usr/share/code-insiders/code-insiders --unity-launch"), true);
+  });
+
+  it("does not count headless `code serve-web`/`code tunnel` servers as the GUI", () => {
+    // Cloud dev boxes run a headless VS Code server under the same binary;
+    // it never owns the desktop's state.vscdb and must not block writes.
+    assert.equal(linuxCmdlineMatches("/opt/.devin/binaries/code serve-web --host 0.0.0.0 --port 8080"), false);
+    assert.equal(linuxCmdlineMatches("/usr/bin/code serve-web"), false);
+    assert.equal(linuxCmdlineMatches("/usr/bin/code tunnel --name box"), false);
+    assert.equal(linuxCmdlineMatches("/usr/bin/code --serve-web-thing"), true);
   });
 });
 
@@ -95,6 +105,21 @@ describe("ensureVscodeStopped (via ensureIdeStopped)", () => {
       label: "VS Code",
     });
     assert.equal(calls, 1);
+  });
+
+  it("warns under force without offering --force again", async () => {
+    const warned = [];
+    const original = console.warn;
+    console.warn = (msg) => warned.push(String(msg));
+    try {
+      await ensureIdeStopped(SPEC, MSG, { force: true, isRunning: () => true, log: () => {}, label: "VS Code" });
+    } finally {
+      console.warn = original;
+    }
+    assert.equal(warned.length, 1);
+    assert.match(warned[0], /Writing anyway \(--force\)\. VS Code is running\./);
+    assert.match(warned[0], /isn't discarded when VS Code exits, then rerun\./);
+    assert.doesNotMatch(warned[0], /pass --force/);
   });
 
   it("auto-continues once VS Code exits (no Enter required)", async () => {

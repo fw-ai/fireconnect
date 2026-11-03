@@ -1,24 +1,23 @@
 import { Buffer } from "node:buffer";
 import { grpcWebCall, pbDecode, pbField, pbString, pbStringAt } from "./grpc-web.mjs";
 import { GATEWAY_GRPC_WEB_URL } from "../keys/mint-api-key.mjs";
+import { isHttpsOrLoopbackHttp } from "../system/loopback.mjs";
 
 /**
  * Enterprise SSO sign-in support, mirroring `firectl signin <account-id>`.
  *
  * Two unary gRPC-web calls against the gateway:
  *
- * - GetOAuthArguments (unauthenticated; sign_in.proto) resolves an account's
- *   OAuth config — for custom-SSO accounts, the tenant issuer/client/domain
- *   whose hosted UI federates to the org's identity provider. Feeding these
- *   into the existing localhost-callback flow is the whole SSO mechanism;
- *   the gateway's auth is multi-issuer (authn.go getOIDCArgs), so tokens
- *   from the tenant issuer work on the same mint path as developer tokens.
+ * - GetOAuthArguments (unauthenticated) resolves an account's OAuth config —
+ *   for custom-SSO accounts, the tenant issuer/client/domain whose hosted UI
+ *   federates to the org's identity provider. Feeding these into the
+ *   existing localhost-callback flow is the whole SSO mechanism; tokens from
+ *   the tenant issuer work on the same mint path as developer tokens.
  *
- * - CreateUser with an empty user (user.proto) is JIT self-provisioning:
- *   the server extracts the email from the SSO token and creates the user
- *   in the account, gated server-side on the account's IdP having JIT
- *   enabled and the email domain allowlisted. AlreadyExists means the user
- *   was pre-added or has signed in before — equally fine.
+ * - CreateUser with an empty user is JIT self-provisioning: the server
+ *   takes the email from the SSO token and adds the user to the account
+ *   when the account allows it. AlreadyExists means the user was pre-added
+ *   or has signed in before — equally fine.
  */
 
 const GRPC_ALREADY_EXISTS = 6;
@@ -37,15 +36,29 @@ const failedArgs = (failure) => ({ ok: false, issuerUrl: "", clientId: "", cogni
 
 /**
  * The gateway stores the domain as a URL (firectl url.Parse()s it verbatim),
- * but normalize defensively: no scheme → https, no trailing slash.
+ * but normalize defensively: no scheme → https, no trailing slash. The
+ * result is opened in the browser, so only an https URL (http just for a
+ * loopback host) without credentials, query or fragment is accepted.
  * @param {string} domain
  */
-function normalizeCognitoDomain(domain) {
-  const trimmed = domain.trim().replace(/\/+$/, "");
+export function normalizeCognitoDomain(domain) {
+  const trimmed = String(domain ?? "").trim().replace(/\/+$/, "");
   if (!trimmed) {
     return "";
   }
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  // A scheme only when written as `scheme://`: a bare `host:port` (dots and
+  // hyphens are legal scheme characters) is a host, like before.
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    if (!isHttpsOrLoopbackHttp(url) || url.username || url.password || url.search || url.hash
+      || !/^(?:[a-z0-9.-]+|\[::1\])$/i.test(url.hostname)) {
+      return "";
+    }
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -88,8 +101,7 @@ export async function getOAuthArgumentsForAccount(accountId, { baseUrl = GATEWAY
  * CreateUser{parent: accounts/<id>, user: {}} — the server fills the email
  * in from the SSO token. Outcomes:
  *   created / AlreadyExists  → ok (member, proceed)
- *   PermissionDenied         → ok: the gateway denies JIT to shared-pool tokens
- *                              even for members, so minting decides membership.
+ *   PermissionDenied         → ok: minting decides membership.
  * @param {string} idToken
  * @param {string} accountId  bare id, e.g. "my-company"
  * @param {{ baseUrl?: string }} [options]

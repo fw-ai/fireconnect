@@ -7,6 +7,7 @@ import { readGlobalConfig } from "../../lib/config/global-config.mjs";
 import { userSettingsPath } from "../../lib/harnesses/claude/core.mjs";
 import { opencodeConfigPath, OPENCODE_FIREWORKS_PROVIDER_ID } from "../../lib/harnesses/opencode/core.mjs";
 import { piAuthPath, piModelsPath } from "../../lib/harnesses/pi/core.mjs";
+import { chatLanguageModelsPath } from "../../lib/harnesses/vscode/core.mjs";
 
 const FIREWORKS_KEY = "fw_test_key_12345";
 const ANTHROPIC_KEY = "sk-ant-unset-test-00000000";
@@ -25,7 +26,12 @@ function harnessFiles(home) {
     claude: userSettingsPath(home),
     opencode: opencodeConfigPath(home),
     pi: piModelsPath(home),
-    vscode: path.join(home, ".config/Code/User/chatLanguageModels.json"),
+    // Where `vscode on` writes: on Linux, under the XDG_CONFIG_HOME the spawned
+    // CLI gets (withHarnessHome); elsewhere, the OS's own app-data folder
+    // (~/Library/Application Support on macOS), which only HOME decides.
+    vscode: process.platform === "linux"
+      ? path.join(home, ".config/Code/User/chatLanguageModels.json")
+      : chatLanguageModelsPath({ home }),
   };
 }
 
@@ -74,10 +80,7 @@ async function withHarnessHome(prefix, fn) {
       NEXUS_VSCODE_SECRET_PLAINTEXT: "1",
     };
     const on = async (harness) => {
-      const result = await runCli(
-        [harness, "on", "--api-key", FIREWORKS_KEY, ...(harness === "vscode" ? ["--force"] : [])],
-        { home, env },
-      );
+      const result = await (await runCli(["login", "--api-key", FIREWORKS_KEY], { home, env }), await runCli([harness, "on", ...(harness === "vscode" ? ["--force"] : [])], { home, env }));
       assert.equal(result.code, 0, `${harness}: ${result.stderr}`);
     };
     await fn({ home, env, on, files: harnessFiles(home) });

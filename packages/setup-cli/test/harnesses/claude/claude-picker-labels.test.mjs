@@ -30,7 +30,7 @@ describe("Claude picker labels", () => {
 
   it("labels a leftover FireRouter id like auto, which is how the gateway serves it", () => {
     for (const id of ["firerouter", "firerouter/astra", "firerouter/claude-opus-5/kimi-k3"]) {
-      assert.equal(fireworksModelPickerName(id), "Auto", id);
+      assert.equal(fireworksModelPickerName(id), "Nexus Auto", id);
       assert.equal(fireworksModelPickerDescription(id), "Smart routing: automatically picks the best model for the task.", id);
     }
   });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -8,6 +9,9 @@ import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 import { CODEX_CATALOG_TOML_REF, codexCatalogPath, codexConfigPath } from "../../../lib/harnesses/codex/core.mjs";
 import { clearListPriceCache, setListPriceCacheRates } from "../../../lib/pricing/list-price-cache.mjs";
 import {
+  CODEX_AUTO_EFFORT_NOTE,
+  CODEX_AUTO_RENAME_NOTE,
+  CODEX_DUPLICATE_KEY_REPAIR_NOTE,
   CODEX_ENV_PROVIDER_KEYS_NOTE,
   CODEX_SAVED_ANTHROPIC_KEY_NOTE,
   CODEX_FIREROUTER_MIGRATION_NOTE,
@@ -17,6 +21,7 @@ import {
 } from "../../../lib/harnesses/codex/upgrade-reon.mjs";
 import { parseToml } from "../../../lib/harnesses/codex/toml.mjs";
 import { withCodexSignInRows } from "../../../lib/harnesses/codex/catalog.mjs";
+import { migrateCodexCatalogConstantsOnUpgrade } from "../../../lib/harnesses/codex/upgrade-migrations.mjs";
 import { buildServerlessCatalogSnapshot } from "../../../lib/fireworks/models.mjs";
 import { cacheServerlessCatalogSnapshot, setServerlessCatalogSnapshot } from "../../../lib/fireworks/serverless-catalog-cache.mjs";
 import { mockServerlessModel, seedKeychainConfig, withTempHome } from "../../helpers.mjs";
@@ -113,6 +118,30 @@ describe("reapplyCodexOnUpgrade", () => {
       const raw = await readFile(configPath, "utf8");
       assert.doesNotMatch(raw, /ANTHROPIC_API_KEY|x-anthropic-api-key/);
       assert.equal(parseToml(raw).tables["model_providers.fireworks-ai"].http_headers["x-fireworks-api-key"], KEY);
+
+      assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), []);
+    });
+  });
+
+  it("repairs a config.toml that defines the provider headers twice, then leaves it alone", async () => {
+    await withTempHome("codex-upgrade-reon-duplicate-key-", async (home) => {
+      await seedLegacyCodex(home);
+      await inHome(home, () => reapplyCodexOnUpgrade(home));
+      const configPath = codexConfigPath(home);
+      await writeFile(
+        configPath,
+        (await readFile(configPath, "utf8")).replace(
+          "[model_providers.fireworks-ai]\n",
+          `[model_providers.fireworks-ai.http_headers]\nx-fireworks-api-key = "${KEY}"\n\n[model_providers.fireworks-ai]\n`,
+        ),
+      );
+      assert.throws(() => parseToml(readFileSync(configPath, "utf8")), /redefine/);
+
+      const notes = await inHome(home, () => reapplyCodexOnUpgrade(home));
+      assert.deepEqual(notes, [CODEX_DUPLICATE_KEY_REPAIR_NOTE]);
+      const raw = await readFile(configPath, "utf8");
+      assert.equal(parseToml(raw).tables["model_providers.fireworks-ai"].http_headers["x-fireworks-api-key"], KEY);
+      assert.match(raw, /\[features\]\nweb_search = true/);
 
       assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), []);
     });
@@ -236,6 +265,54 @@ describe("reapplyCodexOnUpgrade", () => {
         assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), []);
       } finally {
         clearListPriceCache();
+        setServerlessCatalogSnapshot(null);
+      }
+    });
+  });
+
+  it("renames an earlier release's Auto row to Nexus Auto, then leaves it alone", async () => {
+    await withTempHome("codex-upgrade-reon-auto-label-", async (home) => {
+      await seedLegacyCodex(home);
+      await inHome(home, () => cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([mockServerlessModel()])));
+      try {
+        await inHome(home, () => reapplyCodexOnUpgrade(home));
+        const catalogPath = codexCatalogPath(home);
+        const autoRow = async () => JSON.parse(await readFile(catalogPath, "utf8")).models.find((row) => row.slug === "auto");
+        const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+        catalog.models = catalog.models.map((row) => (row.slug === "auto" ? { ...row, display_name: "Auto" } : row));
+        await writeFile(catalogPath, JSON.stringify(catalog));
+
+        // The upgrade runs the catalog-constants migration first; a label-only change must reach the re-on.
+        assert.equal(await inHome(home, () => migrateCodexCatalogConstantsOnUpgrade(home)), false);
+        assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), [CODEX_AUTO_RENAME_NOTE]);
+        assert.equal((await autoRow()).display_name, "Nexus Auto");
+
+        assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), []);
+      } finally {
+        setServerlessCatalogSnapshot(null);
+      }
+    });
+  });
+
+  it("gives an earlier release's three-level Auto row xhigh and max, then leaves it alone", async () => {
+    await withTempHome("codex-upgrade-reon-auto-effort-", async (home) => {
+      await seedLegacyCodex(home);
+      await inHome(home, () => cacheServerlessCatalogSnapshot(buildServerlessCatalogSnapshot([mockServerlessModel()])));
+      try {
+        await inHome(home, () => reapplyCodexOnUpgrade(home));
+        const catalogPath = codexCatalogPath(home);
+        const autoRow = (catalog) => catalog.models.find((row) => row.slug === "auto");
+        const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+        autoRow(catalog).supported_reasoning_levels.splice(3);
+        await writeFile(catalogPath, JSON.stringify(catalog));
+
+        assert.equal(await inHome(home, () => migrateCodexCatalogConstantsOnUpgrade(home)), false);
+        assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), [CODEX_AUTO_EFFORT_NOTE]);
+        const upgraded = autoRow(JSON.parse(await readFile(catalogPath, "utf8")));
+        assert.deepEqual(upgraded.supported_reasoning_levels.map((level) => level.effort), ["low", "medium", "high", "xhigh", "max"]);
+
+        assert.deepEqual(await inHome(home, () => reapplyCodexOnUpgrade(home)), []);
+      } finally {
         setServerlessCatalogSnapshot(null);
       }
     });

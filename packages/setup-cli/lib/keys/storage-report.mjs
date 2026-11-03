@@ -1,12 +1,12 @@
 import process from "node:process";
 import { detectSecretBackend } from "./secret-store.mjs";
 import { plaintextSecretStoreAvailable } from "./plaintext-secret-store.mjs";
-import { isKeyStorageForcedNull } from "./storage-env.mjs";
+import { formatKeyStorageOverrideHint, isKeyStorageForcedNull } from "./storage-env.mjs";
 import { accent } from "../ui/term.mjs";
 
 /**
  * Shared, backend-aware messaging for the places that store a Fireworks API
- * key (`login`, `configure`, `<harness> on --api-key`). Keeps the user
+ * key (`login`, `configure`). Keeps the user
  * informed about *where* their key actually lives — OS keychain vs encrypted
  * file fallback — so sandboxes/Linux-without-keychain users aren't misled.
  */
@@ -16,10 +16,9 @@ import { accent } from "../ui/term.mjs";
  */
 
 /**
- * The refusal line when no backend can store a key. Names the headless path
- * (FIREWORKS_API_KEY needs no storage; every resolver reads the env first)
- * and clarifies that login flags that pass a key still try to persist it.
- * A bare "cannot store" is a dead end on exactly the machines that hit it.
+ * The refusal line when no backend can store a key. Names the file-backend
+ * path for headless machines — every credential must land in storage because
+ * env vars are not a credential source.
  * @param {string} [error]  backend detection error, when known
  */
 export function cannotStoreKeyMessage(error = "") {
@@ -27,9 +26,7 @@ export function cannotStoreKeyMessage(error = "") {
     ? `Cannot store the API key: ${error}`
     : "Cannot store the API key: no secret storage backend is available.";
   return `${reason}\n`
-    + "On headless machines, sign in without storage instead:\n"
-    + "  export FIREWORKS_API_KEY=fw_...   (create a key at https://app.fireworks.ai/settings/users/api-keys)\n"
-    + "login --api-key, --paste, and --with-token also try to store a key and will fail here.";
+    + `On headless machines, use the file backend instead: ${formatKeyStorageOverrideHint("file")}`;
 }
 
 /**
@@ -119,15 +116,11 @@ function maskKey(key) {
 
 /**
  * One explicit line stating which Fireworks credential tools will actually use,
- * so the source of truth is never ambiguous — especially at `login` and
- * `<harness> on --api-key`.
+ * so the source of truth is never ambiguous — especially at `login`.
  *
- * The stored secret is the source of truth, BUT `FIREWORKS_API_KEY` in the
- * shell overrides it at runtime (every resolver reads the env var before the
- * stored secret). So when the env var differs we warn loudly and name the
- * winner; when it matches we say so; otherwise we affirm the stored key. The
- * env value is compared against the just-stored key so the message reflects the
- * post-`login` / post-`on` state. Returns "" only when there is no key at all.
+ * The stored secret is the source of truth. `FIREWORKS_API_KEY` in the shell
+ * is NOT a credential source — Nexus ignores it — so when it is set we warn
+ * that it has no effect. Returns "" only when there is no key at all.
  *
  * @param {string} storedKey  the key that was just stored (or resolved as stored)
  * @returns {string}
@@ -135,19 +128,13 @@ function maskKey(key) {
 export function activeKeySourceNote(storedKey) {
   const envKey = process.env.FIREWORKS_API_KEY?.trim() ?? "";
   const stored = storedKey?.trim() ?? "";
-  if (!envKey && !stored) {
+  if (envKey) {
+    return stored
+      ? `Note: ${accent("FIREWORKS_API_KEY")} is set in your shell but Nexus ignores it; the stored key (${maskKey(stored)}) is used.`
+      : `Note: ${accent("FIREWORKS_API_KEY")} is set in your shell but Nexus ignores it; run ${accent("nexus login")} to store a key.`;
+  }
+  if (!stored) {
     return "";
-  }
-  if (envKey && stored && envKey !== stored) {
-    return `Warning: ${accent("FIREWORKS_API_KEY")} in your shell (${maskKey(envKey)}) overrides the stored key `
-      + `(${maskKey(stored)}) — tools will use the shell value, not the stored key. `
-      + `Run ${accent("unset FIREWORKS_API_KEY")} to use the stored key instead.`;
-  }
-  if (envKey && stored && envKey === stored) {
-    return `${accent("FIREWORKS_API_KEY")} in your shell matches the stored key — both resolve to the same credential.`;
-  }
-  if (envKey && !stored) {
-    return `Using ${accent("FIREWORKS_API_KEY")} from your shell (${maskKey(envKey)}); no key is stored on disk.`;
   }
   return "This key is now your source of truth: every harness resolves it from here.";
 }

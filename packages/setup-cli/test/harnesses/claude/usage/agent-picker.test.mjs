@@ -1151,7 +1151,7 @@ describe("runClaudeUsageLive agent loop", () => {
     assert.match(text, /2\.0k/, "should track the newly chosen session");
   });
 
-  it("resumes the current agent when the session list is cancelled", async () => {
+  it("exits when the session list is cancelled", async () => {
     const home = await tempHome();
     const projectDir = path.join(home, ".claude", "projects", "repo");
     await mkdir(projectDir, { recursive: true });
@@ -1172,6 +1172,7 @@ describe("runClaudeUsageLive agent loop", () => {
     const input = new FakeInput();
     const controller = new AbortController();
     let polls = 0;
+    let pollsAfterCancel = 0;
     let sessionPrompts = 0;
 
     await runClaudeUsageLive({
@@ -1184,13 +1185,14 @@ describe("runClaudeUsageLive agent loop", () => {
         { kind: "main", id: "main", label: "Main", filePath: logPath },
       ],
       promptAgent: async () => null,
-      // null = user pressed Esc/q in the picker; the meter should resume.
+      // null = user pressed Esc/q in the picker.
       promptSession: async () => {
         sessionPrompts += 1;
         return null;
       },
       sleep: async () => {
         polls += 1;
+        if (sessionPrompts > 0) pollsAfterCancel += 1;
         if (polls === 1) {
           input.emit("data", "\x1b");
           return;
@@ -1202,10 +1204,8 @@ describe("runClaudeUsageLive agent loop", () => {
     });
 
     assert.equal(sessionPrompts, 1);
-    // Cancelling returns to the same log, so the meter re-renders its figures
-    // rather than exiting. Assert on the token column: this fixture costs well
-    // under a cent, so its total renders "<$0.01" and carries no digits to match.
-    assert.match(chunks.join(""), /1\.0k/, "meter resumed after cancel");
+    assert.equal(pollsAfterCancel, 0, "meter must not resume after the list is cancelled");
+    assert.equal(controller.signal.aborted, false, "runClaudeUsageLive returned on its own");
   });
 
   it("resumes the meter when the session picker throws", async () => {

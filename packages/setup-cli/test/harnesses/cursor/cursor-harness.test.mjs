@@ -1,4 +1,5 @@
-import { access, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmodSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,7 @@ import { decryptSecret } from "../../../lib/harnesses/vscode/safestorage.mjs";
 import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 import { cursorPathsFor } from "../../../lib/harness/context.mjs";
 import { migrateCursorFirerouterOnUpgrade } from "../../../lib/harnesses/cursor/upgrade-migrations.mjs";
+import { ensureItemTable } from "../../../lib/harnesses/vscode/vscdb-sqlite.mjs";
 
 // Cursor's key cell is an Electron safeStorage-encrypted `secret://` row. Set
 // the plaintext seam process-wide so `encryptSecret`/`decryptSecret` are the
@@ -49,6 +51,36 @@ process.env.NEXUS_VSCODE_SECRET_PLAINTEXT = "1";
 
 const APPLICATION_USER_KEY =
   "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
+
+describe("state.vscdb file modes", () => {
+  it("creates a fresh database with mode 0600 under umask 022", { skip: process.platform === "win32" }, async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "fc-vscdb-mode-"));
+    const dbPath = path.join(dir, "state.vscdb");
+    const previousUmask = process.umask(0o022);
+    try {
+      await ensureItemTable(dbPath);
+      assert.equal(statSync(dbPath).mode & 0o777, 0o600);
+    } finally {
+      process.umask(previousUmask);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the mode of a pre-existing database", { skip: process.platform === "win32" }, async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "fc-vscdb-existing-mode-"));
+    const dbPath = path.join(dir, "state.vscdb");
+    const previousUmask = process.umask(0o022);
+    try {
+      await writeFile(dbPath, "");
+      chmodSync(dbPath, 0o644);
+      await ensureItemTable(dbPath);
+      assert.equal(statSync(dbPath).mode & 0o777, 0o644);
+    } finally {
+      process.umask(previousUmask);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 /** Minimal Cursor-shaped blob for tests. */
 function baseBlob(overrides = {}) {
@@ -396,10 +428,7 @@ describe("cursor harness integration", () => {
       writeCursorDb(dbPath, baseBlob());
       const apiKey = "fw_cursor_on_flag_key_123456";
 
-      const r = await runCli(
-        ["cursor", "on", "--api-key", apiKey, "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const r = await (await runCli(["login", "--api-key", apiKey], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const exportR = await runFireconnect(["key", "export"], {
@@ -440,10 +469,7 @@ describe("cursor harness integration", () => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
 
-      const r = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home },
-      );
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const blob = readBlob(dbPath);
@@ -465,10 +491,7 @@ describe("cursor harness integration", () => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
 
-      const first = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       assert.equal(first.code, 0, `stderr: ${first.stderr}`);
 
       // Simulate an older install that registered and selected bare `auto`.
@@ -481,10 +504,7 @@ describe("cursor harness integration", () => {
       legacyAuto.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "auto", parameters: [] }];
       writeCursorDb(dbPath, legacyAuto);
 
-      const migrated = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home },
-      );
+      const migrated = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       assert.equal(migrated.code, 0, `stderr: ${migrated.stderr}`);
       const migratedBlob = readBlob(dbPath);
       assert.equal(cursorCurrentModelId(migratedBlob, CURSOR_DEFAULT_MODE), "nexus/auto");
@@ -500,10 +520,7 @@ describe("cursor harness integration", () => {
         .filter((id) => id !== "nexus/auto");
       writeCursorDb(dbPath, stale);
 
-      const rerun = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home },
-      );
+      const rerun = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       assert.equal(rerun.code, 0, `stderr: ${rerun.stderr}`);
 
       const blob = readBlob(dbPath);
@@ -527,10 +544,7 @@ describe("cursor harness integration", () => {
       // IDE-cleared key: empty safeStorage ciphertext in the secret cell.
       writeCursorDb(dbPath, blob, { openAIKey: "" });
 
-      const r = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home },
-      );
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       assert.equal(decryptSecretCell(dbPath), "fw_test_key_12345");
@@ -540,10 +554,7 @@ describe("cursor harness integration", () => {
   it("on works against a never-launched profile (missing state.vscdb)", async () => {
     await withTempHome("cursor-fresh-profile-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
-      const r = await runCli(
-        ["cursor", "on", "--api-key", "fw_cataloged_v1_adversarial000000", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const r = await (await runCli(["login", "--api-key", "fw_cataloged_v1_adversarial000000"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const status = await runCliJson(["cursor", "status", "--db-path", dbPath, "--json"], { home });
@@ -561,10 +572,7 @@ describe("cursor harness integration", () => {
       blob.aiSettings.modelConfig["background-composer"] = { modelName: "composer-2.5", selectedModels: [] };
       writeCursorDb(dbPath, blob);
 
-      const r = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home },
-      );
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const after = readBlob(dbPath);
@@ -581,7 +589,7 @@ describe("cursor harness integration", () => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
 
-      await runCli(["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"], { home });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       const r = await runCli(["cursor", "off", "--db-path", dbPath, "--force"], { home });
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
@@ -607,7 +615,7 @@ describe("cursor harness integration", () => {
       blob.aiSettings.modelOverrideEnabled.push("user-own-model");
       writeCursorDb(dbPath, blob);
 
-      await runCli(["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"], { home });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       await runCli(["cursor", "off", "--db-path", dbPath, "--force"], { home });
 
       const after = readBlob(dbPath);
@@ -620,7 +628,7 @@ describe("cursor harness integration", () => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
 
-      await runCli(["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"], { home });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       const r = await runCliJson(["cursor", "status", "--db-path", dbPath, "--json"], { home });
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
       assert.equal(r.json.harness, "cursor");
@@ -638,14 +646,10 @@ describe("cursor harness integration", () => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
 
-      const r = await runCli(
-        [
-          "cursor", "on", "--api-key", "fw_test_key_12345",
+      const r = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli([
+          "cursor", "on",
           "--model", "deepseek-v4-flash",
-          "--db-path", dbPath, "--force",
-        ],
-        { home },
-      );
+          "--db-path", dbPath, "--force"], { home }));
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
       const blob = readBlob(dbPath);
@@ -667,13 +671,9 @@ describe("cursor harness integration", () => {
       };
       writeCursorDb(dbPath, blob);
 
-      const first = await runCli(
-        [
-          "cursor", "on", "--api-key", "fw_test_key_12345",
-          "--model", "deepseek-v4-flash", "--db-path", dbPath, "--force",
-        ],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli([
+          "cursor", "on",
+          "--model", "deepseek-v4-flash", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(first.code, 0, first.stderr);
       const beforeBlob = readBlob(dbPath);
       const before = structuredClone(beforeBlob.aiSettings.modelConfig);
@@ -711,10 +711,7 @@ describe("cursor harness integration", () => {
 
       // "cataloged" key → mock gateway serves a catalog, exercising the online
       // path where pruning (not the offline trust set) applies.
-      const first = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_cataloged_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_test_cataloged_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(first.code, 0, first.stderr);
 
       // Simulate the old buggy state: Cursor's native Auto id preserved and
@@ -751,10 +748,7 @@ describe("cursor harness integration", () => {
       writeCursorDb(dbPath, baseBlob());
 
       // Plain key → mock gateway 404s the catalog → offline path.
-      const first = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(first.code, 0, first.stderr);
 
       // A past online run registered retired rows and selected one.
@@ -786,10 +780,7 @@ describe("cursor harness integration", () => {
       writeCursorDb(dbPath, baseBlob());
 
       // Plain key → mock gateway 404s the catalog → offline path.
-      const first = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(first.code, 0, first.stderr);
 
       // Pretend a past ONLINE run registered a catalog id the static spec
@@ -830,10 +821,7 @@ describe("cursor harness integration", () => {
     await withTempHome("cursor-explicit-prune-native-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const first = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(first.code, 0, first.stderr);
 
       const blob = readBlob(dbPath);
@@ -865,10 +853,7 @@ describe("cursor harness integration", () => {
       writeCursorDb(dbPath, baseBlob());
       const apiKey = "fw_cataloged_v1_adversarial000000";
 
-      const first = await runCli(
-        ["cursor", "on", "--api-key", apiKey, "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", apiKey], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(first.code, 0, first.stderr);
 
       // Simulate selecting another catalog model in Cursor.
@@ -877,10 +862,7 @@ describe("cursor harness integration", () => {
       blob.aiSettings.modelConfig.composer.selectedModels = [{ modelId: "kimi-latest", parameters: [] }];
       writeCursorDb(dbPath, blob);
 
-      const second = await runCli(
-        ["cursor", "on", "--model", "deepseek-v4-flash", "--api-key", apiKey, "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const second = await (await runCli(["login", "--api-key", apiKey], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--model", "deepseek-v4-flash", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(second.code, 0, second.stderr);
       assert.match(second.stdout, /Cursor → Fireworks · deepseek-v4-flash/);
       assert.doesNotMatch(second.stdout, /isn't on Fireworks/);
@@ -896,10 +878,7 @@ describe("cursor harness integration", () => {
       });
       writeCursorDb(dbPath, blob);
 
-      const on = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const on = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(on.code, 0, on.stderr);
 
       const after = readBlob(dbPath);
@@ -917,7 +896,7 @@ describe("cursor harness integration", () => {
     });
   });
 
-  itIfSqlite("env key wins over a stale harness-local key without being stored", async () => {
+  itIfSqlite("harness-local literal wins over an ignored env key and is promoted to storage", async () => {
     await withTempHome("cursor-env-precedence-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       const blob = baseBlob();
@@ -925,14 +904,15 @@ describe("cursor harness integration", () => {
       blob.useOpenAIKey = true;
       writeCursorDb(dbPath, blob, { openAIKey: "fw_cursor_stale_local_key" });
 
-      const envKey = "fw_cursor_env_key_123456789";
       const result = await runCli(
         ["cursor", "on", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: envKey } },
+        { home, env: { FIREWORKS_API_KEY: "fw_cursor_env_key_123456789" } },
       );
       assert.equal(result.code, 0, result.stderr);
-      assert.equal(decryptSecretCell(dbPath), envKey);
-      await assert.rejects(access(path.join(home, ".nexus", ".secret-memory")));
+      // env is not a credential source; the harness-local literal won and was
+      // promoted into shared storage.
+      assert.equal(decryptSecretCell(dbPath), "fw_cursor_stale_local_key");
+      await access(path.join(home, ".nexus", ".secret-memory"));
     });
   });
 
@@ -969,7 +949,7 @@ describe("cursor harness integration", () => {
       blob.openAIBaseUrl = "https://prior.example/v1";
       writeCursorDb(dbPath, blob, { openAIKey: "sk-prior-key" });
 
-      await runCli(["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"], { home });
+      await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home }));
       const r = await runCli(["cursor", "off", "--db-path", dbPath, "--force"], { home });
       assert.equal(r.code, 0, `stderr: ${r.stderr}`);
 
@@ -1028,10 +1008,7 @@ describe("cursor harness integration", () => {
     await withTempHome("cursor-firerouter-no-key-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const result = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
-      );
+      const result = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }), await runCli(["cursor", "on", "--model", "firerouter", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }));
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /is no longer supported/);
       assert.notEqual(cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE), "firerouter");
@@ -1042,10 +1019,7 @@ describe("cursor harness integration", () => {
     await withTempHome("cursor-firerouter-footnote-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const result = await runCli(
-        ["cursor", "on", "--api-key", "fw_test_key_12345", "--db-path", dbPath, "--force"],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const result = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli(["cursor", "on", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.equal(result.code, 0, result.stderr);
       // Plain `on` never advertises FireRouter.
       assert.doesNotMatch(result.stdout, /FireRouter/);
@@ -1057,7 +1031,7 @@ describe("cursor harness integration", () => {
       const configure = await runCli(
         [
           "configure", "--provider", "azure",
-          "--base-url", "https://msft-fw-foundry-resource.services.ai.azure.com",
+          "--base-url", "https://example-resource.services.ai.azure.com",
           "--api-key", "azure-test-key-1234567890",
         ],
         { home, env: { FIREWORKS_API_KEY: "", AZURE_API_KEY: "" } },
@@ -1065,13 +1039,9 @@ describe("cursor harness integration", () => {
       assert.equal(configure.code, 0, configure.stderr);
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const result = await runCli(
-        [
-          "cursor", "on", "--api-key", "fw_test_key_12345",
-          "--model", "firerouter", "--db-path", dbPath, "--force",
-        ],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const result = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli([
+          "cursor", "on",
+          "--model", "firerouter", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /--model firerouter is no longer supported\. Use --model auto instead/);
       assert.doesNotMatch(result.stderr, /needs workspace BYOK/);
@@ -1082,13 +1052,9 @@ describe("cursor harness integration", () => {
     await withTempHome("cursor-allow-firerouter-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const selectOn = await runCli(
-        [
-          "cursor", "on", "--api-key", "fw_test_key_12345",
-          "--model", "firerouter/kimi-k3", "--db-path", dbPath, "--force",
-        ],
-        { home, env: { FIREWORKS_API_KEY: "" } },
-      );
+      const selectOn = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "" } }), await runCli([
+          "cursor", "on",
+          "--model", "firerouter/kimi-k3", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "" } }));
       assert.notEqual(selectOn.code, 0);
       assert.match(selectOn.stderr, /is no longer supported/);
       assert.notEqual(
@@ -1104,11 +1070,8 @@ describe("cursor harness integration", () => {
       writeCursorDb(dbPath, baseBlob());
 
       for (const model of ["firerouter", "firerouter/claude-opus-5/kimi-k3-fast"]) {
-        const result = await runCli(
-          ["cursor", "on", "--api-key", "fw_test_key_12345",
-            "--model", model, "--db-path", dbPath, "--force"],
-          { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } },
-        );
+        const result = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }), await runCli(["cursor", "on",
+            "--model", model, "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "" } }));
         assert.notEqual(result.code, 0, model);
         assert.match(result.stderr, /is no longer supported/, model);
         assert.notEqual(cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE), model);
@@ -1120,13 +1083,9 @@ describe("cursor harness integration", () => {
     await withTempHome("cursor-firerouter-refused-", async (home) => {
       const dbPath = path.join(home, "state.vscdb");
       writeCursorDb(dbPath, baseBlob());
-      const result = await runCli(
-        [
-          "cursor", "on", "--api-key", "fw_test_key_12345",
-          "--model", "firerouter", "--db-path", dbPath, "--force",
-        ],
-        { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-configured-0000", OPENAI_API_KEY: "" } },
-      );
+      const result = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-configured-0000", OPENAI_API_KEY: "" } }), await runCli([
+          "cursor", "on",
+          "--model", "firerouter", "--db-path", dbPath, "--force"], { home, env: { FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-configured-0000", OPENAI_API_KEY: "" } }));
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /is no longer supported/);
       assert.notEqual(cursorCurrentModelId(readBlob(dbPath), CURSOR_DEFAULT_MODE), "firerouter");

@@ -46,7 +46,7 @@ describe("configure to harness on propagation", () => {
     assert.match(onResult.stderr, new RegExp(MISSING_FIREWORKS_API_KEY_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
-  it("pi on accepts legacy global env ref when FIREWORKS_API_KEY is set", async () => {
+  it("pi on treats a legacy global env ref as missing (env is not a source)", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-pi-legacy-"));
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     await writeGlobalConfig(home, {
@@ -58,10 +58,8 @@ describe("configure to harness on propagation", () => {
       ["pi", "on"],
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
     );
-    assert.equal(onResult.code, 0);
-
-    const auth = JSON.parse(await readFile(piAuthPath(home), "utf8"));
-    assert.equal(auth.fireworks.key, "fw_test_key_12345");
+    assert.notEqual(onResult.code, 0);
+    assert.match(onResult.stderr, /No Fireworks API key found/);
   });
 
   it("opencode on reads keychain key from configure global config", async () => {
@@ -123,7 +121,7 @@ describe("configure to harness on propagation", () => {
 
     const saved = await runFireconnect(["auto", "--anthropic-api-key", "sk-ant-global-key-12345"], env);
     assert.equal(saved.code, 0, saved.stderr);
-    const onResult = await runFireconnect(["opencode", "on", "--api-key", "fw_test_key_12345"], env);
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["opencode", "on"], env));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const config = JSON.parse(await readFile(opencodeConfigPath(home), "utf8"));
@@ -137,10 +135,7 @@ describe("configure to harness on propagation", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-on-env-anthropic-"));
     await mkdir(path.dirname(opencodeConfigPath(home)), { recursive: true });
 
-    const onResult = await runFireconnect(
-      ["opencode", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-env-only-12345" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-env-only-12345" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-env-only-12345" }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const raw = await readFile(opencodeConfigPath(home), "utf8");
@@ -151,14 +146,9 @@ describe("configure to harness on propagation", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-on-refuse-anthropic-"));
     await mkdir(path.dirname(opencodeConfigPath(home)), { recursive: true });
 
-    const onResult = await runFireconnect(
-      [
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }), await runFireconnect([
         "opencode", "on",
-        "--api-key", "fw_test_key_12345",
-        "--anthropic-api-key", "sk-ant-global-key-12345",
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" },
-    );
+        "--anthropic-api-key", "sk-ant-global-key-12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "" }));
     assert.notEqual(onResult.code, 0);
     assert.match(onResult.stderr, /Save the key once with `nexus auto --anthropic-api-key <key>`/);
 
@@ -197,7 +187,7 @@ describe("configure to harness on propagation", () => {
     assert.equal(globalConfig.apiKey, "{keychain:fireworks-api-key}");
   });
 
-  it("opencode on writes a literal apiKey when only FIREWORKS_API_KEY is set", async () => {
+  it("opencode on ignores FIREWORKS_API_KEY: fails without a stored key", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-configure-oc-env-"));
     await mkdir(path.dirname(opencodeConfigPath(home)), { recursive: true });
 
@@ -205,12 +195,7 @@ describe("configure to harness on propagation", () => {
       ["opencode", "on"],
       { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
     );
-    assert.equal(onResult.code, 0);
-
-    const config = JSON.parse(await readFile(opencodeConfigPath(home), "utf8"));
-    assert.equal(
-      config.provider["fireworks-ai"].options.apiKey,
-      "fw_test_key_12345",
-    );
+    assert.notEqual(onResult.code, 0);
+    assert.match(onResult.stderr, /No Fireworks API key found/);
   });
 });

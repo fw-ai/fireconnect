@@ -3,25 +3,41 @@
  * so array-of-tables and other non-flat TOML is preserved.
  */
 
-const CODEX_PROVIDER_TABLE_HEADER = "[model_providers.fireworks-ai]";
-const CODEX_AZURE_PROVIDER_TABLE_HEADER = "[model_providers.fireworks-azure]";
-const LEGACY_PROFILE_TABLE_HEADER = "[profiles.fireconnect]";
+const CODEX_PROVIDER_TABLE_PATH = ["model_providers", "fireworks-ai"];
+// Every table under one of these paths is Nexus-owned, sub-tables included:
+// `[model_providers.fireworks-ai.http_headers]` holds the same keys `on`
+// rewrites inline, so keeping it would define them twice.
+const MANAGED_TABLE_PATHS = [
+  CODEX_PROVIDER_TABLE_PATH,
+  ["model_providers", "fireworks-azure"],
+  ["profiles", "fireconnect"],
+];
 const LEGACY_FIRECONNECT_PROFILE_LINE = /^profile\s*=\s*["']fireconnect["']\s*$/;
 
-const ROOT_PROFILE_LINE = /^profile\s*=.+$/;
-const ROOT_MODEL_PROVIDER_LINE = /^model_provider\s*=.+$/;
-const ROOT_MODEL_LINE = /^model\s*=.+$/;
-const ROOT_MODEL_CATALOG_LINE = /^model_catalog_json\s*=.+$/;
+const ROOT_PROFILE_LINE = /^(?:profile|"profile"|'profile')\s*=.+$/;
+const ROOT_MODEL_PROVIDER_LINE = /^(?:model_provider|"model_provider"|'model_provider')\s*=.+$/;
+const ROOT_MODEL_LINE = /^(?:model|"model"|'model')\s*=.+$/;
+const ROOT_MODEL_CATALOG_LINE = /^(?:model_catalog_json|"model_catalog_json"|'model_catalog_json')\s*=.+$/;
 // fireconnect-owned cleanup: removes only the stale web_search = "disabled"
 // override written by earlier releases so re-enabling restores defaults.
 // User-set values (live, cached, …) are not fireconnect-owned and are kept.
 const ROOT_WEB_SEARCH_DISABLED_LINE = /^web_search\s*=\s*["']disabled["']\s*(#.*)?$/;
 const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
-const CODEX_HTTP_HEADERS_LINE = /^http_headers\s*=.+$/;
+// `http_headers = {…}` or a dotted `http_headers.<name> = …` entry.
+const CODEX_HTTP_HEADERS_LINE = /^(?:http_headers|"http_headers"|'http_headers')\s*[=.]/;
+const CODEX_HEADERS_TABLE_PATH = [...CODEX_PROVIDER_TABLE_PATH, "http_headers"];
 
-function tomlString(value) {
-  return `"${String(value).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
+const TOML_ESCAPES = { "\\": "\\\\", "\"": "\\\"", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r" };
+
+/**
+ * A TOML basic string. Every value Nexus writes goes through here: quotes,
+ * backslashes and all control characters are escaped, so a value can only
+ * ever set its own key.
+ */
+export function tomlString(value) {
+  return `"${String(value).replace(/[\\"\u0000-\u001f\u007f]/g, (c) =>
+    TOML_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
 }
 
 function inlineTableLine(key, entries) {
@@ -47,24 +63,74 @@ function providerAuthLines({ literal, apiKey, envKey = "FIREWORKS_API_KEY", chat
   }
   if (literal && apiKey) {
     return [
-      `experimental_bearer_token = "${apiKey}"`,
+      `experimental_bearer_token = ${tomlString(apiKey)}`,
       "requires_openai_auth = false",
     ];
   }
   return [
-    `env_key = "${envKey}"`,
+    `env_key = ${tomlString(envKey)}`,
     "requires_openai_auth = false",
   ];
 }
 
+/**
+ * The key path of a `[table]` or `[[array]]` header line, or null when the
+ * line is not a header. Accepts every spelling TOML allows for the same
+ * table: quoted keys, spaces around dots and brackets, a trailing comment.
+ * @param {string} trimmed
+ * @returns {string[] | null}
+ */
+function tableHeaderPath(trimmed) {
+  if (!trimmed.startsWith("[")) {
+    return null;
+  }
+  const arrayTable = trimmed.startsWith("[[");
+  let rest = trimmed.slice(arrayTable ? 2 : 1);
+  const path = [];
+  for (;;) {
+    rest = rest.trimStart();
+    const match = /^(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))/.exec(rest);
+    if (!match) {
+      return null;
+    }
+    path.push(match[1] !== undefined ? unescapeBasicKey(match[1]) : (match[2] ?? match[3]));
+    rest = rest.slice(match[0].length).trimStart();
+    if (!rest.startsWith(".")) {
+      break;
+    }
+    rest = rest.slice(1);
+  }
+  const close = arrayTable ? "]]" : "]";
+  if (!rest.startsWith(close)) {
+    return null;
+  }
+  const trailing = rest.slice(close.length).trim();
+  return trailing === "" || trailing.startsWith("#") ? path : null;
+}
+
+function unescapeBasicKey(body) {
+  try {
+    return JSON.parse(`"${body}"`);
+  } catch {
+    return body;
+  }
+}
+
+function pathStartsWith(path, prefix) {
+  return path.length >= prefix.length && prefix.every((segment, i) => path[i] === segment);
+}
+
+function samePath(path, other) {
+  return path.length === other.length && pathStartsWith(path, other);
+}
+
 function isAnyTableHeader(trimmed) {
-  return trimmed.startsWith("[") && trimmed.endsWith("]");
+  return tableHeaderPath(trimmed) !== null;
 }
 
 function isManagedTableHeader(trimmed) {
-  return trimmed === CODEX_PROVIDER_TABLE_HEADER
-    || trimmed === CODEX_AZURE_PROVIDER_TABLE_HEADER
-    || trimmed === LEGACY_PROFILE_TABLE_HEADER;
+  const path = tableHeaderPath(trimmed);
+  return path !== null && MANAGED_TABLE_PATHS.some((prefix) => pathStartsWith(path, prefix));
 }
 
 function ensureTrailingNewline(text) {
@@ -214,15 +280,15 @@ export function patchFireconnectRoutingRaw(raw, {
   // routing block; keeping them would add one more on every re-`on`.
   const base = stripFireconnectRoutingRaw(raw, { stripRootRouting: true }).replace(/^(?:[ \t]*\r?\n)+/, "");
   const routingBlock = [
-    `model_provider = "${providerId}"`,
-    ...(catalogPath ? [`model_catalog_json = "${catalogPath}"`] : []),
-    `model = "${modelId}"`,
+    `model_provider = ${tomlString(providerId)}`,
+    ...(catalogPath ? [`model_catalog_json = ${tomlString(catalogPath)}`] : []),
+    `model = ${tomlString(modelId)}`,
   ].join("\n");
   const tablesBlock = [
     `[model_providers.${providerId}]`,
-    `name = "${providerName}"`,
-    `base_url = "${baseUrl}"`,
-    `wire_api = "${wireApi}"`,
+    `name = ${tomlString(providerName)}`,
+    `base_url = ${tomlString(baseUrl)}`,
+    `wire_api = ${tomlString(wireApi)}`,
     ...providerAuthLines({ literal: literalAuth, apiKey, envKey: authEnvKey, chatgptLogin }),
     ...(Object.keys(httpHeaders).length ? [httpHeadersLine(httpHeaders)] : []),
     ...(Object.keys(envHttpHeaders).length
@@ -253,13 +319,13 @@ export function patchCodexCatalogRefRaw(raw, catalogPath) {
 
   return transformRootLines(raw, ({ trimmed }) => {
     if (hasCatalog && ROOT_MODEL_CATALOG_LINE.test(trimmed)) {
-      return `model_catalog_json = "${catalogPath}"`;
+      return `model_catalog_json = ${tomlString(catalogPath)}`;
     }
     return "keep";
   }, {
     afterRootLine: ({ trimmed, out }) => {
       if (!hasCatalog && !inserted && ROOT_MODEL_PROVIDER_LINE.test(trimmed)) {
-        out.push(`model_catalog_json = "${catalogPath}"`);
+        out.push(`model_catalog_json = ${tomlString(catalogPath)}`);
         inserted = true;
       }
     },
@@ -273,7 +339,7 @@ export function patchCodexCatalogRefRaw(raw, catalogPath) {
 export function patchCodexModelRaw(raw, modelId) {
   return transformRootLines(raw, ({ trimmed }) => {
     if (/^model\s*=/.test(trimmed)) {
-      return `model = "${modelId}"`;
+      return `model = ${tomlString(modelId)}`;
     }
     return "keep";
   });
@@ -281,7 +347,9 @@ export function patchCodexModelRaw(raw, modelId) {
 
 /**
  * Rewrite the gateway provider's auth. With `chatgptLogin`, the key lives in
- * `http_headers`, so that line is rewritten from `httpHeaders` as well.
+ * `http_headers`, so that line is rewritten from `httpHeaders` as well; any
+ * other spelling of it (dotted keys, a `[….http_headers]` sub-table) is
+ * dropped, or the inline line would define it twice.
  * @param {string} raw
  * @param {{
  *   apiKey: string,
@@ -298,30 +366,45 @@ export function patchCodexProviderAuthRaw(raw, {
 }) {
   const lines = raw.split("\n");
   const out = [];
+  // Without the provider's own header there is nowhere to write the inline
+  // line, so a headers sub-table must stay.
+  const dropHeadersTable = chatgptLogin
+    && lines.some((line) => samePath(tableHeaderPath(line.trim()) ?? [], CODEX_PROVIDER_TABLE_PATH));
   let inProviderTable = false;
+  let skippingTable = false;
   let authPatched = false;
   const authLines = () => [
     ...providerAuthLines({ literal: literalAuth, apiKey, chatgptLogin }),
     ...(chatgptLogin && Object.keys(httpHeaders).length ? [httpHeadersLine(httpHeaders)] : []),
   ];
+  // Ahead of the table's trailing blank lines, so a rewrite doesn't add one.
+  const insertAuthLines = () => {
+    let at = out.length;
+    while (at > 0 && !out[at - 1].trim()) {
+      at -= 1;
+    }
+    out.splice(at, 0, ...authLines());
+    authPatched = true;
+  };
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed === CODEX_PROVIDER_TABLE_HEADER) {
-      inProviderTable = true;
-      out.push(line);
+    const header = tableHeaderPath(trimmed);
+    if (header) {
+      if (inProviderTable && !authPatched) {
+        insertAuthLines();
+      }
+      inProviderTable = samePath(header, CODEX_PROVIDER_TABLE_PATH);
+      skippingTable = dropHeadersTable && pathStartsWith(header, CODEX_HEADERS_TABLE_PATH);
+      if (!skippingTable) {
+        out.push(line);
+      }
+      continue;
+    }
+    if (skippingTable) {
       continue;
     }
     if (inProviderTable) {
-      if (isAnyTableHeader(trimmed)) {
-        if (!authPatched) {
-          out.push(...authLines());
-          authPatched = true;
-        }
-        inProviderTable = false;
-        out.push(line);
-        continue;
-      }
       if (CODEX_BEARER_AUTH_LINE.test(trimmed)
         || CODEX_ENV_AUTH_LINE.test(trimmed)
         || /^requires_openai_auth\s*=/.test(trimmed)
@@ -333,8 +416,49 @@ export function patchCodexProviderAuthRaw(raw, {
   }
 
   if (inProviderTable && !authPatched) {
-    out.push(...authLines());
+    insertAuthLines();
   }
 
+  return ensureTrailingNewline(out.join("\n"));
+}
+
+/**
+ * Repair a config an earlier key rotation broke: the gateway provider holds an
+ * inline (or dotted) `http_headers` and a `[….http_headers]` sub-table at
+ * once, which Codex refuses to load ("duplicate key"). The inline line is the
+ * one Nexus wrote last, with the current key, so the sub-table is dropped. Any
+ * other input is returned unchanged.
+ * @param {string} raw
+ */
+export function repairDuplicateCodexHttpHeadersRaw(raw) {
+  const lines = raw.split("\n");
+  let inProviderTable = false;
+  let hasInlineHeaders = false;
+  let hasHeadersTable = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const header = tableHeaderPath(trimmed);
+    if (header) {
+      inProviderTable = samePath(header, CODEX_PROVIDER_TABLE_PATH);
+      hasHeadersTable ||= pathStartsWith(header, CODEX_HEADERS_TABLE_PATH);
+    } else if (inProviderTable && CODEX_HTTP_HEADERS_LINE.test(trimmed)) {
+      hasInlineHeaders = true;
+    }
+  }
+  if (!hasInlineHeaders || !hasHeadersTable) {
+    return raw;
+  }
+
+  const out = [];
+  let skipping = false;
+  for (const line of lines) {
+    const header = tableHeaderPath(line.trim());
+    if (header) {
+      skipping = pathStartsWith(header, CODEX_HEADERS_TABLE_PATH);
+    }
+    if (!skipping) {
+      out.push(line);
+    }
+  }
   return ensureTrailingNewline(out.join("\n"));
 }

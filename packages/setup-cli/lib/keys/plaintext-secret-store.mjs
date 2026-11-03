@@ -1,5 +1,6 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { writeFileAtomic } from "../io/atomic-write.mjs";
 
 const PLAINTEXT_RELATIVE_PATH = ".nexus/.api-key";
 
@@ -53,7 +54,8 @@ export async function writePlaintextSecret(home, value) {
     throw new Error("HOME is not set; cannot use the plaintext secret fallback");
   }
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  await writeFile(filePath, `${trimmed}\n`, { mode: 0o600 });
+  // Atomic rename replaces a planted symlink instead of writing through it.
+  await writeFileAtomic(filePath, `${trimmed}\n`, { mode: 0o600 });
 }
 
 /**

@@ -11,7 +11,7 @@ import {
   snapshotReferencesFireworksCatalog,
 } from "./core.mjs";
 import { parseToml } from "./toml.mjs";
-import { stripStaleCodexWebSearchDisabledRaw } from "./toml-patch.mjs";
+import { repairDuplicateCodexHttpHeadersRaw, stripStaleCodexWebSearchDisabledRaw } from "./toml-patch.mjs";
 
 /**
  * Re-stamp the current constant catalog fields, `supports_search_tool`
@@ -77,5 +77,32 @@ export async function migrateCodexWebSearchOnUpgrade(home) {
     return false;
   }
   await writeFileAtomic(configPath, migrated, { mode: 0o600 });
+  return true;
+}
+
+/**
+ * Write back a config.toml an earlier key rotation left with two
+ * `http_headers` definitions, which keeps Codex from starting. Not gated on
+ * Codex being enabled: the duplicate sits in the Nexus-owned provider table,
+ * and Codex can't load the file either way. Throws when the repair still
+ * doesn't parse, leaving the file unchanged.
+ * @param {string} home
+ * @returns {Promise<boolean>} true when the file was repaired
+ */
+export async function repairCodexDuplicateHttpHeadersOnUpgrade(home) {
+  if (!home) {
+    return false;
+  }
+  const configPath = codexConfigPath(home);
+  const snapshot = await readRawIfExists(configPath);
+  if (!snapshot.existed) {
+    return false;
+  }
+  const repaired = repairDuplicateCodexHttpHeadersRaw(snapshot.raw);
+  if (repaired === snapshot.raw) {
+    return false;
+  }
+  parseToml(repaired);
+  await writeFileAtomic(configPath, repaired, { mode: 0o600 });
   return true;
 }

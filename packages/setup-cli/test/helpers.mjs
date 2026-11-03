@@ -14,6 +14,7 @@ import { buildServerlessCatalogSnapshot } from "../lib/fireworks/models.mjs";
 import { HARNESSES, HARNESS_ALIASES } from "../lib/harness/id.mjs";
 import {
   cacheServerlessCatalogSnapshot,
+  expireCatalogCache,
   readCatalogCache,
   setServerlessCatalogSnapshot,
 } from "../lib/fireworks/serverless-catalog-cache.mjs";
@@ -57,11 +58,17 @@ export function seedServerlessCatalogCache(home, apiModels) {
   }
 }
 
-/** Seed an empty cache unless the mock gateway serves this key's catalog. */
+/**
+ * Seed an empty cache unless the mock gateway serves this key's catalog. The
+ * seed is expired: `on` serves a fresh cache without fetching, so a fresh
+ * empty seed would stand in for the account's catalog; expired, it is only
+ * the offline fallback and `on` still fetches.
+ */
 export function seedOnCommandCatalog(home, args = []) {
   const raw = Array.isArray(args) ? args.join(" ") : String(args ?? "");
-  if (home && !/cataloged/i.test(raw)) {
+  if (home && !/cataloged/i.test(raw) && !readCatalogCache(home)?.snapshot) {
     seedServerlessCatalogCache(home, []);
+    expireCatalogCache(home);
   }
 }
 // Tests pass a temp HOME and expect it to isolate Claude credentials. But
@@ -343,6 +350,51 @@ export function harnessTestArgs(args, { installGate = false } = {}) {
   return !installGate && withCodex.some((arg) => HARNESS_TOKENS.has(arg)) && !withCodex.includes("--skip-install-check")
     ? [...withCodex, "--skip-install-check"]
     : withCodex;
+}
+
+/**
+ * `on --api-key` was removed: keys are stored by `nexus login` only. Split an
+ * arg list of the form `[<h>, "on", "--api-key", K, ...rest]` into the login
+ * seed args and the stripped `on` args so a spec can run the login first and
+ * keep the same end state (`login` verifies + stores; `on` resolves the
+ * stored key).
+ * @param {string[]} args
+ * @returns {{ login: string[] | null, rest: string[] }}
+ */
+export function splitLoginArgs(args) {
+  const idx = args.indexOf("--api-key");
+  if (idx < 0) {
+    return { login: null, rest: args };
+  }
+  return {
+    login: ["login", "--api-key", args[idx + 1]],
+    rest: [...args.slice(0, idx), ...args.slice(idx + 2)],
+  };
+}
+
+/**
+ * `on --azure --api-key` was removed: the Foundry endpoint key is stored by
+ * `nexus configure --provider azure`. Split an arg list of the form
+ * `[<h>, "on", "--azure", ..., "--api-key", K]` into the azure settings the
+ * flag carried and the stripped `on` args, so a spec can writeGlobalConfig
+ * `{azure}` first and keep the same end state (`on --azure` resolves the
+ * configured key). Writing only `azure` (not `provider`) keeps the default
+ * provider fireworks so later plain `on` calls are unaffected.
+ * @param {string[]} args
+ * @returns {{ azure: { apiKey: string, baseUrl?: string } | null, rest: string[] }}
+ */
+export function splitAzureKeyArgs(args) {
+  const idx = args.indexOf("--api-key");
+  if (idx < 0 || !args.includes("--azure")) {
+    return { azure: null, rest: args };
+  }
+  const rest = [...args];
+  const apiKey = rest.splice(idx, 2)[1];
+  const baseIdx = rest.indexOf("--base-url");
+  return {
+    azure: { apiKey, ...(baseIdx >= 0 ? { baseUrl: rest[baseIdx + 1] } : {}) },
+    rest,
+  };
 }
 
 export function runFireconnect(args, env = {}) {

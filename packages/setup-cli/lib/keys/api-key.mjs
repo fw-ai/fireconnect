@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 import {
   FIREWORKS_API_KEY_ENV_REF,
@@ -12,6 +14,8 @@ import { cannotStoreKeyMessage, keyStorageSummaryLine } from "./storage-report.m
 import { syncBakedKeysAfterStore } from "./sync.mjs";
 import { FIREPASS_KEY_UNSUPPORTED_MESSAGE, isFirePassKey, isFireworksShapedKey } from "./key-type.mjs";
 import { clearMintedKeyState } from "./mint-api-key.mjs";
+import { expireCatalogCache } from "../fireworks/serverless-catalog-cache.mjs";
+import { refreshServerlessCatalogCache } from "../fireworks/models.mjs";
 import { readSecret } from "../ui/read-secret.mjs";
 import { link } from "../ui/term.mjs";
 import { printInfo, printNote } from "../cli/messages.mjs";
@@ -30,24 +34,31 @@ export {
   isLegacyLiteralConfigRef,
 } from "./config-ref.mjs";
 
-/** Where users create Fireworks API keys — the one URL every key-entry prompt points at. */
+/** Where Fireworks Platform users create API keys, and the default when the account kind isn't known. */
 export const FIREWORKS_KEYS_URL = "https://app.fireworks.ai/settings/users/api-keys";
+/** The same page on the Nexus site, for Nexus accounts. */
+export const NEXUS_KEYS_URL = "https://nexus.fireworks.ai/settings/api-keys";
 
 /**
- * Refuse to create a second credential source while FIREWORKS_API_KEY is
- * already active. A child process cannot unset or replace its parent shell's
- * variable, so storing another key would report success while future commands
- * kept using the environment value.
+ * The API-keys page for an account: Nexus accounts manage keys on the Nexus
+ * site, everyone else (and an unknown account) on the Platform.
+ * @param {boolean} nexusAccount
  */
-export function assertNoFireworksEnvForStorage() {
-  if (!process.env.FIREWORKS_API_KEY?.trim()) {
-    return;
+export function keysUrlFor(nexusAccount) {
+  return nexusAccount === true ? NEXUS_KEYS_URL : FIREWORKS_KEYS_URL;
+}
+
+/**
+ * The API-keys page for whoever last signed in on this machine. Reads the
+ * account kind browser sign-in saved; never throws (Platform on any error).
+ * @param {string} home
+ */
+export async function keysUrlForHome(home) {
+  try {
+    return keysUrlFor((await readGlobalConfig(home)).nexusAccount);
+  } catch {
+    return FIREWORKS_KEYS_URL;
   }
-  throw new Error(
-    "FIREWORKS_API_KEY is already set. Nexus CLI will use it without storing another key. "
-      + "Omit the key option to use the environment value, or run `unset FIREWORKS_API_KEY` "
-      + "and retry to store a key.",
-  );
 }
 
 /**
@@ -55,13 +66,13 @@ export function assertNoFireworksEnvForStorage() {
  * key-entry path so `login` and `<harness> on` phrase the same failure the same
  * way.
  * @param {import("./verify-api-key.mjs").VerifyResult} result
- * @param {{ interactive?: boolean }} [options]
+ * @param {{ interactive?: boolean, keysUrl?: string }} [options]
  */
-export function verifyFailureLine(result, { interactive = false } = {}) {
+export function verifyFailureLine(result, { interactive = false, keysUrl = FIREWORKS_KEYS_URL } = {}) {
   if (result.reason === "rejected") {
     return interactive
-      ? `That key didn't work. Check it at ${link(FIREWORKS_KEYS_URL)} or paste another.`
-      : `That key didn't work. Check it at ${FIREWORKS_KEYS_URL}`;
+      ? `That key didn't work. Check it at ${link(keysUrl)} or paste another.`
+      : `That key didn't work. Check it at ${keysUrl}`;
   }
   if (result.reason === "network") {
     return `Couldn't reach the Fireworks API (${result.detail}). Check your connection and try again.`;
@@ -85,9 +96,9 @@ export function assertFireworksKeyShape(key) {
 /**
  * Shape-check then strict-verify a Fireworks key before it is stored or baked
  * into a harness config, throwing a friendly one-line error on failure. Shared
- * by `login --api-key`/`--with-token` and `<harness> on --api-key` so both
- * validate identically (a typo or dead key fails fast with a clear message
- * instead of a 401 surfacing later inside the tool). Returns the VerifyResult
+ * by `login --api-key`/`--with-token` so non-interactive sign-ins validate
+ * identically (a typo or dead key fails fast with a clear message instead of
+ * a 401 surfacing later inside the tool). Returns the VerifyResult
  * on success so callers can print the resolved identity.
  * @param {string} key
  * @returns {Promise<import("./verify-api-key.mjs").VerifyResult>}
@@ -99,6 +110,28 @@ export async function assertFireworksKeyUsable(key) {
     throw new Error(verifyFailureLine(result));
   }
   return result;
+}
+
+const ON_KEY_VERIFY_TIMEOUT_MS = 5000;
+
+/**
+ * Stop `<harness> on` before it bakes an env or saved key that the gateway
+ * rejects (deleted or revoked) into a harness config, where it would only
+ * surface later as a 401 inside the tool. Only a definitive 401/403 stops the
+ * command; offline or an unexpected status keeps `on` working without network.
+ * @param {string} key
+ * @param {{ harnessId?: string }} [options]
+ */
+export async function assertResolvedKeyNotRejected(key, { harnessId = "" } = {}) {
+  const result = await verifyFireworksApiKey(key, { timeoutMs: ON_KEY_VERIFY_TIMEOUT_MS });
+  if (result.reason !== "rejected") {
+    return;
+  }
+  const rerun = harnessId ? `nexus ${harnessId} on` : "nexus login";
+  throw new Error(
+    "The Fireworks API rejected your saved Fireworks key (it may have been deleted or revoked). "
+      + `Run \`nexus login\` to sign in with a new key, then run: ${rerun}`,
+  );
 }
 
 /**
@@ -182,27 +215,23 @@ export function shouldInstallShellEnvHook(stored) {
 }
 
 /**
- * Whether `<harness> on` may persist a verified env key into secure storage.
- * Headless env-only mode (`NEXUS_KEY_STORAGE=null`) keeps using the
- * runtime env var without storing.
+ * Refetch the model catalog cache for `apiKey`'s account (bounded, never
+ * throws). The cache lives under the process HOME, so a `home` that isn't
+ * it (an in-process caller pointing elsewhere) is left alone.
  * @param {string} home
- * @param {{ backend?: import("./secret-store.mjs").SecretBackend }} [options]
+ * @param {string} apiKey
  */
-export async function canPersistApiKeyToKeychain(home, options = {}) {
-  if (isKeyStorageForcedNull()) {
+export async function refreshCatalogCacheForHome(home, apiKey) {
+  if (path.resolve(home) !== path.resolve(process.env.HOME ?? os.homedir())) {
     return false;
   }
-  const backend = options.backend ?? await detectSecretBackend(home);
-  if (backend.backend !== "unavailable") {
-    return true;
-  }
-  return plaintextSecretStoreAvailable(home);
+  return await refreshServerlessCatalogCache(apiKey);
 }
 
 /**
  * @param {string} home
  * @param {string} apiKey
- * @param {{ backend?: import("./secret-store.mjs").SecretBackend, onNote?: (line: string) => void }} [options]
+ * @param {{ backend?: import("./secret-store.mjs").SecretBackend, accountType?: "nexus"|"platform"|"unknown", onNote?: (line: string) => void }} [options]
  *   `onNote` receives baked-key sync notes (default: console.log) — callers
  *   that compose their own success block collect them instead.
  */
@@ -215,13 +244,16 @@ export async function persistApiKeyToKeychain(home, apiKey, options = {}) {
     throw new Error(cannotStoreKeyMessage(backend.error));
   }
   const trimmed = apiKey?.trim() ?? "";
-  // Idempotent: if the store already holds this key (e.g. runHarnessCommand's
-  // persistGlobalApiKey just stored it), skip the write+readback to avoid a
-  // duplicate keychain round-trip on every `<harness> on --api-key`.
+  // Idempotent: if the store already holds this key (e.g. login just stored
+  // it), skip the write+readback to avoid a duplicate keychain round-trip.
   const existing = await getSecret(home);
   const keyChanged = !existing || existing.trim() !== trimmed;
   if (keyChanged) {
     await setSecret(trimmed, home);
+    // The model catalog belongs to the account the old key signed in to:
+    // refetch it for the new one, so the next harness `on` lists its models.
+    expireCatalogCache(home);
+    await refreshCatalogCacheForHome(home, trimmed);
     // The minted-key record describes the credential the browser flow stored;
     // once a path stores a DIFFERENT key, `logout` must not offer to revoke
     // the old one on its behalf. Only clear on a real change — an idempotent
@@ -233,6 +265,11 @@ export async function persistApiKeyToKeychain(home, apiKey, options = {}) {
   const config = await readGlobalConfig(home);
   await writeGlobalConfig(home, {
     apiKey: FIREWORKS_API_KEY_KEYCHAIN_REF,
+    // Keep the reference and its account metadata in the same config write.
+    // Unknown replacements cannot inherit the previous credential's kind;
+    // ordinary idempotent config repair preserves known metadata.
+    ...(options.accountType !== undefined || keyChanged
+      ? { nexusAccount: options.accountType === "nexus" } : {}),
     harnesses: config.harnesses,
   });
   // Re-point router configs that bake the key as a literal — AFTER the store
@@ -255,7 +292,6 @@ export async function persistApiKeyFromFlag(home, apiKey, options = {}) {
   if (!apiKey?.trim()) {
     return;
   }
-  assertNoFireworksEnvForStorage();
   await persistApiKeyToKeychain(home, apiKey.trim(), options);
 }
 
@@ -267,8 +303,12 @@ export async function resolveStoredApiKeyValue(stored, home) {
   if (!stored) {
     return "";
   }
+  // A stored {env:FIREWORKS_API_KEY} ref is dead — env is not a credential
+  // source anymore; fall through to the keychain so a secret sitting beside
+  // the legacy ref still resolves (upgrade reconciliation will rewrite the
+  // ref on the next migration pass).
   if (isEnvConfigRef(stored)) {
-    return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+    return tryReadKeychainSecret(home);
   }
   if (isKeychainConfigRef(stored)) {
     return tryReadKeychainSecret(home);
@@ -288,10 +328,10 @@ export async function resolveStoredApiKeyValue(stored, home) {
  * THE single precedence definition for the active Fireworks key, so every
  * caller resolves it the same way and can report which source won:
  *   1. an explicit `--api-key` flag,
- *   2. the `FIREWORKS_API_KEY` environment variable (a deliberate runtime
- *      override — see `activeKeySourceNote`),
- *   3. the stored credential (keychain / encrypted file / plaintext, via the
+ *   2. the stored credential (keychain / encrypted file / plaintext, via the
  *      `config.json` ref).
+ * `FIREWORKS_API_KEY` is deliberately not a source — `nexus login` is the
+ * only key entry, and env-injected keys are ignored.
  * `resolveFireworksApiKeyValue` returns just the value; callers that need to
  * tell the user which key is in effect use `.source` here.
  * @param {{ apiKey?: string, home?: string }} args
@@ -302,7 +342,6 @@ export async function resolveFireworksKeyWithSource({
   home = process.env.HOME ?? "",
 }) {
   const flagKey = apiKey?.trim() ?? "";
-  const envKey = process.env.FIREWORKS_API_KEY?.trim() ?? "";
   let config = null;
   if (home) {
     const migration = await migrateLegacyGlobalApiKey(home);
@@ -311,10 +350,6 @@ export async function resolveFireworksKeyWithSource({
 
   if (flagKey) {
     return { key: flagKey, source: "flag" };
-  }
-
-  if (envKey) {
-    return { key: envKey, source: "env" };
   }
 
   if (config) {
@@ -340,7 +375,7 @@ export async function fireworksKeyPresent({
   apiKey = "",
   home = process.env.HOME ?? "",
 }) {
-  if (apiKey?.trim() || process.env.FIREWORKS_API_KEY?.trim()) {
+  if (apiKey?.trim()) {
     return true;
   }
   if (!home) {
@@ -348,6 +383,11 @@ export async function fireworksKeyPresent({
   }
   const stored = (await readGlobalConfig(home)).apiKey;
   if (isKeychainConfigRef(stored)) {
+    return hasSecret(home);
+  }
+  if (isEnvConfigRef(stored)) {
+    // A dead env-ref resolves through the keychain (see
+    // resolveStoredApiKeyValue); presence checks the same secret.
     return hasSecret(home);
   }
   return isLegacyLiteralConfigRef(stored) && isFireworksShapedKey(stored);
@@ -428,10 +468,6 @@ export async function tryReadKeychainSecret(home) {
  * @param {{ storedOnly?: boolean }} [opts]
  */
 export async function exportFireworksApiKey(home = process.env.HOME ?? "", { storedOnly = false } = {}) {
-  if (!storedOnly && process.env.FIREWORKS_API_KEY?.trim()) {
-    return process.env.FIREWORKS_API_KEY.trim();
-  }
-
   const fromKeychain = await tryReadKeychainSecret(home);
   if (fromKeychain) {
     return fromKeychain;
@@ -442,13 +478,6 @@ export async function exportFireworksApiKey(home = process.env.HOME ?? "", { sto
     if (isLegacyLiteralConfigRef(config.apiKey) && isFireworksShapedKey(config.apiKey)) {
       return config.apiKey.trim();
     }
-  }
-
-  // `--stored-only` skips env while a secret exists (stored beats env). When
-  // nothing is stored — headless CI, NEXUS_KEY_STORAGE=null — apiKeyHelper
-  // still needs a credential from FIREWORKS_API_KEY.
-  if (process.env.FIREWORKS_API_KEY?.trim()) {
-    return process.env.FIREWORKS_API_KEY.trim();
   }
 
   throw new Error("No Fireworks API key found. Run `nexus login` to sign in.");

@@ -78,12 +78,12 @@ describe("harnessStatusText", () => {
 });
 
 describe("buildLauncherChoices", () => {
-  it("lists every harness, then configure/key/help", () => {
+  it("lists every harness, then models/configure/key/help", () => {
     const adapters = listHarnesses();
     const choices = buildLauncherChoices(adapters, {}, []);
-    assert.equal(choices.length, adapters.length + 3);
+    assert.equal(choices.length, adapters.length + 4);
     assert.deepEqual(choices[0].value, { kind: "harness", id: adapters[0].id });
-    assert.deepEqual(choices.slice(-3).map((choice) => choice.value.kind), ["configure", "key", "help"]);
+    assert.deepEqual(choices.slice(-4).map((choice) => choice.value.kind), ["models", "configure", "key", "help"]);
     assert.doesNotMatch(choices.at(-3).name, /register harnesses|API keys/i);
     assert.match(choices.at(-3).name, /provider|BYOK/i);
   });
@@ -154,7 +154,7 @@ describe("runLauncherCommand", () => {
   it("routes key through its subcommand menu", async () => {
     const adapters = listHarnesses();
     const subcommands = [];
-    const keysToKeyRow = Array.from({ length: adapters.length + 1 }, () => DOWN);
+    const keysToKeyRow = Array.from({ length: adapters.length + 2 }, () => DOWN);
     const output = await drive(
       await tempCtx(),
       [...keysToKeyRow, ENTER, ENTER], // key row -> status (first)
@@ -171,7 +171,7 @@ describe("runLauncherCommand", () => {
   it("runs configure from the menu", async () => {
     const adapters = listHarnesses();
     let ran = 0;
-    const keysToConfigureRow = Array.from({ length: adapters.length }, () => DOWN);
+    const keysToConfigureRow = Array.from({ length: adapters.length + 1 }, () => DOWN);
     const output = await drive(
       await tempCtx(),
       [...keysToConfigureRow, ENTER],
@@ -179,5 +179,19 @@ describe("runLauncherCommand", () => {
     );
     assert.equal(ran, 1);
     assert.ok(output.text().includes("skip the menu: nexus configure"));
+  });
+
+  it("runs the model list from the menu", async () => {
+    const adapters = listHarnesses();
+    let ran = 0;
+    const keysToModelsRow = Array.from({ length: adapters.length }, () => DOWN);
+    const output = await drive(
+      await tempCtx(),
+      [...keysToModelsRow, ENTER],
+      { runModels: async () => { ran += 1; } },
+    );
+    assert.equal(ran, 1);
+    assert.ok(output.text().includes("skip the menu:"));
+    assert.ok(output.text().includes("nexus models"));
   });
 });

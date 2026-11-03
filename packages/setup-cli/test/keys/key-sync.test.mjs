@@ -8,6 +8,9 @@ import { piAuthPath } from "../../lib/harnesses/pi/core.mjs";
 import { userSettingsPath } from "../../lib/harnesses/claude/core.mjs";
 import { opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
 import { writeGlobalConfig } from "../../lib/config/global-config.mjs";
+import { claudeDesktopDataDir } from "../../lib/harnesses/claude-desktop/core.mjs";
+import { thirdPartyDir } from "../../lib/harnesses/claude-desktop/lineup.mjs";
+import { setSecret } from "../../lib/keys/secret-store.mjs";
 import {
   addFireworksProvider,
   buildAzureModelEntry,
@@ -69,6 +72,23 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
+async function writeDesktopProfile(home, { port = 8799, baseUrl = `http://127.0.0.1:${port}` } = {}) {
+  const data = {
+    inferenceGatewayBaseUrl: baseUrl,
+    inferenceGatewayApiKey: "fw_stale_desktop_00000000000000000",
+    inferenceProvider: "gateway",
+    inferenceCredentialKind: "static",
+    inferenceModels: [{ name: "claude-sonnet-4-5" }],
+    coworkEgressAllowedHosts: ["*"],
+  };
+  const filePath = path.join(thirdPartyDir(home), "configLibrary", "profile-under-test.json");
+  await writeJsonFile(filePath, data);
+  await writeJsonFile(path.join(claudeDesktopDataDir(home), "profile-state.json"), {
+    enabled: true, lane: "profile", port, profileId: "profile-under-test",
+  });
+  return { path: filePath, data };
+}
+
 describe("syncBakedKeysAfterStore", () => {
   it("re-bakes Claude's custom header", async () => {
     await withTempHome("key-sync-", async (home) => {
@@ -127,6 +147,45 @@ describe("syncBakedKeysAfterStore", () => {
 
       // Idempotent: nothing to change on a second run.
       assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+    });
+  });
+
+  it("login re-points the applied Claude Desktop profile at the new key", async () => {
+    const { server, url } = await startMockGatewayForKey(NEW_KEY);
+    try {
+      await withTempHome("key-sync-desktop-", async (home) => {
+        await mkdir(path.join(home, ".nexus"), { recursive: true });
+        await enableHarnessesForSync(home, ["claude-desktop"]);
+        const profile = await writeDesktopProfile(home, { port: 8800 });
+        // The child's HOME is the temp home, so an inherited XDG_CONFIG_HOME would move Desktop's dir outside it.
+        const env = { NEXUS_GATEWAY_URL: url, XDG_CONFIG_HOME: "" };
+
+        const result = await runCli(["login", "--api-key", NEW_KEY], { home, env });
+        assert.equal(result.code, 0, `stderr: ${result.stderr}`);
+        assert.match(result.stdout, /Updated Claude Desktop's Fireworks settings with this key — restart Claude Desktop/);
+        assert.deepEqual(await readJson(profile.path), { ...profile.data, inferenceGatewayApiKey: NEW_KEY });
+        assert.equal((await stat(profile.path)).mode & 0o777, 0o600);
+
+        const again = await runCli(["login", "--api-key", NEW_KEY], { home, env });
+        assert.equal(again.code, 0, `stderr: ${again.stderr}`);
+        assert.doesNotMatch(again.stdout, /Claude Desktop/);
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("leaves the Claude Desktop profile alone for an unstored key or a profile Nexus didn't write", async () => {
+    await withTempHome("key-sync-desktop-skip-", async (home) => {
+      await enableHarnessesForSync(home, ["claude-desktop"]);
+      const nexus = await writeDesktopProfile(home);
+      assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+      assert.deepEqual(await readJson(nexus.path), nexus.data);
+
+      await setSecret(NEW_KEY, home);
+      const user = await writeDesktopProfile(home, { baseUrl: "https://gateway.example.com" });
+      assert.deepEqual(await syncBakedKeysAfterStore(home, NEW_KEY), []);
+      assert.deepEqual(await readJson(user.path), user.data);
     });
   });
 

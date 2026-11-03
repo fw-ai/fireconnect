@@ -62,15 +62,14 @@ describe("fireconnect status", () => {
     });
   });
 
-  it("reports identity for a valid env key (exit 0)", async () => {
+  it("ignores a valid env key: status reports not signed in", async () => {
     await withTempHome("status-env-", async (home) => {
       const result = await runCli(["status"], {
         home,
         env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
       });
-      assert.equal(result.code, 0, `stderr: ${result.stderr}`);
-      assert.match(result.stdout, new RegExp(`Signed in as ${EMAIL}`));
-      assert.match(result.stdout, /Active key: FIREWORKS_API_KEY from your environment/);
+      assert.equal(result.code, 1);
+      assert.match(result.stdout, /Not signed in/);
     });
   });
 
@@ -86,17 +85,18 @@ describe("fireconnect status", () => {
     });
   });
 
-  it("says the env key overrides the stored key when both are present", async () => {
+  it("uses the stored key and ignores the env key when both are present", async () => {
     await withTempHome("status-env-over-stored-", async (home) => {
-      await seedKeychainConfig(home, REJECTED_KEY);
+      await seedKeychainConfig(home, VALID_KEY);
       const result = await runCli(["status"], {
         home,
-        env: { ...gatewayEnv, FIREWORKS_API_KEY: VALID_KEY },
+        env: { ...gatewayEnv, FIREWORKS_API_KEY: REJECTED_KEY },
       });
       assert.equal(result.code, 0, `stderr: ${result.stderr}`);
-      // env wins → the valid env key verifies, and status says so explicitly.
+      // The env var no longer wins: the stored key verifies, even with a bad
+      // FIREWORKS_API_KEY sitting in the environment.
       assert.match(result.stdout, new RegExp(`Signed in as ${EMAIL}`));
-      assert.match(result.stdout, /Active key: FIREWORKS_API_KEY from your environment \(overrides the stored key\)/);
+      assert.match(result.stdout, /Active key: stored credential/);
     });
   });
 
@@ -111,15 +111,14 @@ describe("fireconnect status", () => {
     });
   });
 
-  it("flags a rejected FIREWORKS_API_KEY without pointing at --force (exit 1)", async () => {
+  it("ignores a rejected FIREWORKS_API_KEY and reports not signed in", async () => {
     await withTempHome("status-env-rejected-", async (home) => {
       const result = await runCli(["status"], {
         home,
         env: { ...gatewayEnv, FIREWORKS_API_KEY: REJECTED_KEY },
       });
       assert.equal(result.code, 1);
-      assert.match(result.stdout, /rejected/i);
-      assert.match(result.stdout, /FIREWORKS_API_KEY/);
+      assert.match(result.stdout, /Not signed in/);
       assert.doesNotMatch(result.stdout, /--force/);
     });
   });

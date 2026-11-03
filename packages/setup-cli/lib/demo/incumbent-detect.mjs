@@ -1,5 +1,5 @@
 /**
- * Incumbent auto-detection for `nexus demo` (§3 of the brief).
+ * Incumbent auto-detection for `nexus demo`.
  *
  * Reuses the existing harness adapters / core modules to read what the developer
  * actually uses today — without modifying any config. The first harness in probe

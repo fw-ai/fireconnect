@@ -114,11 +114,42 @@ describe("release notes", () => {
     assert.doesNotMatch(formatted, /\u2014/);
   });
 
+  it("formats the v0.11.0 user-facing summary", async () => {
+    const releases = await readReleaseNotes();
+    const release = releases.find((candidate) => candidate.version === "0.11.0");
+    assert.ok(release);
+    assert.equal(releases[0].version, "0.11.0");
+
+    const formatted = formatReleaseNotes(release);
+    assert.match(formatted, /What's new in Nexus CLI v0\.11\.0/);
+    assert.equal(release.highlights.length, 5);
+    assert.equal(release.improvements.length, 9);
+    assert.match(formatted, /`nexus login` opens a new Nexus sign-in page/);
+    assert.match(formatted, /New installs no longer need git or a GitHub account/);
+    assert.match(formatted, /`nexus update` never installs an older version/);
+    assert.match(formatted, /`auto` is labeled Nexus Auto in every harness model picker/);
+    assert.match(formatted, /Codex offers `xhigh` and `max` effort on it/);
+    assert.match(formatted, /show only the models your account can use/);
+    assert.match(formatted, /after you switch accounts, `nexus login` refreshes the list/);
+    assert.match(formatted, /Bare `nexus` now lists models in its menu/);
+    assert.match(formatted, /cloud and remote agents are not supported/);
+    assert.match(formatted, /Claude Desktop is now labeled Limited/);
+    assert.match(formatted, /`nexus deepseek on` works with current DeepSeek Harness versions/);
+    assert.match(formatted, /checks your saved Fireworks key first/);
+    assert.match(formatted, /Your Fireworks key now comes only from `nexus login`/);
+    assert.match(formatted, /Nexus ignores `FIREWORKS_API_KEY`/);
+    assert.match(formatted, /`nexus claude-desktop mcp sync` and `on` list which connectors moved over/);
+    assert.match(formatted, /`nexus logout` lists the harnesses that still hold a copy of your key/);
+    assert.match(formatted, /restart your harnesses to load the updated settings/);
+    // Keep the notes simple: no placeholder harness commands.
+    assert.doesNotMatch(formatted, /<harness>/);
+    assert.doesNotMatch(formatted, /\u2014/);
+  });
+
   it("formats the v0.10.1 user-facing summary", async () => {
     const releases = await readReleaseNotes();
     const release = releases.find((candidate) => candidate.version === "0.10.1");
     assert.ok(release);
-    assert.equal(releases[0].version, "0.10.1");
 
     const formatted = formatReleaseNotes(release);
     assert.match(formatted, /What's new in Nexus CLI v0\.10\.1/);

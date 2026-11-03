@@ -4,7 +4,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { HARNESSES } from "../../lib/harness/id.mjs";
 import { checkHarnessInstall } from "../../lib/harness/detect.mjs";
-import { runCli, withTempHome } from "../helpers.mjs";
+import { runCli, seedKeychainConfig, withTempHome } from "../helpers.mjs";
 
 // File-config harnesses whose `on` succeeds in a bare test home on every
 // platform; for these a failed run would make the check vacuous. Desktop
@@ -32,8 +32,8 @@ describe("Nexus never writes a harness's install signals", () => {
           PATH: bin,
           XDG_CONFIG_HOME: path.join(home, ".config"),
           XDG_DATA_HOME: path.join(home, ".local", "share"),
-          FIREWORKS_API_KEY: "fw_test_key_12345",
         };
+        await seedKeychainConfig(home, "fw_test_key_12345");
         const result = await runCli([harness, "on", "--skip-install-check"], { home, env, installGate: true });
         if (MUST_SUCCEED.has(harness)) {
           assert.equal(result.code, 0, result.stderr);

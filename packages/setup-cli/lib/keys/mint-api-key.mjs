@@ -10,12 +10,11 @@ import { readJsonIfExists, writeJson } from "../io/json.mjs";
  * Exchange a Cognito id_token for an fw_ API key, so browser sign-in
  * converges on the same credential the paste flow stores. Uses the control
  * plane's gRPC-web surface at gateway.fireworks.ai — the same endpoint and
- * bearer the web console uses to create keys; the REST facade is closed to
- * external callers by a gateway-secret gate.
+ * bearer the web console uses to create keys.
  *
  * Three unary calls: ListAccounts (find the account), ListUsers (find the
  * caller's user resource by email), CreateApiKey (mint a key named
- * fireconnect-{hostname}, returned in plaintext exactly once).
+ * nexus-{client}-{hostname}, returned in plaintext exactly once).
  */
 export const GATEWAY_GRPC_WEB_URL = process.env.NEXUS_GATEWAY_GRPC_WEB_URL?.trim()
   || "https://gateway.fireworks.ai/web/gateway.Gateway";
@@ -31,17 +30,22 @@ export const BROWSER_SSO_UNSUPPORTED_HINT =
 export const BROWSER_SIGNIN_NO_ACCOUNT_FAILURE =
   `Your sign-in worked, but no Fireworks account is associated with it. ${BROWSER_SSO_UNSUPPORTED_HINT}`;
 
-/** display_name for keys this CLI mints; the hostname says which machine to revoke. */
-export function mintedKeyName(hostname = os.hostname()) {
-  const host = hostname.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-") || "cli";
-  return `nexus-${host}`;
+/**
+ * Label creation origin, not where a copied/shared key is subsequently used.
+ * Desktop callers explicitly set NEXUS_CLIENT=desktop for their subprocess;
+ * ordinary CLI calls (including unknown client values) default to cli.
+ */
+export function mintedKeyName(hostname = os.hostname(), client = process.env.NEXUS_CLIENT) {
+  const origin = client === "desktop" ? "desktop" : "cli";
+  const host = hostname.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-") || "unknown-host";
+  return `nexus-${origin}-${host}`;
 }
 
 /**
  * @typedef {Object} MintResult
  * @property {boolean} ok
  * @property {string} key        The fw_ key ("" on failure).
- * @property {string} keyId      Unkey key id, for future revocation.
+ * @property {string} keyId      Key id, for future revocation.
  * @property {string} userName   accounts/{account}/users/{user} the key belongs to.
  * @property {string} failure    One-line reason for the terminal ("" when ok).
  */
@@ -50,27 +54,42 @@ const failed = (failure) => ({ ok: false, key: "", keyId: "", userName: "", fail
 
 const GRPC_PERMISSION_DENIED = 7;
 
+// A minted key is stored and written into harness configs and headers: one
+// with whitespace, quotes, backslashes or control characters is refused
+// rather than carried into those files. So is one with braces or `$`:
+// OpenCode expands `{env:VAR}` and `{file:path}` in its config, which would
+// send that variable or file as the key. Every other printable key passes.
+const MINTED_KEY_RE = /^fw_[\x21-\x7e]+$/;
+const MINTED_KEY_UNSAFE = /["'\\`{}$]/;
+
 /**
  * List the Fireworks accounts an id_token principal can mint keys under. The
  * control plane resolves the principal to its accounts server-side; when more
  * than one comes back the caller must pick which one the key belongs to,
  * since minting under the wrong account silently puts the key where the user
  * didn't mean to (and the CLI would still report success for their identity).
+ * `nexusAccountNames` lists the ones that are Nexus accounts (Account
+ * field 28), which manage keys on the Nexus site.
  * @param {string} idToken
- * @param {{ baseUrl?: string }} [options]
- * @returns {Promise<{ ok: boolean, accountNames: string[], failure: string }>}
+ * @param {{ baseUrl?: string, signal?: AbortSignal }} [options]  `signal` aborts the call.
+ * @returns {Promise<{ ok: boolean, accountNames: string[], nexusAccountNames: string[], failure: string }>}
  */
-export async function listAccountsForIdToken(idToken, { baseUrl = GATEWAY_GRPC_WEB_URL } = {}) {
+export async function listAccountsForIdToken(idToken, { baseUrl = GATEWAY_GRPC_WEB_URL, signal } = {}) {
   let accounts;
   try {
-    accounts = await grpcWebCall(baseUrl, "ListAccounts", Buffer.alloc(0), idToken);
+    accounts = await grpcWebCall(baseUrl, "ListAccounts", Buffer.alloc(0), idToken, { signal });
   } catch (error) {
-    return { ok: false, accountNames: [], failure: `Couldn't reach the Fireworks control plane (${error?.message ?? "network error"}).` };
+    return { ok: false, accountNames: [], nexusAccountNames: [], failure: `Couldn't reach the Fireworks control plane (${error?.message ?? "network error"}).` };
   }
   if (accounts.status !== 0 || !accounts.message) {
-    return { ok: false, accountNames: [], failure: rpcFailureLine("looking up your account", accounts) };
+    return { ok: false, accountNames: [], nexusAccountNames: [], failure: rpcFailureLine("looking up your account", accounts) };
   }
-  return { ok: true, accountNames: allResourceNames(accounts.message), failure: "" };
+  return {
+    ok: true,
+    accountNames: allResourceNames(accounts.message),
+    nexusAccountNames: nexusResourceNames(accounts.message),
+    failure: "",
+  };
 }
 
 /**
@@ -140,6 +159,9 @@ export async function mintApiKeyForAccount(idToken, accountName, {
   if (!key) {
     return failed("The control plane created a key but didn't return its value.");
   }
+  if (!MINTED_KEY_RE.test(key) || MINTED_KEY_UNSAFE.test(key)) {
+    return failed("The control plane returned a malformed API key; nothing was stored.");
+  }
   return { ok: true, key, keyId: pbStringAt(fields, 1), userName, failure: "" };
 }
 
@@ -206,13 +228,13 @@ export async function clearMintedKeyState(home) {
 
 /**
  * Delete the API key this CLI minted, authenticating with the key itself —
- * the gateway accepts fw_ keys via x-api-key (authn.go), and a key may
- * delete its own record. Never throws.
+ * the gateway accepts fw_ keys via x-api-key, and a key may delete its own
+ * record. Never throws.
  * @param {{ apiKey: string, keyId: string, userName: string, baseUrl?: string }} args
  * @returns {Promise<{ ok: boolean, failure: string }>}
  */
 export async function revokeMintedKey({ apiKey, keyId, userName, baseUrl = GATEWAY_GRPC_WEB_URL }) {
-  // DeleteApiKeyRequest{ parent = user resource, key_id } (gateway/api_key.proto)
+  // DeleteApiKeyRequest{ parent = user resource, key_id }
   const request = Buffer.concat([pbString(1, userName), pbString(2, keyId)]);
   let result;
   try {
@@ -242,6 +264,20 @@ function allResourceNames(message) {
         out.push(name);
       }
     }
+  }
+  return out;
+}
+
+const ACCOUNT_NEXUS_FIELD = 28;
+
+/** Names of the listed accounts marked as Nexus accounts. */
+function nexusResourceNames(message) {
+  const out = [];
+  for (const entry of pbDecode(message).get(1) ?? []) {
+    if (!Buffer.isBuffer(entry)) continue;
+    const fields = pbDecode(entry);
+    const name = pbStringAt(fields, 1);
+    if (name && fields.get(ACCOUNT_NEXUS_FIELD)?.[0] === 1) out.push(name);
   }
   return out;
 }

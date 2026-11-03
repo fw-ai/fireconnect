@@ -54,7 +54,20 @@ function seedTwoRouterCatalog(home) {
   ]);
 }
 
-const API_KEY_ARGS = ["on", "--api-key", "fw_test_key_12345", "--model", "alpha-latest"];
+const ON_ARGS = ["on", "--model", "alpha-latest"];
+
+// `on --api-key` was removed: login seeds the key, `on` resolves the store.
+async function freshOn(args, env) {
+  const seed = await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env);
+  assert.equal(seed.code, 0, seed.stderr);
+  return runFireconnect(args, env);
+}
+
+async function freshOnCli(home, args, env) {
+  const seed = await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env });
+  assert.equal(seed.code, 0, seed.stderr);
+  return runCli(args, { home, env });
+}
 
 // Cursor's Electron-state key for the applicationUser blob (mirrors
 // cursor-harness.test.mjs).
@@ -66,7 +79,7 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-contract-claude-"));
     seedTwoRouterCatalog(home);
 
-    const result = await runFireconnect(["claude", ...API_KEY_ARGS], {
+    const result = await freshOn(["claude", ...ON_ARGS], {
       HOME: home,
       FIREWORKS_API_KEY: "",
       ANTHROPIC_API_KEY: "",
@@ -86,7 +99,7 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
     await mkdir(path.join(home, ".codex"), { recursive: true });
     seedTwoRouterCatalog(home);
 
-    const result = await runFireconnect(["codex", ...API_KEY_ARGS], {
+    const result = await freshOn(["codex", ...ON_ARGS], {
       HOME: home,
       FIREWORKS_API_KEY: "",
     });
@@ -103,7 +116,7 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-contract-opencode-"));
     seedTwoRouterCatalog(home);
 
-    const result = await runFireconnect(["opencode", ...API_KEY_ARGS], {
+    const result = await freshOn(["opencode", ...ON_ARGS], {
       HOME: home,
       FIREWORKS_API_KEY: "",
     });
@@ -120,7 +133,7 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
     await mkdir(path.join(home, ".pi/agent"), { recursive: true });
     seedTwoRouterCatalog(home);
 
-    const result = await runFireconnect(["pi", ...API_KEY_ARGS], {
+    const result = await freshOn(["pi", ...ON_ARGS], {
       HOME: home,
       FIREWORKS_API_KEY: "",
     });
@@ -140,12 +153,10 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
       seedTwoRouterCatalog(home);
 
-      const result = await runCli(
-        ["vscode", ...API_KEY_ARGS, "--vscode-path", vscodePath, "--force"],
-        {
-          home,
-          env: { NEXUS_VSCODE_SECRET_PLAINTEXT: "1", FIREWORKS_API_KEY: "" },
-        },
+      const result = await freshOnCli(
+        home,
+        ["vscode", ...ON_ARGS, "--vscode-path", vscodePath, "--force"],
+        { NEXUS_VSCODE_SECRET_PLAINTEXT: "1", FIREWORKS_API_KEY: "" },
       );
       assert.equal(result.code, 0, `stderr: ${result.stderr}`);
       const arr = JSON.parse(await readFile(vscodePath, "utf8"));
@@ -163,8 +174,8 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
       await mkdir(path.dirname(dbPath), { recursive: true });
       seedTwoRouterCatalog(home);
 
-      const result = await runFireconnect(
-        ["copilot-app", ...API_KEY_ARGS, "--db-path", dbPath, "--force"],
+      const result = await freshOn(
+        ["copilot-app", ...ON_ARGS, "--db-path", dbPath, "--force"],
         { HOME: home, FIREWORKS_API_KEY: "" },
       );
       assert.equal(result.code, 0, result.stderr);
@@ -186,7 +197,7 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-contract-copilot-cli-"));
     seedTwoRouterCatalog(home);
 
-    const result = await runFireconnect(["copilot-cli", ...API_KEY_ARGS], {
+    const result = await freshOn(["copilot-cli", ...ON_ARGS], {
       HOME: home,
       FIREWORKS_API_KEY: "",
     });
@@ -204,15 +215,15 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
     // Switch to the mock gateway's live catalog: selected alpha is absent and
     // newly served standard routers are present. Re-on must retain/register
     // alpha, add the live rows, and remain duplicate-free.
-    const reon = await runFireconnect([
-      "copilot-cli",
-      "on",
-      "--api-key",
-      "fw_cataloged_v1_adversarial000000",
-    ], {
+    const reon = await (await runFireconnect(["login", "--api-key", "fw_cataloged_v1_adversarial000000"], {
       HOME: home,
       FIREWORKS_API_KEY: "",
-    });
+    }), await runFireconnect([
+      "copilot-cli",
+      "on"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+    }));
     assert.equal(reon.code, 0, reon.stderr);
     settings = JSON.parse(await readFile(copilotSettingsPath({ home }), "utf8"));
     assert.equal(settings.model, "fireworks/alpha-latest");
@@ -261,12 +272,10 @@ describe("fresh on --model seeds the full catalog in every harness", () => {
       );
       assert.equal(init.status, 0, init.stderr);
 
-      const result = await runCli(
-        ["cursor", ...API_KEY_ARGS, "--db-path", dbPath, "--force"],
-        {
-          home,
-          env: { NEXUS_VSCODE_SECRET_PLAINTEXT: "1", FIREWORKS_API_KEY: "" },
-        },
+      const result = await freshOnCli(
+        home,
+        ["cursor", ...ON_ARGS, "--db-path", dbPath, "--force"],
+        { NEXUS_VSCODE_SECRET_PLAINTEXT: "1", FIREWORKS_API_KEY: "" },
       );
       assert.equal(result.code, 0, `stderr: ${result.stderr}`);
       const out = spawnSync(

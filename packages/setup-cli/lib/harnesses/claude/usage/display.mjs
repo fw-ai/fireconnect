@@ -1056,7 +1056,7 @@ function formatSummary({ sessions, totals, calls, estimated, unpriced = 0 }, str
   return lines.join("\n");
 }
 
-/** Brief, deterministic version of the designer's pixel firework. */
+/** Brief, deterministic pixel firework. */
 export async function playUsageIntroAnimation(stream = stdout) {
   if (!stream.isTTY || !useColor(stream) || process.env.NEXUS_NO_USAGE_ANIMATION) return;
 

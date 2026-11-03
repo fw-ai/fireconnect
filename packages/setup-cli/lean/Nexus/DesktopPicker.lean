@@ -93,8 +93,8 @@ theorem rewrite_sources_not_in_ladder :
 
 `on` rewrites four device keys in `claude_desktop_config.json` and snapshots
 their prior values; `off` restores them. A repeat `on` must keep the ORIGINAL
-snapshot (Bugbot round: recapturing from the already-rewritten config made
-`off` restore Nexus's own values).
+snapshot (recapturing from the already-rewritten config would make `off`
+restore Nexus's own values).
 -/
 
 abbrev Config := String → Option String

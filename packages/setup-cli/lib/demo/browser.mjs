@@ -1,5 +1,5 @@
 /**
- * Browser comparison page + local server for `nexus demo` (§7 of the brief).
+ * Browser comparison page + local server for `nexus demo`.
  *
  * compare.html is fully self-contained: both generated apps are inlined as
  * sandboxed-iframe srcdoc and the result numbers are inlined as JSON, so the
@@ -12,6 +12,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { browserOpenCommand } from "../system/win-command.mjs";
 import {
   formatSeconds, formatUsd, formatTokens, formatSpeedRatio, formatCostDelta,
   costPerGenerations,
@@ -174,7 +175,7 @@ export function buildCompareHtml({
 <script id="result" type="application/json">${safeJsonForScript(JSON.stringify(payload))}</script>
 <script>
   ${VIEW_CODE_JS}
-  ${COPY_JS.replace("__SUMMARY__", JSON.stringify(copySummary))}
+  ${COPY_JS.replace("__SUMMARY__", () => safeJsonForScript(JSON.stringify(copySummary)))}
 </script>
 </body>
 </html>`;
@@ -432,13 +433,8 @@ export function serveStatic(dir) {
 export function openInBrowser(url) {
   const { platform } = process;
   try {
-    if (platform === "darwin") {
-      execFileSync("open", [url], { stdio: "ignore" });
-    } else if (platform === "win32") {
-      execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
-    } else {
-      execFileSync("xdg-open", [url], { stdio: "ignore" });
-    }
+    const [command, args] = browserOpenCommand(url, { platform });
+    execFileSync(command, args, { stdio: "ignore" });
     return true;
   } catch {
     return false;

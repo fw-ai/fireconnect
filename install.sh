@@ -18,8 +18,17 @@ done < <(compgen -e | grep '^FIRECONNECT_' || true)
 
 DEFAULT_SOURCE="https://github.com/fw-ai/nexus-cli.git"
 SOURCE="${NEXUS_SOURCE:-${DEFAULT_SOURCE}}"
+# HTTPS tarball for the public repo, via the documented archive endpoint
+# (https://docs.github.com/en/rest/repos/contents — it redirects to GitHub's
+# archive host). `git clone` of a public HTTPS URL still consults the user's
+# git config, so a global `url.git@github.com:.insteadOf` rewrite plus a
+# missing/revoked SSH key makes the public repo unclonable ("Permission
+# denied (publickey)"). The tarball goes straight over HTTPS and never
+# touches git configuration. (NEXUS_TARBALL_URL exists mainly for tests.)
+TARBALL_URL="${NEXUS_TARBALL_URL:-https://api.github.com/repos/fw-ai/nexus-cli/tarball/main}"
 MIN_NODE_MAJOR=22
 CLAUDE_SETTINGS_RESTORED=0
+STAGED_DEPS_INSTALLED=0
 INSTALL_NOTES=()
 
 install_progress() {
@@ -409,6 +418,25 @@ print_claude_restore_summary() {
   echo "Reconnect Claude Code through Nexus CLI: nexus claude"
 }
 
+# Fetch the public release tarball over plain HTTPS into $1. Fails (returning
+# non-zero) when curl/wget/tar is unavailable or the download is incomplete.
+# Timeouts keep the wait bounded.
+download_cli_tarball() {
+  local staging="$1"
+  command -v tar >/dev/null 2>&1 || return 1
+  if command -v curl >/dev/null 2>&1; then
+    # -L: the documented api.github.com archive endpoint redirects to the
+    # archive host.
+    curl -fsSL --connect-timeout 15 --max-time 300 "${TARBALL_URL}" \
+      | tar -xzf - -C "${staging}" --strip-components=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -T 30 -O - "${TARBALL_URL}" \
+      | tar -xzf - -C "${staging}" --strip-components=1
+  else
+    return 1
+  fi
+}
+
 ensure_durable_source() {
   if [[ -f "${CLI}" ]]; then
     return
@@ -417,20 +445,60 @@ ensure_durable_source() {
   local install_dir="${HOME}/.nexus/cli"
   install_progress "Downloading Nexus CLI..."
 
-  if ! command -v git >/dev/null 2>&1; then
-    echo "Missing required command: git" >&2
-    exit 1
-  fi
-  # Clone beside the install and swap it in only once it is complete, so a
+  # Download beside the install and swap it in only once it is complete, so a
   # failed download leaves the working CLI (and its launcher) intact.
   local staging="${install_dir}.download"
   rm -rf "${staging}"
   mkdir -p "$(dirname "${install_dir}")"
-  if ! git clone --quiet --depth 1 "${SOURCE}" "${staging}" \
-    || [[ ! -f "${staging}/packages/setup-cli/bin/nexus.mjs" ]]; then
-    rm -rf "${staging}"
+
+  local downloaded=0
+  if [[ "${SOURCE}" == "${DEFAULT_SOURCE}" ]]; then
+    # The default public source installs from the HTTPS tarball — no git
+    # needed at all. `git clone` of a public HTTPS URL still consults the
+    # user's git config, so a global `url.git@github.com:.insteadOf` rewrite
+    # plus a missing/revoked SSH key makes the public repo unclonable
+    # ("Permission denied (publickey)"). The tarball goes straight over HTTPS
+    # and never touches git configuration. A tarball install has no .git;
+    # `nexus update` handles that (it re-downloads the tarball).
+    mkdir -p "${staging}"
+    if ! download_cli_tarball "${staging}" \
+      || [[ ! -f "${staging}/packages/setup-cli/bin/nexus.mjs" ]]; then
+      rm -rf "${staging}"
+    else
+      downloaded=1
+    fi
+  else
+    # Custom sources (internal forks, local checkouts for tests) still clone.
+    if ! command -v git >/dev/null 2>&1; then
+      echo "Missing required command: git (needed for NEXUS_SOURCE=${SOURCE})" >&2
+      exit 1
+    fi
+    if git clone --quiet --depth 1 "${SOURCE}" "${staging}" \
+      && [[ -f "${staging}/packages/setup-cli/bin/nexus.mjs" ]]; then
+      downloaded=1
+    else
+      rm -rf "${staging}"
+    fi
+  fi
+
+  if (( ! downloaded )); then
     echo "Couldn't download Nexus CLI from ${SOURCE}; your existing install was left in place." >&2
+    if [[ "${SOURCE}" == "${DEFAULT_SOURCE}" ]]; then
+      echo "Check your network (the installer downloads ${TARBALL_URL} over HTTPS)." >&2
+    else
+      echo "Your git configuration may be blocking the clone; see 'git config --get-regexp url\\..*\\.insteadof'." >&2
+    fi
     exit 1
+  fi
+  # Install dependencies in the staged copy too, so an npm failure also leaves
+  # the working CLI and its node_modules in place.
+  if [[ -f "${staging}/packages/setup-cli/package.json" ]]; then
+    if ! install_dependencies "${staging}/packages/setup-cli"; then
+      rm -rf "${staging}"
+      echo "Failed to install Nexus CLI dependencies; your existing install was left in place." >&2
+      exit 1
+    fi
+    STAGED_DEPS_INSTALLED=1
   fi
   rm -rf "${install_dir}"
   mv "${staging}" "${install_dir}"
@@ -439,17 +507,31 @@ ensure_durable_source() {
 
 # Install runtime dependencies (cross-keychain, used for secure API-key storage).
 # Without it, `import("cross-keychain")` fails at runtime and every
-# `configure`/`<harness> on --api-key` aborts with "OS keychain is unavailable."
+# `login`/`configure` aborts with "OS keychain is unavailable."
 # Run on every install — including re-installs over an existing CLI — so a
 # broken (dep-missing) install is repaired by re-running the installer, not just
 # by `nexus update`. Skips dev/peer deps to keep the install lean.
 ensure_dependencies() {
+  if [[ "${STAGED_DEPS_INSTALLED}" == "1" ]]; then
+    return
+  fi
   local setup_dir
   setup_dir="$(cd "$(dirname "${CLI}")/.." && pwd)"
   if [[ ! -f "${setup_dir}/package.json" ]]; then
     echo "Nexus CLI source not found; cannot install dependencies." >&2
     exit 1
   fi
+  if ! install_dependencies "${setup_dir}"; then
+    echo "Failed to install Nexus CLI dependencies." >&2
+    exit 1
+  fi
+}
+
+# npm install in <setup_dir>; returns npm's status. No lifecycle scripts:
+# Nexus's own postinstall is skipped anyway, and none of its dependencies
+# need one.
+install_dependencies() {
+  local setup_dir="$1"
   install_progress "Installing dependencies..."
   local npm_loglevel=error
   local npm_stdout="/dev/null"
@@ -460,11 +542,8 @@ ensure_dependencies() {
   # npm's "added N packages in Xms" summary prints to stdout regardless of
   # --loglevel, which clutters the install output with a stray line between our
   # `→` steps. Discard stdout (errors still surface on stderr) unless verbose.
-  if ! (cd "${setup_dir}" && NEXUS_SKIP_POSTINSTALL_FINALIZE=1 \
-    npm install --omit=dev --no-fund --no-audit --loglevel="${npm_loglevel}" 1>"${npm_stdout}"); then
-    echo "Failed to install Nexus CLI dependencies." >&2
-    exit 1
-  fi
+  (cd "${setup_dir}" && NEXUS_SKIP_POSTINSTALL_FINALIZE=1 \
+    npm install --omit=dev --no-fund --no-audit --ignore-scripts --loglevel="${npm_loglevel}" 1>"${npm_stdout}")
 }
 
 add_bin_dir_to_path() {
@@ -571,7 +650,7 @@ const OWNED = [
   "catalog-cache.json", "list-price-cache.json", "codex-stock-models.json",
   "update-check.json", "update-check.lock", "release-notes.json", "minted-key.json",
   "demo.json", ".api-key", ".secret-memory",
-  "cli", "claude-desktop", "statusline-refresh",
+  "cli", "claude-desktop", "statusline-refresh", "set-aside.json",
 ];
 const STRONG = [
   "key-storage.json", "secret-backend.json", "rename-complete", "rename-announced",

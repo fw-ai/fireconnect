@@ -13,11 +13,15 @@ import {
 } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { writeFileAtomicSync } from "../io/atomic-write.mjs";
 
 export const DATA_DIRNAME = ".nexus";
 export const LEGACY_DATA_DIRNAME = ".fireconnect";
 /** Where an old `~/.fireconnect` is kept when this CLI's `~/.nexus` already exists. */
 export const LEGACY_ASIDE_DIRNAME = ".nexus-pre";
+/** Names of the `~/.nexus-pre*` directories the migration created, in `~/.nexus`. */
+export const SET_ASIDE_RECORD_FILENAME = "set-aside.json";
+const SET_ASIDE_NAME = /^\.nexus-pre(?:-\d+)?$/;
 
 const RENAME_COMPLETE_MARKER = "rename-complete";
 const RENAME_ANNOUNCED_MARKER = "rename-announced";
@@ -77,6 +81,7 @@ export const NEXUS_OWNED_FILENAMES = Object.freeze([
   "cli",
   "claude-desktop",
   "statusline-refresh",
+  SET_ASIDE_RECORD_FILENAME,
 ]);
 
 /**
@@ -95,6 +100,43 @@ export const NEXUS_STRONG_FILENAMES = Object.freeze([
   "minted-key.json",
   ".secret-memory",
 ]);
+
+function readSetAsideRecord(home) {
+  try {
+    const names = JSON.parse(readFileSync(path.join(home, DATA_DIRNAME, SET_ASIDE_RECORD_FILENAME), "utf8"));
+    return Array.isArray(names) ? names.filter((name) => typeof name === "string" && SET_ASIDE_NAME.test(name)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remember which `~/.nexus-pre*` directory this migration created, so
+ * uninstall removes that one and never an unrelated directory of the same name.
+ * @param {string} home
+ * @param {string} aside
+ */
+function recordSetAside(home, aside) {
+  try {
+    const names = [...new Set([...readSetAsideRecord(home), path.basename(aside)])];
+    writeFileAtomicSync(
+      path.join(home, DATA_DIRNAME, SET_ASIDE_RECORD_FILENAME),
+      `${JSON.stringify(names)}\n`,
+      { mode: 0o600 },
+    );
+  } catch {
+    // Best effort: without the record, uninstall leaves the aside directory.
+  }
+}
+
+/**
+ * The `~/.nexus-pre*` directories this CLI's migration set aside.
+ * @param {string} home
+ * @returns {string[]}
+ */
+export function setAsideDirs(home) {
+  return readSetAsideRecord(home).map((name) => path.join(home, name));
+}
 
 /**
  * True when `dir` is this CLI's data directory (or empty), false when it holds
@@ -286,6 +328,7 @@ export function migrateLegacyDataDir(home, { platform = process.platform, rename
       }
       return "none";
     }
+    recordSetAside(home, aside);
     linkLegacyToTarget(legacy, platform);
     return "set-aside";
   }

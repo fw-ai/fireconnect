@@ -130,7 +130,7 @@ describe("firerouter model recognition", () => {
       "firerouter/claude-opus-5/kimi-k3-fast",
       "accounts/fireworks/routers/firerouter/kimi-k3",
     ]) {
-      assert.equal(firerouterDisplayName(id), "Auto", id);
+      assert.equal(firerouterDisplayName(id), "Nexus Auto", id);
     }
   });
 

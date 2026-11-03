@@ -94,7 +94,7 @@ function isNexusAuth(auth) {
 
 export function resolvePiApiKeyValue(key) {
   return key === PI_API_KEY_ENV_REF || key === "${FIREWORKS_API_KEY}"
-    ? (process.env.FIREWORKS_API_KEY ?? "")
+    ? "" // env is not a credential source
     : key;
 }
 
@@ -297,10 +297,11 @@ export async function readJsonFile(filePath) {
   }
 }
 
+// With `mode` (key-bearing files) the file is created at that mode from its
+// first byte, inside directories Nexus creates owner-only.
 async function writeJsonFile(filePath, value, mode) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
-  if (mode) await chmod(filePath, mode);
+  await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await writeFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`, mode ? { mode } : {});
 }
 
 async function readPiProfile(home) {
@@ -519,7 +520,7 @@ function piFireworksProvider(modelIds, headers, piKnownIds) {
 /**
  * Route Pi through Fireworks models served on Microsoft Foundry (Azure): a
  * custom `openai-completions` provider pointed at the Foundry resource, with
- * the Azure key (literal via --api-key, or the `$AZURE_API_KEY` reference).
+ * the Azure key (literal from configure, or the `$AZURE_API_KEY` reference).
  */
 export async function enablePiAzure({
   settingsPath,

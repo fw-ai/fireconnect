@@ -9,7 +9,7 @@ export const CLI_COLORS = Object.freeze({
 });
 
 /**
- * Design System V2 data colors for charts, tables, and per-series marks. Not
+ * Data colors for charts, tables, and per-series marks. Not
  * for prose or interface chrome. The palette's two purples (#9888F5, #715FD8)
  * are replaced by the CLI color guide's logo-gradient stops `amber` and `flare`.
  */

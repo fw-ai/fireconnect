@@ -149,6 +149,9 @@ describe("runHarnessForwardMigrations", () => {
   });
 
   it("adds auto only to an existing referenced Codex catalog", async () => {
+    // The real guard reads the process list: an open ChatGPT app on the
+    // machine running the suite would skip the backfill.
+    const notRunning = { autoCatalog: { isRunning: () => false } };
     await withTempHome("forward-migrate-codex-auto-", async (home) => {
       await writeGlobalConfig(home, {
         harnesses: { codex: { enabled: true, provider: "fireworks" } },
@@ -169,8 +172,8 @@ describe("runHarnessForwardMigrations", () => {
       // Referenced catalog without auto: auto row prepended, ref untouched.
       await writeFile(configPath, managed(true), { mode: 0o600 });
       await writeJson(catalogPath, { models: [{ slug: "glm-5p1" }] });
-      const noted = await runHarnessForwardMigrations(home);
-      assert.equal(noted.filter((n) => /auto model to Codex/.test(n)).length, 1, noted.join("\n"));
+      const noted = await runHarnessForwardMigrations(home, notRunning);
+      assert.ok(noted.includes("Added the auto model to Codex — restart it to pick it up."), noted.join("\n"));
       assert.deepEqual(
         (await readJsonIfExists(catalogPath)).models.map((row) => row.slug),
         ["auto", "glm-5p1"],
@@ -179,7 +182,7 @@ describe("runHarnessForwardMigrations", () => {
       // No catalog file at all: nothing created, config untouched.
       await rm(catalogPath, { force: true });
       const before = await readFile(configPath, "utf8");
-      const silent = await runHarnessForwardMigrations(home);
+      const silent = await runHarnessForwardMigrations(home, notRunning);
       assert.equal(silent.filter((n) => /auto model to Codex/.test(n)).length, 0, silent.join("\n"));
       assert.equal(await readFile(configPath, "utf8"), before);
       assert.equal(existsSync(catalogPath), false);
@@ -215,6 +218,10 @@ describe("runHarnessForwardMigrations", () => {
       const notes = await runHarnessForwardMigrations(home);
       assert.ok(
         notes.includes("Couldn't add the auto model to OpenCode — re-run nexus opencode on."),
+        notes.join("\n"),
+      );
+      assert.ok(
+        notes.includes("Couldn't update effort settings for OpenCode's Fireworks models. Re-run nexus opencode on."),
         notes.join("\n"),
       );
     });
@@ -266,7 +273,13 @@ describe("runHarnessForwardMigrations", () => {
         ["Added the auto model to OpenCode — restart it to pick it up."],
         notes.join("\n"),
       );
+      assert.deepEqual(
+        notes.filter((n) => /effort settings/.test(n)),
+        ["Updated effort settings for OpenCode's Fireworks models. Restart OpenCode to pick them up."],
+        notes.join("\n"),
+      );
       const opencode = JSON.parse(await readFile(configPath, "utf8"));
+      assert.equal(opencode.provider["fireworks-ai"].models["glm-latest"].reasoning, true);
       assert.ok(opencode.provider["fireworks-ai"].models.auto);
       // The Pi upgrade step rewrites its fireworks provider, which includes auto.
       assert.ok(notes.some((n) => /^Updated Pi.s Fireworks models/.test(n)), notes.join("\n"));
@@ -396,7 +409,10 @@ describe("runHarnessForwardMigrations", () => {
       const native = JSON.parse(await readFile(configPath, "utf8")).providers["fireworks-ai"];
       assert.deepEqual(native.models.auto, {
         name: "Auto",
-        capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+        capabilities: {
+          tools: true, input: ["text", "image"], output: ["text"],
+          reasoning: { supported: true, effort: ["low", "medium", "high"] },
+        },
       });
 
       const again = await runHarnessForwardMigrations(home);
@@ -422,13 +438,127 @@ describe("runHarnessForwardMigrations", () => {
     },
   };
 
-  it("leaves a v1-only OpenCode config alone on upgrade", async () => {
+  it("repairs v1-only OpenCode effort on upgrade without adding a native providers map", async () => {
     await withTempHome("forward-migrate-opencode-v1-", async (home) => {
-      const { configPath, original } = await writeOpencodeUpgradeFixture(home, { config: managedOpencodeConfig });
-      await runHarnessForwardMigrations(home);
+      const { configPath } = await writeOpencodeUpgradeFixture(home, { config: managedOpencodeConfig });
+      const notes = await runHarnessForwardMigrations(home);
+      assert.deepEqual(
+        notes.filter((n) => /OpenCode's Fireworks models|auto model to OpenCode/.test(n)),
+        ["Updated effort settings for OpenCode's Fireworks models. Restart OpenCode to pick them up."],
+        notes.join("\n"),
+      );
+      const after = await readFile(configPath, "utf8");
+      const config = JSON.parse(after);
+      assert.deepEqual(config.provider["fireworks-ai"].models.auto, { name: "Auto", reasoning: true });
+      assert.equal(config.providers, undefined);
+      const again = await runHarnessForwardMigrations(home);
+      assert.equal(again.filter((n) => /OpenCode's Fireworks models/.test(n)).length, 0, again.join("\n"));
+      assert.equal(await readFile(configPath, "utf8"), after);
+    });
+  });
+
+  it("leaves an Auto row with the user's variants as written on upgrade, with no note", async () => {
+    await withTempHome("forward-migrate-opencode-partial-", async (home) => {
+      const variants = Object.fromEntries(["low", "medium", "high"].map((id) => [id, { reasoningEffort: id }]));
+      const config = structuredClone(managedOpencodeConfig);
+      config.provider["fireworks-ai"].models.auto.variants = variants;
+      const { configPath, original } = await writeOpencodeUpgradeFixture(home, { config });
+      const notes = await runHarnessForwardMigrations(home);
+      assert.equal(notes.filter((n) => /OpenCode's Fireworks models/.test(n)).length, 0, notes.join("\n"));
       assert.equal(await readFile(configPath, "utf8"), original);
     });
   });
+
+  // The mirror is spelled out rather than written by the code under test, so a
+  // writer that drops disabled variants cannot hide the rewrite it causes.
+  const userVariants = { fast: { disabled: true }, deep: { reasoningEffort: "high" } };
+  const mirroredVariants = [
+    { id: "fast", settings: { disabled: true } },
+    { id: "deep", settings: { reasoningEffort: "high" } },
+  ];
+  for (const { name, globalProvider, config } of [
+    {
+      name: "Fireworks",
+      globalProvider: "fireworks",
+      config: {
+        model: "fireworks-ai/auto",
+        provider: {
+          "fireworks-ai": {
+            options: { apiKey: "fw_test_key_12345" },
+            models: { auto: { name: "Auto", reasoning: true }, "example-model": { name: "Example", variants: userVariants } },
+          },
+        },
+        providers: {
+          "fireworks-ai": {
+            settings: { apiKey: "fw_test_key_12345" },
+            models: {
+              auto: {
+                name: "Auto",
+                capabilities: {
+                  reasoning: { supported: true, effort: ["low", "medium", "high"] },
+                },
+              },
+              "example-model": { name: "Example", variants: mirroredVariants },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "Azure",
+      globalProvider: "azure",
+      config: {
+        model: "fireworks-azure/example-deployment",
+        provider: {
+          "fireworks-azure": {
+            npm: "@ai-sdk/openai-compatible",
+            options: { baseURL: "https://example-resource.services.ai.azure.com/openai/v1", apiKey: "{env:AZURE_API_KEY}" },
+            models: { "example-deployment": { name: "example-deployment", variants: userVariants } },
+          },
+        },
+        providers: {
+          "fireworks-azure": {
+            package: "aisdk:@ai-sdk/openai-compatible",
+            settings: { baseURL: "https://example-resource.services.ai.azure.com/openai/v1", apiKey: "{env:AZURE_API_KEY}" },
+            models: { "example-deployment": { name: "example-deployment", variants: mirroredVariants } },
+          },
+        },
+      },
+    },
+  ]) {
+    if (name === "Fireworks") {
+      it("removes invented v2 capabilities from a reasoning-only mirror once, keeping variants", async () => {
+        await withTempHome("forward-migrate-opencode-capabilities-", async (home) => {
+          await writeGlobalConfig(home, { harnesses: { opencode: { enabled: true, provider: globalProvider } } });
+          const configPath = opencodeConfigPath(home);
+          await mkdir(path.dirname(configPath), { recursive: true });
+          const old = structuredClone(config);
+          Object.assign(old.providers["fireworks-ai"].models.auto.capabilities, {
+            tools: true, input: ["text", "image"], output: ["text"],
+          });
+          await writeFile(configPath, JSON.stringify(old));
+          await runHarnessForwardMigrations(home);
+          const repaired = await readFile(configPath, "utf8");
+          assert.deepEqual(JSON.parse(repaired), config);
+          assert.deepEqual(await runHarnessForwardMigrations(home), []);
+          assert.equal(await readFile(configPath, "utf8"), repaired);
+        });
+      });
+    }
+
+    it(`leaves an existing ${name} v2 mirror with a disabled variant as written`, async () => {
+      await withTempHome("forward-migrate-opencode-disabled-", async (home) => {
+        await writeGlobalConfig(home, { harnesses: { opencode: { enabled: true, provider: globalProvider } } });
+        const configPath = opencodeConfigPath(home);
+        await mkdir(path.dirname(configPath), { recursive: true });
+        const original = `${JSON.stringify(config, null, 2)}\n`;
+        await writeFile(configPath, original);
+        const notes = await runHarnessForwardMigrations(home);
+        assert.equal(notes.filter((n) => /OpenCode/.test(n)).length, 0, notes.join("\n"));
+        assert.equal(await readFile(configPath, "utf8"), original);
+      });
+    });
+  }
 
   it("leaves a v2 OpenCode config alone on upgrade when the harness is off", async () => {
     await withTempHome("forward-migrate-opencode-off-", async (home) => {
@@ -497,10 +627,20 @@ describe("runHarnessForwardMigrations", () => {
     clearModelsDevFireworksRegistry();
     await withTempHome("forward-migrate-opencode-offline-", async (home) => {
       const config = { ...pickerDuplicateConfig, providers: undefined };
-      const { configPath, original } = await writeOpencodeUpgradeFixture(home, { config });
+      const { configPath } = await writeOpencodeUpgradeFixture(home, { config });
       const notes = await runHarnessForwardMigrations(home);
       assert.equal(notes.filter((n) => /duplicate Fireworks models/.test(n)).length, 0, notes.join("\n"));
-      assert.equal(await readFile(configPath, "utf8"), original);
+      const updated = JSON.parse(await readFile(configPath, "utf8"));
+      const { auto: previousAuto, ...previousModels } = config.provider["fireworks-ai"].models;
+      const { auto: updatedAuto, ...updatedModels } = updated.provider["fireworks-ai"].models;
+      assert.deepEqual(
+        updatedModels,
+        Object.fromEntries(Object.entries(previousModels).map(([id, row]) => [id, { ...row, reasoning: true }])),
+      );
+      assert.equal(updatedAuto.name, previousAuto.name);
+      assert.equal(updatedAuto.reasoning, true);
+      assert.equal(updated.model, config.model);
+      assert.equal(updated.providers, undefined);
     });
   });
 
@@ -534,7 +674,7 @@ describe("runHarnessForwardMigrations", () => {
       await writeFile(settingsPath, originalSettings);
 
       const notes = await runHarnessForwardMigrations(home);
-      assert.equal(notes.filter((n) => /auto model to/.test(n)).length, 0, notes.join("\n"));
+      assert.equal(notes.filter((n) => /auto model to|OpenCode's Fireworks models/.test(n)).length, 0, notes.join("\n"));
       assert.equal(await readFile(configPath, "utf8"), original);
       assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
     });

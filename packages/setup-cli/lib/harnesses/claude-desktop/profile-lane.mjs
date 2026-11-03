@@ -20,8 +20,9 @@
 import process from "node:process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
-import { resolveFireworksKeyWithSource } from "../../keys/api-key.mjs";
+import { fileURLToPath } from "node:url";
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { assertResolvedKeyNotRejected, resolveFireworksKeyWithSource, tryReadKeychainSecret } from "../../keys/api-key.mjs";
 import { loadServerlessCatalog } from "../../fireworks/models.mjs";
 import { isFirerouterModelPattern } from "../../fireworks/model-specs.mjs";
 import { writeFileAtomic } from "../../io/atomic-write.mjs";
@@ -32,6 +33,8 @@ import {
   retireLegacyShimAgent, shimServiceFilePath, shimTrustOptions, startShimService, stopShimService,
 } from "./platform.mjs";
 import { preferDataDirPath } from "../../system/data-dir.mjs";
+import { ensureShimSecret, probeShimIdentity, readShimSecret } from "./shim-auth.mjs";
+import { isLoopbackHostname } from "../../system/loopback.mjs";
 
 const SHIM_DEFAULT_PORT = 8799;
 const SHIM_LABEL = SHIM_AGENT_LABEL;
@@ -86,7 +89,8 @@ export async function detectConnectors(home, { deployments = [firstPartyDir(home
   const firstParty = await readJson(path.join(firstPartyDir(home), "claude_desktop_config.json"));
   for (const [name, def] of Object.entries(firstParty?.mcpServers ?? {})) {
     const key = connectorSlug(name);
-    if (!key || found.has(key)) continue;
+    // A relay URL recorded from a session file yields to the config's real URL.
+    if (!key || (found.has(key) && !isRelayUrl(found.get(key).url))) continue;
     if (typeof def?.url === "string" && /^https:\/\//.test(def.url)) {
       found.set(key, { name: key, transport: "http", url: def.url, ...(def.oauth ? { oauth: desktopOAuth(def.oauth, def.url) } : {}) });
     } else if (typeof def?.command === "string") {
@@ -107,15 +111,22 @@ export function desktopOAuth(oauth, url) {
   if (!oauth || typeof oauth !== "object") return undefined;
   const out = { ...oauth };
   if (out.clientId && out.callbackPort && !out.callbackHost) out.callbackHost = "localhost";
-  // A client secret requires an explicit issuer (Desktop schema rule); for
-  // Google-hosted connectors that is always accounts.google.com.
+  // A client secret requires an explicit issuer (Desktop schema rule).
   if (out.clientSecret && !out.authorizationServer) {
     let host = "";
     try { host = new URL(url ?? "").hostname; } catch {}
-    if (/googleapis\.com$/.test(host)) out.authorizationServer = ["https://accounts.google.com"];
+    const issuer = /googleapis\.com$/.test(host) ? "https://accounts.google.com"
+      : OAUTH_ISSUERS[host];
+    if (issuer) out.authorizationServer = [issuer];
   }
   return out;
 }
+
+// Authorization-server issuers for IdPs Desktop cannot discover.
+const OAUTH_ISSUERS = {
+  "mcp.slack.com": "https://slack.com",
+  "mcp.figma.com": "https://api.figma.com",
+};
 
 /**
  * Claude.ai connector relay candidates: {name, serverId} pairs found in
@@ -136,13 +147,63 @@ export async function listHostedCandidates(home) {
  * 3p app cannot self-register with them, so sync skips them unless the entry
  * carries its own pre-registered OAuth client.
  */
-const CONTROL_PLANE_HOSTS = /googleapis\.com$|claudemcpcontent\.com$|\.mcp\.claude\.com$|^mcp\.claude\.com$/;
+// mcp-proxy.anthropic.com is claude.ai's connector relay: a session file
+// carrying that URL is really a hosted connector (see listHostedCandidates),
+// and the relay only answers for claude.ai sessions — a 3p profile pointing
+// at it gets a dead server, so it is skipped like the other control-plane
+// hosts.
+const CONTROL_PLANE_HOSTS = /googleapis\.com$|claudemcpcontent\.com$|\.mcp\.claude\.com$|^mcp\.claude\.com$|^mcp-proxy\.anthropic\.com$/;
 
 export function reliesOnClaudeAiLogin(entry) {
   const url = entry?.url ?? "";
   let host = "";
   try { host = new URL(url).hostname; } catch { return false; }
   return CONTROL_PLANE_HOSTS.test(host) && !entry?.oauth?.clientId;
+}
+
+/** claude.ai's connector relay (see listHostedCandidates). */
+function isRelayUrl(url) {
+  try { return new URL(url).hostname === "mcp-proxy.anthropic.com"; } catch { return false; }
+}
+
+/** IdPs that require a pre-registered OAuth client (Figma): without one the
+ * entry can never authenticate, so sync skips it instead of landing a dead
+ * connector. `mcp add <name> --client-id --client-secret` supplies one. */
+const BYO_OAUTH_HOSTS = new Set(["mcp.figma.com"]);
+
+function hostOf(url) {
+  try { return new URL(url ?? "").hostname; } catch { return ""; }
+}
+
+/** Entries that can never work in the 3p profile: relay URLs (dead even
+ * with an OAuth client — the relay answers claude.ai sessions only),
+ * control-plane connectors without their own client, and connectors that
+ * require a pre-registered OAuth client the user has not supplied. */
+function isUnmigratable(entry) {
+  return isRelayUrl(entry?.url) || reliesOnClaudeAiLogin(entry)
+    || (BYO_OAUTH_HOSTS.has(hostOf(entry?.url)) && !entry?.oauth?.clientId);
+}
+
+/** Why a connector was skipped, for sync output. */
+function skippedReason(entry, excluded) {
+  if (excluded.has(entry.name)) return "removed with `mcp remove`";
+  const host = hostOf(entry?.url);
+  if (BYO_OAUTH_HOSTS.has(host) || /googleapis\.com$/.test(host)) return "requires OAuth client ID and secret";
+  return "requires claude.ai account";
+}
+
+/** Canonical report lines for `mcp sync` and `on`. */
+export function syncReportLines({ migrated = [], skipped = [] } = {}) {
+  const lines = [];
+  if (migrated.length) {
+    lines.push("  Migrated:");
+    for (const e of migrated) lines.push(`    ${e.name}`);
+  }
+  if (skipped.length) {
+    lines.push("  Not migrated:");
+    for (const s of skipped) lines.push(`    ${s.name}: ${s.reason}`);
+  }
+  return lines;
 }
 
 /**
@@ -168,7 +229,14 @@ async function walk(dir, found, hostedByUuid = new Map()) {
       const url = server?.url;
       const key = connectorSlug(server?.name);
       if (typeof url !== "string" || !/^https:\/\//.test(url) || !key) continue;
-      if (!found.has(key)) found.set(key, { name: key, transport: "http", url });
+      // A relay URL is not the connector's own address — it only resolves for
+      // claude.ai sessions. Record it as a placeholder so sync can report the
+      // connector as skipped, but let a usable URL for the same name win.
+      const existing = found.get(key);
+      const isRelay = isRelayUrl(url);
+      if (isRelay ? !existing : (!existing || isRelayUrl(existing.url))) {
+        found.set(key, { name: key, transport: "http", url });
+      }
       if (typeof server.uuid === "string" && !hostedByUuid.has(server.uuid)) {
         hostedByUuid.set(server.uuid, { name: key, serverId: server.uuid });
       }
@@ -200,17 +268,24 @@ export function parseClaudeMcpList(stdout) {
 export async function listOrgConnectorsViaClaudeCli({ timeoutMs = 90_000 } = {}) {
   if (process.env.NEXUS_TEST === "1") return [];
   const { execFile } = await import("node:child_process");
-  const { tmpdir } = await import("node:os");
   const env = { ...process.env };
   for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS"]) delete env[name];
-  return new Promise((resolve, reject) => {
-    execFile("claude", ["--setting-sources", "project,local", "mcp", "list"], {
-      env, cwd: tmpdir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
-    }, (error, stdout) => {
-      if (error && !stdout) reject(new Error(`claude mcp list failed: ${error.message}`));
-      else resolve(parseClaudeMcpList(stdout));
+  // Project and local settings are read from the working directory, so run
+  // in a fresh private one: never a shared directory others can write into.
+  const { tmpdir } = await import("node:os");
+  const cwd = await mkdtemp(path.join(tmpdir(), "nexus-mcp-list-"));
+  try {
+    return await new Promise((resolve, reject) => {
+      execFile("claude", ["--setting-sources", "project,local", "mcp", "list"], {
+        env, cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
+      }, (error, stdout) => {
+        if (error && !stdout) reject(new Error(`claude mcp list failed: ${error.message}`));
+        else resolve(parseClaudeMcpList(stdout));
+      });
     });
-  });
+  } finally {
+    await rm(cwd, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function appliedProfilePath(home, state) {
@@ -257,7 +332,7 @@ export function isConnectorUrl(url) {
   let parsed;
   try { parsed = new URL(url); } catch { return false; }
   if (parsed.protocol === "https:") return true;
-  return parsed.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname);
+  return parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname);
 }
 
 /** Add or replace a connector directly in the applied profile. */
@@ -304,10 +379,42 @@ async function persistConnectorStore(home, { servers, excluded } = {}) {
   await writeConnectorStore(home, store);
 }
 
-async function saveOauthClient(home, name, oauth) {
+/**
+ * A saved OAuth client for `name`, only when it was registered for `url`. A
+ * client is issued for one server: a source that later reports a different
+ * URL under the same name never inherits it. Entries saved before the URL
+ * was recorded match nothing here; sync binds them (see backfillClientUrls
+ * and syncProfileConnectors).
+ */
+export function durableClientFor(durable, name, url) {
+  const entry = durable?.[name];
+  if (!entry || typeof entry !== "object") return undefined;
+  const { registeredUrl, ...oauth } = entry;
+  return typeof url === "string" && registeredUrl === url ? oauth : undefined;
+}
+
+/**
+ * Clients saved before the URL was recorded: take the URL once from the
+ * applied profile's entry carrying the same client, then they are
+ * URL-bound like any other. Mutates and persists `durable`.
+ */
+async function backfillClientUrls(home, durable, servers) {
+  let changed = false;
+  for (const server of Array.isArray(servers) ? servers : []) {
+    const entry = durable[server?.name];
+    if (!entry || typeof entry !== "object" || entry.registeredUrl || typeof server.url !== "string") continue;
+    if (!server.oauth || server.oauth.clientId !== entry.clientId) continue;
+    entry.registeredUrl = server.url;
+    changed = true;
+  }
+  if (!changed) return;
+  await writeFileAtomic(oauthClientsPath(home), JSON.stringify(durable, null, 2), { mode: 0o600 });
+}
+
+async function saveOauthClient(home, name, oauth, url) {
   if (!oauth || typeof oauth !== "object") return;
   const all = await readOauthClients(home);
-  all[name] = oauth;
+  all[name] = { ...oauth, registeredUrl: url };
   await mkdir(claudeDesktopDataDir(home), { recursive: true });
   await writeFileAtomic(oauthClientsPath(home), JSON.stringify(all, null, 2), { mode: 0o600 });
 }
@@ -321,7 +428,7 @@ export async function addProfileConnector(home, { name, url, command, args, env,
   if (!isHttp && !isStdio) {
     throw new Error(`Connector needs an https URL (http only for 127.0.0.1/localhost) or a stdio command: ${name}`);
   }
-  if (oauth) await saveOauthClient(home, name, oauth);
+  if (oauth && isHttp) await saveOauthClient(home, name, oauth, url);
   const entry = isHttp
     ? { name, transport: "http", url, ...(oauth ? { oauth: desktopOAuth(oauth, url) } : {}) }
     : { name, transport: "stdio", command, args: args ?? [], ...(env ? { env } : {}) };
@@ -365,10 +472,31 @@ export async function syncProfileConnectors(home, { listOrgConnectors = listOrgC
   // its own client authenticates standalone and is kept; without one,
   // control-plane connectors (Google/Anthropic-hosted) are skipped.
   const durable = await readOauthClients(home);
+  await backfillClientUrls(home, durable, profile.managedMcpServers).catch(() => {});
   const previousOauth = new Map((Array.isArray(profile.managedMcpServers) ? profile.managedMcpServers : [])
-    .filter((e) => typeof e?.name === "string" && e?.oauth).map((e) => [e.name, e.oauth]));
+    .filter((e) => typeof e?.name === "string" && e?.oauth).map((e) => [e.name, e]));
+  // A client follows its connector's name AND URL, never just the name.
+  const previousClient = (e) => {
+    const prev = previousOauth.get(e.name);
+    return prev && prev.url === e.url ? prev.oauth : undefined;
+  };
+  // A client saved before URLs were recorded that the applied profile no
+  // longer carries: bind it, once, to the URL the first source reports for
+  // its name, then it is URL-bound like any other.
+  let bound = false;
+  const legacyClient = (e) => {
+    const entry = durable[e.name];
+    // Never bind a URL-less client to a relay placeholder — it would record
+    // the dead URL and the real URL from another source could not inherit it.
+    if (excluded.has(e.name) || isRelayUrl(e.url) || !entry || typeof entry !== "object" || entry.registeredUrl || typeof e.url !== "string") {
+      return undefined;
+    }
+    entry.registeredUrl = e.url;
+    bound = true;
+    return durableClientFor(durable, e.name, e.url);
+  };
   const withClients = (e) => {
-    const oauth = e.oauth ?? previousOauth.get(e.name) ?? durable[e.name];
+    const oauth = e.oauth ?? previousClient(e) ?? durableClientFor(durable, e.name, e.url) ?? legacyClient(e);
     return oauth && !e.oauth ? { ...e, oauth: desktopOAuth(oauth, e.url) } : e;
   };
   const [detectedAll, orgRaw] = await Promise.all([
@@ -376,8 +504,18 @@ export async function syncProfileConnectors(home, { listOrgConnectors = listOrgC
     listOrgConnectors().catch(() => null),
   ]);
   const registryRead = orgRaw !== null;
-  const detected = detectedAll.map(withClients).filter((e) => !excluded.has(e.name) && !reliesOnClaudeAiLogin(e));
-  const org = (orgRaw ?? []).map(withClients).filter((e) => !excluded.has(e.name) && !reliesOnClaudeAiLogin(e));
+  // Skipped connectors are reported by name with a reason (first source wins).
+  const skipped = new Map();
+  const keep = (e) => {
+    const skip = excluded.has(e.name) || isUnmigratable(e);
+    // A usable entry for the same name from another source un-skips it.
+    if (!skip) skipped.delete(e.name);
+    else if (!skipped.has(e.name)) skipped.set(e.name, { name: e.name, reason: skippedReason(e, excluded) });
+    return !skip;
+  };
+  const detected = detectedAll.map(withClients).filter(keep);
+  const org = (orgRaw ?? []).map(withClients).filter(keep);
+  if (bound) await writeFileAtomic(oauthClientsPath(home), JSON.stringify(durable, null, 2), { mode: 0o600 }).catch(() => {});
   // The list is rebuilt strictly from sources: org-registered + locally used.
   // Standard-catalog connectors that the org has not added are ignored, and
   // entries only present in the profile from an earlier sync are dropped.
@@ -388,21 +526,29 @@ export async function syncProfileConnectors(home, { listOrgConnectors = listOrgC
   const isManual = (e) => {
     let host = "";
     try { host = new URL(e?.url ?? "").hostname; } catch { return true; } // stdio
-    return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || Boolean(e?.oauth);
+    return isLoopbackHostname(host) || Boolean(e?.oauth);
   };
   for (const server of Array.isArray(profile.managedMcpServers) ? profile.managedMcpServers : []) {
-    if (!server?.name || excluded.has(server.name) || reliesOnClaudeAiLogin(server)) continue;
+    if (!server?.name) continue;
+    if (excluded.has(server.name) || isUnmigratable(server)) {
+      if (!skipped.has(server.name)) skipped.set(server.name, { name: server.name, reason: skippedReason(server, excluded) });
+      continue;
+    }
     if (isManual(server)) byName.set(server.name, server);
   }
   for (const entry of [...detected, ...org.filter((e) => !localNames.has(e.name))]) {
     byName.set(entry.name, entry);
   }
   const merged = [...byName.values()];
+  // A name that still migrated is not "skipped" — e.g. a purged relay entry
+  // in the profile while a usable URL for it came from a detection source.
+  for (const entry of merged) skipped.delete(entry.name);
   if (merged.length) profile.managedMcpServers = merged;
   else delete profile.managedMcpServers;
   await writeFileAtomic(profilePath, JSON.stringify(profile, null, 2), { mode: 0o600 });
   await persistConnectorStore(home, { servers: merged, excluded: [...excluded] }).catch(() => {});
-  return { total: merged.length, fromOrg: org.length, registryRead };
+  return { total: merged.length, fromOrg: org.length, registryRead,
+    migrated: merged, skipped: [...skipped.values()] };
 }
 
 /** Set/clear the harness enabled flag via the shared config helper (uninstall discovery reads it). */
@@ -547,7 +693,28 @@ export async function loadDesktopLineup({ apiKey, signedCatalogPath }) {
   };
 }
 
-function buildProfile({ shimUrl, apiKey, models, existingServers, customModels = [] }) {
+// Unset, Cowork and Chat refuse every web fetch and sandbox network call.
+// "*" matches first-party Cowork; a list the user set in Desktop wins.
+const DEFAULT_EGRESS_HOSTS = Object.freeze(["*"]);
+
+function userEgressHosts(profile) {
+  const hosts = profile?.coworkEgressAllowedHosts;
+  return Array.isArray(hosts) && hosts.length ? hosts : null;
+}
+
+/** The user's own list from the current profile, else the one `off` saved, else every host. */
+export function egressHosts(profile, saved) {
+  return userEgressHosts(profile) ?? userEgressHosts({ coworkEgressAllowedHosts: saved }) ?? [...DEFAULT_EGRESS_HOSTS];
+}
+
+/** `off` deletes the profile, so a user-set egress list is kept here for the next `on`. */
+function egressStorePath(home) {
+  return path.join(claudeDesktopDataDir(home), "egress-hosts.json");
+}
+
+function buildProfile({
+  shimUrl, apiKey, models, existingServers, customModels = [], coworkEgressAllowedHosts,
+}) {
   // managedMcpServers are opt-in via `nexus claude-desktop mcp add/sync`
   // (which rewrite the applied profile directly). A repeat `on` preserves
   // them so a re-run never wipes the user's connectors.
@@ -568,6 +735,7 @@ function buildProfile({ shimUrl, apiKey, models, existingServers, customModels =
     // Max stream-idle wait (documented range 300–1800s). 1M-context prefills
     // take minutes on a silent stream; the default 300s abandons them.
     inferenceStreamIdleTimeoutSec: 1800,
+    coworkEgressAllowedHosts,
     ...(servers.length ? { managedMcpServers: servers } : {}),
   };
 }
@@ -582,13 +750,48 @@ function isShimProfile(profile, shimUrl) {
   if (typeof url !== "string") return false;
   let host = "", port = "";
   try { ({ hostname: host, port } = new URL(url)); } catch { return false; }
-  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(host);
+  const loopback = isLoopbackHostname(host);
   if (!loopback) return false;
   const key = profile?.inferenceGatewayApiKey;
   // Older installs also wrote Fire Pass (fpk_) keys; `off` must still find them.
   const fingerprint = typeof key === "string" && /^(fw_|fpk_)/.test(key)
     && profile?.inferenceProvider === "gateway" && profile?.inferenceCredentialKind === "static";
   return fingerprint && (port === "" || port === String(new URL(shimUrl).port));
+}
+
+/**
+ * Re-point the applied Nexus profile at `fireworksKey`: Desktop sends the
+ * profile's literal key, so it must track the stored key. Returns true when
+ * the profile changed.
+ * @param {{ home: string, fireworksKey: string }} params
+ */
+export async function refreshClaudeDesktopGatewayKey({ home, fireworksKey }) {
+  const key = fireworksKey?.trim();
+  // Like `on`, bake only the stored key, never one from this shell's environment.
+  if (!key || key !== await tryReadKeychainSecret(home)) return false;
+  const state = await readProfileState(home);
+  if (!state?.enabled || !state.profileId) return false;
+  const profilePath = path.join(configLibraryDir(home), `${state.profileId}.json`);
+  const profile = await readJson(profilePath);
+  if (!isShimProfile(profile, `http://127.0.0.1:${state.port ?? SHIM_DEFAULT_PORT}`)
+    || profile.inferenceGatewayApiKey === key) return false;
+  await writeFileAtomic(profilePath, JSON.stringify({ ...profile, inferenceGatewayApiKey: key }, null, 2), { mode: 0o600 });
+  return true;
+}
+
+/**
+ * The key Claude Desktop sends while the Nexus profile is applied: the
+ * profile's literal `inferenceGatewayApiKey` (the shim forwards it as-is).
+ * null when the lane is off or the profile isn't ours. Reads files only.
+ * @param {string} home
+ * @returns {Promise<string | null>}
+ */
+export async function readClaudeDesktopProfileKey(home) {
+  const state = await readProfileState(home);
+  if (!state?.enabled || !state.profileId) return null;
+  const profile = await readJson(path.join(configLibraryDir(home), `${state.profileId}.json`));
+  if (!isShimProfile(profile, `http://127.0.0.1:${state.port ?? SHIM_DEFAULT_PORT}`)) return null;
+  return profile.inferenceGatewayApiKey;
 }
 
 /** Durable registry of profile ids Nexus has written (survives off, so
@@ -685,15 +888,161 @@ async function restoreDeviceCatalogConfig(home, saved) {
 // never writes it — the Desktop app default applies while fireconnected.
 const DEVICE_CATALOG_KEYS = ["modelCatalogEnabled", "catalogUrl", "modelPrefer1mContext", "defaultModelEffort", "toolSearchEnabled"];
 
-async function waitForShim(port, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
+async function fileSize(file) {
+  return stat(file).then((s) => s.size, () => 0);
+}
+
+/** What the shim wrote to `errorPath` after byte `offset` (this run only). */
+async function readNewErrorLog(errorPath, offset) {
+  const bytes = await readFile(errorPath).catch(() => Buffer.alloc(0));
+  // A log truncated since `offset` was taken is all new.
+  return bytes.subarray(bytes.length >= offset ? offset : 0).toString("utf8").trim();
+}
+
+/**
+ * Explain a shim that never answered, from what it logged during this run:
+ * a port conflict, other crash output, or nothing at all (it exited cleanly
+ * or the service never started it).
+ * @param {{ port: number, newErrors: string, platform?: string }} details
+ */
+export function shimNotReadyMessage({ port, newErrors, platform = process.platform }) {
+  const head = `The Fireworks shim did not start on 127.0.0.1:${port}.`;
+  if (/EADDRINUSE/.test(newErrors)) {
+    return `${head} Another program is using port ${port}. `
+      + `Find it with \`lsof -nP -iTCP:${port} -sTCP:LISTEN\`, quit it, then connect again.`;
+  }
+  if (newErrors) {
+    const tail = newErrors.split("\n").slice(-8).join("\n");
+    return `${head} It reported:\n${tail}\nFull log: ~/.nexus/claude-desktop/shim.err.log`;
+  }
+  const status = platform === "linux"
+    ? `systemctl --user status ${SHIM_LABEL}`
+    : `launchctl print gui/$(id -u)/${SHIM_LABEL}`;
+  return `${head} It exited without an error; check the service with \`${status}\`.`;
+}
+
+/**
+ * Wait until the listener on `port` proves it is our shim (HMAC over a
+ * nonce with the per-install secret). Any other answer on the port — a
+ * different user's process holding it — never counts as ready.
+ *
+ * A port conflict logged early is expected to clear: the service respawns
+ * the shim (launchd waits 10 s between respawns, systemd 2 s) and a
+ * previous instance may still be letting go of the port. Only a conflict
+ * logged after `conflictGraceMs` is current, and that one fails at once
+ * instead of waiting out the full timeout. The log is read at most once a
+ * second.
+ */
+export async function waitForShim(port, {
+  secret, errorPath, errorOffset = 0, timeoutMs = 20_000, conflictGraceMs = 10_500,
+} = {}) {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let recentOffset = null;
+  let lastLogRead = 0;
   for (;;) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) });
-      if (res.ok) return;
-    } catch { /* not up yet */ }
-    if (Date.now() > deadline) throw new Error(`Shim did not become ready on 127.0.0.1:${port}; see ~/.nexus/claude-desktop/shim.err.log`);
+    if (await probeShimIdentity(port, secret)) return;
+    const now = Date.now();
+    if (now > deadline) {
+      const newErrors = errorPath ? await readNewErrorLog(errorPath, errorOffset) : "";
+      throw new Error(shimNotReadyMessage({ port, newErrors }));
+    }
+    if (errorPath && now - started >= conflictGraceMs) {
+      if (recentOffset === null) {
+        recentOffset = await fileSize(errorPath);
+      } else if (now - lastLogRead >= 1000) {
+        lastLogRead = now;
+        if (/EADDRINUSE/.test(await readNewErrorLog(errorPath, recentOffset))) {
+          throw new Error(shimNotReadyMessage({ port, newErrors: await readNewErrorLog(errorPath, errorOffset) }));
+        }
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+/**
+ * Put the backed-up profile library back, minus Nexus's own profile, with the
+ * user's later changes on top: profiles added or edited since `on` keep their
+ * current contents and stay listed, and profiles the user deleted since
+ * (gone from both the current listing and the current files) stay deleted.
+ * With no later changes the result is the backup byte for byte. Built beside
+ * the library and swapped in, so a failure leaves the current one intact.
+ * @param {string} lib
+ * @param {string} backup
+ * @param {{ profileId?: string, meta?: { appliedId?: string|null, entries?: Array<{ id: string }> } | null, readdirFn?: typeof readdir }} options
+ */
+async function restoreProfileLibrary(lib, backup, { profileId, meta, readdirFn = readdir }) {
+  const staged = `${lib}.nexus-restore-${Date.now()}`;
+  await rm(staged, { recursive: true, force: true });
+  await cp(backup, staged, { recursive: true });
+  try {
+    let current = [];
+    try {
+      current = await readdirFn(lib, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    for (const entry of current) {
+      if (entry.name === "_meta.json" || entry.name === `${profileId}.json`) continue;
+      const from = path.join(lib, entry.name);
+      const to = path.join(staged, entry.name);
+      if (entry.isFile()) {
+        const before = await readFile(to).catch(() => null);
+        const now = await readFile(from);
+        if (before && before.equals(now)) continue;
+      }
+      await rm(to, { recursive: true, force: true });
+      await cp(from, to, { recursive: true });
+    }
+    const backupMeta = await readJson(path.join(staged, "_meta.json"));
+    const later = new Map((meta?.entries ?? []).filter((entry) => entry.id !== profileId).map((entry) => [entry.id, entry]));
+    // `on` carries every listed profile over, so a backup entry missing from
+    // a readable current listing was deleted by the user. An unreadable
+    // listing proves nothing, and the backup is kept whole.
+    const currentFiles = new Set(current.map((entry) => entry.name));
+    const deleted = (entry) => Array.isArray(meta?.entries) && !later.has(entry.id) && !currentFiles.has(`${entry.id}.json`);
+    const backupEntries = (backupMeta?.entries ?? []).filter((entry) => !deleted(entry));
+    for (const entry of backupMeta?.entries ?? []) {
+      if (deleted(entry)) await rm(path.join(staged, `${entry.id}.json`), { force: true });
+    }
+    const entries = [
+      ...backupEntries.map((entry) => later.get(entry.id) ?? entry),
+      ...[...later.values()].filter((entry) => !backupEntries.some((old) => old.id === entry.id)),
+    ];
+    const listed = new Set(entries.map((entry) => entry.id));
+    const appliedId = meta?.appliedId === null
+      ? null
+      : meta?.appliedId !== profileId && listed.has(meta?.appliedId)
+        ? meta.appliedId
+        : backupMeta?.appliedId !== profileId && listed.has(backupMeta?.appliedId)
+          ? backupMeta.appliedId
+          : null;
+    if (JSON.stringify(entries) !== JSON.stringify(backupMeta?.entries ?? []) || appliedId !== backupMeta?.appliedId) {
+      await writeFileAtomic(
+        path.join(staged, "_meta.json"),
+        JSON.stringify({ ...backupMeta, appliedId, entries }, null, 2),
+        { mode: 0o600 },
+      );
+    }
+    const old = `${lib}.nexus-old-${Date.now()}`;
+    let movedOld = false;
+    try {
+      await rename(lib, old);
+      movedOld = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    try {
+      await rename(staged, lib);
+    } catch (error) {
+      if (movedOld) await rename(old, lib).catch(() => {});
+      throw error;
+    }
+    if (movedOld) await rm(old, { recursive: true, force: true }).catch(() => {});
+  } catch (error) {
+    await rm(staged, { recursive: true, force: true }).catch(() => {});
+    throw error;
   }
 }
 
@@ -732,11 +1081,13 @@ export async function enableProfileLane(home, {
       + "Run `nexus login --api-key <key>` so the shim service can use a stored credential.",
     );
   }
+  // Same stop as every other `on`: never bake a saved key the gateway
+  // rejects into the profile or the shim (a dead key would 401 every turn).
+  await assertResolvedKeyNotRejected(key.key, { harnessId: "claude-desktop" });
 
   const dataDir = claudeDesktopDataDir(home);
   await mkdir(dataDir, { recursive: true });
   const shimUrl = `http://127.0.0.1:${port}`;
-  const durableClients = await readOauthClients(home);
 
   // Full serverless line-up: auto plus one picker entry per -latest router
   // alias, paired with a unique signed-catalog id (tier-matched when the pool
@@ -768,10 +1119,14 @@ export async function enableProfileLane(home, {
     models: { ...(modelMap.models ?? {}), ...Object.fromEntries(customModels.map((m) => [m.name, m.shortId])) },
   };
   await writeFileAtomic(shimStatePath(home), JSON.stringify({ port, modelMap: stateModelMap }, null, 2));
+  // Before the service starts, so the shim can prove itself on first probe.
+  const shimSecret = await ensureShimSecret(dataDir);
   if (process.env.NEXUS_TEST !== "1" && allowSystemChanges) {
-    const entry = preferDataDirPath(new URL(import.meta.url).pathname.replace(/[^/]+$/, "shim.mjs"));
+    const entry = preferDataDirPath(fileURLToPath(new URL("shim.mjs", import.meta.url)));
     const servicePath = shimServicePath(home);
     const firstInstall = await stat(servicePath).then(() => false, () => true);
+    const errorPath = path.join(dataDir, "shim.err.log");
+    const errorOffset = await fileSize(errorPath);
     try {
       await mkdir(path.dirname(servicePath), { recursive: true });
       await writeFileAtomic(servicePath, buildShimServiceFile({
@@ -781,11 +1136,11 @@ export async function enableProfileLane(home, {
         ...shimTrustOptions(),
         label: SHIM_LABEL,
         logPath: path.join(dataDir, "shim.log"),
-        errorPath: path.join(dataDir, "shim.err.log"),
+        errorPath,
       }));
       await retireLegacyShimAgent(home, { allowSystemChanges }).catch(() => {});
       await startShimService(servicePath, { allowSystemChanges, label: SHIM_LABEL });
-      await waitForShim(port);
+      await waitForShim(port, { secret: shimSecret, errorPath, errorOffset });
     } catch (error) {
       // No profile state is written yet, so `off` would not know to remove
       // a service this run installed; undo it here (e.g. no systemd user
@@ -798,8 +1153,11 @@ export async function enableProfileLane(home, {
     }
   }
 
-  const connectors = (await detectConnectors(home)).map((c) =>
-    durableClients[c.name] && !c.oauth ? { ...c, oauth: desktopOAuth(durableClients[c.name], c.url) } : c);
+  // Names only (profile-state and the summary); syncProfileConnectors below
+  // is what lands connectors and their OAuth clients in the profile.
+  // Unmigratable entries (relay URLs, claude.ai-hosted without a client) are
+  // only detected so sync can report them as skipped — they are not connectors.
+  const connectors = (await detectConnectors(home)).filter((e) => !isUnmigratable(e));
 
   const lib = configLibraryDir(home);
   const existing = await readJson(path.join(lib, "_meta.json"));
@@ -823,9 +1181,13 @@ export async function enableProfileLane(home, {
   // none (first on, or off deleted it), restore from the durable store so an
   // off/on cycle keeps the user's mcp add/sync setup.
   const durableStore = await readConnectorStore(home);
-  const profileServers = (await readJson(path.join(lib, `${profileId}.json`)))?.managedMcpServers;
+  const priorProfile = await readJson(path.join(lib, `${profileId}.json`));
+  const profileServers = priorProfile?.managedMcpServers;
   const existingServers = Array.isArray(profileServers) ? profileServers : durableStore.servers;
-  await writeFileAtomic(path.join(lib, `${profileId}.json`), JSON.stringify(buildProfile({ shimUrl, apiKey: key.key, models, existingServers, customModels }), null, 2), { mode: 0o600 });
+  await writeFileAtomic(path.join(lib, `${profileId}.json`), JSON.stringify(buildProfile({
+    shimUrl, apiKey: key.key, models, existingServers, customModels,
+    coworkEgressAllowedHosts: egressHosts(priorProfile, await readJson(egressStorePath(home))),
+  }), null, 2), { mode: 0o600 });
 
   const entries = (existing?.entries ?? []).filter((e) => e.id !== profileId);
   entries.push({ id: profileId, name: "Fireworks" });
@@ -858,10 +1220,18 @@ export async function enableProfileLane(home, {
     log(`Connector sync skipped: ${error?.message ?? error}`);
   }
 
-  if (synced?.total) {
-    printNote(`${synced.total} connector(s) are set up — sign in once per connector when you first use it.`);
+  if (synced?.total) printNote(`${synced.total} connector(s) are set up.`);
+  for (const line of syncReportLines(synced ?? {})) printNote(line);
+  if (synced) {
+    // status reads state.connectors: record what actually migrated (a durable
+    // OAuth client can rescue a connector detection alone cannot judge).
+    const state = await readJson(profileStatePath(home));
+    if (state?.connectors) {
+      state.connectors = synced.migrated.map((e) => e.name);
+      await writeFileAtomic(profileStatePath(home), JSON.stringify(state, null, 2));
+    }
   }
-  return { port, profileId, connectors: connectors.length, migrated,
+  return { port, profileId, connectors: synced?.total ?? connectors.length, migrated,
     models: [...models.map((m) => m.labelOverride ?? m.name), ...customModels.map((m) => m.label)] };
 }
 
@@ -869,6 +1239,7 @@ export async function enableProfileLane(home, {
 export async function disableProfileLane(home, {
   allowSystemChanges = true,
   log = (line) => console.log(line),
+  readdirFn = readdir,
 } = {}) {
   const state = await readProfileState(home);
   if (!state) { log("Desktop profile lane is not configured; nothing to do."); return; }
@@ -880,14 +1251,17 @@ export async function disableProfileLane(home, {
   try {
     const profile = state.profileId ? await readJson(path.join(lib, `${state.profileId}.json`)) : null;
     await persistConnectorStore(home, { servers: profile?.managedMcpServers, excluded: state.excludedConnectors });
+    const hosts = userEgressHosts(profile);
+    if (hosts) await writeFileAtomic(egressStorePath(home), JSON.stringify(hosts, null, 2));
+    else await rm(egressStorePath(home), { force: true });
   } catch { /* best effort — the store may already hold the latest writes */ }
   await restoreDeviceCatalogConfig(home, state.deviceBackup).catch((error) => log(`Device config restore skipped: ${error?.message ?? error}`));
   if (state.backup) {
-    // Restore the pre-fireconnect profiles exactly — except a backup whose
-    // appliedId points at a shim profile (older installs) would leave the app
-    // on the now-dead gateway. Fall back to Default in that case.
-    await rm(lib, { recursive: true, force: true });
-    await cp(state.backup, lib, { recursive: true });
+    // Restore the pre-fireconnect profiles, keeping what the user changed
+    // since — except a backup whose appliedId points at a shim profile (older
+    // installs) would leave the app on the now-dead gateway. Fall back to
+    // Default in that case.
+    await restoreProfileLibrary(lib, state.backup, { profileId: state.profileId, meta, readdirFn });
     await sanitizeAppliedId(lib, `http://127.0.0.1:${state.port ?? SHIM_DEFAULT_PORT}`);
     log("Restored the Desktop setup you had before.");
   } else if (meta?.appliedId === state.profileId) {
@@ -920,14 +1294,23 @@ export async function disableProfileLane(home, {
 export async function readProfileStatus(home) {
   const state = await readProfileState(home);
   let shimHealthy = false;
+  let shimUnverified = false;
   if (state?.port) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${state.port}/`, { signal: AbortSignal.timeout(1500) });
-      shimHealthy = res.ok;
-    } catch { shimHealthy = false; }
+    // Healthy only when the listener proves it is our shim: any process can
+    // answer on a loopback port.
+    const secret = await readShimSecret(claudeDesktopDataDir(home));
+    shimHealthy = await probeShimIdentity(state.port, secret, { timeoutMs: 1500 });
+    // Something answers but can't prove it is our shim: a shim from before
+    // this check that hasn't restarted yet, or another program on the port.
+    if (!shimHealthy) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${state.port}/`, { signal: AbortSignal.timeout(1500) });
+        shimUnverified = res.ok;
+      } catch { shimUnverified = false; }
+    }
   }
   let appliedProfileIsOurs = false;
   const meta = await readJson(path.join(configLibraryDir(home), "_meta.json"));
   if (state?.profileId && meta?.appliedId === state.profileId) appliedProfileIsOurs = true;
-  return { state, shimHealthy, appliedProfileIsOurs };
+  return { state, shimHealthy, shimUnverified, appliedProfileIsOurs };
 }

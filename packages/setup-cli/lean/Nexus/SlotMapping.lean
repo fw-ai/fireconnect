@@ -125,8 +125,8 @@ def needsOpenaiKey (isBare requiresKey : String → Bool)
     (extra : Option String) (pins : List String) : Bool :=
   (extra.toList ++ pins).any fun m => isBare m || requiresKey m
 
-/-- A GPT compound pinned to a tier slot attaches the key (the Bugbot finding:
-previously only `--model` was inspected). -/
+/-- A GPT compound pinned to a tier slot attaches the key, not only one
+passed with `--model`. -/
 theorem slot_gpt_compound_attaches (isBare requiresKey : String → Bool)
     (extra : Option String) (pins : List String) (m : String)
     (hm : m ∈ pins) (hk : requiresKey m = true) :

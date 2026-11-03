@@ -16,10 +16,8 @@ export const HTML_ONLY_SUFFIX =
  * every demo run, so no two races send an identical system prompt.
  *
  * Only the per-run marker remains. The spec text that used to live here (layout
- * sizing, design palette, "this run is timed") was removed: it added input
- * tokens where the open model has the weaker position (GLM pays $2.10/M every
- * run; warm-cached Opus pays $0.50/M), so padding the prompt biased the cost
- * story the wrong way. The output contract ("Return only a single complete HTML
+ * sizing, design palette, "this run is timed") was removed: it only added
+ * input tokens to every run. The output contract ("Return only a single complete HTML
  * file…") already lives in {@link HTML_ONLY_SUFFIX} on each preset.
  *
  * The marker does NOT force a cold cache and should not be relied on for

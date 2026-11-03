@@ -168,7 +168,7 @@ function printProviderKeys(status, keys, keysSent) {
 
 function printCurrent(auto, harnesses, keys, providerKeys) {
   const { providers, keysSent } = describeAutoConfig(auto, keys);
-  console.log("Auto router");
+  console.log("Nexus Auto");
   console.log("");
   console.log(`  Providers:      ${providers?.length ? formatAutoProviders(providers) : providers ? "none sent" : "default"}`);
   console.log("");
@@ -323,7 +323,7 @@ export async function runAutoCommand(ctx) {
   const heldBack = savedKeyLabels.length && !ctx.autoReset
     && Object.values(autoProviderKeysInScope({ ...config, auto: { providers } })).every((key) => !key);
   if (ctx.autoReset) {
-    printSuccess("Auto router is back to the default.");
+    printSuccess("Nexus Auto is back to the default.");
     console.log("  Auto-selects the best model for each turn, based on your setup.");
     if (savedKeyLabels.length) {
       console.log(`  Your saved ${savedKeyLabels.join(" and ")} ${savedKeyLabels.length > 1 ? "keys are" : "key is"} sent again once you re-run your harness.`);

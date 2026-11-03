@@ -44,10 +44,10 @@ describe("global-config", () => {
     assert.deepEqual(listEnabledHarnesses(config.harnesses), []);
   });
 
-  it("resolveStoredApiKey reads env ref", () => {
+  it("resolveStoredApiKey treats an env ref as missing (env is not a credential source)", () => {
     const previous = process.env.FIREWORKS_API_KEY;
     process.env.FIREWORKS_API_KEY = "fw_test_key";
-    assert.equal(resolveStoredApiKey(FIREWORKS_API_KEY_ENV_REF), "fw_test_key");
+    assert.equal(resolveStoredApiKey(FIREWORKS_API_KEY_ENV_REF), "");
     process.env.FIREWORKS_API_KEY = previous;
   });
 

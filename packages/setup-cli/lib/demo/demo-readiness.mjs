@@ -65,7 +65,7 @@ function renderReadinessLines(readiness) {
     `  ${DIM}Both sides use your Nexus CLI Claude setup. Anthropic slots run real Anthropic; only --model differs.${RESET}`,
     "",
     `  ${statusMark(readiness.claudeOn)}  ${BOLD}nexus claude${RESET}  ${DIM}(Fireworks routing)${RESET}`,
-    `  ${statusMark(readiness.fireworksKey)}  ${BOLD}Fireworks API key${RESET}  ${DIM}(login or FIREWORKS_API_KEY)${RESET}`,
+    `  ${statusMark(readiness.fireworksKey)}  ${BOLD}Fireworks API key${RESET}  ${DIM}(nexus login)${RESET}`,
     `  ${statusMark(readiness.claudeBinary)}  ${BOLD}claude${RESET} on PATH  ${DIM}(Claude Code CLI)${RESET}`,
     "",
   ];
@@ -228,7 +228,7 @@ export function formatReadinessError(readiness) {
     parts.push(FIRECONNECT_REQUIRED_MSG);
   }
   if (!readiness.fireworksKey) {
-    parts.push("No Fireworks API key found — run `nexus login`, export FIREWORKS_API_KEY, or pass --api-key.");
+    parts.push("No Fireworks API key found — run `nexus login` or pass --api-key.");
   }
   if (!readiness.claudeBinary) {
     parts.push("Claude Code CLI (`claude`) not found on PATH.");

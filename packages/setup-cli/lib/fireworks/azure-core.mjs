@@ -98,7 +98,8 @@ export const MISSING_AZURE_BASE_URL_MESSAGE =
   + "(e.g. https://<resource>.services.ai.azure.com).";
 
 export const MISSING_AZURE_API_KEY_MESSAGE =
-  `No Azure API key found. Export ${AZURE_API_KEY_ENV} or pass --api-key with your Foundry key.`;
+  "No Azure API key found. Run `nexus configure --provider azure --api-key <key>` "
+  + `or export ${AZURE_API_KEY_ENV} with your Foundry key.`;
 
 export const FIREWORKS_KEY_AS_AZURE_MESSAGE =
   "The Azure API key cannot be a Fireworks key (fw_...). "
@@ -192,11 +193,15 @@ export function normalizeAzureBaseUrl(endpoint) {
 /**
  * Resolve the Azure API key and how it should be stored for `<harness> on`.
  *
- * Resolution order:
- *   1. explicit `--api-key` (stored literally)
- *   2. existing stored key on a previous `on` (reused as-is)
- *   3. the key configured via `nexus configure` (stored literally)
+ * Resolution order (mirrors resolveAzureBaseUrl):
+ *   1. explicit `--api-key` (configure-only; stored literally)
+ *   2. the key configured via `nexus configure` (stored literally)
+ *   3. existing stored key on a previous `on` (reused as-is)
  *   4. `AZURE_API_KEY` environment variable (stored as the {env:...} reference)
+ *
+ * `configure` outranks the harness-stored key so `nexus configure --api-key`
+ * rotates the credential of an already-enabled harness on its next `on` — the
+ * stored key only wins when nothing is configured.
  *
  * @param {{
  *   apiKey?: string,
@@ -216,6 +221,10 @@ export async function resolveAzureOnApiKey({
     return validatedAzureKeyResult(apiKey.trim(), true, false);
   }
 
+  if (configuredApiKey && !isAzureApiKeyEnvRef(configuredApiKey)) {
+    return validatedAzureKeyResult(configuredApiKey.trim(), true, false);
+  }
+
   if (getExistingKey) {
     const existing = (await getExistingKey()) ?? "";
     if (existing) {
@@ -225,10 +234,6 @@ export async function resolveAzureOnApiKey({
         true,
       );
     }
-  }
-
-  if (configuredApiKey && !isAzureApiKeyEnvRef(configuredApiKey)) {
-    return validatedAzureKeyResult(configuredApiKey.trim(), true, false);
   }
 
   if (process.env[AZURE_API_KEY_ENV]?.trim()) {

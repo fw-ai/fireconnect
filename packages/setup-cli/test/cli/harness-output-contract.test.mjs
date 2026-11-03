@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { runCli, withTempHome } from "../helpers.mjs";
+import { runCli, seedKeychainConfig, withTempHome } from "../helpers.mjs";
 import {
+  LOCAL_ONLY_NOTE,
   printClaudeModelManagementHints,
   printClaudeModelActivationHint,
   printCodexRestartHint,
@@ -93,22 +94,23 @@ describe("compact harness command output", () => {
 
   it("prints outcome, FireRouter help, and one apply action for routine on", async () => {
     await withTempHome("compact-on-", async (home) => {
+      await seedKeychainConfig(home, "fw_compact_output_key");
       const result = await runCli(
         ["opencode", "on", "--model", "deepseek-v4-flash"],
         {
           home,
           env: {
-            FIREWORKS_API_KEY: "fw_compact_output_key",
             ANTHROPIC_API_KEY: "",
           },
         },
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      // Success line + restart hint only — no FireRouter advertisement.
-      assert.equal(lines.length, 2, result.stdout);
+      // Success line, local-only note, restart hint — no FireRouter advertisement.
+      assert.equal(lines.length, 3, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks · deepseek-v4-flash/);
-      assert.equal(lines[1], "Restart OpenCode to use the new setup.");
+      assert.equal(lines[1], LOCAL_ONLY_NOTE);
+      assert.equal(lines[2], "Restart OpenCode to use the new setup.");
       assert.doesNotMatch(result.stdout, /Next →|Revert anytime|Tip:|API key written/);
       assert.doesNotMatch(result.stdout, /FireRouter/);
     });
@@ -116,16 +118,19 @@ describe("compact harness command output", () => {
 
   it("does not claim FireRouter is on when only registered in the catalog", async () => {
     await withTempHome("compact-catalog-only-", async (home) => {
-      const result = await runCli(
-        ["opencode", "on", "--api-key", "fw_compact_output_key"],
-        {
+      const result = await (await runCli(["login", "--api-key", "fw_compact_output_key"], {
           home,
           env: {
             FIREWORKS_API_KEY: "",
             ANTHROPIC_API_KEY: "sk-ant-configured",
           },
-        },
-      );
+        }), await runCli(["opencode", "on"], {
+          home,
+          env: {
+            FIREWORKS_API_KEY: "",
+            ANTHROPIC_API_KEY: "sk-ant-configured",
+          },
+        }));
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /OpenCode → Fireworks · auto/);
       // A plain `on` never advertises FireRouter — even with a key present.
@@ -153,9 +158,10 @@ describe("compact harness command output", () => {
 
   it("warns that --routing-preference is deprecated and connects without it", async () => {
     await withTempHome("compact-routing-pref-", async (home) => {
+      await seedKeychainConfig(home, "fw_compact_output_key");
       const result = await runCli(
         ["opencode", "on", "--routing-preference", "balanced"],
-        { home, env: { FIREWORKS_API_KEY: "fw_compact_output_key" } },
+        { home },
       );
       assert.equal(result.code, 0, result.stderr);
       assert.match(
@@ -163,7 +169,7 @@ describe("compact harness command output", () => {
         /--routing-preference is deprecated and has no effect\. Set effort in your harness instead\./,
       );
       const lines = nonemptyLines(result.stdout);
-      assert.equal(lines.length, 2, result.stdout);
+      assert.equal(lines.length, 3, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks · auto/);
       assert.doesNotMatch(result.stdout, /Routing:/);
     });
@@ -172,19 +178,23 @@ describe("compact harness command output", () => {
   it("uses Claude default tier slots when BYOK is configured without explicit flags", async () => {
     await withTempHome("compact-claude-byok-", async (home) => {
       await writeGlobalConfig(home, { anthropicApiKey: "sk-ant-configured" });
-      const result = await runCli(
-        ["claude", "on", "--api-key", "fw_compact_output_key"],
-        {
+      const result = await (await runCli(["login", "--api-key", "fw_compact_output_key"], {
           home,
           env: {
             FIREWORKS_API_KEY: "",
             ANTHROPIC_API_KEY: "",
           },
-        },
-      );
+        }), await runCli(["claude", "on"], {
+          home,
+          env: {
+            FIREWORKS_API_KEY: "",
+            ANTHROPIC_API_KEY: "",
+          },
+        }));
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
       assert.equal(lines[0], `${symbols.ok} Claude Code → Fireworks · auto`);
+      assert.equal(lines[1], LOCAL_ONLY_NOTE);
       assert.match(result.stdout, /Model picker/);
       assert.match(result.stdout, /Anthropic model slots.*unchanged/);
       assert.match(result.stdout, /Fireworks catalog.*appended/);
@@ -198,16 +208,19 @@ describe("compact harness command output", () => {
   it("rejects Codex firerouter selections, bare and compound", async () => {
     await withTempHome("compact-codex-firerouter-", async (home) => {
       for (const model of ["firerouter", "firerouter/sol"]) {
-        const result = await runCli(
-          ["codex", "on", "--model", model, "--api-key", "fw_compact_output_key"],
-          {
+        const result = await (await runCli(["login", "--api-key", "fw_compact_output_key"], {
             home,
             env: {
               FIREWORKS_API_KEY: "",
               ANTHROPIC_API_KEY: "sk-ant-configured",
             },
-          },
-        );
+          }), await runCli(["codex", "on", "--model", model], {
+            home,
+            env: {
+              FIREWORKS_API_KEY: "",
+              ANTHROPIC_API_KEY: "sk-ant-configured",
+            },
+          }));
         assert.notEqual(result.code, 0, model);
         assert.match(result.stderr, /is no longer supported/, model);
         assert.doesNotMatch(result.stdout, /Codex → Fireworks/, model);
@@ -217,20 +230,23 @@ describe("compact harness command output", () => {
 
   it("keeps Azure output to outcome, endpoint, and apply action", async () => {
     await withTempHome("compact-azure-", async (home) => {
+      await writeGlobalConfig(home, {
+        azure: { baseUrl: "https://demo.services.ai.azure.com", apiKey: "az_demo" },
+      });
       const result = await runCli(
         [
           "opencode", "on", "--azure",
           "--base-url", "https://demo.services.ai.azure.com",
-          "--api-key", "az_demo",
         ],
         { home, env: { FIREWORKS_API_KEY: "" } },
       );
       assert.equal(result.code, 0, result.stderr);
       const lines = nonemptyLines(result.stdout);
-      assert.equal(lines.length, 3, result.stdout);
+      assert.equal(lines.length, 4, result.stdout);
       assert.match(lines[0], /OpenCode → Fireworks on Microsoft Foundry · FW-GLM-5.2/);
-      assert.match(lines[1], /Endpoint: https:\/\/demo\.services\.ai\.azure\.com\/openai\/v1/);
-      assert.equal(lines[2], "Restart OpenCode to use the new setup.");
+      assert.equal(lines[1], LOCAL_ONLY_NOTE);
+      assert.match(lines[2], /Endpoint: https:\/\/demo\.services\.ai\.azure\.com\/openai\/v1/);
+      assert.equal(lines[3], "Restart OpenCode to use the new setup.");
       assert.match(result.stdout, /openai\/v1\n\nRestart OpenCode/);
     });
   });

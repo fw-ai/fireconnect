@@ -12,7 +12,7 @@ import { thirdPartyDir } from "./lineup.mjs";
 import {
   LEGACY_SHIM_AGENT_LABEL, SHIM_AGENT_LABEL, launchAgentPlistPath, startLaunchAgent, startShimService, stopLaunchAgent,
 } from "./platform.mjs";
-import { readProfileState, shimPlistPath, shimServicePath, shimStatePath } from "./profile-lane.mjs";
+import { egressHosts, readProfileState, shimPlistPath, shimServicePath, shimStatePath } from "./profile-lane.mjs";
 
 /**
  * @param {string} file
@@ -130,6 +130,30 @@ export async function migrateClaudeDesktopFirerouterOnUpgrade(home) {
     }
   }
   return changed;
+}
+
+/**
+ * Write the egress allowlist into a profile an earlier release applied
+ * without one, so Cowork and Chat can fetch pages without a new `on`.
+ * @param {string} home
+ * @returns {Promise<boolean>} true when the profile was updated
+ */
+export async function migrateClaudeDesktopEgressOnUpgrade(home) {
+  const profileId = home ? (await readProfileState(home))?.profileId : null;
+  if (typeof profileId !== "string" || !profileId) {
+    return false;
+  }
+  const profilePath = path.join(thirdPartyDir(home), "configLibrary", `${profileId}.json`);
+  const profile = existsSync(profilePath) ? await readJsonIfExists(profilePath).catch(() => null) : null;
+  if (!profile) {
+    return false;
+  }
+  const hosts = egressHosts(profile);
+  if (JSON.stringify(hosts) === JSON.stringify(profile.coworkEgressAllowedHosts)) {
+    return false;
+  }
+  await writeJson(profilePath, { ...profile, coworkEgressAllowedHosts: hosts }, { mode: 0o600 });
+  return true;
 }
 
 /**

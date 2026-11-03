@@ -3,10 +3,12 @@ import process, { stdin } from "node:process";
 import { signInViaDeviceFlow, signInViaLocalhostCallback } from "../browser-auth.mjs";
 import { readGlobalConfig, writeGlobalConfig } from "../../config/global-config.mjs";
 import {
-  assertNoFireworksEnvForStorage,
+  keysUrlFor,
+  keysUrlForHome,
   resolveFireworksApiKeyValue,
 } from "../../keys/api-key.mjs";
 import { readSecret } from "../../ui/read-secret.mjs";
+import { sanitize } from "../../ui/sanitize.mjs";
 import {
   FIREPASS_KEY_UNSUPPORTED_MESSAGE,
   isFirePassKey,
@@ -24,7 +26,6 @@ import { verifyFireworksApiKey } from "../../keys/verify-api-key.mjs";
 import { accent, link, openInBrowser, withSpinner } from "../../ui/term.mjs";
 import {
   fail,
-  KEYS_URL,
   printSuccessBlock,
   storeApiKey,
   verifyFailureLine,
@@ -37,6 +38,19 @@ import {
 } from "./prompts.mjs";
 
 const MAX_PASTE_ATTEMPTS = 3;
+const ACCOUNT_KIND_TIMEOUT_MS = 5_000;
+
+/**
+ * Who the browser sign-in came back as, shown before a key is created so a
+ * sign-in that returned an unexpected identity is visible.
+ * @param {string} email
+ * @param {string} accountName  accounts/<id>
+ */
+export function signedInIdentityLine(email, accountName) {
+  const who = sanitize(email) || "an account with no email";
+  const account = sanitize(String(accountName ?? "").replace(/^accounts\//, ""));
+  return `Signed in as ${who} — creating a key in account ${account}.`;
+}
 
 async function completeMintedSignIn(home, {
   idToken,
@@ -44,11 +58,14 @@ async function completeMintedSignIn(home, {
   accountName,
   fallbackAccountId = "",
   rememberSsoAccountId = "",
+  nexusAccount = false,
   nextHint = true,
   say,
 }) {
+  say(signedInIdentityLine(email, accountName));
+  const keyName = mintedKeyName();
   const outcome = await withSpinner("Signing you in…", async () => {
-    const mint = await mintApiKeyForAccount(idToken, accountName, { email });
+    const mint = await mintApiKeyForAccount(idToken, accountName, { email, keyName });
     if (!mint.ok) {
       return { failure: mint.failure };
     }
@@ -63,18 +80,18 @@ async function completeMintedSignIn(home, {
     return false;
   }
 
-  const stored = await storeApiKey(home, outcome.mint.key);
+  const stored = await storeApiKey(home, outcome.mint.key, nexusAccount ? "nexus" : "platform");
   await writeMintedKeyState(home, {
     keyId: outcome.mint.keyId,
     userName: outcome.mint.userName,
-    displayName: mintedKeyName(),
+    displayName: keyName,
   });
   if (rememberSsoAccountId) {
     await writeGlobalConfig(home, { ssoAccountId: rememberSsoAccountId });
   }
   const identity = outcome.verify.ok ? outcome.verify : { email, accountId: fallbackAccountId };
   printSuccessBlock(identity, [
-    `Created API key ${accent(mintedKeyName())} — revoke anytime at ${link(KEYS_URL)}`,
+    `Created API key ${accent(keyName)} — revoke anytime at ${link(keysUrlFor(nexusAccount))}`,
     stored.message,
     ...stored.notes,
     activeKeySourceNote(outcome.mint.key),
@@ -87,7 +104,9 @@ async function runBrowserFlow(home, { nextHint = true } = {}) {
   console.log("");
 
   const flows = [
-    () => signInViaLocalhostCallback({ onStatus: say }),
+    // The Nexus client gets our own sign-in pages; SSO accounts
+    // (runSsoBrowserFlow) keep their pool's own sign-in.
+    () => signInViaLocalhostCallback({ onStatus: say, nexusSignInPage: true }),
     () => signInViaDeviceFlow({ onStatus: say }),
   ];
 
@@ -136,6 +155,7 @@ async function runBrowserFlow(home, { nextHint = true } = {}) {
     idToken: tokens.idToken,
     email: tokens.email,
     accountName,
+    nexusAccount: listed.nexusAccountNames.includes(accountName),
     nextHint,
     say,
   });
@@ -178,10 +198,18 @@ async function runSsoBrowserFlow(home, accountId, { nextHint = true } = {}) {
     return true;
   }
 
+  // Best-effort: an SSO sign-in names its account, so the list is only read
+  // for the account kind; a failed or slow lookup keeps Platform links.
+  // The request itself is aborted at the deadline, so a stalled response
+  // can't keep the CLI running after sign-in.
+  const listed = await listAccountsForIdToken(tokens.idToken, {
+    signal: AbortSignal.timeout(ACCOUNT_KIND_TIMEOUT_MS),
+  }).catch(() => null);
   const completed = await completeMintedSignIn(home, {
     idToken: tokens.idToken,
     email: tokens.email,
     accountName: `accounts/${accountId}`,
+    nexusAccount: listed?.nexusAccountNames?.includes(`accounts/${accountId}`) === true,
     fallbackAccountId: accountId,
     rememberSsoAccountId: accountId,
     nextHint,
@@ -195,6 +223,8 @@ async function runSsoBrowserFlow(home, accountId, { nextHint = true } = {}) {
 }
 
 async function runPasteFlow(home, { nextHint = true } = {}) {
+  // Whoever signed in here last: a pasted key's account isn't known.
+  const KEYS_URL = await keysUrlForHome(home);
   console.log("");
   console.log(`  Get a key from  ${link(KEYS_URL)}`);
   console.log("  Press Enter to open that page in your browser, or paste your key below.");
@@ -241,7 +271,7 @@ async function runPasteFlow(home, { nextHint = true } = {}) {
       return;
     }
     attempts += 1;
-    console.log(`  ${verifyFailureLine(result, { interactive: true })}`);
+    console.log(`  ${verifyFailureLine(result, { interactive: true, keysUrl: KEYS_URL })}`);
   }
 
   fail(`Sign-in not completed. Run ${accent("nexus login")} to try again.`);
@@ -253,7 +283,6 @@ async function runPasteFlow(home, { nextHint = true } = {}) {
  * @returns {Promise<boolean>}
  */
 export async function runInteractiveSignIn(home, { nextHint = true, method: chosen } = {}) {
-  assertNoFireworksEnvForStorage();
   const method = chosen ?? await promptSignInMethod();
   if (!method) {
     fail(`Sign-in cancelled. Run ${accent("nexus login")} when you're ready.`);

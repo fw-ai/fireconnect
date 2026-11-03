@@ -7,6 +7,7 @@ import {
   writeGlobalConfig,
 } from "../config/global-config.mjs";
 import {
+  assertResolvedKeyNotRejected,
   fireworksKeyPresent,
   persistApiKeyFromFlag,
   resolveFireworksApiKeyValue,
@@ -27,7 +28,9 @@ function effectiveHarnessStoredKey(stored, harnessEnvRef) {
     || trimmed.startsWith("{env:")
     || trimmed === "${FIREWORKS_API_KEY}"
   ) {
-    return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+    // env-refs are dead — env is not a credential source; treat as missing so
+    // resolution falls through to shared storage.
+    return "";
   }
   return isFireworksShapedKey(trimmed) ? trimmed : "";
 }
@@ -40,6 +43,7 @@ export async function resolveHarnessOnApiKey({
   apiKey = "",
   home = process.env.HOME ?? "",
   harnessEnvRef,
+  harnessId = "",
   getExistingHarnessKey,
   promptForKey = async () => "",
 }) {
@@ -48,7 +52,7 @@ export async function resolveHarnessOnApiKey({
   }
 
   let effectiveKey = await resolveFireworksApiKeyValue({ apiKey, home });
-  let source = "env";
+  let source = "stored";
 
   if (!effectiveKey && getExistingHarnessKey) {
     const harnessKey = effectiveHarnessStoredKey(
@@ -58,6 +62,11 @@ export async function resolveHarnessOnApiKey({
     if (harnessKey) {
       effectiveKey = harnessKey;
       source = "harness-local-literal";
+      // Check BEFORE promoting the literal into shared storage:
+      // persistApiKeyFromFlag re-bakes the key into every enabled harness, so a
+      // dead literal must stop here, not after replacing the shared credential.
+      // Same 401/403-only stop as resolveOnKey.
+      await assertResolvedKeyNotRejected(harnessKey, { harnessId });
       if (home) {
         await persistApiKeyFromFlag(home, harnessKey);
       }
@@ -102,7 +111,11 @@ export async function resolveHarnessOnApiKey({
     if (storedKey === FIREWORKS_API_KEY_KEYCHAIN_REF) {
       source = "global-keychain";
     } else if (storedKey === FIREWORKS_API_KEY_ENV_REF) {
-      source = "global-env-ref";
+      // The env-ref is dead (env is not a credential source), but resolution
+      // reached the keychain through the stored-ref fall-through — repair the
+      // ref so later reads don't depend on the fall-through.
+      await writeGlobalConfig(home, { apiKey: FIREWORKS_API_KEY_KEYCHAIN_REF });
+      source = "global-keychain";
     } else if (storedKey) {
       source = "global-legacy-literal";
     }

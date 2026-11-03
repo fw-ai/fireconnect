@@ -1,6 +1,7 @@
 import process from "node:process";
 import { FIREWORKS_BASE_URL } from "../fireworks/model-id.mjs";
-import { HARNESSES, HARNESS_ALIASES, AMBIGUOUS_COPILOT_MESSAGE, resolveHarnessAlias } from "../harness/id.mjs";
+import { AZURE_ON_HARNESS_SET, HARNESSES, HARNESS_ALIASES, AMBIGUOUS_COPILOT_MESSAGE, resolveHarnessAlias } from "../harness/id.mjs";
+import { readConfiguredProviderSync } from "../config/global-config.mjs";
 import { parseDemoArgs, findDemoInvocation } from "../demo/parse-demo-args.mjs";
 import { withSuggestion } from "../ui.mjs";
 
@@ -53,7 +54,7 @@ const KNOWN_FLAGS = [
   "--providers", "--reset",
   "--force", "--skip-install-check", "--stored-only",
   "--last-n", "--plain", "--verbose", "--routing-preference", "--session", "--days",
-  "--account", "--anthropic", "--openai", "--paste", "--revoke", "--with-token",
+  "--account", "--account-type", "--anthropic", "--openai", "--paste", "--revoke", "--with-token",
   "--interactive", "--non-interactive", "--client-id", "--client-secret",
 ];
 
@@ -122,6 +123,7 @@ export function createBaseContext() {
     storedOnly: false,
     vscodePath: "",
     withToken: false,
+    accountType: "",
     revoke: false,
     paste: false,
     account: "",
@@ -185,6 +187,15 @@ export function applyGlobalFlag(ctx, arg, next) {
     case "--client-secret": ctx.clientSecret = requireValue(arg, next); return true;
     case "--stored-only": ctx.storedOnly = true; return false;
     case "--with-token": ctx.withToken = true; return false;
+    case "--account-type": {
+      if (ctx.accountType) throw new Error("--account-type may only be supplied once.");
+      const kind = requireValue(arg, next);
+      if (!["nexus", "platform", "unknown"].includes(kind)) {
+        throw new Error("--account-type takes nexus, platform, or unknown.");
+      }
+      ctx.accountType = kind;
+      return true;
+    }
     case "--paste": ctx.paste = true; return false;
     // `login --account <id>`: enterprise SSO sign-in via the account's own
     // identity provider (same semantics as `firectl signin <account-id>`).
@@ -261,6 +272,7 @@ function parseFlagsAndPositionals(argv) {
   const ctx = createBaseContext();
   const positional = [];
   let version = false;
+  const appliedFlags = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -291,6 +303,9 @@ function parseFlagsAndPositionals(argv) {
         positional,
       ));
     }
+    if (consumed !== null) {
+      appliedFlags.push(arg);
+    }
     if (consumed === true) {
       i += 1;
     } else if (consumed === null) {
@@ -313,6 +328,53 @@ function parseFlagsAndPositionals(argv) {
     // consumed === false → a boolean global flag; already applied.
   }
 
+  if (ctx.accountType) {
+    // Allowlist, not just the conflicting credential sources: the desktop
+    // contract is exactly `login --with-token --account-type <kind>`, so
+    // unrelated command flags (--revoke, --model, --providers, …) must not
+    // ride along silently. Rotation/output modifiers and HOME overrides stay.
+    const allowed = new Set([
+      "--with-token", "--account-type",
+      "--force", "--json", "--plain", "--verbose", "-v",
+      "--home", "--data-dir",
+    ]);
+    const offContract = appliedFlags.find((flag) => !allowed.has(flag));
+    if (offContract) {
+      throw new Error(`--account-type cannot be combined with ${offContract}.`);
+    }
+    if (version || positional.length !== 1 || positional[0] !== "login" || !ctx.withToken) {
+      throw new Error("--account-type applies only to nexus login --with-token.");
+    }
+  }
+
+  if (ctx.apiKeyFromFlag && positional.length > 0) {
+    // Fireworks keys are stored exclusively through `nexus login`; bare
+    // `<harness>` (implied `on`) and `<harness> on` no longer take --api-key.
+    // Fireworks credentials enter via `nexus login`; the Foundry endpoint key
+    // enters via `nexus configure --provider azure`.
+    const harnessId = resolveHarnessAlias(positional[0]);
+    const impliedOn = positional.length === 1 || positional[1] === "on";
+    // Effective provider decides which entry point the error names: flags
+    // first, then the configured provider — `on` consults both (a plain `on`
+    // on an azure-configured install routes through Foundry without `--azure`).
+    // Only azure-capable adapters take that route; the rest stay on Fireworks.
+    const azureMode = AZURE_ON_HARNESS_SET.has(harnessId)
+      && (ctx.azure === true
+        || ctx.provider === "azure"
+        || readConfiguredProviderSync(ctx.home) === "azure");
+    if (HARNESSES.includes(harnessId) && impliedOn) {
+      throw new Error(
+        azureMode
+          ? `--api-key isn't a ${positional[0]} on option. `
+              + "Set the Foundry endpoint key once with "
+              + `\`nexus configure --provider azure --base-url <url> --api-key <key>\`, `
+              + `then run \`nexus ${positional[0]} on --azure\`.`
+          : `--api-key isn't a ${positional[0]} on option. `
+              + `Sign in once with \`nexus login --api-key <key>\` (or \`nexus login\`), `
+              + `then run \`nexus ${positional[0]} on\`.`,
+      );
+    }
+  }
   return { ctx, positional, help: false, helpTopic: "", version };
 }
 
@@ -416,6 +478,15 @@ export function parseCli(argv) {
       );
     }
     return { kind: "global", command: "model", modelSubcommand: "list", ctx };
+  }
+
+  // Hidden plumbing for the Nexus desktop app: kept out of GLOBAL_COMMANDS so
+  // it never shows up in help or did-you-mean suggestions.
+  if (first === "usage-data") {
+    if (rest.length > 0) {
+      throw new Error(`usage-data does not accept positional arguments. ${helpHint()}`);
+    }
+    return { kind: "global", command: "usage-data", ctx };
   }
 
   if (GLOBAL_COMMANDS.has(first)) {

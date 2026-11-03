@@ -146,6 +146,17 @@ export default defineHarnessProfile({
     return opencodeProviderStatus(config);
   },
 
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.OPENCODE);
+    const config = await readJsonIfExists(opencodePathsFor(ctx).configPath);
+    if (opencodeProviderStatus(config) !== "fireworks") {
+      return null;
+    }
+    const storedRef = opencodeStoredApiKeyRef(config);
+    // An env reference sends whatever the shell exports: can't tell.
+    return opencodeAuthKeyMode(storedRef) === "env-reference" ? null : storedRef || null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.OPENCODE);
     const { configPath } = opencodePathsFor(ctx);
@@ -162,7 +173,7 @@ export default defineHarnessProfile({
       baseUrl: provider === "azure" ? (azure?.options?.baseURL ?? null) : (fireworksAi?.options?.baseURL ?? null),
       hasAuthToken: provider === "azure"
         ? Boolean(effectiveAzureApiKey(storedRef))
-        : Boolean(storedRef || process.env.FIREWORKS_API_KEY),
+        : Boolean(effectiveOpencodeApiKey(storedRef)),
       defaults: {
         main: provider === "azure"
           ? DEFAULT_AZURE_MODEL

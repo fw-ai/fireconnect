@@ -5,7 +5,7 @@
 
 import process from "node:process";
 import path from "node:path";
-import { cp, mkdir, mkdtemp, rm, readdir, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, rm, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 
 import { HARNESS } from "../harness/id.mjs";
@@ -77,9 +77,22 @@ export async function findStaleDemoTmp(tmpRoot = os.tmpdir()) {
   } catch {
     return [];
   }
-  return names
-    .filter((n) => DEMO_TMP_PREFIXES.some((p) => n.startsWith(p)))
-    .map((n) => path.join(tmpRoot, n));
+  // The tmp root may be shared with other users: a matching name is not
+  // proof the entry is ours. Sweep only real directories this user owns
+  // that no one else can write into.
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  const out = [];
+  for (const n of names) {
+    if (!DEMO_TMP_PREFIXES.some((p) => n.startsWith(p))) continue;
+    const full = path.join(tmpRoot, n);
+    try {
+      const st = await lstat(full);
+      if (!st.isDirectory()) continue;
+      if (uid !== null && (st.uid !== uid || (st.mode & 0o022) !== 0)) continue;
+      out.push(full);
+    } catch { /* vanished */ }
+  }
+  return out;
 }
 
 /**

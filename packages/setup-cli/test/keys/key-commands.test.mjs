@@ -46,14 +46,11 @@ describe("fireconnect key", () => {
   it("status reports encrypted safeStorage for vscode in direct mode", async () => {
     await withTempHome("fc-key-status-vscode-direct-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      // `on --api-key` strict-verifies the key, so drop the unreachable-gateway
+      // `login --api-key` strict-verifies the key, so drop the unreachable-gateway
       // override here (inherit the test double from global-setup); `status`
       // below keeps it to stay offline for the verify it does.
       const { NEXUS_GATEWAY_URL: _drop, ...onEnv } = vscodeRouterEnv();
-      const on = await runCli(
-        ["vscode", "on", "--api-key", FW_KEY, "--vscode-path", vscodePath, "--force"],
-        { home, env: onEnv },
-      );
+      const on = await (await runCli(["login", "--api-key", FW_KEY], { home, env: onEnv }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: onEnv }));
       assert.equal(on.code, 0, `stderr: ${on.stderr}`);
 
       const status = await runCli(["status", "--json"], { home, env: vscodeRouterEnv() });

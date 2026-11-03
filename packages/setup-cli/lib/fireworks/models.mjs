@@ -6,6 +6,7 @@ import {
   canonicalAutoModelId,
 } from "./model-id.mjs";
 import { MISSING_FIREWORKS_API_KEY_MESSAGE } from "../keys/key-type.mjs";
+import { planLimitsCatalogToAuto } from "./account-plan.mjs";
 import {
   FIREWORKS_PRICING_DOCS_URL,
   lookupModelSpec,
@@ -16,6 +17,7 @@ import {
 } from "./model-specs.mjs";
 import {
   cacheServerlessCatalogSnapshot,
+  catalogKeyFingerprint,
   getServerlessCatalogSnapshot,
   isCatalogCacheFresh,
   readCatalogCache,
@@ -32,8 +34,8 @@ export const SERVERLESS_CODING_USE_CASE = "coding";
 /** @typedef {{ id: string, shortId: string, displayName: string, baseModelId?: string, kind: "serverless", serverlessMode?: string }} CatalogEntry */
 
 /**
- * Synthesized row for an auto mix. The serverless API never returns them, so
- * `model list` has to supply them to show the models at all.
+ * Row for an auto mix. The serverless API may list `auto` as a router row;
+ * when it doesn't, `model list` has to supply the row to show the mix at all.
  * @param {string} [modelId] an auto mix slug (`auto`, `auto-instant`)
  */
 export function autoCatalogEntry(modelId = AUTO_MODEL_ID) {
@@ -98,17 +100,17 @@ export function prettyModelName(modelId) {
 }
 
 /**
- * Human-readable label for an auto mix. Bare `auto` is "Auto"; variants use
- * pretty slugs (`auto-instant` -> "Auto Instant").
+ * Human-readable label for an auto mix. Bare `auto` is "Nexus Auto"; variants use
+ * pretty slugs (`auto-instant` -> "Nexus Auto Instant").
  * @param {string} modelId
  * @returns {string}
  */
 export function autoDisplayName(modelId) {
   const slug = canonicalAutoModelId(modelId);
   if (!slug || slug === AUTO_MODEL_ID) {
-    return lookupModelSpec(AUTO_MODEL_ID)?.label ?? "Auto";
+    return lookupModelSpec(AUTO_MODEL_ID)?.label ?? "Nexus Auto";
   }
-  return prettyModelName(slug);
+  return `Nexus ${prettyModelName(slug)}`;
 }
 
 /**
@@ -131,7 +133,13 @@ class FireworksHttpError extends Error {
   }
 }
 
-async function fetchGatewayPage(path, apiKey) {
+/**
+ * @param {string} path
+ * @param {string} apiKey
+ * @param {AbortSignal} [signal] Shared deadline for every attempt; when
+ *   omitted each attempt gets the standard 30s gateway budget.
+ */
+async function fetchGatewayPage(path, apiKey, signal) {
   // Same dev/test override as verify-api-key.mjs — lets the mock gateway
   // serve the catalog in specs.
   const gatewayUrl = process.env.NEXUS_GATEWAY_URL?.trim() || FIREWORKS_GATEWAY_URL;
@@ -153,7 +161,7 @@ async function fetchGatewayPage(path, apiKey) {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
       },
-      signal: fireworksGatewayFetchSignal(),
+      signal: signal ?? fireworksGatewayFetchSignal(),
     });
 
     if (response.ok) {
@@ -269,19 +277,15 @@ export function inputModalitiesFromModel(model) {
 }
 
 /**
- * Pricing tier of a flat serverless row, read off `serverless_mode`.
+ * Pricing tier of a flat serverless row, read off `serverless_mode`. Only an
+ * absent or "standard" mode is the standard tier: any other mode (fast, spot,
+ * or one added later) is its own offering, priced on its own router.
  * @param {{ serverless_mode?: string, serverlessMode?: string }} model
  * @returns {string}
  */
 function flatModeTier(model) {
   const mode = model.serverless_mode ?? model.serverlessMode ?? "";
-  if (mode === "fast") {
-    return "fast";
-  }
-  if (mode === "priority") {
-    return "priority";
-  }
-  return "standard";
+  return mode === "" || mode === "standard" ? "standard" : mode;
 }
 
 function hasUsableSkuPricing(rates) {
@@ -461,6 +465,11 @@ export function buildServerlessCatalogSnapshot(apiModels) {
   const fastRouterByModel = new Map();
 
   for (const model of apiModels) {
+    const routerAutoId = autoIdOfRouterRow(model);
+    if (routerAutoId) {
+      entries.push(autoCatalogEntry(routerAutoId));
+      continue;
+    }
     const modelId = model.name ?? model.id ?? "";
     const tier = flatModeTier(model);
     const modelEntry = normalizeModelEntry(model);
@@ -498,7 +507,7 @@ export function buildServerlessCatalogSnapshot(apiModels) {
     }
 
     // Bare model ids carry standard-tier pricing only; a mode-specific rate
-    // belongs to that mode's usage_identifier router below.
+    // (fast, spot, ...) belongs to that mode's usage_identifier router below.
     const rates = tier === "priority" ? null : parseSkuPricing(model.pricing ?? []);
     if (tier === "standard" && rates) {
       const pricing = buildPricingRecord(modelId, modelEntry.displayName, rates, tier);
@@ -507,7 +516,7 @@ export function buildServerlessCatalogSnapshot(apiModels) {
       }
     }
 
-    const usageId = model.usageIdentifier ?? model.usage_identifier ?? "";
+    const usageId = usageIdOf(model);
     if (usageId.includes("/routers/")) {
       const routerEntry = normalizeRouterEntry({ usageId, baseModel: model });
       entries.push(routerEntry);
@@ -553,6 +562,25 @@ export function buildServerlessCatalogSnapshot(apiModels) {
   return snapshot;
 }
 
+/**
+ * The auto mix a `kind: "router"` row names through its usage identifier
+ * (`auto`, or a resource path ending in `auto`), or "" for any other row. A router row has no model, rates or
+ * context of its own, so it becomes the canonical auto entry.
+ * @param {object} model
+ */
+function autoIdOfRouterRow(model) {
+  if (String(model.kind ?? "").toLowerCase() !== "router") {
+    return "";
+  }
+  const usageId = usageIdOf(model);
+  return canonicalAutoModelId(usageId) || canonicalAutoModelId(shortIdFromResourceName(usageId));
+}
+
+/** A row's usage identifier, from the flat (snake_case) or nested (camelCase) shape. */
+function usageIdOf(model) {
+  return model.usageIdentifier ?? model.usage_identifier ?? "";
+}
+
 function dedupeCatalog(entries) {
   const byId = new Map();
   for (const entry of entries) {
@@ -575,10 +603,51 @@ function dedupeCatalog(entries) {
   return [...byId.values()].sort((a, b) => a.shortId.localeCompare(b.shortId));
 }
 
-export async function fetchServerlessCatalog(apiKey) {
-  const models = await fetchServerlessCatalogRaw(apiKey);
-  const snapshot = buildServerlessCatalogSnapshot(models);
-  const updatedAt = cacheServerlessCatalogSnapshot(snapshot);
+/**
+ * Overall budget for the catalog listing (every page and the 5xx retry) when a
+ * cached snapshot can stand in for it. The listing normally answers in well
+ * under a second, but it intermittently hangs or 5xx's slowly; without a
+ * bound, every harness `on`/`status` waited out the 30s gateway timeout (40s
+ * with the retry) only to serve the cached snapshot anyway. Cold starts keep
+ * the full per-request budget so a first `on` still gets a real catalog.
+ */
+export const CACHED_CATALOG_FETCH_TIMEOUT_MS = 3_000;
+
+export function cachedCatalogFetchTimeoutMs() {
+  const raw = Number(process.env.NEXUS_CATALOG_CACHED_FETCH_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CACHED_CATALOG_FETCH_TIMEOUT_MS;
+}
+
+function hasUsableCatalogCache(cache) {
+  return Boolean(cache?.snapshot?.entries?.length);
+}
+
+/**
+ * @param {string} apiKey
+ * @param {{ cacheAvailable?: boolean }} [options] Whether a cached snapshot
+ *   backs this fetch; read from disk when omitted. With one, the listing is
+ *   bounded by {@link cachedCatalogFetchTimeoutMs} and callers fall back to it.
+ */
+export async function fetchServerlessCatalog(apiKey, { cacheAvailable } = {}) {
+  const bounded = cacheAvailable ?? hasUsableCatalogCache(readCatalogCache());
+  const signal = bounded ? AbortSignal.timeout(cachedCatalogFetchTimeoutMs()) : undefined;
+  const [models, autoOnly] = await Promise.all([
+    fetchServerlessCatalogRaw(apiKey, { signal }),
+    planLimitsCatalogToAuto(apiKey, { timeoutMs: bounded ? cachedCatalogFetchTimeoutMs() : 0 }),
+  ]);
+  const built = buildServerlessCatalogSnapshot(models);
+  if (autoOnly === null) {
+    // A failed plan lookup must not cache the full catalog for a plan limited
+    // to auto. Keep the cached catalog; without one, serve this fetch uncached
+    // so the next command checks the plan again.
+    if (bounded) {
+      throw new PlanLookupError();
+    }
+    setServerlessCatalogSnapshot(built);
+    return { catalog: built.entries, rawModels: models, routersUnavailable: false, updatedAt: null };
+  }
+  const snapshot = autoOnly ? autoOnlySnapshot(built) : built;
+  const updatedAt = cacheServerlessCatalogSnapshot(snapshot, { apiKey });
   return {
     catalog: snapshot.entries,
     rawModels: models,
@@ -593,13 +662,25 @@ export async function fetchServerlessCatalog(apiKey) {
  * Only genuine Fireworks inference keys (`fw_`) are sent to api.fireworks.ai,
  * so a foreign credential (e.g. an Anthropic key read from ANTHROPIC_API_KEY)
  * never reaches the Fireworks gateway.
+ *
+ * `reuseFreshCache` serves a catalog cached within the TTL instead of
+ * refetching it, for callers that only read prices (`claude status`) and
+ * shouldn't wait on the listing every run.
+ * @param {string} apiKey
+ * @param {{ reuseFreshCache?: boolean }} [options]
  */
-export async function warmServerlessPricingCache(apiKey) {
+export async function warmServerlessPricingCache(apiKey, { reuseFreshCache = false } = {}) {
   // Anthropic/OpenAI list prices come from the keyless models.dev cache, so
   // they refresh for every key ahead of the fw_ gate.
   await refreshListPriceCache();
   const trimmed = apiKey?.trim();
   if (!trimmed || !trimmed.startsWith("fw_")) {
+    return;
+  }
+  if (reuseFreshCache && isCatalogCacheFresh()) {
+    // Hydrate memory too, as loadServerlessCatalog does, in case this
+    // process already resolved the snapshot to null.
+    setServerlessCatalogSnapshot(readCatalogCache().snapshot);
     return;
   }
   try {
@@ -609,13 +690,34 @@ export async function warmServerlessPricingCache(apiKey) {
   }
 }
 
+/**
+ * The snapshot an account limited to the `auto` mix sees: only `auto`, even
+ * when the gateway still lists other models, and with no per-model metadata.
+ * @param {ReturnType<typeof buildServerlessCatalogSnapshot>} snapshot
+ */
+function autoOnlySnapshot(snapshot) {
+  const autoEntries = snapshot.entries.filter(isAutoCatalogEntry);
+  return {
+    entries: autoEntries.length ? autoEntries : [autoCatalogEntry()],
+    pricingById: new Map(),
+    inputModalitiesById: new Map(),
+    routerBaseModelById: new Map(),
+    contextLengthById: new Map(),
+    supportsToolsById: new Map(),
+  };
+}
+
 export function buildPickerCatalogFromApiModels(apiModels) {
   const snapshot = buildServerlessCatalogSnapshot(apiModels);
   setServerlessCatalogSnapshot(snapshot);
   return snapshot.entries;
 }
 
-export async function fetchServerlessCatalogRaw(apiKey) {
+/**
+ * @param {string} apiKey
+ * @param {{ signal?: AbortSignal }} [options] Deadline shared by every page.
+ */
+export async function fetchServerlessCatalogRaw(apiKey, { signal } = {}) {
   const models = [];
   let pageToken = "";
 
@@ -624,7 +726,7 @@ export async function fetchServerlessCatalogRaw(apiKey) {
     if (pageToken) {
       query.set("pageToken", pageToken);
     }
-    const page = await fetchGatewayPage(`/v1/serverless/models?${query}`, apiKey);
+    const page = await fetchGatewayPage(`/v1/serverless/models?${query}`, apiKey, signal);
     models.push(...(page.data ?? []));
     pageToken = page.nextPageToken ?? page.next_page_token ?? "";
   } while (pageToken);
@@ -840,8 +942,8 @@ function withoutFirerouterRow(catalog) {
 }
 
 /**
- * Treat the `auto` mix like a serverless list member. The gateway serves it
- * without listing it, so the served catalog synthesizes the row once, up
+ * Treat the `auto` mix like a serverless list member. The gateway usually
+ * serves it without listing it, so the served catalog synthesizes the row once, up
  * front — every `on` path below (`registerableModelIds`, the Codex bundle,
  * `model list`, the Claude picker) then receives it like any other entry.
  * Empty lists stay empty so an unreachable catalog still reads as
@@ -891,13 +993,63 @@ function withCanonicalAutoRows(catalog) {
   return changed ? rows : catalog;
 }
 
+/**
+ * The ids a harness `on` registers, from the TTL-bounded catalog cache that
+ * `login` and `model list` refresh (a stale or other-account cache is
+ * refetched). `served` is true when this account's catalog (cached or
+ * fetched) is non-empty, which is the only catalog that may prune a picker
+ * down to what it lists.
+ */
 export async function loadRegisterableModels({ apiKey }) {
-  const { catalog, source } = await loadServerlessCatalog({ apiKey, refresh: true });
+  const { catalog, source } = await loadServerlessCatalog({ apiKey });
   const ids = registerableModelIds(catalog);
-  return { ids, available: source !== "stale" };
+  const available = source !== "stale";
+  return { ids, available, served: available && ids.length > 0 };
 }
 
-export async function loadServerlessCatalog({ apiKey, refresh = false }) {
+/**
+ * Refetch the catalog cache for `apiKey`'s account, as `login` does once a
+ * new key is stored, so the next harness `on` lists that account's models.
+ * Bounded by the cached-catalog budget; never throws. A failed fetch leaves
+ * the cache as it is (already expired for a new key), and the next `on`
+ * retries.
+ * @param {string} apiKey
+ * @returns {Promise<boolean>} whether the cache now holds this account's catalog
+ */
+export async function refreshServerlessCatalogCache(apiKey) {
+  const trimmed = apiKey?.trim();
+  if (!trimmed?.startsWith("fw_")) {
+    return false;
+  }
+  try {
+    const { source } = await loadServerlessCatalog({ apiKey: trimmed, refresh: true, bounded: true });
+    return source === "network";
+  } catch {
+    return false;
+  }
+}
+
+class PlanLookupError extends Error {
+  constructor() {
+    super("Couldn't check your Nexus plan.");
+    this.name = "PlanLookupError";
+  }
+}
+
+function catalogFetchFailureReason(error) {
+  if (error instanceof FireworksHttpError || error instanceof PlanLookupError) {
+    return error.message;
+  }
+  // A timeout is the gateway being slow, not the user's network failing.
+  if (error?.name === "TimeoutError") {
+    return "Fireworks didn't return the model catalog in time.";
+  }
+  return `Couldn't reach Fireworks (${error?.message || "network error"}). Check your network connection.`;
+}
+
+export async function loadServerlessCatalog({ apiKey, refresh = false, bounded = false }) {
+  // `bounded` caps the fetch at the cached-catalog budget even with no cache
+  // to fall back on, for callers that only refresh opportunistically.
   // `apiKey` may be a resolver, called only when the catalog must be fetched:
   // `model list` passes one so a fresh cached catalog is served without
   // reading the stored key (each read can cost a keychain prompt).
@@ -917,7 +1069,11 @@ export async function loadServerlessCatalog({ apiKey, refresh = false }) {
   // fetch replaces it: deleting it up front would turn an offline refresh into
   // a cold start and wipe a catalog the user still depends on.
   const cache = readCatalogCache();
-  if (!refresh && cache && isCatalogCacheFresh()) {
+  // The catalog depends on the account, so a cache fetched with another key is
+  // refetched. Older caches carry no fingerprint and still serve. A lazy key
+  // is not read on a cache hit; storing a new key clears the cache instead.
+  const cacheMatchesKey = lazyKey || !cache?.keyFingerprint || cache.keyFingerprint === catalogKeyFingerprint(apiKey);
+  if (!refresh && cache && cacheMatchesKey && isCatalogCacheFresh()) {
     // Serve from disk AND hydrate the in-memory snapshot, so downstream
     // catalog consumers (getServerlessCatalogSnapshot) see it even if this
     // process previously resolved the snapshot to null.
@@ -936,6 +1092,11 @@ export async function loadServerlessCatalog({ apiKey, refresh = false }) {
   if (!resolvedKey) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
+  // Only this key's cache may stand in for a failed fetch: another account's
+  // catalog is never served. It stays on disk for its owner.
+  const fallback = !cache?.keyFingerprint || cache.keyFingerprint === catalogKeyFingerprint(resolvedKey)
+    ? cache
+    : null;
 
   try {
     // Every harness `on` loads the catalog through here, so refresh the
@@ -945,7 +1106,9 @@ export async function loadServerlessCatalog({ apiKey, refresh = false }) {
     // awaited — the catalog path must not block on a slow/unreachable
     // models.dev. The fresh prices land on disk for the next read.
     void refreshListPriceCache({ force: refresh });
-    const { catalog, rawModels, routersUnavailable, updatedAt } = await fetchServerlessCatalog(resolvedKey);
+    const { catalog, rawModels, routersUnavailable, updatedAt } = await fetchServerlessCatalog(resolvedKey, {
+      cacheAvailable: bounded || hasUsableCatalogCache(fallback),
+    });
     return {
       apiKey: resolvedKey,
       catalog: catalogWithAutomaticAuto(catalog),
@@ -955,20 +1118,36 @@ export async function loadServerlessCatalog({ apiKey, refresh = false }) {
       updatedAt,
     };
   } catch (error) {
-    if (cache?.snapshot) {
-      setServerlessCatalogSnapshot(cache.snapshot);
+    const reason = catalogFetchFailureReason(error);
+    if (fallback?.snapshot) {
+      setServerlessCatalogSnapshot(fallback.snapshot);
       return {
         apiKey: resolvedKey,
-          catalog: catalogWithAutomaticAuto(cache.snapshot.entries),
+        catalog: catalogWithAutomaticAuto(fallback.snapshot.entries),
         rawModels: [],
         routersUnavailable: false,
         source: "stale",
-        updatedAt: cache.cachedAt || null,
+        staleReason: reason,
+        updatedAt: fallback.cachedAt || null,
       };
     }
-    const reason = error instanceof FireworksHttpError
-      ? error.message
-      : `Couldn't reach Fireworks (${error?.message || "network error"}). Check your network connection.`;
+    if (cache?.snapshot) {
+      // A key switch with no network: the catalog is unavailable rather
+      // than missing, so `on` keeps each harness's list as it is (see
+      // planModelList) and `model list` shows nothing from the other account.
+      // The in-memory snapshot is cleared too, so metadata lookups in this
+      // process don't answer from the other account's catalog either.
+      setServerlessCatalogSnapshot(null);
+      return {
+        apiKey: resolvedKey,
+        catalog: [],
+        rawModels: [],
+        routersUnavailable: false,
+        source: "stale",
+        staleReason: `${reason} The cached copy was fetched with another key, so it isn't shown.`,
+        updatedAt: null,
+      };
+    }
     const retry = error instanceof FireworksHttpError && error.status >= 500
       ? "Retry once the Fireworks API recovers. "
       : "";

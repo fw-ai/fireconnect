@@ -136,6 +136,33 @@ describe("Claude settings modelPicker", () => {
     );
   });
 
+  it("refresh prunes to auto when a freshly served catalog holds only auto", () => {
+    const settings = {
+      modelPicker: {
+        fireconnectManaged: true,
+        options: [
+          { model: "glm-latest[1m]", label: "GLM" },
+          { model: "claude-sonnet-4-6", label: "Mine" },
+          { model: "example-pin[1m]", label: "Pinned" },
+        ],
+      },
+    };
+
+    const next = withFireconnectModelPicker(settings, ["auto"], {
+      refresh: true,
+      catalogServed: true,
+      protectedIds: ["example-pin"],
+    });
+
+    const ids = next.modelPicker.options.map((row) => row.model);
+    assert.ok(!ids.includes("glm-latest[1m]"), "a row the served catalog no longer lists is pruned");
+    assert.ok(ids.includes("claude-sonnet-4-6"), "claude-* rows are kept");
+    assert.ok(ids.some((id) => id.startsWith("auto")), "auto is listed");
+    assert.ok(ids.includes("example-pin"), "protected ids survive");
+    // Without a served catalog the same ids stay a no-op, as before.
+    assert.equal(withFireconnectModelPicker(settings, ["auto"], { refresh: true }), settings);
+  });
+
   it("refresh dedupes claude-* rows by normalized id, keeping the first", () => {
     const settings = {
       modelPicker: {

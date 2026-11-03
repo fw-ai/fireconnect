@@ -22,6 +22,7 @@ import {
   patchCodexCatalogRefRaw,
   patchCodexProviderAuthRaw,
   patchFireconnectRoutingRaw,
+  repairDuplicateCodexHttpHeadersRaw,
   stripFireconnectRoutingRaw,
 } from "./toml-patch.mjs";
 import {
@@ -30,8 +31,8 @@ import {
   codexCatalogContainsModel,
   codexModelExclusionReason,
   isCodexStaleFirerouterRow,
-  pruneCodexCatalogRows,
   refreshCodexCatalogRows,
+  withCodexAutoRows,
   withCodexConstantFields,
   withCodexSignInRows,
 } from "./catalog.mjs";
@@ -107,6 +108,85 @@ function readTomlDoc(raw) {
     return emptyTomlDoc();
   }
   return parseToml(raw);
+}
+
+/**
+ * Parse config.toml. A file that is invalid only inside Nexus's tables (a key
+ * defined twice, which Codex reports as "duplicate key") is repaired in memory:
+ * - `"headers"`: the provider defines `http_headers` both inline and as a
+ *   sub-table, as an earlier key rotation left it. The sub-table is dropped;
+ *   the inline line holds the key Nexus wrote last, and the saved model stays.
+ * - `"stripped"`: any other duplicate. Nexus's tables are removed, so only
+ *   `on` and `off`, which rewrite them, can use the result.
+ * @param {string} configPath
+ * @param {string} raw
+ * @returns {{
+ *   raw: string,
+ *   doc: { root: Record<string, unknown>, tables: Record<string, Record<string, unknown>> },
+ *   repair: "headers" | "stripped" | null,
+ * }}
+ */
+function readCodexConfigDoc(configPath, raw) {
+  try {
+    return { raw, doc: readTomlDoc(raw), repair: null };
+  } catch (error) {
+    const headersRepaired = repairDuplicateCodexHttpHeadersRaw(raw);
+    if (headersRepaired !== raw) {
+      try {
+        return { raw: headersRepaired, doc: readTomlDoc(headersRepaired), repair: "headers" };
+      } catch {
+        // Fall through to removing every Nexus table.
+      }
+    }
+    const stripped = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
+    try {
+      return { raw: stripped, doc: readTomlDoc(stripped), repair: "stripped" };
+    } catch {
+      throw new Error(`${configPath} is not valid TOML: ${error.message}. Fix that line, then re-run this command.`);
+    }
+  }
+}
+
+/**
+ * {@link readCodexConfigDoc} for callers that patch the provider table in place
+ * (key rotation, saved-key removal). Those need the table, so a file only
+ * `on` can repair is an error.
+ * @param {string} configPath
+ * @param {string} raw
+ */
+function readCodexConfigDocForPatch(configPath, raw) {
+  const read = readCodexConfigDoc(configPath, raw);
+  if (read.repair === "stripped") {
+    throw new Error(`${configPath} defines Nexus's Fireworks settings twice. Run 'nexus codex on' to repair it.`);
+  }
+  return read;
+}
+
+/**
+ * Throw unless `raw` parses: Codex and the ChatGPT app refuse to start on an
+ * invalid config.toml.
+ * @param {string} configPath
+ * @param {string} raw
+ */
+function assertCodexConfigWritable(configPath, raw) {
+  try {
+    parseToml(raw);
+  } catch (error) {
+    throw new Error(
+      `Left ${configPath} unchanged: the update would make it invalid TOML (${error.reason ?? error.message}). `
+      + `Remove the fireworks-ai entries under model_providers from that file, then re-run 'nexus codex on'.`,
+    );
+  }
+}
+
+/**
+ * @param {string} configPath
+ * @param {string} raw
+ * @param {{ mode?: number }} [options]
+ */
+async function writeCodexConfig(configPath, raw, options) {
+  assertCodexConfigWritable(configPath, raw);
+  await writeFileAtomic(configPath, raw, options);
 }
 
 /**
@@ -261,7 +341,7 @@ export function effectiveCodexApiKey(storedRef) {
     return "";
   }
   if (storedRef === CODEX_API_KEY_ENV_REF) {
-    return process.env.FIREWORKS_API_KEY?.trim() ?? "";
+    return ""; // env is not a credential source
   }
   if (storedRef === CODEX_AZURE_API_KEY_ENV_REF) {
     return process.env[AZURE_API_KEY_ENV]?.trim() ?? "";
@@ -334,10 +414,25 @@ export function snapshotReferencesFireworksCatalog(raw) {
 }
 
 /**
+ * Whether the default Codex config beside this catalog still references it.
  * @param {string} catalogPath
+ * @param {string} configPath the config being turned off
+ * @returns {Promise<boolean>}
  */
-async function unlinkCatalogIfExists(catalogPath) {
-  if (!catalogPath) {
+async function catalogReferencedByOtherConfig(catalogPath, configPath) {
+  if (!catalogPath || !configPath) return false;
+  const defaultConfig = path.join(path.dirname(catalogPath), "config.toml");
+  if (path.resolve(configPath) === path.resolve(defaultConfig)) return false;
+  try {
+    const sibling = await readRawIfExists(defaultConfig);
+    return sibling.existed && snapshotReferencesFireworksCatalog(sibling.raw);
+  } catch {
+    return true;
+  }
+}
+
+async function unlinkCatalogIfExists(catalogPath, configPath = "") {
+  if (!catalogPath || await catalogReferencedByOtherConfig(catalogPath, configPath)) {
     return;
   }
   try {
@@ -367,7 +462,7 @@ async function restoreConfigFromBackup(backup, configPath, backupPath, catalogPa
       }
     }
   }
-  if (backup.catalogSnapshot && catalogPath) {
+  if (backup.catalogSnapshot && catalogPath && !await catalogReferencedByOtherConfig(catalogPath, configPath)) {
     if (backup.catalogPath !== path.resolve(catalogPath)) {
       throw new Error(
         `Codex backup was taken for catalog ${backup.catalogPath}, not ${catalogPath}; refusing to restore.`,
@@ -391,7 +486,7 @@ async function restoreConfigFromBackup(backup, configPath, backupPath, catalogPa
 async function stripManagedRoutingFromConfig(configPath, raw) {
   const stripped = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   if (stripped !== raw) {
-    await writeFileAtomic(configPath, stripped);
+    await writeCodexConfig(configPath, stripped);
     return true;
   }
   return false;
@@ -433,7 +528,7 @@ export async function loadCodexCatalogBundle(apiKey, { modelId = "" } = {}) {
   }
 
   try {
-    const loaded = await loadServerlessCatalog({ apiKey, refresh: true });
+    const loaded = await loadServerlessCatalog({ apiKey });
     const snapshot = getServerlessCatalogSnapshot();
     if (!snapshot) {
       throw new Error("Serverless catalog snapshot is unavailable.");
@@ -468,20 +563,18 @@ export async function enableCodexFireworks({
   catalog = null,
   catalogSnapshot = null,
   catalogAvailable = false,
-  refreshCatalog = false,
   telemetryHeaders = {},
   anthropicKey = "",
 }) {
   const resolvedEffective = effectiveApiKey
-    || (apiKey === CODEX_API_KEY_ENV_REF ? (process.env.FIREWORKS_API_KEY ?? "") : apiKey);
+    || (apiKey === CODEX_API_KEY_ENV_REF ? "" : apiKey);
   if (!resolvedEffective) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
-  const snapshot = await readRawIfExists(configPath);
-  const doc = snapshot.existed && snapshot.raw.trim()
-    ? readTomlDoc(snapshot.raw)
-    : emptyTomlDoc();
+  const original = await readRawIfExists(configPath);
+  const { raw: currentRaw, doc } = readCodexConfigDoc(configPath, original.raw);
+  const snapshot = { existed: original.existed, raw: currentRaw };
 
   // Only reuse the current model when the gateway provider is already active —
   // switching from Foundry must not carry over a Foundry deployment name and
@@ -499,6 +592,39 @@ export async function enableCodexFireworks({
   if (exclusionReason) {
     throw new Error(exclusionReason);
   }
+
+  const providerTable = doc.tables[CODEX_PROVIDER_TABLE] ?? {};
+  // Codex's own sign-in pays for GPT turns, so an OpenAI key never rides
+  // along. An Anthropic key (saved with `nexus auto`, or already in this
+  // table) does, for Claude turns.
+  const droppedKeyHeaders = anthropicKey ? [OPENAI_BYOK_HEADER] : CODEX_PROVIDER_KEY_HEADERS;
+  const removedProviderKeys = Boolean(
+    omitHeaders(providerTable.http_headers, droppedKeyHeaders)
+      || omitHeaders(providerTable.env_http_headers, droppedKeyHeaders),
+  );
+  const httpHeaders = {
+    ...mergeFireconnectTelemetryHeaders(
+      withoutHeaders(providerTable.http_headers, CODEX_REBUILT_HEADERS),
+      telemetryHeaders,
+    ),
+    ...(anthropicKey ? { [ANTHROPIC_BYOK_HEADER]: anthropicKey } : {}),
+  };
+  const routing = {
+    providerId: CODEX_FIREWORKS_PROVIDER_ID,
+    baseUrl: CODEX_FIREWORKS_BASE_URL,
+    modelId: storedModel,
+    apiKey: resolvedEffective,
+    literalAuth: true,
+    chatgptLogin: true,
+    httpHeaders: withChatgptLoginFireworksKey(httpHeaders, resolvedEffective),
+    envHttpHeaders: withoutHeaders(providerTable.env_http_headers, CODEX_REBUILT_HEADERS),
+  };
+  // Refuse before the backup or catalog is touched, so a refused `on` leaves
+  // nothing behind for `off` to restore.
+  assertCodexConfigWritable(
+    configPath,
+    patchFireconnectRoutingRaw(snapshot.raw, { ...routing, catalogPath: CODEX_CATALOG_TOML_REF }),
+  );
 
   const backupPath = codexBackupPath(dataDir, configPath);
   const hasBackup = (await readJsonIfExists(backupPath)).snapshot !== undefined;
@@ -539,24 +665,22 @@ export async function enableCodexFireworks({
       ? existingCatalog
       : null;
     const managedModels = withoutStaleFirerouterRows(managedCatalog?.models);
-    // An explicit --model keeps the existing rows; `refreshCatalog` marks a
-    // model Nexus chose itself (re-`on` or the FireRouter default).
+    // Shared list policy: a managed catalog tracks the account's catalog on
+    // every `on`, `--model` or not; a fresh install seeds the whole fetched
+    // catalog (the file drives the ChatGPT app model dropdown, so a
+    // single-row file leaves no menu to pick from). The selected model is
+    // appended when the fetched set doesn't have it.
     const models = managedCatalog
-      ? (modelId && !refreshCatalog
-          ? managedModels
-          : catalogAvailable
-            ? refreshCodexCatalogRows(managedModels, catalogSnapshot, catalog.models ?? [])
-            : managedModels)
-      // Fresh installs seed the whole fetched catalog even when --model pins
-      // one row: the catalog file drives the ChatGPT app model dropdown, so a
-      // single-row file leaves no menu to pick from. The selected model is
-      // appended below when it isn't in the fetched set.
+      ? refreshCodexCatalogRows(managedModels, catalogSnapshot, catalog.models ?? [], {
+        catalogAvailable,
+        selected: storedModel,
+      })
       : (catalog.models ?? []);
     const catalogToWrite = {
       ...(managedCatalog ?? catalog),
-      models: withCodexConstantFields(withCodexSignInRows(modelId
-        ? addCodexSelectedModel(models, catalog, storedModel)
-        : models)),
+      models: withCodexConstantFields(withCodexAutoRows(withCodexSignInRows(
+        addCodexSelectedModel(models, catalog, storedModel),
+      ))),
     };
     if ((managedCatalog || catalogToWrite.models.length > 0)
       && (!managedCatalog
@@ -576,9 +700,9 @@ export async function enableCodexFireworks({
     const existingCatalog = await readCodexCatalogIfValid(catalogPath);
     const models = existingCatalog?.models ?? [];
     const keptModels = withoutStaleFirerouterRows(models);
-    const nextModels = withCodexConstantFields(withCodexSignInRows(modelId
+    const nextModels = withCodexConstantFields(withCodexAutoRows(withCodexSignInRows(modelId
       ? addCodexSelectedModel(keptModels, null, storedModel)
-      : keptModels));
+      : keptModels)));
     const catalogToWrite = {
       ...(existingCatalog ?? {}),
       models: nextModels,
@@ -591,37 +715,10 @@ export async function enableCodexFireworks({
     }
   }
 
-  const providerTable = doc.tables[CODEX_PROVIDER_TABLE] ?? {};
-  // Codex's own sign-in pays for GPT turns, so an OpenAI key never rides
-  // along. An Anthropic key (saved with `nexus auto`, or already in this
-  // table) does, for Claude turns.
-  const droppedKeyHeaders = anthropicKey ? [OPENAI_BYOK_HEADER] : CODEX_PROVIDER_KEY_HEADERS;
-  const removedProviderKeys = Boolean(
-    omitHeaders(providerTable.http_headers, droppedKeyHeaders)
-      || omitHeaders(providerTable.env_http_headers, droppedKeyHeaders),
-  );
-  const httpHeaders = {
-    ...mergeFireconnectTelemetryHeaders(
-      withoutHeaders(providerTable.http_headers, CODEX_REBUILT_HEADERS),
-      telemetryHeaders,
-    ),
-    ...(anthropicKey ? { [ANTHROPIC_BYOK_HEADER]: anthropicKey } : {}),
-  };
-  const envHttpHeaders = withoutHeaders(providerTable.env_http_headers, CODEX_REBUILT_HEADERS);
-  const nextRaw = patchFireconnectRoutingRaw(snapshot.raw, {
-    providerId: CODEX_FIREWORKS_PROVIDER_ID,
-    baseUrl: CODEX_FIREWORKS_BASE_URL,
-    modelId: storedModel,
-    catalogPath: effectiveCatalogPath,
-    apiKey: resolvedEffective,
-    literalAuth: true,
-    chatgptLogin: true,
-    httpHeaders: withChatgptLoginFireworksKey(httpHeaders, resolvedEffective),
-    envHttpHeaders,
-  });
+  const nextRaw = patchFireconnectRoutingRaw(snapshot.raw, { ...routing, catalogPath: effectiveCatalogPath });
   await mkdir(path.dirname(configPath), { recursive: true });
-  if (nextRaw !== snapshot.raw) {
-    await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
+  if (nextRaw !== original.raw) {
+    await writeCodexConfig(configPath, nextRaw, { mode: 0o600 });
   }
 
   return {
@@ -648,37 +745,46 @@ export async function refreshCodexGatewayKey({ configPath, fireworksKey }) {
   if (!snapshot.existed || !snapshot.raw.trim()) {
     return false;
   }
-  const doc = readTomlDoc(snapshot.raw);
-  if (fireconnectManagedVariant(doc) !== "fireworks") {
+  const { raw, doc, repair } = readCodexConfigDocForPatch(configPath, snapshot.raw);
+  const nextRaw = refreshedCodexGatewayKeyRaw(raw, doc, key);
+  if (nextRaw === null && !repair) {
     return false;
+  }
+  await writeCodexConfig(configPath, nextRaw ?? raw, { mode: 0o600 });
+  return true;
+}
+
+/**
+ * `raw` with the gateway provider's auth set to `key`, or null when it already
+ * holds it or Codex isn't on the gateway.
+ * @param {string} raw
+ * @param {{ root: Record<string, unknown>, tables: Record<string, Record<string, unknown>> }} doc
+ * @param {string} key
+ */
+function refreshedCodexGatewayKeyRaw(raw, doc, key) {
+  if (fireconnectManagedVariant(doc) !== "fireworks") {
+    return null;
   }
   const stored = codexStoredAuthRef(doc);
   const provider = doc.tables[CODEX_PROVIDER_TABLE];
   if (codexChatgptLoginFireworksKey(provider)) {
     if (stored === key) {
-      return false;
+      return null;
     }
-    const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, {
+    return patchCodexProviderAuthRaw(raw, {
       apiKey: key,
       literalAuth: true,
       chatgptLogin: true,
       httpHeaders: withChatgptLoginFireworksKey(provider.http_headers, key),
     });
-    await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
-    return true;
   }
-  const mode = codexAuthKeyMode(stored);
-  if (mode === "env-reference") {
-    const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, { apiKey: key, literalAuth: true });
-    await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
-    return true;
+  if (codexAuthKeyMode(stored) === "env-reference") {
+    return patchCodexProviderAuthRaw(raw, { apiKey: key, literalAuth: true });
   }
   if (!stored || !isFireworksShapedKey(stored) || stored === key) {
-    return false;
+    return null;
   }
-  const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, { apiKey: key, literalAuth: true });
-  await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
-  return true;
+  return patchCodexProviderAuthRaw(raw, { apiKey: key, literalAuth: true });
 }
 
 /**
@@ -693,22 +799,24 @@ export async function removeCodexSavedProviderKeys({ configPath, headerNames }) 
   if (!snapshot.existed || !snapshot.raw.trim()) {
     return false;
   }
-  const doc = readTomlDoc(snapshot.raw);
+  const { raw, doc, repair } = readCodexConfigDocForPatch(configPath, snapshot.raw);
   const provider = doc.tables[CODEX_PROVIDER_TABLE];
-  if (fireconnectManagedVariant(doc) !== "fireworks" || !codexChatgptLoginFireworksKey(provider)) {
-    return false;
-  }
-  const headers = omitHeaders(provider.http_headers, headerNames);
+  const headers = fireconnectManagedVariant(doc) === "fireworks" && codexChatgptLoginFireworksKey(provider)
+    ? omitHeaders(provider.http_headers, headerNames)
+    : null;
   if (!headers) {
+    if (repair) {
+      await writeCodexConfig(configPath, raw, { mode: 0o600 });
+    }
     return false;
   }
-  const nextRaw = patchCodexProviderAuthRaw(snapshot.raw, {
+  const nextRaw = patchCodexProviderAuthRaw(raw, {
     apiKey: codexStoredAuthRef(doc),
     literalAuth: true,
     chatgptLogin: true,
     httpHeaders: headers,
   });
-  await writeFileAtomic(configPath, nextRaw, { mode: 0o600 });
+  await writeCodexConfig(configPath, nextRaw, { mode: 0o600 });
   return true;
 }
 
@@ -716,14 +824,13 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
   const backupPath = codexBackupPath(dataDir, configPath);
   const backup = await readJsonIfExists(backupPath);
   const snapshot = await readRawIfExists(configPath);
-  const doc = snapshot.existed && snapshot.raw.trim()
-    ? readTomlDoc(snapshot.raw)
-    : emptyTomlDoc();
+  const { raw: currentRaw, doc } = readCodexConfigDoc(configPath, snapshot.raw);
+  const repaired = currentRaw !== snapshot.raw;
   const hasBackup = backup.snapshot !== undefined;
 
-  if (!wasEnabled && !hasBackup && !fireconnectManaged(doc)) {
-    if (catalogPath && !snapshotReferencesFireworksCatalog(snapshot.raw)) {
-      await unlinkCatalogIfExists(catalogPath);
+  if (!wasEnabled && !hasBackup && !repaired && !fireconnectManaged(doc)) {
+    if (catalogPath && !snapshotReferencesFireworksCatalog(currentRaw)) {
+      await unlinkCatalogIfExists(catalogPath, configPath);
     }
     return "noop";
   }
@@ -736,21 +843,21 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
     } else {
       await restoreConfigFromBackup(backup, configPath, backupPath, catalogPath);
       if (!backup.catalogSnapshot && !snapshotReferencesFireworksCatalog(backup.snapshot.raw)) {
-        await unlinkCatalogIfExists(catalogPath);
+        await unlinkCatalogIfExists(catalogPath, configPath);
       }
       return "restored";
     }
   }
 
   if (!snapshot.existed) {
-    await unlinkCatalogIfExists(catalogPath);
+    await unlinkCatalogIfExists(catalogPath, configPath);
     return "noop";
   }
 
   const stripped = await stripManagedRoutingFromConfig(configPath, snapshot.raw);
   const currentSnapshot = stripped ? await readRawIfExists(configPath) : snapshot;
   if (!snapshotReferencesFireworksCatalog(currentSnapshot.raw)) {
-    await unlinkCatalogIfExists(catalogPath);
+    await unlinkCatalogIfExists(catalogPath, configPath);
   }
   return stripped ? "stripped" : "noop";
 }
@@ -758,7 +865,8 @@ export async function disableCodexFireworks({ configPath, dataDir, catalogPath =
 export async function readCodexTomlIfExists(configPath) {
   const snapshot = await readRawIfExists(configPath);
   if (!snapshot.existed || !snapshot.raw.trim()) {
-    return { existed: false, doc: emptyTomlDoc() };
+    return { existed: false, doc: emptyTomlDoc(), repaired: false };
   }
-  return { existed: true, doc: readTomlDoc(snapshot.raw) };
+  const { raw, doc } = readCodexConfigDoc(configPath, snapshot.raw);
+  return { existed: true, doc, repaired: raw !== snapshot.raw };
 }

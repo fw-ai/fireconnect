@@ -314,9 +314,11 @@ export async function runClaudeUsageLive({
       // must not be able to kill a working meter — resume what we were on.
       try {
         const nextSession = await promptSession({ home, input, output: stream });
-        // Esc/q out of the session list also resumes the tracked agent.
+        // Esc/q on the session list leaves `usage`, as on the first list. The
+        // list is the top level; resuming the meter here would bounce Esc
+        // between the two screens forever.
         if (nextSession == null) {
-          continue;
+          return;
         }
         if (nextSession !== sessionPath) {
           const nextMain = await mainAgentOf(nextSession);

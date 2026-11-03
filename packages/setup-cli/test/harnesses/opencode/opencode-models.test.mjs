@@ -153,7 +153,7 @@ describe("opencode model entries", () => {
     assert.equal(opencodeNeedsProviderModelOverride("auto"), true);
     assert.equal(opencodeConfigModelRef("auto"), "auto");
     const entry = buildOpencodeModelEntry("auto");
-    assert.equal(entry.name, "Auto");
+    assert.equal(entry.name, "Nexus Auto");
     assert.deepEqual(entry.modalities, { input: ["text", "image"] });
     assert.equal(entry.limit.context, 1_048_575);
   });
@@ -162,7 +162,7 @@ describe("opencode model entries", () => {
     assert.equal(opencodeNeedsProviderModelOverride("auto-instant"), true);
     assert.equal(opencodeConfigModelRef("auto-instant"), "auto-instant");
     const entry = buildOpencodeModelEntry("auto-instant");
-    assert.equal(entry.name, "Auto Instant");
+    assert.equal(entry.name, "Nexus Auto Instant");
     assert.deepEqual(entry.modalities, { input: ["text", "image"] });
     assert.equal(entry.limit.context, 1_048_575);
   });

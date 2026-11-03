@@ -47,10 +47,16 @@ export function printBody(message) {
   console.log(dim(message));
 }
 
+// `on` edits settings on this machine only. A cloud or remote agent session
+// (even signed in to the same account) never reads them and never sees the key.
+export const LOCAL_ONLY_NOTE =
+  "Only works on this computer. Cloud and remote agents aren't supported.";
+
 /** Harness turned on (direct Fireworks). */
 export function printHarnessConnected(name, { model } = {}) {
   const display = displayModel(model);
   printSuccess(display ? `${name} → Fireworks · ${display}` : `${name} → Fireworks`);
+  printNote(LOCAL_ONLY_NOTE);
 }
 
 export function printModelsAdded(models = [], { primaryModel } = {}) {
@@ -156,6 +162,7 @@ export async function printHarnessOnSuccess({
  */
 export function printAzureConnected({ id, result }) {
   printSuccess(`${id} → ${AZURE_PROVIDER_LABEL} · ${displayModel(result.model)}`);
+  printNote(LOCAL_ONLY_NOTE);
   printDetail("Endpoint", result.baseUrl);
   printSpacer();
 }

@@ -1,5 +1,6 @@
 import process, { stdout } from "node:process";
 import { spawn } from "node:child_process";
+import { browserOpenCommand, safeCommand } from "../system/win-command.mjs";
 
 import { withSpinner as withSpinnerBase } from "./spinner.mjs";
 
@@ -19,11 +20,7 @@ export function withSpinner(text, work) {
  * @returns {Promise<boolean>}
  */
 export function openInBrowser(url, { platform = process.platform, spawnFn = spawn, graceMs = 1500 } = {}) {
-  const [command, args] = platform === "darwin"
-    ? ["open", [url]]
-    : platform === "win32"
-      ? ["cmd", ["/c", "start", "", url]]
-      : ["xdg-open", [url]];
+  const [command, args] = browserOpenCommand(url, { platform });
 
   return new Promise((resolve) => {
     let child;
@@ -58,7 +55,7 @@ export function copyToClipboard(text) {
   const candidates = process.platform === "darwin"
     ? [["pbcopy", []]]
     : process.platform === "win32"
-      ? [["clip", []]]
+      ? [[safeCommand("clip"), []]]
       : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]]];
 
   const tryOne = ([command, args]) => new Promise((resolve) => {

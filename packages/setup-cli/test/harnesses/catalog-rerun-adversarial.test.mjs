@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { codexCatalogPath, codexConfigPath } from "../../lib/harnesses/codex/core.mjs";
+import { isCodexOpenaiModelSlug } from "../../lib/harnesses/codex/catalog.mjs";
 import { OPENCODE_FIREWORKS_PROVIDER_ID, opencodeConfigPath } from "../../lib/harnesses/opencode/core.mjs";
 import { piModelsPath, piSettingsPath } from "../../lib/harnesses/pi/core.mjs";
 import { USER_SETTINGS_RELATIVE_PATH } from "../../lib/harnesses/claude/core.mjs";
@@ -26,7 +27,9 @@ function clearCatalogCacheForHome(home) {
 }
 
 async function runOnSequence(home, harness, { model = "", apiKey = V1_KEY } = {}) {
-  const base = [harness, "on", "--api-key", apiKey];
+  const seed = await runFireconnect(["login", "--api-key", apiKey], { HOME: home, ...NO_ENV });
+  assert.equal(seed.code, 0, seed.stderr);
+  const base = [harness, "on"];
   const withModel = model ? [...base, "--model", model] : base;
   const steps = [
     await runFireconnect(base, { HOME: home, ...NO_ENV }),
@@ -56,10 +59,7 @@ describe("catalog rerun adversarial scenarios", () => {
       await writeFile(catalogPath, `${JSON.stringify(beforeV2, null, 2)}\n`);
 
       clearCatalogCacheForHome(home);
-      const v2 = await runFireconnect(
-        ["codex", "on", "--api-key", V2_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const v2 = await (await runFireconnect(["login", "--api-key", V2_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(v2.code, 0, v2.stderr);
 
       const slugs = JSON.parse(await readFile(catalogPath, "utf8")).models.map((row) => row.slug);
@@ -75,10 +75,7 @@ describe("catalog rerun adversarial scenarios", () => {
     for (const route of ["", "firerouter/opus"]) {
       await withTempHome("adv-codex-firerouter-refresh-", async (home) => {
         await mkdir(path.join(home, ".codex"), { recursive: true });
-        const first = await runFireconnect(
-          ["codex", "on", "--api-key", V1_KEY],
-          { HOME: home, ...NO_ENV },
-        );
+        const first = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
         assert.equal(first.code, 0, first.stderr);
         if (route) {
           // What an earlier release wrote for `--model firerouter/opus`.
@@ -97,7 +94,7 @@ describe("catalog rerun adversarial scenarios", () => {
         await writeFile(catalogPath, `${JSON.stringify(before, null, 2)}\n`);
 
         clearCatalogCacheForHome(home);
-        const rerun = await runFireconnect(["codex", "on", "--api-key", V2_KEY], { HOME: home, ...NO_ENV });
+        const rerun = await (await runFireconnect(["login", "--api-key", V2_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
         assert.equal(rerun.code, 0, rerun.stderr);
 
         // The plain re-run drops any stored FireRouter usage to `auto`.
@@ -115,10 +112,7 @@ describe("catalog rerun adversarial scenarios", () => {
   it("codex drops a FireRouter path to auto on re-on without --model, keeping the catalog ref", async () => {
     await withTempHome("adv-codex-firerouter-path-", async (home) => {
       await mkdir(path.join(home, ".codex"), { recursive: true });
-      const plain = await runFireconnect(
-        ["codex", "on", "--api-key", V1_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const plain = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(plain.code, 0, plain.stderr);
       // What an earlier release wrote for `--model firerouter/test-model`.
       await writeFile(
@@ -129,10 +123,7 @@ describe("catalog rerun adversarial scenarios", () => {
       const seeded = JSON.parse(await readFile(codexCatalogPath(home), "utf8"));
       seeded.models.push({ slug: "firerouter/test-model", display_name: "FireRouter · Test" });
       await writeFile(codexCatalogPath(home), JSON.stringify(seeded));
-      const rerun = await runFireconnect(
-        ["codex", "on", "--api-key", V1_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const rerun = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(rerun.code, 0, rerun.stderr);
 
       const config = await readFile(codexConfigPath(home), "utf8");
@@ -144,27 +135,59 @@ describe("catalog rerun adversarial scenarios", () => {
     });
   });
 
-  it("codex drops a delisted catalog row even when its model stays selected", async () => {
+  it("codex keeps a delisted catalog row while its model stays selected", async () => {
     await withTempHome("adv-codex-selected-", async (home) => {
       await mkdir(path.join(home, ".codex"), { recursive: true });
-      const first = await runFireconnect(
-        ["codex", "on", "--api-key", V1_KEY, "--model", DELISTED_SELECTED],
-        { HOME: home, ...NO_ENV },
-      );
+      const first = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on", "--model", DELISTED_SELECTED], { HOME: home, ...NO_ENV }));
       assert.equal(first.code, 0, first.stderr);
 
       clearCatalogCacheForHome(home);
       // Preserve the configured model while refreshing its catalog row.
-      const v2 = await runFireconnect(
-        ["codex", "on", "--api-key", V2_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const v2 = await (await runFireconnect(["login", "--api-key", V2_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(v2.code, 0, v2.stderr);
 
+      // The selected model keeps its row (config.toml still names it, and a
+      // catalog without it would leave Codex with no catalog at all).
       const slugs = JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models.map((row) => row.slug);
-      assert.ok(!slugs.includes(DELISTED_SELECTED), "delisted model removed from catalog");
+      assert.ok(slugs.includes(DELISTED_SELECTED), "the selected model keeps its row");
       assert.ok(slugs.includes("glm-latest"), "new v2 model is added");
-      assert.match(await readFile(codexConfigPath(home), "utf8"), /model = "deepseek-v4-flash"/);
+      const config = await readFile(codexConfigPath(home), "utf8");
+      assert.match(config, /model = "deepseek-v4-flash"/);
+      assert.match(config, /model_catalog_json/);
+    });
+  });
+
+  it("codex on --model drops rows the account's catalog no longer serves", async () => {
+    await withTempHome("adv-codex-explicit-plan-", async (home) => {
+      await mkdir(path.join(home, ".codex"), { recursive: true });
+      const first = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
+      assert.equal(first.code, 0, first.stderr);
+      const fireworksSlugs = async () => JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models
+        .map((row) => row.slug)
+        .filter((slug) => !isCodexOpenaiModelSlug(slug));
+      assert.ok((await fireworksSlugs()).includes(SELECTED), "the full catalog is seeded first");
+
+      // What the desktop app runs: an explicit model, after the account's
+      // plan limited its catalog to `auto`.
+      clearCatalogCacheForHome(home);
+      const rerun = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV, NEXUS_TEST_PLAN_TIER: "PRO" }), await runFireconnect(["codex", "on", "--model", "auto"], { HOME: home, ...NO_ENV, NEXUS_TEST_PLAN_TIER: "PRO" }));
+      assert.equal(rerun.code, 0, rerun.stderr);
+      assert.deepEqual(await fireworksSlugs(), ["auto"]);
+    });
+  });
+
+  it("codex on --model keeps rows the catalog still serves", async () => {
+    await withTempHome("adv-codex-explicit-served-", async (home) => {
+      await mkdir(path.join(home, ".codex"), { recursive: true });
+      const first = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on"], { HOME: home, ...NO_ENV }));
+      assert.equal(first.code, 0, first.stderr);
+      const slugs = async () => JSON.parse(await readFile(codexCatalogPath(home), "utf8")).models.map((row) => row.slug);
+      const before = await slugs();
+
+      clearCatalogCacheForHome(home);
+      const rerun = await (await runFireconnect(["login", "--api-key", V1_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["codex", "on", "--model", SELECTED], { HOME: home, ...NO_ENV }));
+      assert.equal(rerun.code, 0, rerun.stderr);
+      assert.deepEqual(await slugs(), before);
     });
   });
 
@@ -182,10 +205,7 @@ describe("catalog rerun adversarial scenarios", () => {
       await writeFile(configPath, `${JSON.stringify(stale, null, 2)}\n`);
 
       clearCatalogCacheForHome(home);
-      const v2 = await runFireconnect(
-        ["opencode", "on", "--api-key", V2_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const v2 = await (await runFireconnect(["login", "--api-key", V2_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["opencode", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(v2.code, 0, v2.stderr);
 
       const models = JSON.parse(await readFile(configPath, "utf8"))
@@ -215,10 +235,7 @@ describe("catalog rerun adversarial scenarios", () => {
       await writeFile(settingsPath, `${JSON.stringify(stale, null, 2)}\n`);
 
       clearCatalogCacheForHome(home);
-      const v2 = await runFireconnect(
-        ["claude", "on", "--api-key", V2_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const v2 = await (await runFireconnect(["login", "--api-key", V2_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["claude", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(v2.code, 0, v2.stderr);
 
       const options = JSON.parse(await readFile(settingsPath, "utf8")).modelPicker.options;
@@ -248,10 +265,7 @@ describe("catalog rerun adversarial scenarios", () => {
 
       const modelsPath = piModelsPath(home);
       clearCatalogCacheForHome(home);
-      const v2 = await runFireconnect(
-        ["pi", "on", "--api-key", V2_KEY],
-        { HOME: home, ...NO_ENV },
-      );
+      const v2 = await (await runFireconnect(["login", "--api-key", V2_KEY], { HOME: home, ...NO_ENV }), await runFireconnect(["pi", "on"], { HOME: home, ...NO_ENV }));
       assert.equal(v2.code, 0, v2.stderr);
 
       const fireworks = JSON.parse(await readFile(modelsPath, "utf8")).providers.fireworks;

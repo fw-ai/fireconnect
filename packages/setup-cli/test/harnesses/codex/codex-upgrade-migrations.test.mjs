@@ -22,10 +22,7 @@ async function writeAllSearchOff(home) {
 describe("migrateCodexCatalogConstantsOnUpgrade", () => {
   it("turns tool search on for every row, Claude routes included", async () => {
     await withTempHome("codex-search-migrate", async (home) => {
-      const on = await runFireconnect(
-        ["codex", "on", "--api-key", API_KEY],
-        { HOME: home, FIREWORKS_API_KEY: "" },
-      );
+      const on = await (await runFireconnect(["login", "--api-key", API_KEY], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["codex", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
       assert.equal(on.code, 0, on.stderr);
       // Rows an earlier release registered for FireRouter selections.
       const seeded = await readCatalog(home);
@@ -55,7 +52,9 @@ describe("migrateCodexCatalogConstantsOnUpgrade", () => {
 
   it("does not recreate the catalog once codex is off", async () => {
     await withTempHome("codex-search-migrate-off", async (home) => {
-      for (const args of [["codex", "on", "--api-key", API_KEY], ["codex", "off"]]) {
+      const seed = await runFireconnect(["login", "--api-key", API_KEY], { HOME: home, FIREWORKS_API_KEY: "" });
+      assert.equal(seed.code, 0, seed.stderr);
+      for (const args of [["codex", "on"], ["codex", "off"]]) {
         const result = await runFireconnect(args, { HOME: home, FIREWORKS_API_KEY: "" });
         assert.equal(result.code, 0, result.stderr);
       }

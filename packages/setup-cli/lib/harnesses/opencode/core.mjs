@@ -13,7 +13,9 @@ import {
   normalizeAzureBaseUrl,
 } from "../../fireworks/azure-core.mjs";
 import {
+  AUTO_MODEL_ID,
   defaultMainModel,
+  canonicalAutoModelId,
   dropRetiredModelId,
   fireworksModelSlug,
   fullFireworksResourceId,
@@ -23,8 +25,9 @@ import {
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
+import { hasModelReasoningLevels } from "../../fireworks/reasoning.mjs";
 import { resolveManagedDisplayName } from "../../fireworks/model-display.mjs";
-import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { planModelList } from "../../harness/catalog-refresh.mjs";
 import { resolveFireworksCatalog } from "../../fireworks/model-specs.mjs";
 import { lookupFireworksPricing } from "../../fireworks/pricing.mjs";
 import {
@@ -188,7 +191,7 @@ export function effectiveOpencodeApiKey(storedKey) {
     return "";
   }
   return storedKey === OPENCODE_API_KEY_ENV_REF
-    ? (process.env.FIREWORKS_API_KEY ?? "")
+    ? "" // env is not a credential source
     : storedKey;
 }
 
@@ -310,6 +313,145 @@ export function buildOpencodeModelEntry(modelId) {
   };
 }
 
+/** Auto picker key; resource paths are not gateway Auto model ids. */
+export function opencodeAutoModelKey(modelId) {
+  return typeof modelId === "string"
+    ? canonicalAutoModelId(modelId.replace(/^(?:fireworks-ai|fireworks)\//, ""))
+    : "";
+}
+
+function isModelObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** A `variants` value OpenCode loads: object variants, `disabled` boolean when set. */
+function isVariantMap(value) {
+  return isModelObject(value) && Object.values(value).every((variant) => isModelObject(variant)
+    && (variant.disabled === undefined || typeof variant.disabled === "boolean"));
+}
+
+/** A `reasoning_options` value OpenCode loads: effort, toggle and budget_tokens entries. */
+function isReasoningOptions(value) {
+  return Array.isArray(value) && value.every((option) => {
+    if (!isModelObject(option)) return false;
+    if (option.type === "effort") {
+      return Array.isArray(option.values) && option.values.every((effort) => effort === null || typeof effort === "string");
+    }
+    if (option.type === "budget_tokens") {
+      return ["min", "max"].every((key) => option[key] === undefined || Number.isFinite(option[key]));
+    }
+    return option.type === "toggle";
+  });
+}
+
+/** Stricter than the shared helpers, which also accept other `auto-*` mixes. */
+function isOpencodeAutoRow(modelId, entry) {
+  return opencodeAutoModelKey(modelId) === AUTO_MODEL_ID
+    && canonicalAutoModelId(entry?.id ?? AUTO_MODEL_ID) === AUTO_MODEL_ID;
+}
+
+/** A row-level `provider` OpenCode loads: an object whose `npm` and `api`, when set, are strings. */
+function isRowProviderOverride(value) {
+  return isModelObject(value) && ["npm", "api"].every((key) => value[key] === undefined || typeof value[key] === "string");
+}
+
+/** Bare slug for a picker key or full resource ref, without a provider prefix. */
+function opencodeRowSlug(modelId) {
+  return typeof modelId === "string"
+    ? fireworksModelSlug(modelId.replace(/^(?:fireworks-ai|fireworks)\//i, ""))
+    : "";
+}
+
+/** Whether a picker key names canonical Auto or a reasoning-table model. */
+function isReasoningRowKey(modelId) {
+  if (opencodeAutoModelKey(modelId) === AUTO_MODEL_ID) return true;
+  const slug = opencodeRowSlug(modelId);
+  if (!slug || canonicalAutoModelId(slug) || isFirerouterModelPattern(modelId)) return false;
+  const ref = typeof modelId === "string" ? modelId.replace(/^(?:fireworks-ai|fireworks)\//i, "") : "";
+  // A table key can name a model even when the slug's suffix suggests a router.
+  const modelRef = ref.includes("/") ? ref : `accounts/fireworks/models/${ref}`;
+  return hasModelReasoningLevels(modelRef) || hasModelReasoningLevels(fullFireworksResourceId(ref));
+}
+
+/**
+ * Whether an existing row is one the effort repair may mark: canonical Auto,
+ * or a model Nexus's reasoning table lists. A row carrying its own `id` is a
+ * remap or a user-authored copy, not the row Nexus wrote (Nexus rows never
+ * set `id`); other `auto-*` mixes and FireRouter rows keep their behavior.
+ * The two marking predicates differ by provenance, deliberately: repair
+ * touches pre-existing rows of unknown origin, so it stays with the table;
+ * {@link isAuthoredOpencodeReasoningRow} covers rows Nexus itself writes or
+ * the user just selected through Nexus — and the shared reasoning layer
+ * already grants every Nexus catalog model an effort ladder on the other
+ * harnesses, so a Nexus-authored row carries the flag from the start.
+ */
+function isOpencodeReasoningRepairRow(modelId, entry) {
+  if (isOpencodeAutoRow(modelId, entry)) return true;
+  if (!isModelObject(entry) || entry.id !== undefined) return false;
+  return isReasoningRowKey(modelId);
+}
+
+/**
+ * Whether a row Nexus itself is writing (or the model being enabled) may be
+ * marked: any catalog row Nexus authors for a model OpenCode's catalog does
+ * not carry, not just the reasoning table's current entries, so a model
+ * Nexus adds later gets effort controls without a code change here.
+ */
+function isAuthoredOpencodeReasoningRow(modelId, entry) {
+  if (!isModelObject(entry)) return false;
+  const slug = opencodeRowSlug(modelId);
+  if (!slug || isFirerouterModelPattern(modelId)) return false;
+  if (canonicalAutoModelId(slug)) return isOpencodeAutoRow(modelId, entry);
+  return entry.id === undefined;
+}
+
+function markReasoning(modelId, entry, providerNpm, eligible) {
+  if (!isModelObject(entry) || !eligible(modelId, entry)) return entry;
+  if (["reasoning", "reasoning_options", "variants"].some((key) => entry[key] !== undefined)) return entry;
+  if (entry.provider !== undefined && !isRowProviderOverride(entry.provider)) return entry;
+  // OpenCode takes the row's SDK from its own provider.npm, then the provider's
+  // npm, then models.dev (openai-compatible for fireworks-ai). Other SDKs build
+  // differently shaped effort variants, so their rows stay as written.
+  // Normalize the spellings config can carry (`aisdk:` prefix, `@version`
+  // suffix) before comparing, or a compatible row silently never flags.
+  const rawNpm = entry.provider?.npm ?? providerNpm ?? "@ai-sdk/openai-compatible";
+  const npm = typeof rawNpm === "string"
+    ? rawNpm.replace(/^aisdk:/, "").replace(/@[^@/]+$/, "")
+    : rawNpm;
+  if (npm !== "@ai-sdk/openai-compatible") return entry;
+  return { ...entry, reasoning: true };
+}
+
+/**
+ * Mark a reasoning row Nexus manages as a reasoning model: OpenCode 1.x
+ * then offers its own effort variants and sends the one picked (2.x already
+ * does), with no default effort. This covers canonical Auto and any model
+ * Nexus adds that OpenCode's catalog does not list — those rows exist only
+ * because Nexus wrote them, and without the flag 1.x silently drops the
+ * selected effort. A row with effort controls the user set (`reasoning`,
+ * `reasoning_options`, `variants`, loadable or not) stays as written: the
+ * flag would change the choices OpenCode builds from them.
+ * @param {string} modelId
+ * @param {unknown} entry
+ * @param {unknown} [providerNpm] `npm` of the provider entry holding the row
+ */
+export function withOpencodeReasoningEffort(modelId, entry, providerNpm) {
+  return markReasoning(modelId, entry, providerNpm, isOpencodeReasoningRepairRow);
+}
+
+/**
+ * {@link withOpencodeReasoningEffort} for a row Nexus is authoring now (or
+ * the row of the model being enabled): not limited to the reasoning table,
+ * so newly added catalog-missing models are covered as soon as Nexus writes
+ * their row.
+ * @param {string} modelId
+ * @param {unknown} entry
+ * @param {unknown} [providerNpm] `npm` of the provider entry holding the row
+ */
+export function withAuthoredOpencodeReasoningEffort(modelId, entry, providerNpm) {
+  return markReasoning(modelId, entry, providerNpm, isAuthoredOpencodeReasoningRow);
+}
+
 /**
  * Build an OpenCode `provider.models` entry for a Microsoft Foundry deployment.
  * Foundry deployment names (FW-GLM-5.2, etc.) are absent from models.dev, so
@@ -387,7 +529,7 @@ export async function enableOpencodeFireworks({
   // Resolve the reference for validation/model policy, but keep the reference
   // on disk so an environment-key rotation takes effect without re-running on.
   const resolvedEffective = effectiveApiKey?.trim()
-    || (apiKey === OPENCODE_API_KEY_ENV_REF ? (process.env.FIREWORKS_API_KEY ?? "") : apiKey);
+    || (apiKey === OPENCODE_API_KEY_ENV_REF ? "" : apiKey);
   if (!resolvedEffective?.trim()) {
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
@@ -462,8 +604,8 @@ export async function enableOpencodeFireworks({
   const catalog = catalogModelIds.filter(
     (id) => typeof id === "string" && (id.startsWith("accounts/") || isAutoModelId(id)),
   );
-  const buildModels = (ids) => {
-    /** @type {Record<string, { name: string, modalities?: { input: string[] } }>} */
+  const buildModels = (ids, priorModels) => {
+    /** @type {Record<string, { name: string, modalities?: { input: string[] }, reasoning?: boolean, reasoning_options?: object[], variants?: Record<string, object> }>} */
     const out = {};
     for (const id of ids) {
       if (!opencodeNeedsProviderModelOverride(id)) {
@@ -472,35 +614,58 @@ export async function enableOpencodeFireworks({
       const normalized = normalizeModelId(id);
       const stored = opencodeProviderModelKey(normalized);
       if (stored) {
-        out[stored] = buildOpencodeModelEntry(normalized);
+        const prior = priorModels[stored];
+        // OpenCode rejects the whole file over one malformed value, so only
+        // effort settings it can load carry over; the rest is rebuilt.
+        // Nexus authors this row (the model is absent from OpenCode's
+        // catalog), so it carries the reasoning flag unless the carried-over
+        // settings or the provider SDK say otherwise.
+        out[stored] = withAuthoredOpencodeReasoningEffort(stored, {
+          ...buildOpencodeModelEntry(normalized),
+          ...(typeof prior?.reasoning === "boolean" ? { reasoning: prior.reasoning } : {}),
+          ...(isReasoningOptions(prior?.reasoning_options) ? { reasoning_options: prior.reasoning_options } : {}),
+          ...(isVariantMap(prior?.variants) ? { variants: prior.variants } : {}),
+        }, existing.npm);
       }
     }
     return out;
   };
-  let models = { ...(existing.models ?? {}) };
-  if (Object.keys(models).length === 0) {
-    // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
-    models = buildModels([storedModel, ...catalog]);
-  } else if (modelId) {
-    models = { ...buildModels([storedModel]), ...models };
-  } else if (catalogAvailable) {
-    // Shared catalog-refresh policy: prune delisted ids, add newly served
-    // ones, and re-render kept rows from the fresh catalog (name, context
-    // limits, cost all drift as the serverless catalog evolves).
-    const keyOf = (id) => fullFireworksResourceId(opencodeProviderModelKey(id));
-    const plan = planCatalogRefresh({
-      currentIds: Object.keys(models).map(keyOf),
-      freshIds: catalog.map(fullFireworksResourceId),
-      keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
-    });
-    const keepSet = new Set(plan.kept);
-    models = Object.fromEntries(
-      Object.entries(models).filter(([id]) => keepSet.has(keyOf(id))),
-    );
+  // Shared list policy (lib/harness/catalog-refresh.mjs), in the full
+  // resource-id space; this code only translates ids to provider rows. Rows
+  // the catalog serves are re-rendered from it (name, context limits, cost
+  // all drift), other kept rows stay verbatim.
+  const keyOf = (id) => {
+    const key = opencodeProviderModelKey(id);
+    return key ? fullFireworksResourceId(key) : "";
+  };
+  const prior = { ...(existing.models ?? {}) };
+  // Legacy builds wrote several keys for one model (full id, provider
+  // prefix, short slug); each is kept or pruned with its model.
+  const priorIds = new Set(Object.keys(prior).map(keyOf));
+  const served = new Set(catalog.map(fullFireworksResourceId));
+  const ids = planModelList({
+    currentIds: [...priorIds],
+    freshIds: [...served],
+    catalogAvailable,
+    freshInstall: priorIds.size === 0,
+    selectedId: keyOf(storedModel),
+    keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
+  });
+  const keep = new Set(ids);
+  let models = {
+    ...Object.fromEntries(Object.entries(prior).filter(([key]) => keep.has(keyOf(key)))),
     // Fresh entries overwrite kept rows (metadata refresh) and fill the gaps.
-    models = { ...models, ...buildModels(catalog) };
+    ...buildModels(ids.filter((id) => (catalogAvailable && served.has(id)) || !priorIds.has(id)), prior),
+  };
+  models = Object.fromEntries(Object.entries(withoutModelsDevDuplicates(models))
+    .map(([id, entry]) => [id, withOpencodeReasoningEffort(id, entry, existing.npm)]));
+  // The model being enabled may be a catalog-missing model the reasoning
+  // table does not list yet; its row is Nexus-managed on this path even
+  // when a previous release wrote it without the flag.
+  const selectedKey = opencodeProviderModelKey(storedModel);
+  if (selectedKey && models[selectedKey]) {
+    models[selectedKey] = withAuthoredOpencodeReasoningEffort(selectedKey, models[selectedKey], existing.npm);
   }
-  models = withoutModelsDevDuplicates(models);
   const hasLiteralSecret = Boolean(storedApiKey)
     || Object.keys(byokHeaders ?? {}).length > 0;
   const next = await writeOpencodeConfig(configPath, {
@@ -527,7 +692,7 @@ export async function enableOpencodeAzure({
   modelId,
 }) {
   if (!apiKey || (apiKey === AZURE_API_KEY_ENV_REF && !effectiveAzureApiKey(apiKey))) {
-    throw new Error("No Azure API key found. Export AZURE_API_KEY or pass --api-key with your Foundry key.");
+    throw new Error("No Azure API key found. Run `nexus configure --provider azure --api-key <key>` or export AZURE_API_KEY with your Foundry key.");
   }
 
   const normalizedBaseUrl = normalizeAzureBaseUrl(baseUrl);

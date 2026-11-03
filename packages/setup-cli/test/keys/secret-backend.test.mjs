@@ -21,6 +21,11 @@ import {
   exportFireworksApiKey,
 } from "../../lib/keys/api-key.mjs";
 import { readGlobalConfig, writeGlobalConfig, setHarnessEnabled, globalConfigPath } from "../../lib/config/global-config.mjs";
+import {
+  cacheServerlessCatalogSnapshot,
+  deletePersistedCatalogCache,
+  readCatalogCache,
+} from "../../lib/fireworks/serverless-catalog-cache.mjs";
 import { plaintextMode } from "../../lib/harnesses/vscode/safestorage.mjs";
 import { shellHookBlock } from "../../lib/io/shell-env-hook.mjs";
 import { verifyKeyExportWorks } from "../../lib/keys/selfcheck.mjs";
@@ -170,15 +175,37 @@ describe("secret backend detection + file backend", () => {
     // Seed an existing config so we can prove it is NOT overwritten on failure.
     await writeGlobalConfig(home, { apiKey: "{env:FIREWORKS_API_KEY}", harnesses: {} });
 
-    // The refusal must name the headless path (env var) and clarify that
-    // login flags that pass a key still need storage.
+    // The refusal must name the headless path (the file backend; env vars are
+    // not a credential source).
     await assert.rejects(
       () => persistApiKeyToKeychain(home, KEY),
-      /Cannot store the API key[\s\S]*FIREWORKS_API_KEY[\s\S]*--api-key/,
+      /Cannot store the API key[\s\S]*NEXUS_KEY_STORAGE/,
     );
 
     const config = await readGlobalConfig(home);
     assert.equal(config.apiKey, "{env:FIREWORKS_API_KEY}", "config must be untouched on failure");
+  });
+
+  it("storing a different key marks the model catalog stale but keeps it for offline use", async () => {
+    await persistApiKeyToKeychain(home, KEY);
+    cacheServerlessCatalogSnapshot({ entries: [{ id: "auto", shortId: "auto", displayName: "Auto", kind: "serverless" }], pricingById: new Map(), inputModalitiesById: new Map(), routerBaseModelById: new Map(), contextLengthById: new Map(), supportsToolsById: new Map() }, { apiKey: KEY });
+    const otherHome = await mkdtemp(path.join(os.tmpdir(), "fc-backend-other-"));
+    try {
+      process.env.HOME = otherHome;
+      cacheServerlessCatalogSnapshot({ entries: [{ id: "other", shortId: "other", displayName: "Other", kind: "serverless" }], pricingById: new Map(), inputModalitiesById: new Map(), routerBaseModelById: new Map(), contextLengthById: new Map(), supportsToolsById: new Map() }, { apiKey: KEY });
+      await persistApiKeyToKeychain(home, KEY);
+      assert.ok(readCatalogCache(home).cachedAt > 0, "re-storing the same key keeps the catalog fresh");
+
+      await persistApiKeyToKeychain(home, "fw_backend_test_key_111111111111");
+      const cache = readCatalogCache(home);
+      assert.equal(cache.cachedAt, 0, "a new key's account refetches the catalog");
+      assert.deepEqual(cache.snapshot.entries.map((entry) => entry.id), ["auto"], "the old catalog stays as the offline fallback");
+      assert.ok(readCatalogCache(otherHome).cachedAt > 0, "the current HOME's catalog is untouched");
+    } finally {
+      process.env.HOME = home;
+      deletePersistedCatalogCache();
+      await rm(otherHome, { recursive: true, force: true });
+    }
   });
 
   it("keyStatusSummary includes backend, location, and perHarness entries", async () => {
@@ -272,8 +299,8 @@ describe("configure / on via CLI with file backend", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  it("claude on --api-key stores in the file backend and writes the X-Fireworks-Api-Key custom header", async () => {
-    const res = runCli(["claude", "on", "--api-key", KEY], fileBackendEnv(home));
+  it("login --api-key stores in the file backend and claude on writes the X-Fireworks-Api-Key custom header", async () => {
+    const res = (await runCli(["login", "--api-key", KEY], fileBackendEnv(home)), await runCli(["claude", "on"], fileBackendEnv(home)));
     assert.equal(res.code, 0, res.stderr);
     await assert.doesNotReject(() => readFile(path.join(home, "data/keyring/secrets.json")));
 
@@ -289,10 +316,14 @@ describe("configure / on via CLI with file backend", () => {
   it("harness on refuses with a friendly error when the backend is unavailable", async () => {
     const env = fileBackendEnv(home);
     env[KEY_STORAGE_ENV] = "null";
-    const res = runCli(["claude", "on", "--api-key", KEY], env);
-    assert.notEqual(res.code, 0);
+    const login = await runCli(["login", "--api-key", KEY], env);
+    assert.notEqual(login.code, 0);
     // Graceful failure (no stack-trace crash) when nothing can persist the key.
-    assert.match(res.stderr, /Cannot store the API key|Storage verification failed/);
+    assert.match(login.stderr, /Cannot store the API key|Storage verification failed/);
+    // With nothing stored, `on` stops on the friendly no-key error.
+    const res = await runCli(["claude", "on"], env);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /No Fireworks API key found/);
     // Config must not have been created with a keychain ref pointing at nothing.
     try {
       const config = JSON.parse(await readFile(globalConfigPath(home), "utf8"));
@@ -434,10 +465,12 @@ describe("exportFireworksApiKey --stored-only", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  it("falls back to FIREWORKS_API_KEY when nothing is stored", async () => {
+  it("ignores FIREWORKS_API_KEY when nothing is stored", async () => {
     process.env.FIREWORKS_API_KEY = ENV_ONLY;
-    const key = await exportFireworksApiKey(home, { storedOnly: true });
-    assert.equal(key, ENV_ONLY);
+    await assert.rejects(
+      () => exportFireworksApiKey(home, { storedOnly: true }),
+      /No Fireworks API key found/,
+    );
   });
 
   it("prefers the stored key over FIREWORKS_API_KEY", async () => {

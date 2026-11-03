@@ -129,15 +129,17 @@ describe("claude harness integration", () => {
       }),
     );
 
-    const onResult = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      {
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect(["claude", "on"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -151,7 +153,7 @@ describe("claude harness integration", () => {
     const settingsPath = userSettingsPath(home);
     const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
     const on = async () => {
-      const result = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["claude", "on"], env));
       assert.equal(result.code, 0, result.stderr);
       return JSON.parse(await readFile(settingsPath, "utf8"));
     };
@@ -181,7 +183,7 @@ describe("claude harness integration", () => {
     await writeFile(settingsPath, JSON.stringify({ env: { DO_NOT_TRACK: "1" } }));
     const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
     const on = async () => {
-      const result = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["claude", "on"], env));
       assert.equal(result.code, 0, result.stderr);
       return JSON.parse(await readFile(settingsPath, "utf8"));
     };
@@ -225,15 +227,17 @@ describe("claude harness integration", () => {
       }),
     );
 
-    const onResult = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      {
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect(["claude", "on"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -307,13 +311,13 @@ describe("claude harness integration", () => {
       seedCatalogFor(home);
       const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
       const settingsPath = userSettingsPath(home);
-      const first = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["claude", "on"], env));
       assert.equal(first.code, 0, first.stderr);
       const routed = JSON.parse(await readFile(settingsPath, "utf8"));
       routed.env.CLAUDE_CODE_AUTO_MODE_SERVER = "0";
       await writeFile(settingsPath, JSON.stringify(routed), { mode: 0o600 });
 
-      const again = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      const again = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["claude", "on"], env));
       assert.equal(again.code, 0, again.stderr);
       const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
       assert.equal(Object.hasOwn(enabled.env, "CLAUDE_CODE_AUTO_MODE_SERVER"), false);
@@ -329,7 +333,7 @@ describe("claude harness integration", () => {
       await writeFile(settingsPath, original);
       const env = { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
 
-      const onResult = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+      const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["claude", "on"], env));
       assert.equal(onResult.code, 0, onResult.stderr);
       assert.equal(JSON.parse(await readFile(settingsPath, "utf8")).env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
 
@@ -345,15 +349,17 @@ describe("claude harness integration", () => {
     const settingsPath = userSettingsPath(home);
     await mkdir(path.dirname(settingsPath), { recursive: true });
 
-    const onResult = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345", "--model", "firerouter/astra"],
-      {
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect(["claude", "on", "--model", "firerouter/astra"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.notEqual(onResult.code, 0);
     assert.match(onResult.stderr, /--model firerouter\/astra is no longer supported/);
     assert.equal(existsSync(settingsPath), false);
@@ -370,15 +376,17 @@ describe("claude harness integration", () => {
       },
     }));
 
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      {
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect(["claude", "on"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.equal(result.code, 0, result.stderr);
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -398,15 +406,17 @@ describe("claude harness integration", () => {
       apiKeyHelper: "/usr/local/bin/user-anthropic-key-helper",
     }));
 
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      {
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect(["claude", "on"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.equal(result.code, 0, result.stderr);
 
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -419,14 +429,9 @@ describe("claude harness integration", () => {
 
   it("refuses --anthropic-api-key: Claude Code's own sign-in pays for Claude turns", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-anthropic-flag-"));
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" }), await runFireconnect([
         "claude", "on",
-        "--api-key", "fw_test_key_12345",
-        "--anthropic-api-key", "sk-ant-native-flag",
-      ],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" },
-    );
+        "--anthropic-api-key", "sk-ant-native-flag"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" }));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /Claude Code's own login covers Claude turns/);
     assert.match(result.stderr, /claude login/);
@@ -437,10 +442,7 @@ describe("claude harness integration", () => {
   it("never writes a saved or exported Anthropic key into Claude's settings", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-anthropic-saved-"));
     await writeGlobalConfig(home, { anthropicApiKey: "sk-ant-saved-0000" });
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-exported-0000", ANTHROPIC_AUTH_TOKEN: "" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-exported-0000", ANTHROPIC_AUTH_TOKEN: "" }), await runFireconnect(["claude", "on"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: "sk-ant-exported-0000", ANTHROPIC_AUTH_TOKEN: "" }));
     assert.equal(result.code, 0, result.stderr);
     const raw = await readFile(userSettingsPath(home), "utf8");
     assert.doesNotMatch(raw, /sk-ant-saved-0000|sk-ant-exported-0000/);
@@ -454,7 +456,7 @@ describe("claude harness integration", () => {
     await mkdir(path.dirname(settingsPath), { recursive: true });
     const original = '{"theme":"dark"}\n';
     await writeFile(settingsPath, original);
-    const on = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], env);
+    const on = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], env), await runFireconnect(["claude", "on"], env));
     assert.equal(on.code, 0, on.stderr);
     const legacy = JSON.parse(await readFile(settingsPath, "utf8"));
     legacy.env.ANTHROPIC_API_KEY = "sk-ant-written-by-old-on";
@@ -518,12 +520,18 @@ describe("claude harness integration", () => {
       },
     }));
 
+    const seed = await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+    });
+    assert.equal(seed.code, 0, seed.stderr);
     for (const args of [
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
+      ["claude", "on"],
       [
         "claude", "on",
         "--model", "glm-latest",
-        "--api-key", "fw_test_key_12345",
       ],
     ]) {
       const on = await runFireconnect(args, {
@@ -560,12 +568,17 @@ describe("claude harness integration", () => {
     });
     await writeFile(settingsPath, original);
 
-    const first = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], {
+    const first = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
       HOME: home,
       FIREWORKS_API_KEY: "",
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_AUTH_TOKEN: "",
-    });
+    }), await runFireconnect(["claude", "on"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+    }));
     assert.equal(first.code, 0, first.stderr);
 
     // Recreate what FireConnect <= 0.9.6 left behind on a connected profile:
@@ -584,12 +597,17 @@ describe("claude harness integration", () => {
       },
     }));
 
-    const upgraded = await runFireconnect(["claude", "on", "--api-key", "fw_test_key_12345"], {
+    const upgraded = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
       HOME: home,
       FIREWORKS_API_KEY: "",
       ANTHROPIC_API_KEY: "",
       ANTHROPIC_AUTH_TOKEN: "",
-    });
+    }), await runFireconnect(["claude", "on"], {
+      HOME: home,
+      FIREWORKS_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+    }));
     assert.equal(upgraded.code, 0, upgraded.stderr);
 
     const settings = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -622,7 +640,9 @@ describe("claude harness integration", () => {
 `;
     await writeFile(settingsPath, original);
 
-    for (const args of [["claude", "on", "--api-key", "fw_test_key_12345"], ["claude", "on", "--model", "glm-latest", "--api-key", "fw_test_key_12345"]]) {
+    const seed = await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" });
+    assert.equal(seed.code, 0, seed.stderr);
+    for (const args of [["claude", "on"], ["claude", "on", "--model", "glm-latest"]]) {
       const on = await runFireconnect(args, { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(on.code, 0, on.stderr);
       const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -633,16 +653,13 @@ describe("claude harness integration", () => {
     }
   });
 
-  it("on --api-key persists to keychain for key export", async () => {
+  it("login --api-key persists to keychain for key export", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-keychain-"));
     const settingsDir = path.join(home, ".claude");
     await mkdir(settingsDir, { recursive: true });
     const apiKey = "fw_test_key_12345";
 
-    const onResult = await runFireconnect(
-      ["claude", "on", "--api-key", apiKey],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", apiKey], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["claude", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const { readGlobalConfig } = await import("../../../lib/config/global-config.mjs");
@@ -692,7 +709,7 @@ describe("claude harness integration", () => {
     const settingsPath = userSettingsPath(home);
 
     // Store + bake the current key (like a `login` followed by `claude on`).
-    const first = await runFireconnect(["claude", "on", "--api-key", newKey], { HOME: home, FIREWORKS_API_KEY: "" });
+    const first = await (await runFireconnect(["login", "--api-key", newKey], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["claude", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     assert.equal(first.code, 0, first.stderr);
 
     // Simulate a stale key still baked into settings by an earlier `on`.
@@ -717,10 +734,7 @@ describe("claude harness integration", () => {
     await mkdir(path.join(home, ".claude"), { recursive: true });
     const strayKey = "sk-ant-api03-STRAYstrayKEY1234567890";
 
-    const onResult = await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: strayKey },
-    );
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: strayKey }), await runFireconnect(["claude", "on"], { HOME: home, FIREWORKS_API_KEY: "", ANTHROPIC_API_KEY: strayKey }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     // Claude Code identifies an approved key by key.trim().slice(-20).
@@ -766,10 +780,7 @@ describe("claude harness integration", () => {
       }),
     );
 
-    await runFireconnect(
-      ["claude", "on", "--api-key", "fw_test_key_12345"],
-      { HOME: home, FIREWORKS_API_KEY: "" },
-    );
+    await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["claude", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
     await runFireconnect(["claude", "off"], { HOME: home });
 
     const restored = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -785,19 +796,19 @@ describe("claude harness integration", () => {
   it("prints one compact warning for text-only models", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-vision-warn-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
-        "claude", "on",
-        "--api-key", "fw_test_key_12345",
-        "--model", "glm-fast-latest",
-      ],
-      {
+    const result = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect([
+        "claude", "on",
+        "--model", "glm-fast-latest"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.equal(result.code, 0, result.stderr);
     assert.match(
       result.stdout,
@@ -809,19 +820,19 @@ describe("claude harness integration", () => {
   it("status shows Cursor-style model and registered models", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-vision-status-"));
     seedCatalogFor(home);
-    const onResult = await runFireconnect(
-      [
-        "claude", "on",
-        "--api-key", "fw_test_key_12345",
-        "--model", "glm-fast-latest",
-      ],
-      {
+    const onResult = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], {
         HOME: home,
         FIREWORKS_API_KEY: "",
         ANTHROPIC_API_KEY: "",
         ANTHROPIC_AUTH_TOKEN: "",
-      },
-    );
+      }), await runFireconnect([
+        "claude", "on",
+        "--model", "glm-fast-latest"], {
+        HOME: home,
+        FIREWORKS_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+      }));
     assert.equal(onResult.code, 0, onResult.stderr);
 
     const statusResult = await runFireconnect(["claude", "status"], { HOME: home });
@@ -844,7 +855,7 @@ describe("fireworksModelPickerName", () => {
       assert.equal(fireworksModelPickerName("glm-fast-latest"), "GLM 5.2 Fast (Latest)");
       assert.equal(fireworksModelPickerName("kimi-fast-latest"), "Kimi K3 Fast (Latest)");
       assert.equal(fireworksModelPickerName("deepseek-v4-flash"), "DeepSeek V4 Flash");
-      assert.equal(fireworksModelPickerName("firerouter"), "Auto");
+      assert.equal(fireworksModelPickerName("firerouter"), "Nexus Auto");
     });
   });
 

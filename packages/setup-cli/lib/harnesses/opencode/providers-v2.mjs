@@ -35,6 +35,42 @@ function costTier(cost, tier) {
   });
 }
 
+/**
+ * The v2 `capabilities.reasoning` for a v1 row, mirroring OpenCode's own
+ * catalog conversion: `reasoning: false` (or options without the flag) is
+ * unsupported, otherwise the row's `reasoning_options` supply the effort
+ * values, toggle and token budget. OpenCode 2.x builds a model's variants
+ * from this object and rejects a bare boolean; with no effort option it
+ * generates none, so a flagged row falls back to the low/medium/high
+ * ladder OpenCode 1.x generates for `@ai-sdk/openai-compatible`.
+ * @param {Record<string, any>} model
+ */
+function reasoningCapability(model) {
+  if (typeof model.reasoning !== "boolean" && !Array.isArray(model.reasoning_options)) {
+    return undefined;
+  }
+  if (!model.reasoning) {
+    return { supported: false };
+  }
+  const options = (model.reasoning_options ?? []).filter(isPlainObject);
+  const effort = options.find((option) => option.type === "effort");
+  const values = Array.isArray(effort?.values)
+    ? effort.values.filter((value) => typeof value === "string")
+    : [];
+  const budget = options.find((option) => option.type === "budget_tokens");
+  return withoutUndefined({
+    supported: true,
+    effort: values.length ? values : ["low", "medium", "high"],
+    toggle: options.some((option) => option.type === "toggle") ? true : undefined,
+    budget: budget && ["min", "max"].some((key) => Number.isFinite(budget[key]))
+      ? withoutUndefined({
+        min: Number.isFinite(budget.min) ? budget.min : undefined,
+        max: Number.isFinite(budget.max) ? budget.max : undefined,
+      })
+      : undefined,
+  });
+}
+
 function reasoningCompatibility(interleaved) {
   if (typeof interleaved === "string") return { reasoningField: interleaved };
   if (isPlainObject(interleaved) && typeof interleaved.field === "string") {
@@ -64,6 +100,7 @@ function extractBlockBindingOptOut(options) {
 function v2Model(model) {
   const { options, optOut } = extractBlockBindingOptOut(model.options);
   const compatibility = reasoningCompatibility(model.interleaved);
+  const reasoning = reasoningCapability(model);
   const hasCapabilities = model.tool_call !== undefined
     || model.modalities?.input !== undefined
     || model.modalities?.output !== undefined;
@@ -79,8 +116,10 @@ function v2Model(model) {
         tools: model.tool_call ?? DEFAULT_CAPABILITIES.tools,
         input: model.modalities?.input ?? DEFAULT_CAPABILITIES.input,
         output: model.modalities?.output ?? DEFAULT_CAPABILITIES.output,
+        ...(reasoning ? { reasoning } : {}),
       }
-      : undefined,
+      // A reasoning-only override must inherit the catalog's other capabilities.
+      : reasoning ? { reasoning } : undefined,
     headers: model.headers,
     variants: model.variants
       && Object.entries(model.variants).map(([id, settings]) => ({ id, settings: { ...settings } })),

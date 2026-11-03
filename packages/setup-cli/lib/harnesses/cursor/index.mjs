@@ -149,8 +149,17 @@ export default defineHarnessProfile({
     ensureHomeForHarness(ctx, HARNESS.CURSOR);
     const paths = cursorPathsFor(ctx);
     await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
-    const { blob, openAIKey } = await readCursorState(paths.dbPath);
+    const { blob, openAIKey } = await readCursorState(paths.dbPath, { keychain: false });
     return cursorProviderStatus(blob, openAIKey);
+  },
+
+  // The plain cell only: decrypting the `secret://` cell would cost a
+  // keychain prompt. readCursorState trusts it only while Cursor still points
+  // at the gateway, so an unknown key reads as null.
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CURSOR);
+    const { blob, openAIKey } = await readCursorState(cursorPathsFor(ctx).dbPath, { keychain: false });
+    return cursorProviderStatus(blob, openAIKey) === "fireworks" ? openAIKey || null : null;
   },
 
   async status(ctx) {
@@ -159,7 +168,7 @@ export default defineHarnessProfile({
     await relocateLegacyCursorBackups({ home: ctx.home, dataDir: paths.dataDir });
     const { dbPath } = paths;
     const enabled = await isHarnessEnabled(ctx.home, HARNESS.CURSOR);
-    const { blob, openAIKey } = await readCursorState(dbPath);
+    const { blob, openAIKey, keyStored } = await readCursorState(dbPath, { keychain: false });
     const provider = cursorProviderStatus(blob, openAIKey);
     const baseUrl = blob.openAIBaseUrl ?? null;
 
@@ -172,7 +181,7 @@ export default defineHarnessProfile({
         provider: "azure",
         baseUrl,
         modelProvider: "fireworks-azure",
-        hasKey: Boolean(openAIKey),
+        hasKey: keyStored,
         defaults: { main: DEFAULT_AZURE_MODEL },
         current: { main: deployment },
       };
@@ -199,7 +208,7 @@ export default defineHarnessProfile({
       provider,
       baseUrl,
       useOpenAIKey: Boolean(blob.useOpenAIKey),
-      hasKey: Boolean(openAIKey),
+      hasKey: keyStored,
       keyType,
       registeredModels: registered,
       current: {

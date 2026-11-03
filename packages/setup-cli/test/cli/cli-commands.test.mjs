@@ -319,10 +319,7 @@ describe("fireconnect claude on", () => {
   test("fw_ leaves tier slots native and registers serverless models in modelPicker", async () => {
     await withTempHome("on-fw", async (home) => {
       seedOnCatalog(home);
-      const result = await runCli(
-        ["claude", "on", "--api-key", FW_CLAUDE_KEY],
-        { home, env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } },
-      );
+      const result = await (await runCli(["login", "--api-key", FW_CLAUDE_KEY], { home, env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } }), await runCli(["claude", "on"], { home, env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } }));
       assert.equal(result.code, 0, result.stderr);
 
       const settings = await readClaudeSettings(home);
@@ -347,12 +344,10 @@ describe("fireconnect claude on", () => {
 
   test("rejects an fpk_ --api-key", async () => {
     await withTempHome("on-fpk", async (home) => {
-      const result = await runCli(
-        ["claude", "on", "--api-key", FPK_KEY],
-        { home, env: { ...NO_ENV_KEY, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } },
-      );
-      assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /Fire Pass keys \(fpk_\.\.\.\) are no longer supported\. Run `nexus login` to sign in\./);
+      const env = { ...NO_ENV_KEY, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+      const login = await runCli(["login", "--api-key", FPK_KEY], { home, env });
+      assert.notEqual(login.code, 0);
+      assert.match(login.stderr, /Fire Pass keys \(fpk_\.\.\.\) are no longer supported\. Run `nexus login` to sign in\./);
     });
   });
 
@@ -365,25 +360,25 @@ describe("fireconnect claude on", () => {
     });
   });
 
-  test("rejects an fpk_ FIREWORKS_API_KEY with the login hint", async () => {
+  test("ignores an fpk_ FIREWORKS_API_KEY; env is not a credential source", async () => {
     await withTempHome("on-fpk-env", async (home) => {
       const result = await runCli(
         ["opencode", "on"],
         { home, env: { FIREWORKS_API_KEY: FPK_KEY } },
       );
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /no longer supported\. Run `nexus login`/);
+      assert.match(result.stderr, /No Fireworks API key found[\s\S]*nexus login/);
     });
   });
 
-  test("uses FIREWORKS_API_KEY when settings only have native Anthropic key", async () => {
+  test("uses the stored key when settings only have native Anthropic key", async () => {
     await withTempHome("on-skant", async (home) => {
       seedOnCatalog(home);
       await writeNativeAnthropicSettings(home);
+      await seedKeychainConfig(home, FW_CLAUDE_KEY);
       const result = await runCli(["claude", "on"], {
         home,
         env: {
-          FIREWORKS_API_KEY: FW_CLAUDE_KEY,
           ANTHROPIC_API_KEY: "",
           ANTHROPIC_AUTH_TOKEN: "",
         },
@@ -403,13 +398,10 @@ describe("fireconnect claude on", () => {
     });
   });
 
-  test("re-run: FIREWORKS_API_KEY env beats stored key", async () => {
+  test("re-run: stored key wins; FIREWORKS_API_KEY env is ignored", async () => {
     await withTempHome("reon-stored", async (home) => {
       seedOnCatalog(home);
-      const first = await runCli(
-        ["claude", "on", "--api-key", ALT_FW_KEY],
-        { home, env: { ...NO_ENV_KEY, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } },
-      );
+      const first = await (await runCli(["login", "--api-key", ALT_FW_KEY], { home, env: { ...NO_ENV_KEY, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } }), await runCli(["claude", "on"], { home, env: { ...NO_ENV_KEY, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" } }));
       assert.equal(first.code, 0, first.stderr);
       const result = await runCli(["claude", "on"], {
         home,
@@ -423,7 +415,8 @@ describe("fireconnect claude on", () => {
 
       const settings = await readClaudeSettings(home);
       assert.equal(settings.apiKeyHelper, undefined);
-      assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Fireworks-Api-Key: ${FW_CLAUDE_KEY}`));
+      assert.match(settings.env.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Fireworks-Api-Key: ${ALT_FW_KEY}`));
+      assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, new RegExp(FW_CLAUDE_KEY));
       assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
       assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, undefined);
     });
@@ -434,22 +427,19 @@ describe("fireconnect opencode on", () => {
   test("fw_ uses auto as default model", async () => {
     await withTempHome("on-fw-oc", async (home) => {
       seedOnCatalog(home);
-      const result = await runCli(
-        ["opencode", "on", "--api-key", FW_CLAUDE_KEY],
-        { home },
-      );
+      const result = await (await runCli(["login", "--api-key", FW_CLAUDE_KEY], { home }), await runCli(["opencode", "on"], { home }));
       assert.equal(result.code, 0, result.stderr);
 
       const config = await readOpencodeConfig(home);
       assert.equal(config.model, `fireworks-ai/auto`);
-      // Bare `auto` gets a synthesized catalog entry (name/limits only — no
-      // per-Mtok cost, unlike the router entries).
+      // Auto is a reasoning model, so OpenCode offers its effort levels; no default effort.
       assert.deepEqual(
         config.provider["fireworks-ai"].models["auto"],
         {
-          name: "Auto",
+          name: "Nexus Auto",
           limit: { context: 1_048_575, output: 131_072 },
           modalities: { input: ["text", "image"] },
+          reasoning: true,
         },
       );
     });
@@ -458,7 +448,7 @@ describe("fireconnect opencode on", () => {
 });
 
 describe("fireconnect model list", () => {
-  test("FIREWORKS_API_KEY env beats globally stored key", async () => {
+  test("globally stored key wins over FIREWORKS_API_KEY env (env ignored)", async () => {
     const gateway = await startKeyRecordingGateway();
     try {
       await withTempHome("ml-env", async (home) => {
@@ -469,7 +459,7 @@ describe("fireconnect model list", () => {
         );
       });
       assert.ok(gateway.keys.length > 0, "expected a catalog request");
-      assert.ok(gateway.keys.every((key) => key === ALT_FW_KEY), gateway.keys.join(","));
+      assert.ok(gateway.keys.every((key) => key === FW_CLAUDE_KEY), gateway.keys.join(","));
     } finally {
       gateway.server.close();
     }
@@ -565,8 +555,44 @@ describe("fireconnect model list", () => {
 
       assert.equal(code, 0, stderr);
       assert.equal(json.source, "stale");
+      assert.match(json.staleReason, /Couldn't reach Fireworks/);
       assert.match(json.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
       assert.ok(json.models.some((entry) => entry.shortId === "cached-model"));
+    });
+  });
+
+  test("warns with the reason when an expired cache can't be refreshed", async () => {
+    await withTempHome("ml-expired-403", async (home) => {
+      seedServerlessCatalogCache(home, [{
+        id: "accounts/fireworks/models/cached-model",
+        shortId: "cached-model",
+        displayName: "Cached Model",
+        kind: "serverless",
+      }]);
+      const server = createServer((_req, res) => {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end('{"code":7,"message":"permission denied"}');
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const result = await runCli(
+          ["model", "list", "--api-key", FW_CLAUDE_KEY],
+          {
+            home,
+            env: {
+              ...NO_ENV_KEY,
+              NEXUS_CATALOG_TTL_MS: "1",
+              NEXUS_GATEWAY_URL: `http://127.0.0.1:${server.address().port}`,
+            },
+          },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /Couldn't refresh the model catalog\. Showing the cached copy \(last updated: .+\); newer models may be missing\./);
+        assert.match(result.stdout, /Reason: Fireworks API rejected the request \(403/);
+        assert.match(result.stdout, /cached-model/);
+      } finally {
+        server.close();
+      }
     });
   });
 
@@ -593,14 +619,14 @@ describe("fireconnect <harness> status", () => {
     });
   });
 
-  test("opencode resolves env-ref key", async () => {
+  test("opencode env-ref key resolves to nothing (env ignored)", async () => {
     await withTempHome("status-envref", async (home) => {
       await writeOpencodeConfig(home, OPENCODE_API_KEY_ENV_REF);
       const { json } = await runCliJson(
         ["opencode", "status", "--json"],
         { home, env: { FIREWORKS_API_KEY: FW_CLAUDE_KEY } },
       );
-      assert.equal(json.hasAuthToken, true);
+      assert.equal(json.hasAuthToken, false);
       assert.equal(json.defaults.main, "auto");
     });
   });

@@ -86,6 +86,13 @@ export default defineHarnessProfile({
     return copilotProviderStatus(paths.dbPath);
   },
 
+  // The key sits in the provider row's plain Authorization header.
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.COPILOT_APP);
+    const { provider, apiKey } = await readCopilotState(copilotAppPathsFor(ctx).dbPath);
+    return provider ? apiKey || null : null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.COPILOT_APP);
     const paths = copilotAppPathsFor(ctx);

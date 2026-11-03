@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -15,6 +15,69 @@ import {
 import { seedKeychainConfig } from "../helpers.mjs";
 
 describe("shell-env-hook", () => {
+  it("keeps a symlinked rc and updates its existing target", { skip: process.platform === "win32" }, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-hook-link-"));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    try {
+      const target = path.join(home, "dotfiles", "zshrc");
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, "export PATH=/usr/bin\n");
+      await symlink(path.relative(home, target), path.join(home, ".zshrc"));
+
+      await installShellEnvHook(home);
+
+      assert.equal((await lstat(path.join(home, ".zshrc")).then((info) => info.isSymbolicLink())), true);
+      assert.match(await readFile(target, "utf8"), /# >>> nexus >>>/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a dangling rc symlink and creates its target", { skip: process.platform === "win32" }, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-hook-dangling-"));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    try {
+      const target = path.join(home, "dotfiles", "nested", "zshrc");
+      await mkdir(path.dirname(target), { recursive: true });
+      await symlink(path.relative(home, target), path.join(home, ".zshrc"));
+
+      await installShellEnvHook(home);
+
+      assert.equal((await lstat(path.join(home, ".zshrc")).then((info) => info.isSymbolicLink())), true);
+      assert.match(await readFile(target, "utf8"), /# >>> nexus >>>/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves every symlinked parent before writing through the rc chain", { skip: process.platform === "win32" }, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-hook-nested-link-"));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    try {
+      const target = path.join(home, "dotfiles/shared/zshrc");
+      const zshDotfiles = path.join(home, "dotfiles/zsh");
+      await mkdir(path.dirname(target), { recursive: true });
+      await mkdir(zshDotfiles, { recursive: true });
+      await writeFile(target, "export PATH=/usr/bin\n");
+      await symlink("../shared/zshrc", path.join(zshDotfiles, "rc"));
+      await symlink("dotfiles/zsh", path.join(home, ".config"), "dir");
+      await symlink(".config/rc", path.join(home, ".zshrc"));
+
+      await installShellEnvHook(home);
+
+      assert.match(await readFile(target, "utf8"), /# >>> nexus >>>/);
+      await assert.rejects(lstat(path.join(home, "shared/zshrc")), { code: "ENOENT" });
+      for (const link of [path.join(home, ".zshrc"), path.join(home, ".config"), path.join(zshDotfiles, "rc")]) {
+        assert.equal((await lstat(link)).isSymbolicLink(), true);
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("installs and removes a marked block idempotently", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-shell-hook-"));
     process.env.HOME = home;

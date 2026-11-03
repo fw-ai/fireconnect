@@ -356,3 +356,24 @@ describe("plaintext secret fallback", () => {
     assert.equal(await readKeyStorageCache(home), "file");
   });
 });
+
+describe("writePlaintextSecret destination", () => {
+  it("replaces a planted symlink instead of writing through it", { skip: process.platform === "win32" }, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-plaintext-symlink-"));
+    try {
+      const { lstat, symlink } = await import("node:fs/promises");
+      const victim = path.join(home, "victim.txt");
+      await writeFile(victim, "untouched\n");
+      await mkdir(path.join(home, ".nexus"), { recursive: true });
+      await symlink(victim, plaintextSecretPath(home));
+      await writePlaintextSecret(home, "fw_example_key_0000");
+      assert.equal(await readFile(victim, "utf8"), "untouched\n");
+      const stats = await lstat(plaintextSecretPath(home));
+      assert.equal(stats.isSymbolicLink(), false);
+      assert.equal(stats.mode & 0o777, 0o600);
+      assert.equal(await readPlaintextSecret(home), "fw_example_key_0000");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});

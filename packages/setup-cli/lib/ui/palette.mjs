@@ -1,13 +1,40 @@
-import { terminalTheme } from "./color.mjs";
+import { terminalTheme, truecolorSupported } from "./color.mjs";
 import { CLI_COLORS, DATA_COLORS } from "./tokens.mjs";
 
 /**
+ * Same RGB→xterm-256 mapping ansis uses at level 2 (6×6×6 cube + grayscale).
+ * Kept in-repo so the shared palette does not pull the ansis package onto the
+ * `model-list` → `ui` import path that CI helpers load without `npm ci`.
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ */
+function rgbToAnsi256(r, g, b) {
+  if (r === g && g === b) {
+    if (r < 8) {
+      return 16;
+    }
+    if (r > 248) {
+      return 231;
+    }
+    return Math.round((24 * (r - 8)) / 247) + 232;
+  }
+  return 16 + (36 * Math.round(r / 51)) + (6 * Math.round(g / 51)) + Math.round(b / 51);
+}
+
+/**
  * @param {string} hex `#RRGGBB`
- * @returns {string} truecolor foreground SGR
+ * @returns {string} foreground SGR: truecolor, or 256-color where truecolor breaks
  */
 export function truecolor(hex) {
   const value = Number.parseInt(hex.slice(1), 16);
-  return `\u001b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  if (truecolorSupported()) {
+    return `\u001b[38;2;${r};${g};${b}m`;
+  }
+  return `\u001b[38;5;${rgbToAnsi256(r, g, b)}m`;
 }
 
 const CLI = CLI_COLORS[terminalTheme()];
@@ -78,4 +105,3 @@ export const METER = Object.freeze({
     DATA_COLORS.flare,
   ].map(truecolorParams)),
 });
-

@@ -37,6 +37,25 @@ export function terminalTheme(env = process.env) {
   return background === "7" || background === "15" ? "light" : "dark";
 }
 
+/**
+ * False for macOS Terminal.app unless it advertises truecolor via COLORTERM.
+ * A Terminal.app without truecolor reads `38;2;R;G;B` as separate SGR codes,
+ * so a channel of 100-107 turns on a bright background that the `39` close
+ * never resets. Callers fall back to the nearest 256-color index.
+ *
+ * Kept free of npm deps so CI helpers that load `ui` (via model-list) work
+ * without `npm ci`.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function truecolorSupported(env = process.env) {
+  const colorterm = String(env.COLORTERM ?? "").toLowerCase();
+  if (colorterm === "truecolor" || colorterm === "24bit") {
+    return true;
+  }
+  return env.TERM_PROGRAM !== "Apple_Terminal";
+}
+
 /** @deprecated Use {@link colorsEnabled} — alias kept for theme/banner callers. */
 export function isColorEnabled(stream = process.stdout) {
   return colorsEnabled(stream);

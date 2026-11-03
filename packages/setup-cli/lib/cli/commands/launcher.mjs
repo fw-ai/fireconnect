@@ -44,6 +44,11 @@ export function buildLauncherChoices(adapters, harnessMap, detectedIds) {
   }));
 
   rows.push({
+    value: { kind: "models" },
+    short: "models",
+    name: `${"models".padEnd(idWidth)}  ${dim("browse Fireworks serverless models")}`,
+  });
+  rows.push({
     value: { kind: "configure" },
     short: "configure",
     name: `${"configure".padEnd(idWidth)}  ${dim("choose Fireworks/Azure provider and BYOK keys")}`,
@@ -137,6 +142,7 @@ function teachFastPath(output, command) {
  *   output?: NodeJS.WriteStream,
  *   dispatchHarness?: typeof runHarnessCommand,
  *   runConfigure?: () => Promise<void>,
+ *   runModels?: () => Promise<void>,
  *   runKey?: (subcommand: string) => Promise<string>,
  * }} [overrides] test seams; production callers pass nothing.
  */
@@ -161,6 +167,10 @@ export async function runLauncherCommand(ctx, overrides = {}) {
     const { runConfigureCommand } = await import("./configure.mjs");
     await runConfigureCommand(ctx);
   });
+  const runModels = overrides.runModels ?? (async () => {
+    const { runGlobalModelListCommand } = await import("./model.mjs");
+    await runGlobalModelListCommand(ctx);
+  });
   const runKey = overrides.runKey ?? (async (subcommand) => {
     const command = await dispatchKeyAction(subcommand, ctx);
     return command;
@@ -171,7 +181,7 @@ export async function runLauncherCommand(ctx, overrides = {}) {
     const picked = await promptSelect({
       message: "Pick a harness or command",
       choices: buildLauncherChoices(adapters, harnessMap, detectedIds),
-      pageSize: adapters.length + 3,
+      pageSize: adapters.length + 4,
       input,
       output,
     });
@@ -182,6 +192,12 @@ export async function runLauncherCommand(ctx, overrides = {}) {
 
     if (picked.kind === "help") {
       printHelp();
+      return;
+    }
+
+    if (picked.kind === "models") {
+      await runModels();
+      teachFastPath(output, "nexus models");
       return;
     }
 

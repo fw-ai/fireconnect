@@ -11,8 +11,8 @@ import {
   normalizeModelId,
   shortFireworksModelRef,
 } from "../../fireworks/model-id.mjs";
-import { resolveFireworksCatalog } from "../../fireworks/model-specs.mjs";
-import { prettyModelName, warmServerlessPricingCache } from "../../fireworks/models.mjs";
+import { isAutoModelId, resolveFireworksCatalog } from "../../fireworks/model-specs.mjs";
+import { autoDisplayName, prettyModelName, warmServerlessPricingCache } from "../../fireworks/models.mjs";
 import { readJsonIfExists, writeJson } from "../../io/json.mjs";
 import { writeFileAtomic } from "../../io/atomic-write.mjs";
 import { omitHeaders } from "../../firerouter/core.mjs";
@@ -79,6 +79,16 @@ export function deepseekCredentialsPath(home, opts = {}) {
   return path.join(deepseekHomePath(home), ".credentials.yaml");
 }
 
+/**
+ * Launch-time fallback dsh reads on every boot, including profiles like
+ * `headless` that disable the managed-credentials plugin: the `.env` beside
+ * the credentials document is its last resolution layer.
+ * @param {string} credentialsPath
+ */
+export function deepseekEnvPath(credentialsPath) {
+  return path.join(path.dirname(credentialsPath), ".env");
+}
+
 export function deepseekDataDir(home, dataDir = "") {
   return dataDir || path.join(home, DEEPSEEK_DATA_RELATIVE_DIR);
 }
@@ -115,15 +125,95 @@ export function parseDeepseekSettings(raw) {
   return parseYamlMapping(raw, "settings.yaml");
 }
 
+/**
+ * Credentials parse covering both layouts: the pre-release flat mapping
+ * (`FIREWORKS_API_KEY: <key>` at the top level — what older Nexus builds and
+ * dsh <=0.1.7 wrote) and the version-1 document dsh 0.2+ manages
+ * (`version: 1` with env refs nested under `refs:`). `records:` entries are
+ * scoped record credentials, not env refs — `apiKeyEnv` lookups only ever
+ * consult `refs`, so they stay untouched here.
+ */
 export function parseDeepseekCredentials(raw) {
+  const doc = parseYamlMapping(raw, ".credentials.yaml");
+  const refs = doc.version === 1 ? (asPlainObject(doc.refs) ?? {}) : doc;
   /** @type {Record<string, string>} */
   const out = {};
-  for (const [key, value] of Object.entries(parseYamlMapping(raw, ".credentials.yaml"))) {
+  for (const [key, value] of Object.entries(refs)) {
     if (typeof value === "string" && value.length > 0) {
       out[key] = value;
     }
   }
   return out;
+}
+
+/**
+ * Render the version-1 credentials document dsh 0.2+ reads natively. Flat
+ * documents upgrade in place: every existing env-name key folds under `refs:`.
+ * A `records:` section survives verbatim; unknown top-level keys are dropped
+ * because dsh warns-and-ignores them anyway.
+ * @param {string} existingRaw raw file contents (may be empty)
+ * @param {Record<string, string>} credentials env ref name -> value
+ */
+function serializeDeepseekCredentials(existingRaw, credentials) {
+  /** @type {Record<string, unknown>} */
+  const next = { version: 1, refs: credentials };
+  if (existingRaw.trim()) {
+    try {
+      const doc = parseYamlMapping(existingRaw, ".credentials.yaml");
+      if (doc.version === 1 && doc.records !== undefined) {
+        next.records = doc.records;
+      }
+    } catch {
+      // Unparseable user document — replace rather than guess at merging it.
+    }
+  }
+  return serializeYaml(next);
+}
+
+/** True when a version-1 document carries no refs and no records. */
+function credentialsDocIsEmpty(raw) {
+  try {
+    const doc = parseYamlMapping(raw, ".credentials.yaml");
+    return doc.version !== 1
+      ? Object.keys(doc).length === 0
+      : Object.keys(asPlainObject(doc.refs) ?? {}).length === 0
+        && doc.records === undefined;
+  } catch {
+    return false;
+  }
+}
+
+/** Upsert one `NAME=value` line in dotenv text, preserving every other line. */
+function upsertEnvAssignment(raw, name, value) {
+  const re = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`);
+  const lines = raw.split("\n").filter((line) => line.trim() !== "");
+  const idx = lines.findIndex((line) => re.test(line));
+  const line = `${name}=${value}`;
+  if (idx >= 0) {
+    lines[idx] = line;
+  } else {
+    lines.push(line);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** The value of the first `NAME=value` line in dotenv text, or "" when absent. */
+function readEnvAssignment(raw, name) {
+  const re = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=(.*)$`);
+  for (const line of raw.split("\n")) {
+    const match = re.exec(line);
+    if (match) {
+      return match[1].trim().replace(/^(["'])(.*)\1$/, "$2");
+    }
+  }
+  return "";
+}
+
+/** Drop every `NAME=` / `export NAME=` line; empty output means delete the file. */
+function stripEnvAssignment(raw, name) {
+  const re = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`);
+  const lines = raw.split("\n").filter((line) => line.trim() !== "" && !re.test(line));
+  return lines.length ? `${lines.join("\n")}\n` : "";
 }
 
 function fireworksProvider(settings) {
@@ -212,7 +302,7 @@ export function deepseekAuthMode(settings, credentials) {
 export function resolveDeepseekApiKey({
   mode,
   credentials,
-  envApiKey = process.env.FIREWORKS_API_KEY ?? "",
+  envApiKey = "",
 }) {
   if (mode === "literal") {
     return credentials[DEEPSEEK_API_KEY_ENV]?.trim() ?? "";
@@ -257,7 +347,7 @@ export function buildDeepseekFireworksModelEntry(modelId, name) {
   const { limits, cost, input } = resolveFireworksCatalog(slug);
   return {
     id: slug,
-    name: name || prettyModelName(slug) || slug,
+    name: name || (isAutoModelId(slug) ? autoDisplayName(slug) : prettyModelName(slug)) || slug,
     reasoning: true,
     input,
     contextWindow: limits.contextWindow,
@@ -654,9 +744,11 @@ export async function enableDeepseekFireworks({
     throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
 
-  const [settingsSnap, credentialsSnap] = await Promise.all([
+  const envPath = deepseekEnvPath(credentialsPath);
+  const [settingsSnap, credentialsSnap, envSnap] = await Promise.all([
     readDeepseekSettingsIfExists(settingsPath),
     readDeepseekCredentialsIfExists(credentialsPath),
+    readRawIfExists(envPath),
   ]);
 
   await warmServerlessPricingCache(effectiveApiKey);
@@ -687,7 +779,12 @@ export async function enableDeepseekFireworks({
     addedPatchSnapshot = true;
   }
 
-  if (shouldSnapshot || addedPatchSnapshot) {
+  // The .env layer is snapshotted on first touch like the patch layers so a
+  // re-`on` from an older build's backup (no envSnapshot) still captures the
+  // pre-`on` file before it is rewritten.
+  const addedEnvSnapshot = existingBackup.envSnapshot === undefined;
+
+  if (shouldSnapshot || addedPatchSnapshot || addedEnvSnapshot) {
     const backup = {
       settingsPath: path.resolve(settingsPath),
       credentialsPath: path.resolve(credentialsPath),
@@ -703,6 +800,10 @@ export async function enableDeepseekFireworks({
           },
         }
         : {}),
+      envSnapshot: existingBackup.envSnapshot ?? {
+        existed: envSnap.existed,
+        raw: envSnap.raw,
+      },
       profilePatchSnapshots: patchSnapshots,
     };
     await mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
@@ -721,7 +822,21 @@ export async function enableDeepseekFireworks({
 
   await mkdir(path.dirname(settingsPath), { recursive: true, mode: 0o700 });
   await writeFileAtomic(settingsPath, serializeYaml(nextSettings), { mode: 0o600 });
-  await writeFileAtomic(credentialsPath, serializeYaml(nextCredentials), { mode: 0o600 });
+  // dsh 0.2+ reads `version: 1`/`refs:` natively; the flat layout only
+  // survives through a migration already marked for removal. The managed
+  // store is disabled on headless boots, so `.env` carries the same key for
+  // launch-time resolution — without it `dsh headless` fails
+  // MISSING_CREDENTIAL despite the stored credential.
+  await writeFileAtomic(
+    credentialsPath,
+    serializeDeepseekCredentials(credentialsSnap.raw, nextCredentials),
+    { mode: 0o600 },
+  );
+  await writeFileAtomic(
+    envPath,
+    upsertEnvAssignment(envSnap.raw, DEEPSEEK_API_KEY_ENV, effectiveApiKey),
+    { mode: 0o600 },
+  );
 
   // Patch the home layer and every existing profile directly so the fireworks
   // route is active on the very next dsh boot — a legacy settings.yaml import
@@ -817,20 +932,37 @@ export async function refreshDeepseekGatewayKey({
   if (effective.provider !== "fireworks") {
     return false;
   }
-  const credentialsSnap = await readDeepseekCredentialsIfExists(credentialsPath);
-  const current = credentialsSnap.credentials[DEEPSEEK_API_KEY_ENV] ?? "";
-  if (current === key) {
+  const envPath = deepseekEnvPath(credentialsPath);
+  const [credentialsSnap, envSnap] = await Promise.all([
+    readDeepseekCredentialsIfExists(credentialsPath),
+    readRawIfExists(envPath),
+  ]);
+  // The two layers are checked separately: a setup connected before the
+  // `.env` fallback existed has the key in its credentials document only,
+  // and headless launches still need it written.
+  const credentialsCurrent = (credentialsSnap.credentials[DEEPSEEK_API_KEY_ENV] ?? "") === key;
+  const envCurrent = readEnvAssignment(envSnap.raw, DEEPSEEK_API_KEY_ENV) === key;
+  if (credentialsCurrent && envCurrent) {
     return false;
   }
   await mkdir(path.dirname(credentialsPath), { recursive: true, mode: 0o700 });
-  await writeFileAtomic(
-    credentialsPath,
-    serializeYaml({
-      ...credentialsSnap.credentials,
-      [DEEPSEEK_API_KEY_ENV]: key,
-    }),
-    { mode: 0o600 },
-  );
+  if (!credentialsCurrent) {
+    await writeFileAtomic(
+      credentialsPath,
+      serializeDeepseekCredentials(credentialsSnap.raw, {
+        ...credentialsSnap.credentials,
+        [DEEPSEEK_API_KEY_ENV]: key,
+      }),
+      { mode: 0o600 },
+    );
+  }
+  if (!envCurrent) {
+    await writeFileAtomic(
+      envPath,
+      upsertEnvAssignment(envSnap.raw, DEEPSEEK_API_KEY_ENV, key),
+      { mode: 0o600 },
+    );
+  }
   return true;
 }
 
@@ -893,6 +1025,9 @@ export async function disableDeepseekFireworks({
     if (backup.credentialsSnapshot) {
       await restoreRawSnapshot(backup.credentialsSnapshot, credentialsPath);
     }
+    if (backup.envSnapshot) {
+      await restoreRawSnapshot(backup.envSnapshot, deepseekEnvPath(credentialsPath));
+    }
     await restoreProfilePatchSnapshots(patchSnapshots);
     await stripLeftoverProfilePatches(settingsPath, patchSnapshots);
     try {
@@ -936,11 +1071,22 @@ export async function disableDeepseekFireworks({
   if (credentialsSnap.existed) {
     const nextCreds = { ...credentialsSnap.credentials };
     delete nextCreds[DEEPSEEK_API_KEY_ENV];
-    const credRaw = serializeYaml(nextCreds);
-    if (credRaw) {
+    const credRaw = serializeDeepseekCredentials(credentialsSnap.raw, nextCreds);
+    if (credRaw && !credentialsDocIsEmpty(credRaw)) {
       await writeFileAtomic(credentialsPath, credRaw, { mode: 0o600 });
     } else {
       await restoreRawSnapshot({ existed: false, raw: "" }, credentialsPath);
+    }
+  }
+
+  const envPath = deepseekEnvPath(credentialsPath);
+  const envSnap = await readRawIfExists(envPath);
+  if (envSnap.existed) {
+    const envRaw = stripEnvAssignment(envSnap.raw, DEEPSEEK_API_KEY_ENV);
+    if (envRaw) {
+      await writeFileAtomic(envPath, envRaw, { mode: 0o600 });
+    } else {
+      await restoreRawSnapshot({ existed: false, raw: "" }, envPath);
     }
   }
 

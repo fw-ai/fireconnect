@@ -26,16 +26,6 @@ export function shouldPreferFileBackendOnLinux() {
 }
 
 /**
- * Skip automatic env-key → keychain persistence (harness `on` paths). Remote
- * sessions often lack a working OS keychain; persisting would block or fail.
- *
- * @returns {boolean}
- */
-export function shouldSkipEnvKeyAutoPersist() {
-  return isRemoteContext();
-}
-
-/**
  * Human-readable detail for `detectSecretStorage()` when file backend is chosen
  * due to remote context.
  *

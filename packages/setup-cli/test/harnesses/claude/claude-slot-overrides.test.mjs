@@ -87,15 +87,10 @@ describe("Claude tier-slot overrides", () => {
   it("pins --sonnet/--subagent while other tiers stay native", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
         "--sonnet", "deepseek-flash-latest",
-        "--subagent", "deepseek-flash-latest",
-      ],
-      cliEnv(home),
-    );
+        "--subagent", "deepseek-flash-latest"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
 
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
@@ -114,8 +109,10 @@ describe("Claude tier-slot overrides", () => {
   it("supports the bare `fireconnect claude --sonnet <id>` form", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-bare-"));
     seedCatalogFor(home);
+    const seed = await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home));
+    assert.equal(seed.code, 0, seed.stderr);
     const result = await runFireconnect(
-      ["claude", "--sonnet", "deepseek-flash-latest", "--api-key", FIREWORKS_KEY],
+      ["claude", "--sonnet", "deepseek-flash-latest"],
       cliEnv(home),
     );
     assert.equal(result.code, 0, result.stderr);
@@ -126,15 +123,10 @@ describe("Claude tier-slot overrides", () => {
   it("combines --model picker rows with slot pins", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-model-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
         "--model", "glm-latest",
-        "--haiku", "deepseek-flash-latest",
-      ],
-      cliEnv(home),
-    );
+        "--haiku", "deepseek-flash-latest"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.match(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, /deepseek-flash-latest/);
@@ -146,15 +138,10 @@ describe("Claude tier-slot overrides", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-keep-"));
     seedCatalogFor(home);
     const env = cliEnv(home);
-    const first = await runFireconnect(
-      [
+    const first = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
         "--sonnet", "deepseek-flash-latest",
-        "--haiku", "glm-latest",
-      ],
-      env,
-    );
+        "--haiku", "glm-latest"], env));
     assert.equal(first.code, 0, first.stderr);
 
     const reon = await runFireconnect(["claude", "on"], env);
@@ -178,10 +165,7 @@ describe("Claude tier-slot overrides", () => {
     const original = `{\n  "env": {\n    "ANTHROPIC_API_KEY": "sk-ant-original"\n  }\n}\n`;
     await writeFile(settingsPath, original);
 
-    const on = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--subagent", "deepseek-flash-latest"],
-      cliEnv(home),
-    );
+    const on = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on", "--subagent", "deepseek-flash-latest"], cliEnv(home)));
     assert.equal(on.code, 0, on.stderr);
     const enabled = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.match(enabled.env.CLAUDE_CODE_SUBAGENT_MODEL, /deepseek-flash-latest/);
@@ -194,10 +178,7 @@ describe("Claude tier-slot overrides", () => {
   it("rejects the internal sentinel spelling with `native` guidance", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-sentinel-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--sonnet", "claude-default"],
-      cliEnv(home),
-    );
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on", "--sonnet", "claude-default"], cliEnv(home)));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /--sonnet.*native/);
   });
@@ -205,10 +186,7 @@ describe("Claude tier-slot overrides", () => {
   it("rejects unknown slot ids via catalog validation", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-badid-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--sonnet", "foo/bar"],
-      cliEnv(home),
-    );
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on", "--sonnet", "foo/bar"], cliEnv(home)));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /not available on Fireworks/);
   });
@@ -216,14 +194,9 @@ describe("Claude tier-slot overrides", () => {
   it("rejects a slot set to a FireRouter route", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-router-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
-        "--opus", "firerouter",
-      ],
-      cliEnv(home),
-    );
+        "--opus", "firerouter"], cliEnv(home)));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /--opus firerouter is no longer supported/);
   });
@@ -231,15 +204,10 @@ describe("Claude tier-slot overrides", () => {
   it("warns on the deprecated --routing-preference flag and writes no routing header", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-router-reject-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
         "--sonnet", "deepseek-flash-latest",
-        "--routing-preference", "balanced",
-      ],
-      cliEnv(home),
-    );
+        "--routing-preference", "balanced"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /--routing-preference is deprecated/);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
@@ -250,15 +218,10 @@ describe("Claude tier-slot overrides", () => {
   it("rejects a GPT compound pinned to a tier slot", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-gpt-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
         "--opus", "firerouter/gpt-5p6",
-        "--openai-api-key", "sk-proj-slot-gpt-12345",
-      ],
-      cliEnv(home),
-    );
+        "--openai-api-key", "sk-proj-slot-gpt-12345"], cliEnv(home)));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /--opus firerouter\/gpt-5p6 is no longer supported/);
   });
@@ -266,16 +229,11 @@ describe("Claude tier-slot overrides", () => {
   it("rejects a non-GPT compound pinned to a tier slot", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-nongpt-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      [
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect([
         "claude", "on",
-        "--api-key", FIREWORKS_KEY,
         "--model", "glm-latest",
         "--opus", "firerouter/opus",
-        "--openai-api-key", "sk-proj-slot-opus-12345",
-      ],
-      cliEnv(home),
-    );
+        "--openai-api-key", "sk-proj-slot-opus-12345"], cliEnv(home)));
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /--opus firerouter\/opus is no longer supported/);
   });
@@ -285,7 +243,7 @@ describe("Claude tier-slot overrides", () => {
     seedCatalogFor(home);
     const saved = await runFireconnect(["auto", "--openai-api-key", "sk-proj-default-router-12345"], cliEnv(home));
     assert.equal(saved.code, 0, saved.stderr);
-    const result = await runFireconnect(["claude", "on", "--api-key", FIREWORKS_KEY], cliEnv(home));
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(settings.model, "auto[1m]");
@@ -295,10 +253,7 @@ describe("Claude tier-slot overrides", () => {
   it("leaves an exported OPENAI_API_KEY out of Claude Code's settings", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-env-openai-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY],
-      { ...cliEnv(home), OPENAI_API_KEY: "sk-proj-env-only-12345" },
-    );
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], { ...cliEnv(home), OPENAI_API_KEY: "sk-proj-env-only-12345" }), await runFireconnect(["claude", "on"], { ...cliEnv(home), OPENAI_API_KEY: "sk-proj-env-only-12345" }));
     assert.equal(result.code, 0, result.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.doesNotMatch(settings.env.ANTHROPIC_CUSTOM_HEADERS, /x-openai-api-key/i);
@@ -307,14 +262,11 @@ describe("Claude tier-slot overrides", () => {
   it("keeps the saved OpenAI key when re-on keeps a pinned pick", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-saved-pick-openai-"));
     seedCatalogFor(home);
-    const first = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "glm-latest"],
-      cliEnv(home),
-    );
+    const first = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on", "--model", "glm-latest"], cliEnv(home)));
     assert.equal(first.code, 0, first.stderr);
     const saved = await runFireconnect(["auto", "--openai-api-key", "sk-proj-saved-pick-12345"], cliEnv(home));
     assert.equal(saved.code, 0, saved.stderr);
-    const again = await runFireconnect(["claude", "on", "--api-key", FIREWORKS_KEY], cliEnv(home));
+    const again = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on"], cliEnv(home)));
     assert.equal(again.code, 0, again.stderr);
     const settings = JSON.parse(await readFile(userSettingsPath(home), "utf8"));
     assert.equal(settings.model, "glm-latest[1m]");
@@ -325,10 +277,7 @@ describe("Claude tier-slot overrides", () => {
   it("leaves every tier native when no slot flags are passed", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-slots-native-"));
     seedCatalogFor(home);
-    const result = await runFireconnect(
-      ["claude", "on", "--api-key", FIREWORKS_KEY, "--model", "glm-latest"],
-      cliEnv(home),
-    );
+    const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], cliEnv(home)), await runFireconnect(["claude", "on", "--model", "glm-latest"], cliEnv(home)));
     assert.equal(result.code, 0, result.stderr);
     assertClaudeNativeTierSlots(JSON.parse(await readFile(userSettingsPath(home), "utf8")));
   });

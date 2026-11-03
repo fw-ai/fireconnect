@@ -98,8 +98,6 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
         const args = [
           "claude",
           "on",
-          "--api-key",
-          FIREWORKS_KEY,
           ...(scenario.firerouter ? ["--model", "firerouter"] : []),
         ];
         const env = {
@@ -108,6 +106,8 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
           ANTHROPIC_API_KEY: "",
           ANTHROPIC_AUTH_TOKEN: "",
         };
+        const login = await runFireconnect(["login", "--api-key", FIREWORKS_KEY], env);
+        assert.equal(login.code, 0, login.stderr);
         const enabled = await runFireconnect(args, env);
         if (scenario.firerouter) {
           // A FireRouter selection is rejected in every auth combination,
@@ -168,15 +168,17 @@ describe("Claude subscription, BYOK, and FireRouter matrix", () => {
   it("fresh auto default works without any Anthropic key (workspace BYOK removed)", async () => {
     await withTempHome("claude-no-byok-", async (home) => {
       seedCatalogFor(home);
-      const result = await runFireconnect(
-        ["claude", "on", "--api-key", FIREWORKS_KEY],
-        {
+      const result = await (await runFireconnect(["login", "--api-key", FIREWORKS_KEY], {
           HOME: home,
           FIREWORKS_API_KEY: "",
           ANTHROPIC_API_KEY: "",
           ANTHROPIC_AUTH_TOKEN: "",
-        },
-      );
+        }), await runFireconnect(["claude", "on"], {
+          HOME: home,
+          FIREWORKS_API_KEY: "",
+          ANTHROPIC_API_KEY: "",
+          ANTHROPIC_AUTH_TOKEN: "",
+        }));
       assert.equal(result.code, 0, result.stderr);
 
       const settings = JSON.parse(

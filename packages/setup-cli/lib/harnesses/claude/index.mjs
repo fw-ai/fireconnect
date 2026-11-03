@@ -21,6 +21,7 @@ import {
   providerStatePath,
   providerStatusFromEnv,
   stripFireconnectManagedClaudeSettings,
+  isNexusApiKeyHelper,
   stripManagedApiKeyHelper,
 } from "./core.mjs";
 import {
@@ -89,11 +90,13 @@ import {
 } from "../../firerouter/core.mjs";
 import { resolveAutoProviderKeyHeaders } from "../../firerouter/flag.mjs";
 import {
+  assertResolvedKeyNotRejected,
   harnessStatusKeySource,
   persistApiKeyFromFlag,
   resolveFireworksApiKeyValue,
 } from "../../keys/api-key.mjs";
 import { harnessFullKey } from "../../keys/harness-api-key.mjs";
+import { LIVE_KEY } from "../../keys/key-current.mjs";
 import { detectSecretBackend } from "../../keys/secret-store.mjs";
 import { assertBackendCanStore } from "../../keys/storage-report.mjs";
 import { disableWebsearchMcp } from "../../system/websearch-mcp.mjs";
@@ -196,10 +199,14 @@ async function claudeApiKeyForOn(ctx, snapshot) {
     ctx,
     async () => resolveClaudeAuthState(snapshot.settings, snapshot.state).token,
   );
-  if (token) {
-    return token;
+  if (!token) {
+    throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
   }
-  throw new Error(MISSING_FIREWORKS_API_KEY_MESSAGE);
+  // `--api-key` was already verified by runHarnessCommand.
+  if (!ctx.apiKeyFromFlag) {
+    await assertResolvedKeyNotRejected(token, { harnessId: HARNESS.CLAUDE });
+  }
+  return token;
 }
 
 function isNativeClaudeCredential(value) {
@@ -421,7 +428,7 @@ export default defineHarnessProfile({
       activeMappingIsCurrent,
     });
     const mapping = plan.mapping;
-    const { ids } = await loadRegisterableModels({ apiKey: fireworksKey });
+    const { ids, served: catalogServed } = await loadRegisterableModels({ apiKey: fireworksKey });
     const registerablePickerIds = ids
       .map((id) => shortFireworksModelRef(id))
       .filter(Boolean);
@@ -449,12 +456,9 @@ export default defineHarnessProfile({
 
     // Migrate a harness-local key (baked into settings by an older `on`) into the
     // shared store so `key export` and other harnesses can reuse it — but only
-    // when flag/env/stored are all empty, so a newer key from `login`/env is
-    // never clobbered (matches resolveHarnessOnApiKey's precedence). `--api-key`
-    // is already persisted by runHarnessCommand; a prompted key persists itself.
-    const flagKey = ctx.apiKey?.trim() ?? "";
-    const migrated = !flagKey
-      && isFireworksKey(fireworksKey)
+    // when env/stored are both empty, so a newer key from `login`/env is
+    // never clobbered (matches resolveHarnessOnApiKey's precedence).
+    const migrated = isFireworksKey(fireworksKey)
       && !(await resolveFireworksApiKeyValue({ home: ctx.home }));
     if (migrated) {
       const backend = await detectSecretBackend(ctx.home);
@@ -484,6 +488,7 @@ export default defineHarnessProfile({
       registerablePickerIds,
       selectedPickerModel: extraPickerModel ?? "",
       firerouterHeaders: bareFirerouter,
+      catalogServed,
     });
     await setHarnessState(ctx.home, HARNESS.CLAUDE, {
       enabled: true,
@@ -574,6 +579,23 @@ export default defineHarnessProfile({
     return providerStatusFromEnv(settings.env ?? {});
   },
 
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.CLAUDE);
+    const { settingsPath, dataDir } = claudePathsFor(ctx);
+    const settings = await readJsonIfExists(settingsPath);
+    if (providerStatusFromEnv(settings.env ?? {}) !== "fireworks") {
+      return null;
+    }
+    const state = await readJsonIfExists(providerStatePath(dataDir));
+    const auth = resolveClaudeAuthState(settings, state);
+    if (auth.authMode === "apiKeyHelper") {
+      // Nexus's helper runs `nexus key export` per request: always the stored
+      // key. A user's own helper may send anything.
+      return isNexusApiKeyHelper(settings.apiKeyHelper, state) ? LIVE_KEY : null;
+    }
+    return auth.token || null;
+  },
+
   async status(ctx) {
     ensureHomeForHarness(ctx, HARNESS.CLAUDE);
     const { settingsPath, dataDir } = claudePathsFor(ctx);
@@ -583,7 +605,9 @@ export default defineHarnessProfile({
     const auth = resolveClaudeAuthState(settings, state);
     const token = auth.token;
     if (token) {
-      await warmServerlessPricingCache(token);
+      // Only `--json`'s pricing reads the catalog, so a TTL-fresh cache is
+      // enough; refetching made every status wait on the listing.
+      await warmServerlessPricingCache(token, { reuseFreshCache: true });
     }
     const currentMapping = mappingFromSettings(settings);
     // Claude Code strips the managed marker when it persists a /model pick,

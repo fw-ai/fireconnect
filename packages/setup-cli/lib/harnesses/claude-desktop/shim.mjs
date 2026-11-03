@@ -20,7 +20,9 @@ import "../../system/legacy-env.mjs";
 import http from "node:http";
 import { Readable } from "node:stream";
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "../../io/atomic-write.mjs";
 // Only the pure leaf: the shim must not pull the CLI's full module graph.
 import { serverlessLineup, thirdPartyDir } from "./lineup.mjs";
@@ -33,6 +35,9 @@ import {
   autoProviderKeysInScope,
 } from "../../config/auto-providers.mjs";
 import { HARNESS } from "../../harness/id.mjs";
+import { SHIM_HEALTH_PATH, ensureShimSecret, readShimSecret, shimHealthDigest } from "./shim-auth.mjs";
+import { timingSafeEqual } from "node:crypto";
+import { loopbackHostHeaders } from "../../system/loopback.mjs";
 import { buildFireconnectTelemetryHeaders } from "../../telemetry/request-headers.mjs";
 
 const UPSTREAM = "https://api.fireworks.ai/inference";
@@ -230,6 +235,61 @@ export function createAutoKeysLoader({ configPath }) {
   };
 }
 
+/**
+ * Live gateway key from the profile Desktop has applied (the key it sends
+ * the shim): "" when there is none. The shim compares it with the key on
+ * each request before attaching anything that belongs to the user. Reads
+ * the library's appliedId, falling back to profile-state.json. Memoized on
+ * the profile file's mtime; never throws.
+ * @param {{ home: string, dataDir: string }} opts
+ */
+export function createGatewayKeyLoader({ home, dataDir }) {
+  let memo = null;
+  const lib = path.join(thirdPartyDir(home), "configLibrary");
+  const validId = (id) => typeof id === "string" && /^[\w-]+$/.test(id);
+  return async function currentGatewayKey() {
+    try {
+      const applied = (await readJson(path.join(lib, "_meta.json")))?.appliedId;
+      const state = validId(applied) ? null : await readJson(path.join(dataDir, "profile-state.json"));
+      const profileId = validId(applied) ? applied : state?.enabled ? state.profileId : null;
+      if (!validId(profileId)) return "";
+      const profilePath = path.join(lib, `${profileId}.json`);
+      const mtime = await stat(profilePath).then((s) => s.mtimeMs).catch(() => 0);
+      const key = `${profilePath}:${mtime}`;
+      if (memo?.key === key) return memo.value;
+      const profile = mtime ? await readJson(profilePath) : null;
+      const value = typeof profile?.inferenceGatewayApiKey === "string" ? profile.inferenceGatewayApiKey : "";
+      memo = { key, value };
+      return value;
+    } catch {
+      return "";
+    }
+  };
+}
+
+/** The credential a request carries: x-api-key, else a Bearer token. */
+function inboundKey(headers) {
+  if (typeof headers["x-api-key"] === "string") return headers["x-api-key"];
+  const auth = headers.authorization;
+  return typeof auth === "string" && /^bearer /i.test(auth) ? auth.slice(7).trim() : "";
+}
+
+function sameSecret(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length > 0 && x.length === y.length && timingSafeEqual(x, y);
+}
+
+/** Loopback Host values for the port the request arrived on. */
+function hostAllowed(host, port) {
+  if (typeof host !== "string") return false;
+  return loopbackHostHeaders(port).includes(host.toLowerCase());
+}
+
+function isJsonContentType(value) {
+  return typeof value === "string" && value.split(";")[0].trim().toLowerCase() === "application/json";
+}
+
 /** Copy upstream response headers, dropping the hop-by-hop ones. */
 function copyUpstreamHeaders(headers) {
   const out = {};
@@ -261,6 +321,13 @@ export function createShimServer({
   // When provided, resolves the keys saved with `nexus auto`. Sent only for
   // turns routed to an auto model.
   autoKeysLoader = null,
+  // When provided, resolves the per-install secret the health path proves
+  // knowledge of (see shim-auth.mjs). Unset or null: the path answers 503.
+  secretLoader = null,
+  // Resolves the key written into the applied profile. The keys saved with
+  // `nexus auto` are attached only to requests that carry this key; without
+  // a loader they are never attached.
+  gatewayKeyLoader = null,
 }) {
   const currentModelMap = async () => (lineupLoader ? (await lineupLoader()).modelMap : modelMap) ?? modelMap;
   // The Nexus attribution every other harness puts on its gateway traffic.
@@ -270,6 +337,18 @@ export function createShimServer({
     try {
       const url = new URL(req.url, "http://localhost");
       if (req.method === "GET" && url.pathname === "/") return reply(res, 200, "ok");
+      if (req.method === "GET" && url.pathname === SHIM_HEALTH_PATH) {
+        // Only for a caller that addressed us by a loopback name and isn't a
+        // page: the answer is stable per nonce, so a DNS-rebinding page could
+        // otherwise read it as a per-install identifier.
+        if (!hostAllowed(req.headers.host, req.socket.localPort) || req.headers.origin !== undefined) {
+          return reply(res, 403, "forbidden");
+        }
+        const secret = secretLoader ? await secretLoader().catch(() => null) : null;
+        const nonce = url.searchParams.get("n") ?? "";
+        if (!secret || !nonce) return reply(res, 503, "unavailable");
+        return reply(res, 200, shimHealthDigest(secret, nonce));
+      }
 
       const body = await readBody(req);
 
@@ -308,6 +387,15 @@ export function createShimServer({
         } catch { /* pass through verbatim */ }
       }
 
+      // Decided before the headers are rewritten: the user's own client
+      // sends the profile's key, as JSON, to a loopback name (a web page
+      // that rebinds its own hostname to 127.0.0.1 still sends that name).
+      // Anything else is still forwarded, just without the saved keys.
+      const callerKey = inboundKey(req.headers);
+      const ownClient = Boolean(gatewayKeyLoader) && hostAllowed(req.headers.host, req.socket.localPort)
+        && isJsonContentType(req.headers["content-type"])
+        && sameSecret(callerKey, await gatewayKeyLoader().catch(() => ""));
+
       const headers = {};
       for (const [name, value] of Object.entries(req.headers)) {
         if (HOP_HEADERS.has(name) || name === "host" || name === "content-length") continue;
@@ -336,10 +424,21 @@ export function createShimServer({
         const providers = await autoProvidersLoader().catch(() => "");
         if (providers) headers[NEXUS_PROVIDERS_HEADER] = providers;
       }
-      if (autoKeysLoader && autoTurn) {
+      if (autoKeysLoader && autoTurn && !ownClient) {
+        // Names the failed condition only; never a key or header value.
+        const why = !gatewayKeyLoader ? "no gateway key loader"
+          : !hostAllowed(req.headers.host, req.socket.localPort) ? "Host is not a loopback name"
+            : !isJsonContentType(req.headers["content-type"]) ? "content-type is not application/json"
+              : "request key does not match the applied profile's key (restart Claude Desktop after a key change)";
+        log(`[nexus-shim] saved provider keys not sent for this auto turn: ${why}`);
+      }
+      if (autoKeysLoader && autoTurn && ownClient) {
         const { anthropicKey, openaiKey } = await autoKeysLoader().catch(() => ({}));
         if (anthropicKey) headers[AUTO_PROVIDER_KEY_HEADERS.anthropic] = anthropicKey;
         if (openaiKey) headers[AUTO_PROVIDER_KEY_HEADERS.openai] = openaiKey;
+        // Which providers got a key, never the key itself.
+        const sent = [anthropicKey && "anthropic", openaiKey && "openai"].filter(Boolean);
+        log(`[nexus-shim] auto turn: client verified; saved provider keys ${sent.length ? `sent (${sent.join(", ")})` : "none saved"}`);
       }
 
       const controller = new AbortController();
@@ -417,6 +516,9 @@ async function main() {
   const state = (await readJson(path.join(dataDir, "shim-state.json"))) ?? {};
   const port = Number(state.port) > 0 ? Number(state.port) : 8799;
   const catalogDir = path.join(dataDir, "catalog");
+  // Created here too, so a shim restarted by an upgrade can prove itself
+  // before the next `on`. Read per probe: `on` may create it after start.
+  await ensureShimSecret(dataDir).catch(() => {});
   const lineupLoader = createLineupLoader({
     modelsCachePath: path.join(home, ".nexus", "catalog-cache.json"),
     catalogDir,
@@ -432,6 +534,8 @@ async function main() {
     autoKeysLoader: createAutoKeysLoader({
       configPath: path.join(home, ".nexus", "config.json"),
     }),
+    secretLoader: () => readShimSecret(dataDir),
+    gatewayKeyLoader: createGatewayKeyLoader({ home, dataDir }),
     // The harness matrix's CI loopback; never honored outside tests, so a
     // stray variable can't send a real key elsewhere.
     ...(process.env.NEXUS_TEST === "1" && process.env.NEXUS_SHIM_UPSTREAM
@@ -440,6 +544,15 @@ async function main() {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
+  }).catch((error) => {
+    // Claude Desktop still sends the Fireworks key to this port, so whoever
+    // holds it instead gets that key: say so plainly in the log.
+    if (error?.code === "EADDRINUSE") {
+      console.error(`[nexus-shim] EADDRINUSE: another program holds 127.0.0.1:${port}. `
+        + "Claude Desktop sends your Fireworks key to this port; quit Claude Desktop until the shim is back "
+        + "(`nexus claude-desktop status`).");
+    }
+    throw error;
   });
   console.log(`[nexus-shim] listening on 127.0.0.1:${port}`);
 
@@ -481,5 +594,22 @@ async function main() {
   }, 30_000).unref();
 }
 
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) main().catch((error) => { console.error(error); process.exit(1); });
+/**
+ * True when `argv1` launches the module at `moduleUrl`. Node resolves
+ * symlinks in `import.meta.url` but not in argv, and the service file can
+ * name the shim through a link (`~/.nexus` → `~/.fireconnect` during a
+ * deferred move) or a path with spaces: a raw string compare there makes
+ * the shim exit 0 without listening, silently, under KeepAlive.
+ * @param {string} moduleUrl
+ * @param {string | undefined} argv1
+ */
+export function isEntrypoint(moduleUrl, argv1) {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint(import.meta.url, process.argv[1])) main().catch((error) => { console.error(error); process.exit(1); });

@@ -7,10 +7,21 @@ import assert from "node:assert/strict";
 
 import { fireconnectSecretId, findFireconnectProvider, buildAzureModelEntry } from "../../../lib/harnesses/vscode/core.mjs";
 import { lookupAzureFoundryModelLimits } from "../../../lib/fireworks/azure-core.mjs";
-import { runCli, runCliJson, withTempHome, itIfSqlite } from "../../helpers.mjs";
+import { runCli as baseRunCli, runCliJson, splitAzureKeyArgs, withTempHome, itIfSqlite } from "../../helpers.mjs";
+import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 
-const AZURE_ENDPOINT = "https://msft-fw-foundry-resource.services.ai.azure.com";
-const AZURE_BASE_URL = "https://msft-fw-foundry-resource.services.ai.azure.com/openai/v1";
+// `on --azure --api-key` is gone: store the Foundry key the way
+// `nexus configure --provider azure` does, then run `on` without the flag.
+const runCli = async (args, opts = {}) => {
+  const { azure, rest } = splitAzureKeyArgs(args);
+  if (azure) {
+    await writeGlobalConfig(opts.home, { azure });
+  }
+  return baseRunCli(rest, opts);
+};
+
+const AZURE_ENDPOINT = "https://example-resource.services.ai.azure.com";
+const AZURE_BASE_URL = "https://example-resource.services.ai.azure.com/openai/v1";
 const AZURE_KEY = "azure-test-key-1234567890";
 
 async function readJson(p) {
@@ -167,10 +178,7 @@ describe("vscode azure harness", () => {
   itIfSqlite("switching from the Fireworks gateway to Azure replaces the catalog with the deployment", async () => {
     await withTempHome("vscode-azure-switch-", async (home) => {
       const vscodePath = path.join(home, "chatLanguageModels.json");
-      const fw = await runCli(
-        ["vscode", "on", "--api-key", "fw_test_key_12345", "--vscode-path", vscodePath, "--force"],
-        { home, env: azureEnv({ FIREWORKS_API_KEY: "" }) },
-      );
+      const fw = await (await runCli(["login", "--api-key", "fw_test_key_12345"], { home, env: azureEnv({ FIREWORKS_API_KEY: "" }) }), await runCli(["vscode", "on", "--vscode-path", vscodePath, "--force"], { home, env: azureEnv({ FIREWORKS_API_KEY: "" }) }));
       assert.equal(fw.code, 0, fw.stderr);
 
       const az = await runCli(

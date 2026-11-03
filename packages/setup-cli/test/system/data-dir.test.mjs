@@ -133,6 +133,25 @@ describe("migrateLegacyDataDir", () => {
     });
   });
 
+  it("replaces a symlinked set-aside record without modifying its target", async () => {
+    await withTempHome("data-dir-set-aside-link-", async (home) => {
+      await mkdir(path.join(home, ".fireconnect"));
+      await writeFile(path.join(home, ".fireconnect/config.json"), "{\"old\":true}\n");
+      await mkdir(path.join(home, ".nexus"));
+      await writeFile(path.join(home, ".nexus/config.json"), NEXUS_CONFIG);
+      const personalFile = path.join(home, "personal-set-aside.json");
+      const personalContents = "{\"personal\":true}\n";
+      await writeFile(personalFile, personalContents);
+      const record = path.join(home, ".nexus/set-aside.json");
+      await symlink(personalFile, record);
+
+      assert.equal(migrateLegacyDataDir(home), "set-aside");
+      assert.equal(await readFile(personalFile, "utf8"), personalContents);
+      assert.equal((await lstat(record)).isFile(), true);
+      assert.deepEqual(JSON.parse(await readFile(record, "utf8")), [".nexus-pre"]);
+    });
+  });
+
   it("moves everything into an existing ~/.nexus when nothing clashes", async () => {
     await withTempHome("data-dir-fill-", async (home) => {
       await mkdir(path.join(home, ".fireconnect/codex"), { recursive: true });
@@ -217,6 +236,7 @@ describe("migrateLegacyDataDir", () => {
         "demo.json",
         ".api-key",
         ".secret-memory",
+        "set-aside.json",
       ];
       assert.deepEqual(
         [...(dataDirModule.NEXUS_OWNED_FILENAMES ?? ownedFilenames)].filter((name) => !["cli", "claude-desktop", "statusline-refresh"].includes(name)),
@@ -284,9 +304,9 @@ describe("migrateLegacyDataDir", () => {
 
   it("migrates when the caches beat the rename to ~/.nexus instead of wedging the upgrade", async () => {
     await withTempHome("data-dir-cache-race-", async (home) => {
-      // The observed machine's state: the only ~/.nexus contents were the
-      // two caches an early 0.10.0 command wrote, and every later upgrade
-      // failed with "belongs to another program".
+      // The only ~/.nexus contents are the two caches an early 0.10.0
+      // command wrote; before the fix every later upgrade failed with
+      // "belongs to another program".
       await mkdir(path.join(home, ".fireconnect"));
       await writeFile(path.join(home, ".fireconnect/config.json"), NEXUS_CONFIG);
       await mkdir(path.join(home, ".nexus"));

@@ -121,12 +121,19 @@ function isClaudePickerRow(id) {
  * them; `firerouter/*` rows never do — FireRouter selections are retired,
  * so a refresh prunes them like any other delisted row.
  *
+ * `catalogServed` says a fresh fetch returned a non-empty catalog, so a
+ * refresh may prune even when that catalog holds only the `auto` mix.
+ *
  * @param {Record<string, unknown>} settings
  * @param {string[]} registerableIds
- * @param {{ refresh?: boolean, protectedIds?: string[] }} [opts]
+ * @param {{ refresh?: boolean, protectedIds?: string[], catalogServed?: boolean }} [opts]
  * @returns {Record<string, unknown>}
  */
-export function withFireconnectModelPicker(settings, registerableIds, { refresh = false, protectedIds = [] } = {}) {
+export function withFireconnectModelPicker(settings, registerableIds, {
+  refresh = false,
+  protectedIds = [],
+  catalogServed = false,
+} = {}) {
   if (!Object.hasOwn(settings, "modelPicker")) {
     const options = buildFireconnectModelPickerOptions([
       ...registerableIds,
@@ -182,14 +189,15 @@ export function withFireconnectModelPicker(settings, registerableIds, { refresh 
   // synthesize the `auto` row when the catalog is non-empty (and older ones
   // synthesized bare `firerouter`), so emptiness must be judged after
   // removing those gateway specials: an unreachable or vacant catalog
-  // leaves the picker untouched.
+  // leaves the picker untouched. A freshly served catalog of only `auto`
+  // is the account's real list, so `catalogServed` lets it prune.
   const hasServedCatalogRow = registerableIds.some((id) => {
     const normalized = typeof id === "string"
       ? shortFireworksModelRef(normalizeModelId(id))
       : "";
     return Boolean(normalized) && !isFirerouterModel(normalized) && !isAutoModelId(normalized);
   });
-  if (!hasServedCatalogRow) {
+  if (!hasServedCatalogRow && !catalogServed) {
     return settings;
   }
   const keptClaudeRows = [];

@@ -84,9 +84,8 @@ export function modelQualifiesForClaudeCode1mContext(modelId) {
 }
 
 const OFFLINE_ALIAS_BASE_MODELS = {
-  "glm-latest": "accounts/fireworks/models/glm-5p2",
-  "glm-fast-latest": "accounts/fireworks/models/glm-5p2",
-  "glm-5p2-fast": "accounts/fireworks/models/glm-5p2",
+  "glm-latest": "accounts/fireworks/models/glm-5p3",
+  "glm-fast-latest": "accounts/fireworks/models/glm-5p3",
   "kimi-fast-latest": "accounts/fireworks/models/kimi-k3",
 };
 

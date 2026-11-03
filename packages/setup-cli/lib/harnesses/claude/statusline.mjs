@@ -38,6 +38,8 @@ import {
 } from "../../fireworks/model-id.mjs";
 import { autoDisplayName, firerouterDisplayName, prettyModelName } from "../../fireworks/models.mjs";
 import { stripViaFireworksSuffix } from "../../fireworks/label-suffix.mjs";
+import { truecolor } from "../../ui/palette.mjs";
+import { DATA_COLORS } from "../../ui/tokens.mjs";
 import { UNPRICED_TEXT, addUsage } from "./usage/cost.mjs";
 import {
   formatUsageCost,
@@ -139,19 +141,19 @@ const COLOR = process.env.NO_COLOR ? null : {
   reset: "\x1b[0m",
 };
 
-// Design System V2 data colors for bar segments and swatches only; text uses COLOR tokens above.
+// Data colors for bar segments and swatches only; text uses COLOR tokens above.
 const SERIES_COLORS = Object.freeze([
-  "\x1b[38;2;49;212;211m", // #31d4d3 teal
-  "\x1b[38;2;255;124;87m", // #ff7c57 coral
-  "\x1b[38;2;93;180;142m", // #5db48e green
-  "\x1b[38;2;250;193;147m", // #fac193 peach
-  "\x1b[38;2;195;81;155m", // #c3519b rose
-  "\x1b[38;2;5;137;108m", // #05896c deep green
-  "\x1b[38;2;249;173;177m", // #f9adb1 blush
-  "\x1b[38;2;195;228;251m", // #c3e4fb sky
-  "\x1b[38;2;217;117;71m", // #d97547 amber
-  "\x1b[38;2;222;74;125m", // #de4a7d flare
-]);
+  DATA_COLORS.teal,
+  DATA_COLORS.coral,
+  DATA_COLORS.green,
+  DATA_COLORS.peach,
+  DATA_COLORS.rose,
+  DATA_COLORS.deepGreen,
+  DATA_COLORS.blush,
+  DATA_COLORS.sky,
+  DATA_COLORS.amber,
+  DATA_COLORS.flare,
+].map(truecolor));
 
 /** @param {keyof typeof COLOR} name @param {string} text */
 function paint(name, text) {

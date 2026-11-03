@@ -26,6 +26,7 @@ import {
   mockServerlessModel,
   mockServerlessModelRows,
   runFireconnect,
+  seedKeychainConfig,
   assertClaudeNativeTierSlots,
   assertClaudeRegisterablePicker,
 } from "../../helpers.mjs";
@@ -69,10 +70,10 @@ function seedCatalogFor(home) {
   }
 }
 
-function cliEnv(home, apiKey = FIREWORKS_KEY) {
+async function cliEnv(home, apiKey = FIREWORKS_KEY) {
+  await seedKeychainConfig(home, apiKey);
   return {
     HOME: home,
-    FIREWORKS_API_KEY: apiKey,
     ANTHROPIC_API_KEY: "",
     ANTHROPIC_AUTH_TOKEN: "",
   };
@@ -104,7 +105,7 @@ describe("Claude model preferences", () => {
   it("merges stored profiles, keeps native tiers, and survives off/on", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-model-prefs-"));
     seedCatalogFor(home);
-    const env = cliEnv(home);
+    const env = await cliEnv(home);
     await writeJson(userSettingsPath(home), {
       env: { ANTHROPIC_API_KEY: "sk-ant-native-test" },
     });
@@ -168,7 +169,7 @@ describe("Claude model preferences", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-router-prefs-"));
     seedCatalogFor(home);
     const settingsPath = userSettingsPath(home);
-    const env = cliEnv(home);
+    const env = await cliEnv(home);
     // What an earlier release left behind for `claude on --model firerouter`:
     // a FireRouter default pinned in settings, with no detectable native auth.
     await writeJson(settingsPath, {
@@ -192,7 +193,7 @@ describe("Claude model preferences", () => {
   it("reconnects with native tiers when the managed key is temporarily unreadable", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fc-claude-live-prefs-"));
     const settingsPath = userSettingsPath(home);
-    const env = cliEnv(home);
+    const env = await cliEnv(home);
     const first = await runFireconnect(
       ["claude", "on", "--non-interactive"],
       env,

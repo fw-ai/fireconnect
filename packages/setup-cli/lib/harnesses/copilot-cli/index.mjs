@@ -4,7 +4,7 @@ import {
   printRestartHint,
 } from "../../cli/messages.mjs";
 import { printStructuredHarnessStatus } from "../../harness/status-display.mjs";
-import { planCatalogRefresh } from "../../harness/catalog-refresh.mjs";
+import { planModelList } from "../../harness/catalog-refresh.mjs";
 import { isFireworksKey } from "../../keys/key-type.mjs";
 import { defineHarnessProfile } from "../../harness/engine.mjs";
 import { ensureHomeForHarness, copilotCliPathsFor as copilotCliPathsForShared } from "../../harness/context.mjs";
@@ -83,28 +83,17 @@ export default defineHarnessProfile({
     const requestedModel = modelId?.trim() || dropRetiredModelId(existingSelection);
     const resolvedModel = shortFireworksModelRef(resolveCopilotModelId(requestedModel));
     const initialized = await isHarnessEnabled(ctx.home, HARNESS.COPILOT_CLI);
-    const catalogModels = copilotModelIds(extraModels);
-    let toRegister;
-    if (!initialized) {
-      // Shared fresh-install policy (see lib/harness/catalog-refresh.mjs).
-      toRegister = copilotModelIds([resolvedModel, ...extraModels]);
-    } else if (modelId) {
-      toRegister = [...new Set([...existing.models, resolvedModel])];
-    } else if (catalogAvailable) {
-      const plan = planCatalogRefresh({
-        // Include the saved selection even if providers.json was edited or
-        // partially lost; the selected model must remain registered.
-        currentIds: [...existing.models, existingSelection].filter(Boolean),
-        freshIds: catalogModels,
-        keepUnserved: (id) => (
-          id === resolvedModel
-          || (isAutoModelId(id) && !isAutoInstantModelId(id))
-        ),
-      });
-      toRegister = [...plan.kept, ...plan.added];
-    } else {
-      toRegister = existing.models;
-    }
+    // Shared list policy (lib/harness/catalog-refresh.mjs). The saved
+    // selection counts as registered even if providers.json was edited or
+    // partially lost, so it stays.
+    const toRegister = planModelList({
+      currentIds: [...existing.models, existingSelection],
+      freshIds: copilotModelIds(extraModels),
+      catalogAvailable,
+      freshInstall: !initialized,
+      selectedId: resolvedModel,
+      keepUnserved: (id) => isAutoModelId(id) && !isAutoInstantModelId(id),
+    });
 
     await enableCopilotCli({
       providersPath: paths.providersPath,
@@ -154,6 +143,12 @@ export default defineHarnessProfile({
     ensureHomeForHarness(ctx, HARNESS.COPILOT_CLI);
     const { providersPath } = copilotCliPathsForShared(ctx);
     return (await readCopilotCliState(providersPath)).configured ? "fireworks" : "none";
+  },
+
+  async keyInUse(ctx) {
+    ensureHomeForHarness(ctx, HARNESS.COPILOT_CLI);
+    const { configured, apiKey } = await readCopilotCliState(copilotCliPathsForShared(ctx).providersPath);
+    return configured ? apiKey || null : null;
   },
 
   async status(ctx) {

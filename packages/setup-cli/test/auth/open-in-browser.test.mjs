@@ -68,4 +68,20 @@ describe("openInBrowser", () => {
     child.emit("error", new Error("late"));
     assert.equal(await pending, true);
   });
+
+  it("on Windows hands the URL to the protocol handler, never to cmd.exe", async () => {
+    const calls = [];
+    const child = fakeChild();
+    const url = "https://example.test/a?x=1&y=2|z^%VAR%";
+    const pending = openInBrowser(url, {
+      platform: "win32",
+      spawnFn: (command, args) => { calls.push([command, args]); return child; },
+    });
+    child.emit("exit", 0);
+    assert.equal(await pending, true);
+    const [[command, args]] = calls;
+    assert.match(command, /[\\/]System32[\\/]rundll32\.exe$/i);
+    assert.doesNotMatch(command, /cmd/i);
+    assert.deepEqual(args, ["url.dll,FileProtocolHandler", url]);
+  });
 });

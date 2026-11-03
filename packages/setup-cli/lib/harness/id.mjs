@@ -40,10 +40,10 @@ export const HARNESS_ALIASES = Object.freeze({
  */
 export const HARNESS_COMMANDS = Object.freeze([
   { command: "claude", name: "Claude Code", featured: true },
-  { command: "claude-desktop", name: "Claude Desktop (Fireworks inference)", featured: true },
   { command: "opencode", name: "OpenCode", featured: true },
   { command: "codex", name: "Codex CLI", featured: true },
   { command: "chatgpt", name: "ChatGPT desktop app", featured: true },
+  { command: "claude-desktop", name: "Claude Desktop (Limited)", featured: true },
   { command: "pi", name: "Pi" },
   { command: "cursor", name: "Cursor IDE" },
   { command: "vscode", name: "VS Code Chat" },
@@ -71,6 +71,22 @@ export const FILE_CONFIG_HARNESS_IDS = Object.freeze([
 ]);
 
 export const FILE_CONFIG_HARNESS_SET = new Set(FILE_CONFIG_HARNESS_IDS);
+
+/**
+ * Harnesses whose `on` can route through Microsoft Foundry (`--azure` or a
+ * configured azure provider) — the adapters declaring an `azure` profile
+ * (OpenCode, Pi, Cursor, VS Code). Codex is excluded: it rejects Azure mode
+ * itself. Lives beside the ids so parse-time checks stay free of adapter
+ * imports; a test asserts parity with each profile's `azure`.
+ */
+export const AZURE_ON_HARNESS_IDS = Object.freeze([
+  HARNESS.CURSOR,
+  HARNESS.OPENCODE,
+  HARNESS.PI,
+  HARNESS.VSCODE,
+]);
+
+export const AZURE_ON_HARNESS_SET = new Set(AZURE_ON_HARNESS_IDS);
 
 /**
  * @param {string} value

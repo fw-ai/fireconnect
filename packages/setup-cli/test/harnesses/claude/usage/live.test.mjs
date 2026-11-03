@@ -120,7 +120,7 @@ describe("meter palette uses the color guide primary accent", () => {
     assert.equal(METER.gold, DATA.cost);
     assert.equal(METER.ghost, "\u001b[38;5;245m");
     assert.equal(METER.modelPalette.length, 9);
-    assert.equal(METER.modelPalette[0], "38;2;49;212;211", "badges use the Design System V2 data colors");
+    assert.equal(METER.modelPalette[0], "38;2;49;212;211", "badges use the data colors");
   });
 });
 

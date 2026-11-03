@@ -94,7 +94,7 @@ describe("literal-bake CLI flows", () => {
     });
   });
 
-  it("pi on repairs legacy global env-ref when keychain holds the secret", async () => {
+  it("pi on resolves a legacy global env-ref via the keychain secret and repairs the ref", async () => {
     await withTempHome("cli-pi-repair-", async (home) => {
       await mkdir(path.join(home, ".pi/agent"), { recursive: true });
       await seedKeychainConfig(home, KEY);
@@ -103,6 +103,9 @@ describe("literal-bake CLI flows", () => {
       const on = await runFireconnect(["pi", "on"], { HOME: home, FIREWORKS_API_KEY: "" });
       assert.equal(on.code, 0, on.stderr);
 
+      // The env-ref is dead (env is not a credential source) but the keychain
+      // secret beside it still resolves, and `on` repairs the ref so later
+      // reads don't depend on the fall-through.
       const config = await readGlobalConfig(home);
       assert.equal(config.apiKey, FIREWORKS_API_KEY_KEYCHAIN_REF);
       assert.equal(JSON.parse(await readFile(piAuthPath(home), "utf8")).fireworks.key, KEY);

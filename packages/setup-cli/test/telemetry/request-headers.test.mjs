@@ -35,6 +35,12 @@ describe("FireConnect request telemetry", () => {
     );
   });
 
+  it("keeps the exact GitHub Copilot titles", () => {
+    for (const [harness, title] of [["copilot-app", "GitHub Copilot"], ["copilot-cli", "GitHub Copilot CLI"]]) {
+      assert.equal(buildFireconnectTelemetryHeaders(harness, { fireconnectVersion: "0.10.1" })["X-Title"], title);
+    }
+  });
+
   it("preserves a native User-Agent while updating managed object headers", () => {
     const merged = mergeFireconnectTelemetryHeaders({
       "X-User-Trace": "keep",

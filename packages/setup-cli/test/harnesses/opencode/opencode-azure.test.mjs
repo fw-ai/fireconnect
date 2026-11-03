@@ -4,7 +4,8 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { harnessTestArgs, isolatedChildHome, seedOnCommandCatalog } from "../../helpers.mjs";
+import { harnessTestArgs, isolatedChildHome, seedOnCommandCatalog, splitAzureKeyArgs } from "../../helpers.mjs";
+import { writeGlobalConfig } from "../../../lib/config/global-config.mjs";
 
 import {
   OPENCODE_AZURE_PROVIDER_ID,
@@ -17,7 +18,18 @@ const AZURE_ENDPOINT = "https://my-res.services.ai.azure.com";
 const AZURE_BASE_URL = "https://my-res.services.ai.azure.com/openai/v1";
 const AZURE_KEY = "azure-test-key-1234567890";
 
-function runFireconnect(args, env = {}) {
+async function runFireconnect(args, env = {}) {
+  // `on --azure --api-key` is gone: store the Foundry key the way
+  // `nexus configure --provider azure` does, then run `on` without the flag.
+  const home = isolatedChildHome(env);
+  const { azure, rest } = splitAzureKeyArgs(args);
+  if (azure) {
+    await writeGlobalConfig(home, { azure });
+  }
+  return spawnFireconnect(rest, { ...env, HOME: home });
+}
+
+function spawnFireconnect(args, env = {}) {
   return new Promise((resolve, reject) => {
     if (args.includes("on")) { seedOnCommandCatalog(env.HOME, args); }
     const child = spawn(process.execPath, [CLI, ...harnessTestArgs(args)], {
@@ -44,7 +56,7 @@ async function withHome(fn) {
 }
 
 describe("opencode azure harness", () => {
-  it("writes a Foundry provider block with a literal key (--api-key)", async () => {
+  it("writes a Foundry provider block with a literal key (configured key)", async () => {
     await withHome(async (home) => {
       const configPath = opencodeConfigPath(home);
       const original = JSON.stringify({ model: "openai/gpt-4", provider: {} }, null, 2) + "\n";
@@ -84,7 +96,7 @@ describe("opencode azure harness", () => {
       const result = await runFireconnect(
         [
           "opencode", "on", "--azure",
-          "--base-url", "https://r.services.ai.azure.com/api/projects/msft-fw-foundry",
+          "--base-url", "https://r.services.ai.azure.com/api/projects/example-project",
           "--api-key", AZURE_KEY,
           "--model", "FW-MiniMax-M2.5",
         ],
@@ -133,8 +145,8 @@ describe("opencode azure harness", () => {
       await writeFile(configPath, JSON.stringify({}, null, 2) + "\n");
 
       const result = await runFireconnect(
-        ["opencode", "on", "--azure", "--api-key", AZURE_KEY],
-        { HOME: home },
+        ["opencode", "on", "--azure"],
+        { HOME: home, AZURE_API_KEY: AZURE_KEY },
       );
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /No Azure endpoint/);
@@ -152,7 +164,7 @@ describe("opencode azure harness", () => {
         0,
       );
 
-      // Re-on with only --model (no --base-url, no global configure).
+      // Re-on with only --model (no --base-url; endpoint resolves from config).
       const reon = await runFireconnect(
         ["opencode", "on", "--azure", "--model", "FW-MiniMax-M2.5"],
         { HOME: home },
@@ -242,10 +254,7 @@ describe("opencode azure harness", () => {
       const original = JSON.stringify({ model: "openai/gpt-4", provider: {} }, null, 2) + "\n";
       await writeFile(configPath, original);
 
-      const fwOn = await runFireconnect(
-        ["opencode", "on", "--api-key", "fw_test_key_12345"],
-        { HOME: home, FIREWORKS_API_KEY: "" },
-      );
+      const fwOn = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
       assert.equal(fwOn.code, 0, fwOn.stderr);
 
       const azOn = await runFireconnect(
@@ -274,13 +283,8 @@ describe("opencode azure harness", () => {
       }) + "\n";
       await writeFile(configPath, original);
 
-      const firerouter = await runFireconnect(
-        [
-          "opencode", "on",
-          "--api-key", "fw_test_key_12345",
-        ],
-        { HOME: home, FIREWORKS_API_KEY: "" },
-      );
+      const firerouter = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect([
+          "opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
       assert.equal(firerouter.code, 0, firerouter.stderr);
 
       const azure = await runFireconnect(
@@ -292,10 +296,7 @@ describe("opencode azure harness", () => {
       );
       assert.equal(azure.code, 0, azure.stderr);
 
-      const direct = await runFireconnect(
-        ["opencode", "on", "--api-key", "fw_test_key_12345"],
-        { HOME: home, FIREWORKS_API_KEY: "" },
-      );
+      const direct = await (await runFireconnect(["login", "--api-key", "fw_test_key_12345"], { HOME: home, FIREWORKS_API_KEY: "" }), await runFireconnect(["opencode", "on"], { HOME: home, FIREWORKS_API_KEY: "" }));
       assert.equal(direct.code, 0, direct.stderr);
       const active = JSON.parse(await readFile(configPath, "utf8"));
       assert.ok(active.provider[OPENCODE_FIREWORKS_PROVIDER_ID]);

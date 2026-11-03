@@ -18,6 +18,7 @@ import {
   refreshPiGatewayKey,
   removePiSavedProviderKeys,
 } from "../harnesses/pi/core.mjs";
+import { refreshClaudeDesktopGatewayKey } from "../harnesses/claude-desktop/profile-lane.mjs";
 import {
   chatLanguageModelsPath,
   isVscodeRunning,
@@ -130,6 +131,12 @@ export async function syncBakedKeysAfterStore(home, fireworksKey) {
       label: "VS Code",
       hint: "nexus vscode on",
       refresh: () => refreshVscodeGatewayKey({ vscodePath: chatLanguageModelsPath({ home }), fireworksKey }),
+    },
+    {
+      id: HARNESS.CLAUDE_DESKTOP,
+      label: "Claude Desktop",
+      hint: "nexus claude-desktop on",
+      refresh: () => refreshClaudeDesktopGatewayKey({ home, fireworksKey }),
     },
   ];
   const notes = [];

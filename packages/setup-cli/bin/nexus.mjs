@@ -32,6 +32,20 @@ process.on("warning", (warning) => {
 });
 
 async function run() {
+  // Desktop capability discovery is read-only, even before dependencies are
+  // installed or legacy data is migrated. No credentials, updates, or network.
+  const args = process.argv.slice(2);
+  if (args.length === 2 && args.includes("--json") && (args.includes("--version") || args.includes("-V"))) {
+    const { cliVersionInfo } = await import("../lib/system/version.mjs");
+    const info = cliVersionInfo();
+    if (!info.version) {
+      process.stderr.write("Unable to determine Nexus CLI version.\n");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify(info, null, 2));
+    return;
+  }
   if (!ensureCliDependencies()) {
     process.stderr.write(`${cliDependenciesMissingMessage()}\n`);
     process.exitCode = 1;

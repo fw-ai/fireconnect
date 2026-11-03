@@ -2,7 +2,6 @@ import process from "node:process";
 import {
   FIREWORKS_KEYS_URL,
   assertFireworksKeyUsable,
-  assertNoFireworksEnvForStorage,
   persistApiKeyToKeychain,
   verifyFailureLine,
 } from "../../keys/api-key.mjs";
@@ -10,7 +9,7 @@ import { activeKeySourceNote, assertBackendCanStore, keyStorageSummaryLine } fro
 import { identityLabel } from "../../keys/verify-api-key.mjs";
 import { printHarnessRows } from "../../cli/commands/harnesses.mjs";
 import { HARNESS_COMMANDS } from "../../harness/id.mjs";
-import { accent, bold, check } from "../../ui/term.mjs";
+import { accent, bold, check, withSpinner } from "../../ui/term.mjs";
 
 // Re-exported for the login flows/command that already import these from here.
 export const KEYS_URL = FIREWORKS_KEYS_URL;
@@ -24,13 +23,19 @@ export function fail(message) {
 /**
  * @param {string} home
  * @param {string} apiKey
+ * @param {"nexus"|"platform"|"unknown"} [accountType]
  */
-export async function storeApiKey(home, apiKey) {
+export async function storeApiKey(home, apiKey, accountType = "unknown") {
   const { backend, message } = await keyStorageSummaryLine(home);
   await assertBackendCanStore(backend, home);
   /** @type {string[]} */
   const notes = [];
-  await persistApiKeyToKeychain(home, apiKey, { backend, onNote: (line) => notes.push(line) });
+  // A new key refetches the model catalog (bounded, up to a few seconds).
+  await withSpinner("Saving your key…", () => persistApiKeyToKeychain(home, apiKey, {
+    backend,
+    accountType,
+    onNote: (line) => notes.push(line),
+  }));
   return { message, notes };
 }
 
@@ -71,21 +76,21 @@ function printNextSteps() {
 /**
  * @param {string} home
  * @param {string} key
+ * @param {"nexus"|"platform"|"unknown"} [accountType]
  */
-export async function loginNonInteractive(home, key) {
+export async function loginNonInteractive(home, key, accountType = "unknown") {
   if (!key) {
     fail("No key provided. Run nexus login --with-token < key.txt to sign in non-interactively.");
     return;
   }
   let result;
   try {
-    assertNoFireworksEnvForStorage();
     result = await assertFireworksKeyUsable(key);
   } catch (error) {
     fail(error.message);
     return;
   }
-  const stored = await storeApiKey(home, key);
+  const stored = await storeApiKey(home, key, accountType);
   console.log(signedInLine(result));
   for (const note of [...stored.notes, activeKeySourceNote(key)].filter(Boolean)) {
     console.log(note);
